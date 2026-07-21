@@ -126,7 +126,7 @@ function agentRecord(canonical) {
         ? ["company.records.write", "company.work.execute", "finance.commitment.write"]
         : ["company.records.write"],
       runtime_refs: [],
-      provider_session_refs: [],
+      native_session_refs: [],
       created_at: canonical.created_at,
       updated_at: NOW,
     },

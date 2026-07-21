@@ -15,7 +15,7 @@ Document / TypedRecord
 
 The execution foundation is essential infrastructure, but it is not the
 product homepage, company hierarchy, primary documentation tree, or financial
-system. A Mission, Wave, AgentTeamRun, WorkflowRun, ProviderSession, or runtime
+system. A Mission, Wave, AgentTeamRun, WorkflowRun, native session reference, or runtime
 does not own a company business domain merely because it executed some work for
 it.
 

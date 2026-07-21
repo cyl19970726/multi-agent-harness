@@ -574,7 +574,6 @@ mod tests {
             initiated_by: None,
             design_intent: None,
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,

@@ -56,7 +56,7 @@ fn actor_types_remain_distinct_on_the_wire() {
         capability_refs: vec!["capability-trademark-search".into()],
         permission_policy_refs: vec!["policy-agent-preparation".into()],
         runtime_refs: vec![],
-        provider_session_refs: vec![],
+        native_session_refs: vec![],
         created_at: NOW.into(),
         updated_at: NOW.into(),
     };

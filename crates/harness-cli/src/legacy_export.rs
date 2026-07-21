@@ -399,11 +399,6 @@ const LINK_RULES: &[LinkRule] = &[
         target: TargetKind::Task,
     },
     LinkRule {
-        ledger: "provider_sessions.jsonl",
-        path: "task_id",
-        target: TargetKind::Task,
-    },
-    LinkRule {
         ledger: "provider_child_threads.jsonl",
         path: "task_id",
         target: TargetKind::Task,

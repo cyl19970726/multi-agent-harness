@@ -45,8 +45,8 @@ shared `project_root`.
 ~/.harness/
   projects/
     _global/                  # reserved id for ~ (HOME); usually NOT a git repo
-      goals.jsonl members.jsonl tasks.jsonl provider_turn_events.jsonl ...
-      provider-sessions/  metadata.json
+      missions.jsonl waves.jsonl members.jsonl messages.jsonl ...
+      runtimes/  metadata.json
     ai-luodi-jyx3d/           # under $HOME → slug = relpath with '/'→'-'
     proj-<sha256[:16]>/       # outside $HOME → content-addressed
     registry.json             # {current_project_id, projects:[...]}
@@ -105,10 +105,11 @@ scoped read model + SSE stream on switch and persists the choice to
 ## Migration path (repo-local `.harness` → central store)
 
 Existing repos have a repo-local `.harness/` store. `harness project migrate`
-(run from the repo) **copies** (never moves) every JSONL ledger +
-`provider-sessions/` into `~/.harness/projects/<id>/`, writes `metadata.json` with
+(run from the repo) **copies** (never moves) active JSONL ledgers plus
+`prompts/` and `runtimes/` into `~/.harness/projects/<id>/`, writes `metadata.json` with
 `migrated_from`, and drops a `.harness/MIGRATED_TO_CENTRAL` marker in the old
 store (tooling then reads the central store and ignores the marked local one).
+The retired provider-session mirror ledger/directory is intentionally omitted.
 
 - **No data loss**: it is a copy; `records_after == records_before`, and the old
   store is left intact (only marked).
@@ -134,18 +135,11 @@ the choice (`--store-source`).
   git-backed project).
 - **Diff evidence is unavailable** for `_global` (no worktree to diff) — accepted.
 
-## Transitional risk: per-project provider-event mirror
+## Provider activity
 
-`serve` truncates each project's `provider_turn_events.jsonl` on startup to drop
-stale live frames. With multiple projects this happens **per project on restart**,
-which can drop in-flight events for *all* projects at once. Pass `serve
---no-truncate` (used by the tests and the verify demo) to preserve pre-seeded /
-in-flight rows across a restart.
-
-ADR 0032 removes this mirror from the target architecture. Provider activity
-will be read from each provider's native session; only Harness coordination
-remains in the centralized project store. This flag and truncation behavior are
-implementation debt until that migration lands.
+Provider activity is read from each provider's native session and is not a
+per-project Harness ledger. Restarting `serve` therefore cannot truncate or
+silently rewrite provider history; only ephemeral UI projections reconnect.
 
 ## Live acceptance
 

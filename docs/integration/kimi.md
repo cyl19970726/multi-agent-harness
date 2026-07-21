@@ -48,7 +48,7 @@ AgentMember(provider=kimi)
 Kimi Code 官方 CLI 提供 `kimi` 命令行工具。相比直接走 Moonshot HTTP API：
 
 - **local-process shape**：`kimi -p` 与 Claude/Codex 的按需 CLI delivery 模型一致，
-  harness 可以复用 ProviderAdapter、ProviderSession、NDJSON tee、event ingest 等基础设施；
+  Harness 复用 ProviderAdapter、delivery、NativeSessionRef 与临时流归约基础设施；
 - **registry-routed provider**：Kimi 通过 `ProviderAdapter` trait 实现接入，provider
   lookup 走 `provider_adapter(name)`，不是新增散落 match arms
   (`ProviderAdapter` trait `crates/harness-cli/src/main.rs:13397`;
@@ -87,7 +87,7 @@ AgentRuntime
 
 ```text
 endpoint: runtime directory exists + kimi binary probe
-session: most recent ProviderSession exists + has terminal status
+session: NativeSessionRef is available and compatible
 delivery: latest message delivery has proof of receipt from Kimi
 ```
 
@@ -153,10 +153,9 @@ Kimi delivery 明确不传这些 Claude-only 或非真实 headless flags：
 Source: `crates/harness-cli/src/main.rs:14562-14567`,
 `crates/harness-cli/src/main.rs:14607-14612`.
 
-Kimi 执行后返回：
+Kimi 执行时产生 flat NDJSON transport frames，Harness 在内存归约并返回：
 
-- raw flat NDJSON frames；
-- `ProviderSession` 记录，provider 为 `kimi`；
+- `NativeSessionRef`，provider 为 `kimi`；
 - 可选 resumable session id（来自 `session.resume_hint`）；
 - `Evidence`（source_type = `kimi_delivery_session`）；
 - `DeliveryOutcome.summary`（来自 assistant content）；
@@ -175,16 +174,12 @@ Kimi 产生的事件通过以下源进来：
    - no Claude terminal `result`
    - no `usage` / `model` frame in `-p` mode
 
-2. **ProviderSession record** — harness-store 记录的会话：
-   - provider = `kimi`
-   - command = `kimi`
-   - args = `["-p", "--output-format", "stream-json", ...]`
-   - provider_thread_id = parsed resumable session id when present
-   - jsonl_ref = `kimi.stream-json.ndjson`
+2. **Native session binding** — Harness 只记录 provider/mode/session id、
+   adapter/provider version、availability 与 resume capability。
 
 3. **Evidence ingest** — Kimi delivery session output:
    - source_type = `kimi_delivery_session`
-   - source_ref = `provider-session:{resolved_session_id}`
+   - source_ref = `native-session:kimi:{resolved_session_id}`
    - summary = Kimi stream-json delivery summary
 
 Source: `crates/harness-cli/src/main.rs:14687-14733`.
@@ -195,11 +190,9 @@ Kimi 事件 -> harness objects：
 
 ```text
 (provider = "kimi")
-  role=="assistant"              -> AgentEvent { event_type: "assistant_message" }
-  type=="session.resume_hint"    -> AgentEvent { event_type: "session_resume_hint" }
-  other role                     -> AgentEvent { event_type: role }
-  unknown frame                  -> AgentEvent { event_type: "unknown" }
-  parsed session.resume_hint     -> ProviderSession id/session status
+  role=="assistant"              -> transient native activity + outcome candidate
+  type=="session.resume_hint"    -> NativeSessionRef.native_session_id
+  other/unknown frame            -> transient native activity only
 ```
 
 Kimi uses kimi-native parsing:
@@ -287,10 +280,11 @@ ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode
 initialize -> session/new -> session/prompt (streaming notifications) -> session/cancel
 ```
 
-- The ACP `sessionId` is currently stored on `MemberRun.acp_session_id` and
-  reused for follow-up rounds inside the same live TeamRun process. The target
-  is a mode-aware `NativeSessionRef`; restart-time `session/load|resume` must be
-  proven separately.
+- The ACP `sessionId` is stored through the mode-aware
+  `MemberRun.native_session` and reused for follow-up rounds. The locator,
+  detected Kimi version, adapter contract version, availability, and resume
+  support are explicit; Harness does not persist a second transcript or tool
+  stream.
 - `session/update` message, thought, and tool frames stream during the turn.
   Thought is sanitized into transient live display only. Tool calls remain in
   Kimi's native session and feed only an ephemeral activity projection; current
@@ -320,22 +314,14 @@ The authoritative mode snapshot is `MemberRun.provider_profile` with
 ## Native session storage and workspace
 
 Kimi owns its native session history and resume data. Harness stores only the
-session binding and coordination above it. The following Harness-created
-delivery mirror is current implementation debt, not the target storage model:
+session binding and coordination above it. Process transport is short-lived:
 
 ```text
 {harness_root}/runtimes/{member_id}/
-  state.json
-
-{harness_root}/provider-sessions/{delivery_id}/
-  kimi.stream-json.ndjson
-  kimi.stderr                 # only when stderr is non-empty
+{harness_root}/runtimes/deliveries/{delivery_id}/  # removed after reduction
 ```
 
-Today `run_kimi_delivery` writes `kimi.stream-json.ndjson`, records the path in
-`ProviderSession.jsonl_ref`, and writes stderr to `kimi.stderr` when present
-(`crates/harness-cli/src/main.rs:14667-14733`,
-`crates/harness-cli/src/main.rs:14740-14751`).
+`run_kimi_delivery` does not retain Kimi stdout/stderr/NDJSON as Harness history.
 
 ## Native Multi-Agent Features
 
@@ -506,8 +492,8 @@ Kimi is the third registry-routed provider after Codex and Claude. The relevant 
    extract Kimi replies (`crates/harness-cli/src/main.rs:14349-14417`,
    `crates/harness-cli/src/main.rs:16968-16980`).
 
-3. **Delivery implementation** — `run_kimi_delivery` records ProviderSession, Evidence, NDJSON,
-   stderr, status, and summary under provider `kimi` (`crates/harness-cli/src/main.rs:14641-14763`).
+3. **Delivery implementation** — `run_kimi_delivery` binds NativeSessionRef and records only
+   delivery status, explicit outcome, and promoted evidence under provider `kimi`.
 
 4. **Capability honesty** — core keeps Kimi degraded except streaming until live behavior proves
    resume/schema/cost/MCP/hooks/subagents (`crates/harness-core/src/lib.rs:4929-4950`).

@@ -9,9 +9,9 @@ use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun,
     Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Mission, MissionStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderSession, ProviderSessionStatus, Review, TeamMessage, TeamRunEvent,
-    TeamRunStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    ProviderChildThread, ProviderExecutionStatus, Review, TeamMessage, TeamRunEvent, TeamRunStatus,
+    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -51,7 +51,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub enum MessageDeliveryClaimResult {
     Claimed(Box<Message>),
     NotQueued,
-    BlockedBySession(String),
+    BlockedByDelivery(String),
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +70,6 @@ impl HarnessStore {
 
     pub fn init(&self) -> StoreResult<()> {
         fs::create_dir_all(&self.root)?;
-        fs::create_dir_all(self.root.join("provider-sessions"))?;
         fs::create_dir_all(self.root.join("prompts"))?;
         fs::create_dir_all(self.root.join("runtimes"))?;
         Ok(())
@@ -299,10 +298,6 @@ impl HarnessStore {
 
     pub fn append_vision(&self, value: &Vision) -> StoreResult<()> {
         self.append_jsonl("visions.jsonl", value)
-    }
-
-    pub fn append_provider_session(&self, value: &ProviderSession) -> StoreResult<()> {
-        self.append_jsonl("provider_sessions.jsonl", value)
     }
 
     pub fn append_provider_child_thread(&self, value: &ProviderChildThread) -> StoreResult<()> {
@@ -687,7 +682,7 @@ impl HarnessStore {
                 .as_ref()
                 .and_then(|delivery| delivery.delivery_id.clone())
                 .unwrap_or_else(|| active.id.clone());
-            return Ok(MessageDeliveryClaimResult::BlockedBySession(delivery_id));
+            return Ok(MessageDeliveryClaimResult::BlockedByDelivery(delivery_id));
         }
         let Some(mut message) = latest_messages.get(message_id).cloned() else {
             return Ok(MessageDeliveryClaimResult::NotQueued);
@@ -781,10 +776,6 @@ impl HarnessStore {
 
     pub fn visions(&self) -> StoreResult<Vec<Vision>> {
         self.read_jsonl("visions.jsonl")
-    }
-
-    pub fn provider_sessions(&self) -> StoreResult<Vec<ProviderSession>> {
-        self.read_jsonl("provider_sessions.jsonl")
     }
 
     pub fn provider_child_threads(&self) -> StoreResult<Vec<ProviderChildThread>> {
@@ -918,8 +909,8 @@ fn latest_by_id<T>(
 fn delivery_blocks_another_claim(delivery: &MessageDelivery) -> bool {
     matches!(
         delivery.execution_status,
-        Some(ProviderSessionStatus::Queued | ProviderSessionStatus::Running)
-    ) || (delivery.execution_status == Some(ProviderSessionStatus::Stale)
+        Some(ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running)
+    ) || (delivery.execution_status == Some(ProviderExecutionStatus::Stale)
         && delivery.terminal_source != Some(MessageTerminalSource::Failed))
 }
 
@@ -1357,7 +1348,7 @@ mod tests {
             .expect("second claim");
         assert_eq!(
             second_claim,
-            MessageDeliveryClaimResult::BlockedBySession("delivery-1".into())
+            MessageDeliveryClaimResult::BlockedByDelivery("delivery-1".into())
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
@@ -1408,7 +1399,7 @@ mod tests {
         assert_eq!(delivery.delivery_id.as_deref(), Some("delivery-d"));
         assert_eq!(
             delivery.execution_status,
-            Some(ProviderSessionStatus::Running)
+            Some(ProviderExecutionStatus::Running)
         );
 
         // The reopened store must refuse to re-claim: because both the
@@ -1730,10 +1721,10 @@ mod tests {
         }
     }
 
-    fn test_delivery(provider_session_id: &str) -> MessageDelivery {
+    fn test_delivery(delivery_id: &str) -> MessageDelivery {
         MessageDelivery {
-            delivery_id: Some(provider_session_id.into()),
-            execution_status: Some(ProviderSessionStatus::Running),
+            delivery_id: Some(delivery_id.into()),
+            execution_status: Some(ProviderExecutionStatus::Running),
             native_session: None,
             started_at: Some("unix-ms:1".into()),
             provider_request_id: None,

@@ -16,7 +16,7 @@ export interface Project {
 
 export type MessageKind = "message" | "task" | "report";
 export type SenderKind = "agent" | "operator" | "system";
-export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
+export type ProviderExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
 
 /**
  * The backend's four-layer runtime health snapshot (serialized
@@ -113,7 +113,7 @@ export interface Message {
 
 export interface MessageDelivery {
   delivery_id?: string | null;
-  execution_status?: ProviderSessionStatus | string | null;
+  execution_status?: ProviderExecutionStatus | string | null;
   native_session?: NativeSessionRef | null;
   started_at?: string | null;
   provider_request_id?: string | null;
@@ -599,7 +599,6 @@ export interface WorkflowRun {
    * into; "live" streams it over SSE during execution but does not retain it.
    * Live streaming is independent of this and always happens.
    */
-  trace_retention?: "durable" | "live" | string;
   /**
    * True when this run was a `--dry-run` validation (mock driver, no provider
    * spawned, no tokens). Surfaced as a "dry-run" badge so a validation run is

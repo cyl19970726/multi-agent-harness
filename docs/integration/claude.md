@@ -137,15 +137,15 @@ Claude 产生的事件通过以下源进来：
 3. **Explicit promotion** — Harness 只保存 assignment、handoff、outcome、
    artifact/check refs、PendingInteraction 与控制确认；完整 session 留在 Claude。
 
-## Reducer Mapping
+## Runtime Mapping
 
-Claude 事件 → harness objects（`ingest_claude_stream_json` reducer）：
+Claude 事件在进程内归约，不写第二份 provider history：
 
 ```text
 (provider = "claude")
-  system(init)   → ProviderSession { provider_thread_id = session_id } + AgentEvent { stream_system_init }
-  stream_event   → AgentEvent { event_type = subtype }
-  result         → AgentEvent { stream_result }；status = Succeeded（无 error）/ Failed
+  system(init)   → NativeSessionRef.native_session_id
+  stream_event   → transient NativeActivityProjection
+  result         → explicit delivery outcome；status = Succeeded（无 error）/ Failed
   无 result 帧    → status = Stale（有事件）/ Failed（空输出或进程失败）
   assistant text → DeliveryOutcome.summary（report 内容）+ Evidence
 ```
@@ -187,15 +187,12 @@ mapping 在 CLI 层）。
 
 ## Workspace Model
 
-Claude 和 Codex 都假设一个隔离的工作目录。下列 Harness delivery mirror
-是 ADR 0032 之前的当前实现，必须迁移为 Claude 原生 session reader：
+Claude 和 Codex 都假设一个隔离的工作目录。Harness 仅保留短生命周期的
+进程传输目录，归约出 outcome 后删除：
 
 ```text
-{harness_root}/runtimes/{member_id}/       # runtime 目录标记（无持久 pid）
-
-{harness_root}/provider-sessions/{delivery_id}/
-  claude.stream-json.ndjson  # 该次 delivery 的完整 NDJSON 流（jsonl_ref）
-  claude.stderr              # 仅当 stderr 非空时写入
+{harness_root}/runtimes/{member_id}/       # runtime 目录标记
+{harness_root}/runtimes/deliveries/{delivery_id}/  # ephemeral transport
 ```
 
 会话延续通过 `--resume`：delivery 从 `system(init)` 帧解析真实 session id，

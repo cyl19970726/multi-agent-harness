@@ -45,7 +45,7 @@ flowchart TD
   Message[Message]
   TeamMessage[TeamMessage]
   Member[AgentMember or MemberRun]
-  Provider[ProviderSession / execution session]
+  Provider[NativeSessionRef / provider-owned execution]
   Event[Durable event stream]
   Evidence[Artifacts / optional Evidence]
   Gate[Lightweight Wave gate]
@@ -192,9 +192,9 @@ The learning and governance layer remains domain-neutral.
 | `LearningNote` | Reusable teaching artifact distilled from a closed Mission. |
 | `Vision` | Long-lived target that Missions advance toward. |
 
-## Agent Runtime And Provider Session
+## Agent Runtime And Native Session
 
-`AgentRuntime` and `ProviderSession` connect durable members, Wave executors,
+`AgentRuntime` and `NativeSessionRef` connect durable members, Wave executors,
 and host tools to external providers such as Codex, Claude, or Kimi.
 
 Rules:

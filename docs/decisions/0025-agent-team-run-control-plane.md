@@ -61,7 +61,7 @@ AgentTeamRun    id, mission_id?, wave_id?, objective, status, budget_limit_usd?,
 MemberRun       id, team_run_id, name, role, provider, model?,
                 status(starting|idle|queued|running|waiting|reviewing|
                        blocked|completed|failed|stopped),
-                provider_session_id?, acp_session_id?, current_task_id?,
+                native_session?, current_task_id?,
                 worktree_ref?, owned_paths[], created_at / ended_at
 
 TeamMessage     id, team_run_id, task_id?, from, to[], kind,

@@ -51,8 +51,8 @@ select Mission/Wave executor or direct WorkItem action
 | `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
-| `NativeSessionRef` (target) | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
-| `ProviderSession` / `AgentEvent` (transitional) | current delivery/lifecycle schemas during ADR 0032 migration | target provider activity store |
+| `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
+| `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
 | `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
@@ -74,7 +74,7 @@ Delivery
   package_context(request, execution_refs, artifact_refs, skill_refs, permissions)
   send(provider_request)
   correlate_response(response_or_event)
-  record_delivery(status, provider_session)
+  record_delivery(status, native_session_ref)
 
 NativeActivityProjector
   provider-native record -> ephemeral sanitized projection
@@ -191,12 +191,9 @@ The endpoint emits the following event types:
 - **`snapshot`**: Initial state sent on connection (contains `generated_at` timestamp). Clients use this to initialize their state during reconnect.
 - **`agent_event`**: A new `AgentEvent` was recorded (provider/runtime/hook event).
 - **`message`**: A new `Message` was created or its `delivery_status` changed.
-- **`provider_session`**: A new `ProviderSession` was recorded or its `status` changed.
 - **`workflow_run`** / **`workflow_step`**: A `WorkflowRun` / `WorkflowStep` record was appended or updated (dynamic workflow runtime).
-- **`provider_turn_event`** / **`provider_turn_event_normalized`**: Current
-  transitional frames sourced from the provider turn stream. Persisting them in
-  `provider_turn_events.jsonl` is ADR 0032 removal debt; the target emits an
-  ephemeral projection or re-reads the provider-native session.
+- **`native_activity`**: Ephemeral provider-native projection when the selected
+  adapter/mode supports live publication; reconnect re-reads native state.
 
 ### Event Frame Format
 
@@ -232,15 +229,14 @@ The connection sends a keepalive comment every ~15 seconds (when no events are b
 
 ### Implementation
 
-The current watcher monitors project JSONL files, including the transitional
-provider-event mirror, and broadcasts updates. The target watcher covers only
-Harness-owned records; provider adapters publish ephemeral native projections
-and support on-demand reconstruction from `NativeSessionRef`.
+The watcher monitors Harness-owned project JSONL files. Provider adapters
+publish ephemeral native projections and support on-demand reconstruction from
+`NativeSessionRef`.
 
 ### How A Member Looks Live
 
 The end-to-end model of how these events, the four-layer `runtime_health`
-probe, and the `ProviderSession` lifecycle compose into an `AgentMember`'s
+probe, `MessageDelivery`, and the native session binding compose into an `AgentMember`'s
 real-time state — and how that state reaches the Agent Dashboard — is the
 canonical contract in
 [member-runtime-observability.md](member-runtime-observability.md).

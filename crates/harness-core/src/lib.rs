@@ -475,7 +475,7 @@ pub enum MessageDeliveryStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderSessionStatus {
+pub enum ProviderExecutionStatus {
     Queued,
     Running,
     Succeeded,
@@ -516,7 +516,7 @@ pub struct MessageDelivery {
     #[serde(default)]
     pub delivery_id: Option<String>,
     #[serde(default)]
-    pub execution_status: Option<ProviderSessionStatus>,
+    pub execution_status: Option<ProviderExecutionStatus>,
     #[serde(default)]
     pub native_session: Option<NativeSessionRef>,
     /// Harness-owned start time for this delivery attempt. Provider-native
@@ -537,39 +537,10 @@ pub struct MessageDelivery {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderSession {
-    pub id: String,
-    pub provider: String,
-    pub agent_member_id: String,
-    pub task_id: Option<String>,
-    pub workspace_ref: Option<String>,
-    #[serde(default)]
-    pub provider_thread_id: Option<String>,
-    #[serde(default)]
-    pub provider_turn_id: Option<String>,
-    #[serde(default)]
-    pub terminal_source: Option<MessageTerminalSource>,
-    pub status: ProviderSessionStatus,
-    pub command: String,
-    pub args: Vec<String>,
-    pub prompt_ref: Option<String>,
-    pub prompt_summary: Option<String>,
-    pub provider_session_ref: Option<String>,
-    pub stdout_ref: Option<String>,
-    pub jsonl_ref: Option<String>,
-    pub transcript_ref: Option<String>,
-    pub last_message_ref: Option<String>,
-    pub exit_code: Option<i32>,
-    pub started_at: String,
-    pub ended_at: Option<String>,
-    pub evidence_ids: Vec<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Multi-project identity (goal-multi-project, Stage 0 — pure layer, no I/O).
 //
-// A project's STORE (the JSONL ledgers + provider-sessions) is centralized under
+// A project's STORE (Harness-owned JSONL ledgers and runtime metadata) is centralized under
 // `~/.harness/projects/<id>/`, but its PROJECT ROOT (the git repo / dir where a
 // worker runs and reads CLAUDE.md / AGENTS.md / memory) stays where it is. These
 // two roots are deliberately distinct — see `ProjectContext`.
@@ -670,99 +641,6 @@ pub fn project_id_for_path(path: &std::path::Path, home: &std::path::Path) -> St
 /// `<harness_home>/projects/<id>`.
 pub fn project_store_root(harness_home: &std::path::Path, id: &str) -> std::path::PathBuf {
     harness_home.join("projects").join(id)
-}
-
-/// Normalized, provider-neutral turn-event kind. Maps both codex
-/// (`type`/`item`) and claude (stream-json `type`/subtype) vocabularies onto
-/// one taxonomy so the dashboard and a 3rd provider need no per-provider branch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessTurnEventKind {
-    TurnStarted,
-    TurnCompleted,
-    MessageDelta,
-    Message,
-    ToolCall,
-    ToolResult,
-    Reasoning,
-    Usage,
-    Error,
-    ProviderMeta,
-    Unknown,
-}
-
-/// A normalized tool invocation (`ToolCall` kind).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HarnessToolCall {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub name: String,
-    pub args: serde_json::Value,
-}
-
-/// A normalized tool result (`ToolResult` kind).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HarnessToolResult {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub content: String,
-    pub is_error: bool,
-}
-
-/// Normalized token usage (`Usage`/`TurnCompleted` kinds).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnessTokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cached_input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_output_tokens: Option<u64>,
-}
-
-/// One normalized turn event. `raw_provider_event` always retains the original
-/// provider JSON for audit / debugging / a "show raw" toggle. `seq` is a
-/// harness-assigned monotonic per-session counter; `ts` is harness-assigned at
-/// ingest. `session_id` is the harness provider-session row id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HarnessTurnEvent {
-    pub session_id: String,
-    pub provider: String,
-    pub seq: u64,
-    pub ts: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_item_id: Option<String>,
-    pub kind: HarnessTurnEventKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delta: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call: Option<HarnessToolCall>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_result: Option<HarnessToolResult>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<HarnessTokenUsage>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    pub raw_provider_event: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1231,16 +1109,6 @@ impl Validate for Message {
     }
 }
 
-impl Validate for ProviderSession {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "ProviderSession.id")?;
-        require_non_empty(&self.provider, "ProviderSession.provider")?;
-        require_non_empty(&self.agent_member_id, "ProviderSession.agent_member_id")?;
-        require_non_empty(&self.command, "ProviderSession.command")?;
-        require_non_empty(&self.started_at, "ProviderSession.started_at")
-    }
-}
-
 impl Validate for AgentRuntime {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "AgentRuntime.id")?;
@@ -1349,8 +1217,8 @@ impl Validate for Wave {
 //
 // A `WorkflowRun` is a standalone object with its own id and lifecycle. Each
 // `WorkflowStep` is the workflow-layer wrapper around one `agent()` call and references the
-// `ProviderSession` that the delivery produced rather than re-recording the
-// execution. Both journal to their own append-only JSONL with latest-wins
+// provider-owned native session rather than re-recording the execution. Both
+// journal to their own append-only JSONL with latest-wins
 // projection, exactly like every other harness object.
 // ---------------------------------------------------------------------------
 
@@ -1477,12 +1345,6 @@ pub struct WorkflowRun {
     /// of the run shape. `None` for registry runs / legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<serde_json::Value>,
-    /// Retention policy for the heavy per-node provider turn-event trace:
-    /// "durable" (default) persists the trace so any completed run can be drilled
-    /// into; "live" streams the trace over SSE during execution but does not
-    /// retain it. Live streaming is independent of this and always happens.
-    #[serde(default = "default_trace_retention")]
-    pub trace_retention: String,
     /// OS process id of the `harness workflow run-script`/`run` invocation that
     /// drives this run, stamped on the initial `running` row. The serve-side
     /// reaper uses it to detect an ABANDONED run: if the run is still `running`
@@ -1505,12 +1367,6 @@ pub struct WorkflowRun {
     pub terminal_reason: Option<WorkflowTerminalReason>,
     #[serde(default)]
     pub partial_output_available: bool,
-}
-
-/// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows
-/// and registry runs that predate the field deserialize as "durable".
-fn default_trace_retention() -> String {
-    "durable".to_string()
 }
 
 /// One agent step inside a [`WorkflowRun`]. `phase` is the declarative grouping
@@ -2316,43 +2172,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_session_round_trips_json() {
-        let session = ProviderSession {
-            id: "session-1".to_string(),
-            provider: "codex".to_string(),
-            agent_member_id: "agent-1".to_string(),
-            task_id: Some("task-1".to_string()),
-            workspace_ref: Some("../worktrees/task-1".to_string()),
-            provider_thread_id: Some("thread-1".to_string()),
-            provider_turn_id: Some("turn-1".to_string()),
-            terminal_source: Some(MessageTerminalSource::TurnCompleted),
-            status: ProviderSessionStatus::Succeeded,
-            command: "codex".to_string(),
-            args: vec!["exec".to_string()],
-            prompt_ref: Some(".harness/prompts/task-1.md".to_string()),
-            prompt_summary: Some("Implement task-1".to_string()),
-            provider_session_ref: None,
-            stdout_ref: Some(".harness/provider-sessions/session-1/stdout.log".to_string()),
-            jsonl_ref: Some(".harness/provider-sessions/session-1/events.jsonl".to_string()),
-            transcript_ref: None,
-            last_message_ref: Some(
-                ".harness/provider-sessions/session-1/last-message.md".to_string(),
-            ),
-            exit_code: Some(0),
-            started_at: "2026-05-26T00:00:00Z".to_string(),
-            ended_at: Some("2026-05-26T00:05:00Z".to_string()),
-            evidence_ids: vec!["evidence-1".to_string()],
-        };
-
-        let json = serde_json::to_string(&session).expect("serialize provider session");
-        let parsed: ProviderSession =
-            serde_json::from_str(&json).expect("deserialize provider session");
-
-        assert_eq!(parsed, session);
-        assert!(parsed.validate().is_ok());
-    }
-
-    #[test]
     fn project_id_for_path_home_is_global() {
         let home = std::path::Path::new("/Users/me");
         assert_eq!(project_id_for_path(home, home), GLOBAL_PROJECT_ID);
@@ -2417,119 +2236,6 @@ mod tests {
         );
         // kind is snake_case on the wire.
         assert!(json.contains("\"kind\":\"repo\""));
-    }
-
-    #[test]
-    fn harness_turn_event_round_trips_json_and_omits_absent_optionals() {
-        let tool_event = HarnessTurnEvent {
-            session_id: "session-1".to_string(),
-            provider: "codex".to_string(),
-            seq: 1,
-            ts: "2026-06-13T00:00:00Z".to_string(),
-            provider_thread_id: None,
-            provider_turn_id: Some("turn-1".to_string()),
-            provider_item_id: None,
-            kind: HarnessTurnEventKind::ToolCall,
-            role: None,
-            text: None,
-            delta: None,
-            tool_call: Some(HarnessToolCall {
-                id: Some("call-1".to_string()),
-                name: "shell".to_string(),
-                args: serde_json::json!({ "cmd": "cargo test -p harness-core" }),
-            }),
-            tool_result: None,
-            usage: None,
-            model: Some("gpt-5".to_string()),
-            duration_ms: None,
-            cost_usd: None,
-            status: None,
-            error: None,
-            raw_provider_event: serde_json::json!({
-                "type": "item",
-                "item": { "type": "tool_call", "id": "call-1" }
-            }),
-        };
-
-        let usage_event = HarnessTurnEvent {
-            session_id: "session-1".to_string(),
-            provider: "codex".to_string(),
-            seq: 2,
-            ts: "2026-06-13T00:00:01Z".to_string(),
-            provider_thread_id: None,
-            provider_turn_id: None,
-            provider_item_id: None,
-            kind: HarnessTurnEventKind::Usage,
-            role: None,
-            text: None,
-            delta: None,
-            tool_call: None,
-            tool_result: None,
-            usage: Some(HarnessTokenUsage {
-                input_tokens: 10,
-                output_tokens: 20,
-                total_tokens: 30,
-                cached_input_tokens: None,
-                reasoning_output_tokens: Some(5),
-            }),
-            model: None,
-            duration_ms: None,
-            cost_usd: None,
-            status: None,
-            error: None,
-            raw_provider_event: serde_json::json!({
-                "type": "usage",
-                "input_tokens": 10,
-                "output_tokens": 20
-            }),
-        };
-
-        for event in [tool_event, usage_event] {
-            let json = serde_json::to_value(&event).expect("serialize turn event");
-            let parsed: HarnessTurnEvent =
-                serde_json::from_value(json.clone()).expect("deserialize turn event");
-
-            assert_eq!(parsed, event);
-            assert!(json.get("raw_provider_event").is_some());
-            assert!(json.get("provider_thread_id").is_none());
-            assert!(json.get("provider_item_id").is_none());
-            assert!(json.get("role").is_none());
-            assert!(json.get("text").is_none());
-            assert!(json.get("delta").is_none());
-            assert!(json.get("duration_ms").is_none());
-            assert!(json.get("cost_usd").is_none());
-            assert!(json.get("status").is_none());
-            assert!(json.get("error").is_none());
-        }
-    }
-
-    #[test]
-    fn harness_turn_event_kind_wire_spellings_are_snake_case() {
-        // These wire strings are the API contract the SSE stream, the
-        // /v1/.../events endpoints, and the dashboard key on — pin every variant.
-        let cases = [
-            (HarnessTurnEventKind::TurnStarted, "turn_started"),
-            (HarnessTurnEventKind::TurnCompleted, "turn_completed"),
-            (HarnessTurnEventKind::MessageDelta, "message_delta"),
-            (HarnessTurnEventKind::Message, "message"),
-            (HarnessTurnEventKind::ToolCall, "tool_call"),
-            (HarnessTurnEventKind::ToolResult, "tool_result"),
-            (HarnessTurnEventKind::Reasoning, "reasoning"),
-            (HarnessTurnEventKind::Usage, "usage"),
-            (HarnessTurnEventKind::Error, "error"),
-            (HarnessTurnEventKind::ProviderMeta, "provider_meta"),
-            (HarnessTurnEventKind::Unknown, "unknown"),
-        ];
-        for (kind, wire) in cases {
-            assert_eq!(
-                serde_json::to_value(&kind).expect("serialize kind"),
-                serde_json::Value::String(wire.to_string()),
-                "kind {kind:?} should serialize to {wire:?}"
-            );
-            let back: HarnessTurnEventKind =
-                serde_json::from_value(serde_json::json!(wire)).expect("deserialize kind");
-            assert_eq!(back, kind);
-        }
     }
 
     #[test]

@@ -41,7 +41,6 @@ inside a native Wave.
 | `Proposal` | Rust + JSON schema | yes |
 | `Evidence` | Rust + JSON schema | yes |
 | `Decision` | Rust + JSON schema | yes |
-| `ProviderSession` | Transitional Rust + JSON schema; replacement by a mode-aware native session binding is planned under ADR 0032 | current schema only |
 | `ToolDescriptor` | JSON schema + example descriptor | partially |
 | `DocDescriptor` | JSON schema + docs registry + governance check | yes |
 | `Skill` | markdown skill + metadata check | partially |
@@ -76,7 +75,6 @@ schema contracts are checked with valid and invalid fixtures.
 | Proposal | [proposal.schema.json](../schemas/proposal.schema.json) |
 | Evidence | [evidence.schema.json](../schemas/evidence.schema.json) |
 | Decision | [decision.schema.json](../schemas/decision.schema.json) |
-| Provider session | [provider-session.schema.json](../schemas/provider-session.schema.json) |
 | Tool descriptor | [agent-harness-tool-descriptor.schema.json](../schemas/agent-harness-tool-descriptor.schema.json) |
 | Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
 | Review | [review.schema.json](../schemas/review.schema.json) |
@@ -85,12 +83,9 @@ schema contracts are checked with valid and invalid fixtures.
 
 ## Schema Evolution
 
-`provider-session.schema.json` currently contains `stdout_ref`, `jsonl_ref`, and
-`transcript_ref`. These fields describe the implementation before ADR 0032 and
-must not be used for new product design. The migration will introduce a
-mode-aware native session binding, stop provider-event mirror writes, update
-Dashboard readers, and then remove obsolete local data and fields without a
-backward-compatibility reader.
+Provider-native execution history is referenced only by
+`native-session-ref.schema.json`. Harness deliberately has no schema for a
+mirrored transcript, stdout stream, tool stream, or provider turn ledger.
 
 Schemas evolve additively where a current contract permits it; Company OS
 contracts define their own required migration and validation rules.

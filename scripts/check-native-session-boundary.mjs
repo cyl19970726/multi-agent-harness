@@ -7,7 +7,7 @@ const requirements = new Map([
   ],
   [
     "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-    ["sole source of truth", "NativeSessionRef", "Harness does not persist", "Migration order"],
+    ["sole source of truth", "NativeSessionRef", "Harness does not persist", "Migration outcome"],
   ],
   [
     "docs/data-model.md",
@@ -37,6 +37,35 @@ for (const [path, phrases] of requirements) {
   const text = readFileSync(path, "utf8");
   for (const phrase of phrases) {
     if (!text.includes(phrase)) failures.push(`${path}: missing ${JSON.stringify(phrase)}`);
+  }
+}
+
+for (const retiredPath of [
+  "schemas/provider-session.schema.json",
+  "schemas/fixtures/provider-session/valid/codex.json",
+  "schemas/fixtures/provider-session/invalid/missing-provider.json",
+]) {
+  try {
+    readFileSync(retiredPath, "utf8");
+    failures.push(`${retiredPath}: retired provider-session mirror must be absent`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+const retiredProductionSymbols = new Map([
+  ["crates/harness-core/src/lib.rs", ["pub struct ProviderSession", "provider_session_id:", "acp_session_id:"]],
+  ["crates/harness-store/src/lib.rs", ["append_provider_session", "pub fn provider_sessions"]],
+  ["apps/agent-dashboard/src/types.ts", ["provider_sessions:", "ProviderSession"]],
+  ["crates/harness-cli/src/sse.rs", ["provider_sessions"]],
+]);
+
+for (const [path, symbols] of retiredProductionSymbols) {
+  const text = readFileSync(path, "utf8");
+  for (const symbol of symbols) {
+    if (text.includes(symbol)) {
+      failures.push(`${path}: retired provider-session mirror symbol remains: ${symbol}`);
+    }
   }
 }
 

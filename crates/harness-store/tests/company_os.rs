@@ -81,7 +81,7 @@ fn standing_agent(id: &str) -> StandingAgent {
         capability_refs: vec![],
         permission_policy_refs: vec![],
         runtime_refs: vec![],
-        provider_session_refs: vec![],
+        native_session_refs: vec![],
         created_at: NOW.into(),
         updated_at: NOW.into(),
     }

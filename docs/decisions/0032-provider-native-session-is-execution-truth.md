@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as the target storage and resume boundary.
+Accepted and implemented as the storage, read, and resume boundary.
 
 This ADR amends ADR 0010, ADR 0025, ADR 0030, and ADR 0031 where they imply
 that Harness must mirror a provider transcript, tool lifecycle, command stream,
@@ -69,8 +69,8 @@ coordination fact authored or accepted at the TeamRun/Wave boundary.
 
 ### Native session binding
 
-The target `MemberRun` contract contains a `NativeSessionRef` (schema name may
-be `ProviderSessionBinding` when implemented) with at least:
+`MemberRun`, `WorkflowStep`, and addressable standing-agent runtime bindings use
+the implemented `NativeSessionRef` contract:
 
 ```text
 provider
@@ -89,10 +89,9 @@ parent_native_session_id?   # retry/resume lineage when the provider exposes it
 it need not expose a private absolute path to every caller. The binding is a
 reference and compatibility snapshot, not a mirrored session body.
 
-The current `ProviderSession` schema and `MemberRun.provider_session_id` /
-`acp_session_id` fields are transitional implementation surfaces. They do not
-authorize Harness-owned transcript, stdout, or JSONL copies. The implementation
-must converge on one mode-aware native session binding.
+The retired Harness session mirror, its ledger/schema, and the former
+`MemberRun` session-id fields have been removed. New adapters must bind the
+mode-aware reference and must not recreate a generic mirrored session object.
 
 ### Read projection and Dashboard
 
@@ -147,27 +146,15 @@ A portable export is an explicit user operation, not an automatic mirror. It
 must name its scope, redaction policy, encryption/retention policy, and whether
 it is evidence or only an archive. Exporting thinking is prohibited.
 
-## Migration
+## Migration outcome
 
-The current implementation still writes provider-derived `MemberAction` and
-`TeamRunEvent` rows for tool, command, file, and streamed activity, and some
-paths retain transcript/stdout/JSONL references as Harness session state. These
-are known migration debt, not the target contract.
-
-Migration order:
-
-1. add the mode-aware native session binding and provider-native readers;
-2. implement and verify Codex, Kimi, and Claude resume independently;
-3. make Dashboard dual-source and label native projections honestly;
-4. stop all new provider-derived action/event and transcript-copy writes;
-5. reduce `MemberAction`/`TeamRunEvent` to Harness-owned coordination facts;
-6. remove obsolete provider-event fields, ledgers, and old local data after
-   migration checks. No backward-compatibility reader is required for obsolete
-   local provider-event copies.
-
-Until steps 1-4 ship, documentation and UI must state that the current durable
-activity stream is transitional and must not claim the target boundary is
-implemented.
+The migration is destructive by design: obsolete local session mirrors are not
+read, copied by project migration, exported as active evidence, or exposed by
+compatibility endpoints. Codex, Kimi, and Claude adapters discover provider
+session ids, read native activity on demand, resume through their verified
+native mode, and expose compatibility/availability honestly. Harness retains
+only coordination facts, pending interaction routing, explicit outcomes,
+artifact/check references, delivery control state, and Wave gates.
 
 ## Consequences
 

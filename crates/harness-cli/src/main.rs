@@ -13,21 +13,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use harness_core::{
     build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
     AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
-    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, HarnessTokenUsage, HarnessToolCall,
-    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, LaunchMcp, LaunchPermission,
     LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
     MissionStatus, NativeSessionAvailability, NativeSessionRef, PendingInteraction,
     PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus,
-    ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
-    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderIntegrationProfile,
-    ProviderInteractionMode, ProviderSession, ProviderSessionStatus, SenderKind,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
-    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus, WorkflowTerminalReason,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
+    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
+    ProviderIntegrationProfile,
+    ProviderInteractionMode, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
+    TeamMessageDelivery, TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
@@ -636,7 +634,7 @@ fn project_show(harness_home: &Path, args: &[String]) -> CliResult<()> {
 
 /// Subdirectories of a store that hold non-JSONL payloads and must be copied
 /// wholesale during migration (provider session logs, prompts, runtime files).
-const STORE_PAYLOAD_DIRS: &[&str] = &["provider-sessions", "prompts", "runtimes"];
+const STORE_PAYLOAD_DIRS: &[&str] = &["prompts", "runtimes"];
 
 /// `harness project migrate [<local-store>] [--switch]` — move an existing
 /// repo-local `.harness/` store into the centralized per-project store
@@ -768,8 +766,8 @@ fn count_store_records(store_root: &Path) -> CliResult<u64> {
     Ok(total)
 }
 
-/// Copy every `*.jsonl` ledger and each payload dir (`provider-sessions/`,
-/// `prompts/`, `runtimes/`) from `src` into `dst`, preserving filenames. Returns the
+/// Copy active `*.jsonl` ledgers and the `prompts/` / `runtimes/` payload dirs
+/// from `src` into `dst`, preserving filenames. Returns the
 /// number of top-level entries copied. Existing destination files are overwritten
 /// (merge-copy under `--force`); missing source payload dirs are skipped.
 fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
@@ -779,6 +777,9 @@ fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             if let Some(name) = path.file_name() {
+                if name == "provider_sessions.jsonl" {
+                    continue;
+                }
                 std::fs::copy(&path, dst.join(name))?;
                 copied += 1;
             }
@@ -1251,7 +1252,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 store,
                 &required(args, "--agent").or_else(|_| required(args, "--id"))?,
                 &required(args, "--delivery")?,
-                parse_provider_session_status(&required(args, "--status")?)?,
+                parse_provider_execution_status(&required(args, "--status")?)?,
                 parse_terminal_source(
                     value(args, "--terminal-source")
                         .as_deref()
@@ -4206,8 +4207,8 @@ fn run_codex_team_turn(
     };
     let _ = stdout_reader.join();
     let stderr_text = stderr_reader.join().unwrap_or_default();
-    let inferred = infer_provider_session_status(&events, status.success());
-    if inferred != ProviderSessionStatus::Succeeded {
+    let inferred = infer_provider_execution_status(&events, status.success());
+    if inferred != ProviderExecutionStatus::Succeeded {
         return Err(CliError::Usage(format!(
             "codex team member {} failed ({inferred:?}): {}",
             member.name,
@@ -4656,7 +4657,8 @@ fn run_claude_team_turn(
     };
     let _ = stdout_reader.join();
     let stderr = stderr_reader.join().unwrap_or_default();
-    if infer_claude_session_status(&events, status.success()) != ProviderSessionStatus::Succeeded {
+    if infer_claude_session_status(&events, status.success()) != ProviderExecutionStatus::Succeeded
+    {
         return Err(CliError::Usage(format!(
             "Claude Team Member {} failed: {}",
             member.name,
@@ -6171,7 +6173,6 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
             let _ = reap_stale_workflow_runs(&reaper_store);
             let _ = workflow_gc_worktrees(&reaper_store);
             let _ = reap_orphaned_workers(&reaper_store, false);
-            let _ = workflow_gc_trace(&reaper_store, 100, None, false);
         });
     }
 
@@ -6938,7 +6939,7 @@ fn handle_http_action(
             store,
             agent_id,
             &required_json_string(body, "delivery_id")?,
-            parse_provider_session_status(
+            parse_provider_execution_status(
                 json_string(body, "status").as_deref().unwrap_or("failed"),
             )?,
             parse_terminal_source(
@@ -7759,7 +7760,7 @@ fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<A
     mark_running_delivery_attempts_terminal(
         store,
         &member.id,
-        ProviderSessionStatus::Canceled,
+        ProviderExecutionStatus::Canceled,
         Some(MessageTerminalSource::Failed),
     )?;
     member.status = AgentMemberStatus::Closed;
@@ -8060,14 +8061,9 @@ fn workflow_real_agent_step(
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
 ) -> workflow::StepResult {
-    // Mint the provider session id HERE, before the `running` row, and stamp it
-    // on that row — so the dashboard can link this step to its LIVE turn-event
-    // stream WHILE it runs, not only after it finishes. The worker tees each
-    // event to the shared `provider_turn_events.jsonl` keyed by this id; the
-    // per-node drill-in looks the step's `provider_session_id` up in that live
-    // buffer. If the id were only assigned on the terminal row (as before), a
-    // running step carried `None` and its live tool-by-tool activity could not be
-    // attached until it completed. The worker reuses this exact id.
+    // Mint an internal transport-attempt id before launch. It scopes temporary
+    // files only; the provider-reported NativeSessionRef is attached after
+    // discovery and remains the sole drill-in/resume locator.
     let step_id = generated_id("wfstep");
     let session_id = generated_id("session");
     let started_at = now_string();
@@ -8128,7 +8124,6 @@ fn workflow_real_agent_step(
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: false,
-                provider_session_id: None,
                 output_summary: format!("agent step error: {error}"),
                 step_id: Some(step_id.clone()),
                 started_at: Some(started_at.clone()),
@@ -8223,8 +8218,7 @@ fn try_workflow_real_agent_step(
             isolation: spec.isolation.clone(),
             ok: true,
             // Reuse the caller's session id so the mock terminal row matches the
-            // `running` row's `provider_session_id` (consistent in dry-run too).
-            provider_session_id: Some(session_id.to_string()),
+            // `running` row's `native_session` (consistent in dry-run too).
             output_summary,
             // The journaling identity is assigned by the caller, which already
             // journaled the `running` start row before this step began.
@@ -8960,7 +8954,6 @@ fn spawn_ephemeral_worker(
         provider: spec.provider.clone(),
         isolation: spec.isolation.clone(),
         ok,
-        provider_session_id: Some(session_id),
         output_summary,
         step_id: None,
         started_at: None,
@@ -9452,11 +9445,11 @@ fn codex_delivery_structured(reply: Option<&str>, spec: &LaunchSpec) -> Option<s
 /// SUCCEEDED delivery. A failed/stale turn may have emitted partial or
 /// schema-violating JSON that must not be reported as the structured result.
 fn structured_for_status(
-    status: &ProviderSessionStatus,
+    status: &ProviderExecutionStatus,
     structured: Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     match status {
-        ProviderSessionStatus::Succeeded => structured,
+        ProviderExecutionStatus::Succeeded => structured,
         _ => None,
     }
 }
@@ -9605,7 +9598,7 @@ fn spawn_codex_ephemeral(
         Some(OrphanRegistration {
             dir: session_dir
                 .parent()
-                .and_then(|provider_sessions| provider_sessions.parent())
+                .and_then(|delivery_dir| delivery_dir.parent())
                 .unwrap_or(session_dir)
                 .join("worker_pids"),
             run_id: run_id.to_string(),
@@ -9620,8 +9613,8 @@ fn spawn_codex_ephemeral(
         .filter_map(|line| CodexExecEvent::parse_line(&line))
         .collect();
     let ok = matches!(
-        infer_provider_session_status(&codex_events, run.process_success),
-        ProviderSessionStatus::Succeeded
+        infer_provider_execution_status(&codex_events, run.process_success),
+        ProviderExecutionStatus::Succeeded
     );
     // Prefer the parsed agent message; fall back to the last-message file codex
     // wrote (the terminal assistant text).
@@ -9758,7 +9751,7 @@ fn spawn_claude_ephemeral(
         Some(OrphanRegistration {
             dir: session_dir
                 .parent()
-                .and_then(|provider_sessions| provider_sessions.parent())
+                .and_then(|delivery_dir| delivery_dir.parent())
                 .unwrap_or(session_dir)
                 .join("worker_pids"),
             run_id: run_id.to_string(),
@@ -9774,7 +9767,7 @@ fn spawn_claude_ephemeral(
         .collect();
     let ok = matches!(
         infer_claude_session_status(&claude_events, run.process_success),
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     );
     let reply = extract_claude_reply_text(&claude_events);
     let tokens = parse_claude_usage(&run.events);
@@ -10292,18 +10285,9 @@ fn count_unique_worktree_diff_files(diff: &str) -> usize {
         .len()
 }
 
-/// Backstop GC (cleanup layer 3): `git worktree prune` + sweep
-/// `.harness/worktrees/` for dirs not tied to an ACTIVE run. Active = a worktree
-/// still registered with git (a leftover from a crash is unregistered after
-/// prune). Conservative: only removes dirs git no longer tracks.
 /// `workflow get-output <run_id> [--step <label>]` — retrieve a run's leaf
-/// OUTPUTS (issue #89 item 4). For text-producing workflows the deliverable was
-/// hard to get back: `output_summary` is capped and the full text otherwise only
-/// lived (scattered) in the turn trace. Each step's full reply is persisted as
-/// `provider-sessions/<session_id>/reply.txt` at ingest (durable runs); this reads
-/// it back, in `step_ids` order, falling back to the capped `output_summary` when
-/// the full artifact is absent (e.g. a `--trace live` run whose dir was pruned).
-/// `source` tells the caller which they got: `"reply"` (full) or `"summary"`.
+/// durable WorkflowStep outcomes in authored order and join optional native
+/// provider activity through each step's `NativeSessionRef`.
 fn workflow_get_output_value(
     store: &HarnessStore,
     args: &[String],
@@ -10467,79 +10451,10 @@ fn created_ms(created_at: &str) -> u128 {
         .unwrap_or(0)
 }
 
-/// Retention-window GC for the heavy per-node turn-event trace. The small audit
-/// record (WorkflowRun / WorkflowStep / result / initiated_by / spec) is ALWAYS
-/// kept; only the durable per-session NDJSON of OLDER runs is pruned. We keep the
-/// `keep_runs` most-recent durable runs and any newer than `keep_days` (when
-/// set), and prune the rest: delete each session's on-disk NDJSON dir, null its
-/// `jsonl_ref`/`stdout_ref` (so `/v1/sessions/<id>/events` reports
-/// `retained:false`), and flip the run's `trace_retention` to `"expired"`
-/// (distinct from `"live"`, which was never retained). `--dry-run` reports the
-/// plan without touching anything. Run it on a schedule (cron / `/loop`).
-fn workflow_gc_trace(
-    store: &HarnessStore,
-    keep_runs: usize,
-    keep_days: Option<u64>,
-    dry_run: bool,
-) -> CliResult<serde_json::Value> {
-    let now_ms = current_unix_ms();
-    let mut durable: Vec<WorkflowRun> = latest_workflow_runs_in_append_order(store)?
-        .into_iter()
-        .filter(|run| run.trace_retention == "durable")
-        .collect();
-    // Most-recent first, so the first `keep_runs` survive.
-    durable.sort_by_key(|run| std::cmp::Reverse(created_ms(&run.created_at)));
-
-    let steps = latest_workflow_steps_in_append_order(store)?;
-    let mut pruned = Vec::new();
-    let mut freed_sessions = 0usize;
-
-    for (index, run) in durable.iter().enumerate() {
-        let too_many = index >= keep_runs;
-        let too_old = keep_days
-            .map(|days| {
-                now_ms.saturating_sub(created_ms(&run.created_at)) > u128::from(days) * 86_400_000
-            })
-            .unwrap_or(false);
-        if !(too_many || too_old) {
-            continue;
-        }
-        let native_sessions: Vec<NativeSessionRef> = steps
-            .iter()
-            .filter(|step| step.run_id == run.id)
-            .filter_map(|step| step.native_session.clone())
-            .collect();
-        pruned.push(serde_json::json!({
-            "run_id": run.id,
-            "created_at": run.created_at,
-            "native_sessions": native_sessions.len(),
-            "reason": if too_old { "age" } else { "count" },
-        }));
-        if dry_run {
-            freed_sessions += 0;
-            continue;
-        }
-        // Provider-native sessions are provider-owned and are never deleted by
-        // Harness trace GC. Expire only the Harness retention label.
-        let mut expired = run.clone();
-        expired.trace_retention = "expired".to_string();
-        store.append_workflow_run(&expired)?;
-    }
-
-    Ok(serde_json::json!({
-        "ok": true,
-        "kept_runs": durable.len().min(keep_runs),
-        "pruned_runs": pruned.len(),
-        "freed_sessions": freed_sessions,
-        "dry_run": dry_run,
-        "pruned": pruned,
-    }))
-}
-
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees",
     )?;
     match args[0].as_str() {
         "patch" => {
@@ -10560,15 +10475,6 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             // Useful to clean up abandoned `Running` runs when serve is not up.
             let reaped = reap_stale_workflow_runs(store)?;
             print_json(&serde_json::json!({ "reaped": reaped }))?;
-        }
-        "gc-trace" => {
-            let keep_runs = value(&args[1..], "--keep-runs")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(100);
-            let keep_days = value(&args[1..], "--keep-days").and_then(|v| v.parse::<u64>().ok());
-            let dry_run = args[1..].iter().any(|a| a == "--dry-run");
-            let result = workflow_gc_trace(store, keep_runs, keep_days, dry_run)?;
-            print_json(&result)?;
         }
         "list" => {
             let registry = workflow::WorkflowRegistry::builtin();
@@ -10677,7 +10583,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 }
 
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
-///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
+///  [--dry-run] [--start-runtime] [--timeout-ms <ms>]
 ///  [--model <m>] [--effort <e>] [--initiated-by <id>]`
 ///
 /// Reads a runtime-authored Starlark program — the SOLE dynamic authoring
@@ -10723,7 +10629,6 @@ fn step_result_from_stored(step: &WorkflowStep) -> Option<workflow::StepResult> 
         provider,
         isolation,
         ok: true,
-        provider_session_id: None,
         output_summary: step.output_summary.clone().unwrap_or_default(),
         step_id: None,
         started_at: None,
@@ -11813,16 +11718,6 @@ fn workflow_run_script_value(
         None => None,
     };
 
-    // Retention policy for the heavy per-node turn-event trace. `durable`
-    // (default) persists the trace; `live` streams it over SSE during execution
-    // but does not retain it. Validated up front so a typo fails fast.
-    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
-    if trace_retention != "durable" && trace_retention != "live" {
-        return Err(CliError::Usage(format!(
-            "--trace must be 'durable' or 'live', got '{trace_retention}'"
-        )));
-    }
-
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
@@ -11883,7 +11778,6 @@ fn workflow_run_script_value(
             }),
             None => serde_json::json!({ "lang": "starlark", "script": script }),
         }),
-        trace_retention,
         // Stamp this driver process's pid so the serve-side reaper can detect an
         // abandoned run (driver killed/crashed before journaling a terminal row).
         host_pid: Some(std::process::id()),
@@ -11955,7 +11849,6 @@ fn run_workflow_with_driver(
         initiated_by: Some("operator".to_string()),
         design_intent: None,
         spec: None,
-        trace_retention: "durable".to_string(),
         // Stamp this driver process's pid so the serve-side reaper can detect an
         // abandoned run (see the run-script path and `reap_abandoned_runs`).
         host_pid: Some(std::process::id()),
@@ -12081,7 +11974,7 @@ fn deliver_agent_messages_value(
         mark_running_delivery_attempts_terminal(
             store,
             &member.id,
-            ProviderSessionStatus::Stale,
+            ProviderExecutionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )?;
         runtime = None;
@@ -12153,7 +12046,7 @@ fn deliver_agent_messages_value(
                 store,
                 &delivery_id,
                 &claimed_message,
-                ProviderSessionStatus::Succeeded,
+                ProviderExecutionStatus::Succeeded,
                 provider_thread_id.clone(),
                 provider_turn_id.clone(),
                 Some(MessageTerminalSource::DryRun),
@@ -12162,7 +12055,7 @@ fn deliver_agent_messages_value(
                 Some(0),
             )?;
             DeliveryOutcome {
-                status: ProviderSessionStatus::Succeeded,
+                status: ProviderExecutionStatus::Succeeded,
                 native_session: None,
                 provider_thread_id,
                 provider_turn_id,
@@ -12206,7 +12099,7 @@ fn deliver_agent_messages_value(
                     store,
                     &delivery_id,
                     &claimed_message,
-                    ProviderSessionStatus::Failed,
+                    ProviderExecutionStatus::Failed,
                     member.provider_thread_id.clone(),
                     None,
                     Some(MessageTerminalSource::Failed),
@@ -12215,7 +12108,7 @@ fn deliver_agent_messages_value(
                     Some(1),
                 )?;
                 DeliveryOutcome {
-                    status: ProviderSessionStatus::Failed,
+                    status: ProviderExecutionStatus::Failed,
                     native_session: None,
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
@@ -12238,7 +12131,7 @@ fn deliver_agent_messages_value(
                     store,
                     &delivery_id,
                     &claimed_message,
-                    ProviderSessionStatus::Failed,
+                    ProviderExecutionStatus::Failed,
                     member.provider_thread_id.clone(),
                     None,
                     Some(MessageTerminalSource::Failed),
@@ -12247,7 +12140,7 @@ fn deliver_agent_messages_value(
                     Some(1),
                 )?;
                 DeliveryOutcome {
-                    status: ProviderSessionStatus::Failed,
+                    status: ProviderExecutionStatus::Failed,
                     native_session: None,
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
@@ -12322,7 +12215,7 @@ fn deliver_agent_messages_value(
         }
         if let Some(mut runtime_value) = runtime.clone() {
             runtime_value.health.delivery_probe = Some(match &delivery.status {
-                ProviderSessionStatus::Succeeded => {
+                ProviderExecutionStatus::Succeeded => {
                     format!(
                         "pass: {}",
                         delivery
@@ -12332,8 +12225,8 @@ fn deliver_agent_messages_value(
                             .unwrap_or_else(|| "unknown terminal source".into())
                     )
                 }
-                ProviderSessionStatus::Running => format!("pending: {}", delivery.summary),
-                ProviderSessionStatus::Stale => format!("stale: {}", delivery.summary),
+                ProviderExecutionStatus::Running => format!("pending: {}", delivery.summary),
+                ProviderExecutionStatus::Stale => format!("stale: {}", delivery.summary),
                 _ => format!("failed: {}", delivery.summary),
             });
             runtime_value.health.checked_at = Some(now_string());
@@ -12341,10 +12234,10 @@ fn deliver_agent_messages_value(
             store.append_runtime(&runtime_value)?;
             runtime = Some(runtime_value);
         }
-        if delivery.status == ProviderSessionStatus::Running {
+        if delivery.status == ProviderExecutionStatus::Running {
             member.status = AgentMemberStatus::Running;
             member.current_task_id = delivered_message.task_id.clone();
-        } else if delivery.status == ProviderSessionStatus::Stale {
+        } else if delivery.status == ProviderExecutionStatus::Stale {
             member.status = AgentMemberStatus::Stale;
             member.current_task_id = delivered_message.task_id.clone();
         } else {
@@ -12359,29 +12252,15 @@ fn deliver_agent_messages_value(
             member.provider_runtime_id.as_deref(),
             delivered_message.task_id.as_deref(),
             match &delivery.status {
-                ProviderSessionStatus::Succeeded => "delivery_delivered",
-                ProviderSessionStatus::Running => "delivery_running",
-                ProviderSessionStatus::Stale => "delivery_stale",
+                ProviderExecutionStatus::Succeeded => "delivery_delivered",
+                ProviderExecutionStatus::Running => "delivery_running",
+                ProviderExecutionStatus::Stale => "delivery_stale",
                 _ => "delivery_failed",
             },
             &delivery.summary,
-            delivery
-                .stdout_ref
-                .as_deref()
-                .or(delivery.stderr_ref.as_deref()),
+            None,
         )?;
 
-        if !delivery_unresolved {
-            if let Some(stdout_ref) = delivery.stdout_ref.as_deref() {
-                ingest_provider_output(
-                    store,
-                    &member.id,
-                    member.provider_runtime_id.as_deref(),
-                    delivered_message.task_id.as_deref(),
-                    stdout_ref,
-                )?;
-            }
-        }
         results.push(serde_json::json!({
             "message_id": delivered_message.id,
             "delivery_status": delivered_message.delivery_status,
@@ -12508,7 +12387,7 @@ fn expire_safe_delivery_claims_value(
         let Some(delivery) = message.delivery.as_ref() else {
             continue;
         };
-        if delivery.execution_status != Some(ProviderSessionStatus::Running)
+        if delivery.execution_status != Some(ProviderExecutionStatus::Running)
             || delivery.provider_request_id.is_some()
             || delivery.provider_turn_id.is_some()
         {
@@ -12546,7 +12425,7 @@ fn expire_safe_delivery_claims_value(
 
 #[derive(Debug)]
 struct DeliveryOutcome {
-    status: ProviderSessionStatus,
+    status: ProviderExecutionStatus,
     native_session: Option<NativeSessionRef>,
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
@@ -12573,7 +12452,7 @@ fn claim_message_for_delivery(
 ) -> CliResult<Option<Message>> {
     let delivery = MessageDelivery {
         delivery_id: Some(delivery_id.to_string()),
-        execution_status: Some(ProviderSessionStatus::Running),
+        execution_status: Some(ProviderExecutionStatus::Running),
         native_session: member.native_session.clone(),
         started_at: Some(now_string()),
         provider_request_id: None,
@@ -12586,7 +12465,7 @@ fn claim_message_for_delivery(
     match store.claim_queued_message_delivery(&member.id, &message.id, delivery)? {
         MessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
         MessageDeliveryClaimResult::NotQueued => Ok(None),
-        MessageDeliveryClaimResult::BlockedBySession(session_id) => Err(CliError::Usage(format!(
+        MessageDeliveryClaimResult::BlockedByDelivery(session_id) => Err(CliError::Usage(format!(
             "agent {} has unresolved provider session {}; cannot claim another delivery",
             member.id, session_id
         ))),
@@ -12631,7 +12510,7 @@ fn retry_delivery_value(
         && delivery.provider_turn_id.is_none()
         && !matches!(
             delivery.execution_status,
-            Some(ProviderSessionStatus::Succeeded)
+            Some(ProviderExecutionStatus::Succeeded)
         );
     if !force && !safe_without_force {
         return Err(CliError::Usage(format!(
@@ -12664,7 +12543,7 @@ fn retry_delivery_value(
         "message_id": message_id,
         "delivery_id": delivery_id,
         "delivery_status": message.delivery_status,
-        "execution_status": ProviderSessionStatus::Canceled,
+        "execution_status": ProviderExecutionStatus::Canceled,
         "evidence_id": evidence_id,
         "forced": force
     }))
@@ -12674,13 +12553,13 @@ fn reconcile_delivery_value(
     store: &HarnessStore,
     agent_id: &str,
     delivery_id: &str,
-    status: ProviderSessionStatus,
+    status: ProviderExecutionStatus,
     terminal_source: MessageTerminalSource,
     reason: &str,
 ) -> CliResult<serde_json::Value> {
     if matches!(
         status,
-        ProviderSessionStatus::Queued | ProviderSessionStatus::Running
+        ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running
     ) {
         return Err(CliError::Usage(
             "reconcile-delivery requires a terminal status".into(),
@@ -12773,7 +12652,7 @@ fn record_claimed_delivery_terminal(
     store: &HarnessStore,
     delivery_id: &str,
     message: &Message,
-    _status: ProviderSessionStatus,
+    _status: ProviderExecutionStatus,
     _provider_thread_id: Option<String>,
     _provider_turn_id: Option<String>,
     _terminal_source: Option<MessageTerminalSource>,
@@ -12799,37 +12678,39 @@ fn record_claimed_delivery_terminal(
     Ok(vec![evidence_id])
 }
 
-fn message_status_for_delivery(status: &ProviderSessionStatus) -> MessageDeliveryStatus {
+fn message_status_for_delivery(status: &ProviderExecutionStatus) -> MessageDeliveryStatus {
     message_status_for_terminal(status, None)
 }
 
 fn message_status_for_terminal(
-    status: &ProviderSessionStatus,
+    status: &ProviderExecutionStatus,
     terminal_source: Option<&MessageTerminalSource>,
 ) -> MessageDeliveryStatus {
     match status {
-        ProviderSessionStatus::Succeeded => MessageDeliveryStatus::Delivered,
-        ProviderSessionStatus::Running => MessageDeliveryStatus::Acknowledged,
-        ProviderSessionStatus::Stale if terminal_source != Some(&MessageTerminalSource::Failed) => {
+        ProviderExecutionStatus::Succeeded => MessageDeliveryStatus::Delivered,
+        ProviderExecutionStatus::Running => MessageDeliveryStatus::Acknowledged,
+        ProviderExecutionStatus::Stale
+            if terminal_source != Some(&MessageTerminalSource::Failed) =>
+        {
             MessageDeliveryStatus::Acknowledged
         }
         _ => MessageDeliveryStatus::Failed,
     }
 }
 
-fn provider_status_blocks_delivery(status: &ProviderSessionStatus) -> bool {
+fn provider_status_blocks_delivery(status: &ProviderExecutionStatus) -> bool {
     matches!(
         status,
-        ProviderSessionStatus::Running | ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Running | ProviderExecutionStatus::Stale
     )
 }
 
-fn delivery_error_message(status: &ProviderSessionStatus, summary: &str) -> Option<String> {
+fn delivery_error_message(status: &ProviderExecutionStatus, summary: &str) -> Option<String> {
     matches!(
         status,
-        ProviderSessionStatus::Failed
-            | ProviderSessionStatus::Canceled
-            | ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Failed
+            | ProviderExecutionStatus::Canceled
+            | ProviderExecutionStatus::Stale
     )
     .then(|| summary.to_string())
 }
@@ -12874,46 +12755,6 @@ fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json:
 /// the endpoint verbatim so callers that only inspect existence/format keep
 /// working without assuming a unix socket. This keeps the seam provider-neutral
 /// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
-fn ingest_provider_output(
-    store: &HarnessStore,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    source_ref: &str,
-) -> CliResult<()> {
-    // The member's declared provider is the source of truth for the native output
-    // shape we parse and the provider string we stamp; on lookup failure default to codex.
-    let provider = latest_member(store, agent_member_id)
-        .map(|member| member.provider)
-        .unwrap_or_else(|_| CodexAdapter.name().to_string());
-    match provider_adapter(&provider) {
-        Some(adapter) => {
-            adapter.ingest_output(store, agent_member_id, runtime_id, task_id, source_ref)
-        }
-        None => Err(unknown_provider_error(&provider, "output ingest")),
-    }
-}
-
-fn terminal_source_from_provider_event(
-    value: &serde_json::Value,
-    event_type: &str,
-) -> Option<MessageTerminalSource> {
-    if event_type.contains("turn_completed") {
-        return Some(MessageTerminalSource::TurnCompleted);
-    }
-    if event_type.contains("thread_status_changed")
-        && value
-            .get("params")
-            .and_then(|params| params.get("status"))
-            .and_then(|status| status.get("type"))
-            .and_then(|status_type| status_type.as_str())
-            == Some("idle")
-    {
-        return Some(MessageTerminalSource::ThreadIdle);
-    }
-    None
-}
-
 fn reconcile_running_delivery_attempts(
     store: &HarnessStore,
     agent_member_id: &str,
@@ -12936,7 +12777,7 @@ fn reconcile_running_delivery_attempts(
                 && message.delivery.as_ref().is_some_and(|delivery| {
                     matches!(
                         delivery.execution_status,
-                        Some(ProviderSessionStatus::Running | ProviderSessionStatus::Stale)
+                        Some(ProviderExecutionStatus::Running | ProviderExecutionStatus::Stale)
                     ) && provider_thread_id.is_none_or(|thread_id| {
                         delivery.provider_thread_id.as_deref() == Some(thread_id)
                     }) && provider_turn_id.is_none_or(|turn_id| {
@@ -12950,7 +12791,7 @@ fn reconcile_running_delivery_attempts(
     {
         message.delivery_status = MessageDeliveryStatus::Delivered;
         if let Some(delivery) = message.delivery.as_mut() {
-            delivery.execution_status = Some(ProviderSessionStatus::Succeeded);
+            delivery.execution_status = Some(ProviderExecutionStatus::Succeeded);
             delivery.terminal_source = Some(terminal_source.clone());
             if delivery.provider_thread_id.is_none() {
                 delivery.provider_thread_id = provider_thread_id.map(str::to_string);
@@ -13027,18 +12868,18 @@ fn mark_runtime_delivery_reconciled(
 fn mark_runtime_delivery_terminal(
     store: &HarnessStore,
     runtime_id: &str,
-    status: &ProviderSessionStatus,
+    status: &ProviderExecutionStatus,
     terminal_source: Option<&MessageTerminalSource>,
 ) -> CliResult<()> {
     if let Some(mut runtime) = latest_runtime(store, runtime_id)? {
         runtime.health.delivery_probe = Some(match status {
-            ProviderSessionStatus::Succeeded => format!(
+            ProviderExecutionStatus::Succeeded => format!(
                 "pass: {}",
                 terminal_source
                     .map(terminal_source_label)
                     .unwrap_or_else(|| "unknown".into())
             ),
-            ProviderSessionStatus::Stale => format!(
+            ProviderExecutionStatus::Stale => format!(
                 "stale: {}",
                 terminal_source
                     .map(terminal_source_label)
@@ -13066,8 +12907,8 @@ fn has_unresolved_delivery_attempt(store: &HarnessStore, agent_member_id: &str) 
                 && message.delivery.as_ref().is_some_and(|delivery| {
                     matches!(
                         delivery.execution_status,
-                        Some(ProviderSessionStatus::Queued | ProviderSessionStatus::Running)
-                    ) || (delivery.execution_status == Some(ProviderSessionStatus::Stale)
+                        Some(ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running)
+                    ) || (delivery.execution_status == Some(ProviderExecutionStatus::Stale)
                         && !matches!(
                             delivery.terminal_source,
                             Some(MessageTerminalSource::Failed)
@@ -13079,7 +12920,7 @@ fn has_unresolved_delivery_attempt(store: &HarnessStore, agent_member_id: &str) 
 fn mark_running_delivery_attempts_terminal(
     store: &HarnessStore,
     agent_member_id: &str,
-    status: ProviderSessionStatus,
+    status: ProviderExecutionStatus,
     terminal_source: Option<MessageTerminalSource>,
 ) -> CliResult<()> {
     let mut changed = false;
@@ -13090,7 +12931,7 @@ fn mark_running_delivery_attempts_terminal(
                 && message.delivery.as_ref().is_some_and(|delivery| {
                     matches!(
                         delivery.execution_status,
-                        Some(ProviderSessionStatus::Running | ProviderSessionStatus::Stale)
+                        Some(ProviderExecutionStatus::Running | ProviderExecutionStatus::Stale)
                     )
                 })
         })
@@ -13127,73 +12968,6 @@ fn mark_running_delivery_attempts_terminal(
         }
     }
     Ok(())
-}
-
-fn extract_provider_json_values(text: &str) -> Vec<serde_json::Value> {
-    extract_provider_json_values_from_bytes(text.as_bytes())
-}
-
-fn extract_provider_json_values_from_bytes(bytes: &[u8]) -> Vec<serde_json::Value> {
-    let mut values = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut cursor = 0;
-    while let Some(relative_header_start) = find_bytes(&bytes[cursor..], b"Content-Length:") {
-        let header_start = cursor + relative_header_start;
-        let Some(relative_header_end) = find_bytes(&bytes[header_start..], b"\r\n\r\n") else {
-            break;
-        };
-        let header_end = header_start + relative_header_end;
-        let header = String::from_utf8_lossy(&bytes[header_start..header_end]);
-        let Some(content_length) = header.lines().find_map(parse_content_length) else {
-            cursor = header_end + 4;
-            continue;
-        };
-        let body_start = header_end + 4;
-        let body_end = body_start + content_length;
-        if body_end > bytes.len() {
-            break;
-        }
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes[body_start..body_end])
-        {
-            push_unique_json(&mut values, &mut seen, value);
-        }
-        cursor = body_end;
-    }
-
-    for line in String::from_utf8_lossy(bytes).lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('{') {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                push_unique_json(&mut values, &mut seen, value);
-            }
-        }
-    }
-    values
-}
-
-fn parse_content_length(line: &str) -> Option<usize> {
-    let (name, value) = line.split_once(':')?;
-    if !name.eq_ignore_ascii_case("content-length") {
-        return None;
-    }
-    value.trim().parse().ok()
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn push_unique_json(
-    values: &mut Vec<serde_json::Value>,
-    seen: &mut BTreeSet<String>,
-    value: serde_json::Value,
-) {
-    let key = serde_json::to_string(&value).unwrap_or_default();
-    if seen.insert(key) {
-        values.push(value);
-    }
 }
 
 // Test-only helper: extracts JSON-RPC error strings; covered by unit tests only.
@@ -13271,78 +13045,6 @@ fn turn_id_from_container(value: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn provider_child_thread_id_from_container(value: &serde_json::Value) -> Option<String> {
-    for path in [
-        &["newThreadId"][..],
-        &["new_thread_id"][..],
-        &["childThreadId"][..],
-        &["child_thread_id"][..],
-        &["receiverThreadId"][..],
-        &["receiver_thread_id"][..],
-    ] {
-        if let Some(thread_id) = json_path_string(value, path) {
-            return Some(thread_id);
-        }
-    }
-    None
-}
-
-fn provider_child_thread_from_event(
-    provider: &str,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    parent_provider_thread_id: Option<&str>,
-    value: &serde_json::Value,
-) -> Option<ProviderChildThread> {
-    let method = value
-        .get("method")
-        .and_then(|method| method.as_str())
-        .or_else(|| value.get("type").and_then(|kind| kind.as_str()))
-        .unwrap_or_default()
-        .replace(['/', '.'], "_");
-    let is_spawn_or_subagent = method.contains("subagent")
-        || method.contains("collab_agent_spawn")
-        || method.contains("agent_spawn");
-    if !is_spawn_or_subagent {
-        return None;
-    }
-    let params = value.get("params").unwrap_or(value);
-    let provider_thread_id = provider_child_thread_id_from_container(params)
-        .or_else(|| json_path_string(params, &["threadId"]))
-        .or_else(|| json_path_string(params, &["thread_id"]))?;
-    let status = if method.contains("stop") || method.contains("close") {
-        ProviderChildThreadStatus::Closed
-    } else if method.contains("end") || method.contains("completed") {
-        ProviderChildThreadStatus::Completed
-    } else if method.contains("start") || method.contains("spawn") {
-        ProviderChildThreadStatus::Open
-    } else {
-        ProviderChildThreadStatus::Unknown
-    };
-    Some(ProviderChildThread {
-        id: generated_id("provider-child"),
-        provider: provider.into(),
-        agent_member_id: agent_member_id.into(),
-        provider_runtime_id: runtime_id.map(str::to_string),
-        task_id: task_id.map(str::to_string),
-        parent_provider_thread_id: parent_provider_thread_id.map(str::to_string),
-        provider_thread_id,
-        provider_agent_path: json_path_string(params, &["agentPath"])
-            .or_else(|| json_path_string(params, &["agent_path"])),
-        provider_agent_nickname: json_path_string(params, &["agentNickname"])
-            .or_else(|| json_path_string(params, &["agent_nickname"]))
-            .or_else(|| json_path_string(params, &["newAgentNickname"])),
-        provider_agent_role: json_path_string(params, &["agentRole"])
-            .or_else(|| json_path_string(params, &["agent_role"]))
-            .or_else(|| json_path_string(params, &["newAgentRole"])),
-        status,
-        last_message_ref: None,
-        created_at: now_string(),
-        updated_at: now_string(),
-    })
-}
-
 // Test-only helper: extracts a thread id from codex app-server values; unit-tested only.
 #[cfg(test)]
 fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<String> {
@@ -13412,6 +13114,7 @@ fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+#[cfg(test)]
 fn summarize_json_value(value: &serde_json::Value) -> String {
     let raw = serde_json::to_string(value).unwrap_or_else(|_| "provider event".into());
     if raw.len() > 240 {
@@ -13556,278 +13259,6 @@ fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<Ag
         runtimes.insert(runtime.id.clone(), runtime);
     }
     Ok(runtimes.remove(runtime_id))
-}
-
-fn latest_provider_session(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<Option<ProviderSession>> {
-    let mut sessions = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        sessions.insert(session.id.clone(), session);
-    }
-    Ok(sessions.remove(session_id))
-}
-
-/// Read the RAW provider turn for one session, 1:1: each line of the persisted
-/// claude (`jsonl_ref`) or codex (`stdout_ref`) NDJSON stream parsed back into
-/// JSON. This is what powers the dashboard's "▸ turn" drill-in — the agent's
-/// actual events (assistant text, tool_use, tool_result, result), not a wrapped
-/// summary. Returns `(events, truncated)`; capped so a long turn cannot flood
-/// the response. Non-JSON lines are skipped so a partial final line is safe.
-fn read_provider_session_events(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<(Vec<serde_json::Value>, bool)> {
-    const MAX_EVENTS: usize = 1000;
-    let session = latest_provider_session(store, session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    let path = session
-        .jsonl_ref
-        .clone()
-        .or_else(|| session.stdout_ref.clone())
-        .ok_or_else(|| {
-            CliError::Usage(format!("session {session_id} has no recorded event stream"))
-        })?;
-    let content = fs::read_to_string(&path)
-        .map_err(|error| CliError::Usage(format!("cannot read session stream {path}: {error}")))?;
-    let mut events = Vec::new();
-    let mut truncated = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if events.len() >= MAX_EVENTS {
-                truncated = true;
-                break;
-            }
-            events.push(value);
-        }
-    }
-    Ok((events, truncated))
-}
-
-/// A normalized event for a raw provider frame we have no specific mapping
-/// for yet: retains the raw JSON, stamps provider/ts, kind = Unknown. The
-/// caller/read helper assigns the final sequence number.
-fn generic_turn_event(
-    provider: &str,
-    session_id: &str,
-    raw: &serde_json::Value,
-) -> HarnessTurnEvent {
-    HarnessTurnEvent {
-        session_id: session_id.to_string(),
-        provider: provider.to_string(),
-        seq: 0,
-        ts: now_string(),
-        provider_thread_id: None,
-        provider_turn_id: None,
-        provider_item_id: None,
-        kind: HarnessTurnEventKind::Unknown,
-        role: None,
-        text: None,
-        delta: None,
-        tool_call: None,
-        tool_result: None,
-        usage: None,
-        model: None,
-        duration_ms: None,
-        cost_usd: None,
-        status: None,
-        error: None,
-        raw_provider_event: raw.clone(),
-    }
-}
-
-fn normalize_live_turn_event(
-    provider: &str,
-    session_id: &str,
-    raw: &serde_json::Value,
-    next_seq: u64,
-) -> Vec<HarnessTurnEvent> {
-    match provider_adapter(provider) {
-        Some(adapter) => adapter.normalize_turn_event(session_id, raw),
-        None => vec![generic_turn_event(provider, session_id, raw)],
-    }
-    .into_iter()
-    .enumerate()
-    .map(|(index, mut event)| {
-        event.seq = next_seq + index as u64;
-        event
-    })
-    .collect()
-}
-
-/// Read a session's RAW per-session events and normalize each to a
-/// HarnessTurnEvent (normalize-on-read; no new storage, raw route unchanged).
-fn read_provider_session_normalized_events(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<(Vec<HarnessTurnEvent>, bool)> {
-    let session = latest_provider_session(store, session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    let (raw_events, truncated) = read_provider_session_events(store, session_id)?;
-    let normalized = raw_events
-        .iter()
-        .flat_map(|raw| match provider_adapter(&session.provider) {
-            Some(adapter) => adapter.normalize_turn_event(session_id, raw),
-            None => vec![generic_turn_event(&session.provider, session_id, raw)],
-        })
-        .enumerate()
-        .map(|(i, mut event)| {
-            event.seq = i as u64;
-            event
-        })
-        .collect();
-    Ok((normalized, truncated))
-}
-
-/// Historical (completed-run) normalized read: the normalize-on-read companion to
-/// `read_session_turn_events`, used by `GET /v1/sessions/{id}/normalized-events`.
-/// Mirrors `read_provider_session_normalized_events` but reads the DURABLE
-/// per-session NDJSON via the two-tier-persistence path so it can also report
-/// `retained` — a `--trace live` run whose trace was pruned returns
-/// `(retained=false, [], false)` so the dashboard renders "trace not retained"
-/// instead of a 404, exactly like the raw historical endpoint.
-fn read_session_turn_events_normalized(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<(bool, Vec<HarnessTurnEvent>, bool)> {
-    let raw = read_session_turn_events(store, session_id)?;
-    if !raw.retained {
-        return Ok((false, Vec::new(), raw.truncated));
-    }
-    // The provider drives adapter selection; a retained trace always has its
-    // ProviderSession row, but fall back to the generic adapter if it is missing
-    // so a normalized read never fails on a recoverable lookup.
-    let provider = latest_provider_session(store, session_id)?
-        .map(|session| session.provider)
-        .unwrap_or_default();
-    let normalized = raw
-        .events
-        .iter()
-        .flat_map(|event| match provider_adapter(&provider) {
-            Some(adapter) => adapter.normalize_turn_event(session_id, event),
-            None => vec![generic_turn_event(&provider, session_id, event)],
-        })
-        .enumerate()
-        .map(|(i, mut event)| {
-            event.seq = i as u64;
-            event
-        })
-        .collect();
-    Ok((true, normalized, raw.truncated))
-}
-
-/// Outcome of reading one provider session's PERSISTED turn-event trace for the
-/// historical drill-in (`GET /v1/sessions/<id>/events`). Distinguishes a durable
-/// run whose heavy trace survived from a `--trace live` run whose trace was
-/// pruned after execution (two-tier persistence): the latter streamed live over
-/// SSE but retains nothing, so a past drill-in shows "trace not retained".
-struct SessionTurnEvents {
-    /// Whether the heavy per-node trace was retained for this session.
-    retained: bool,
-    /// Ordered turn events parsed from the durable per-session NDJSON (one JSON
-    /// value per line). Empty when `retained` is false.
-    events: Vec<serde_json::Value>,
-    /// True when the cap was hit and trailing events were dropped.
-    truncated: bool,
-}
-
-/// Read the PERSISTED per-session turn events for a completed durable run's
-/// historical drill-in, keyed by provider session id. This is the read side of
-/// the two-tier persistence design: the small audit record (WorkflowRun/Step)
-/// always survives, while the heavy turn-event trace survives only for
-/// `trace_retention == "durable"` runs.
-///
-/// Source of truth is the DURABLE per-session NDJSON the ProviderSession's
-/// `jsonl_ref` (claude) / `stdout_ref` (codex) points at — the file the spawn
-/// loop writes under `provider-sessions/<id>/` and which survives a server
-/// restart (unlike the shared `provider_turn_events.jsonl` live tee, which
-/// `serve` truncates on startup). We parse it the same way `read_provider_session_events`
-/// and `sse.rs` do: one JSON value per line, skipping torn/non-JSON lines so a
-/// mid-append final fragment is safe.
-///
-/// A `--trace live` run prunes that NDJSON after execution and the Backend left
-/// the ProviderSession's `jsonl_ref`/`stdout_ref` as `None` precisely so the
-/// historical drill-in reports `retained: false` ("trace not retained") instead
-/// of an empty-but-durable trace. A session with no ProviderSession row at all is
-/// likewise reported as not retained.
-fn read_session_turn_events(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<SessionTurnEvents> {
-    const MAX_EVENTS: usize = 1000;
-
-    // The retention marker IS the presence of a recorded event stream on the
-    // session row: durable runs point jsonl_ref/stdout_ref at the retained
-    // per-session NDJSON; live-only runs (and missing sessions) have neither.
-    let path = match latest_provider_session(store, session_id)? {
-        Some(session) => session
-            .jsonl_ref
-            .clone()
-            .or_else(|| session.stdout_ref.clone()),
-        None => None,
-    };
-    let Some(path) = path else {
-        return Ok(SessionTurnEvents {
-            retained: false,
-            events: Vec::new(),
-            truncated: false,
-        });
-    };
-
-    // The trace was retained but the file may have been swept; treat an
-    // unreadable durable ref as an empty (still-retained) trace rather than 404.
-    let content = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(_) => {
-            return Ok(SessionTurnEvents {
-                retained: true,
-                events: Vec::new(),
-                truncated: false,
-            })
-        }
-    };
-    let mut events = Vec::new();
-    let mut truncated = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            continue;
-        };
-        if events.len() >= MAX_EVENTS {
-            truncated = true;
-            break;
-        }
-        events.push(value);
-    }
-    Ok(SessionTurnEvents {
-        retained: true,
-        events,
-        truncated,
-    })
-}
-
-fn latest_provider_sessions_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<ProviderSession>> {
-    let mut session_ids = Vec::new();
-    let mut sessions_by_id = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        session_ids.retain(|id| id != &session.id);
-        session_ids.push(session.id.clone());
-        sessions_by_id.insert(session.id.clone(), session);
-    }
-    Ok(session_ids
-        .into_iter()
-        .filter_map(|id| sessions_by_id.remove(&id))
-        .collect())
 }
 
 fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowRun>> {
@@ -14550,8 +13981,8 @@ trait ProviderAdapter: Sync {
         }
     }
 
-    /// The per-session live NDJSON filename this provider's spawn/delivery writes,
-    /// which the ProviderSession `jsonl_ref` points at during a turn.
+    /// Filename used only inside the short-lived process transport directory.
+    /// It is reduced in memory and removed; it is never a Harness history record.
     fn live_ndjson_file_name(&self) -> &'static str;
 
     /// Map a LaunchPermission to this provider's CLI permission flag value
@@ -14568,29 +13999,6 @@ trait ProviderAdapter: Sync {
             self.name()
         )))
     }
-
-    /// Map one raw provider event frame to normalized HarnessTurnEvents. The
-    /// default is a single generic Unknown event (raw retained); each provider
-    /// overrides it to map its own vocabulary. The read helper assigns final seq.
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        vec![generic_turn_event(self.name(), session_id, raw)]
-    }
-
-    /// Ingest a persistent provider runtime's recorded output file (`source_ref`)
-    /// into neutral AgentEvents / child-threads / proposals / reconciliations /
-    /// reports. The provider-output ingest counterpart of the runtime delivery path.
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()>;
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
@@ -14640,193 +14048,6 @@ impl ProviderAdapter for CodexAdapter {
             LaunchPermission::WorkspaceWrite => "workspace-write",
             LaunchPermission::FullAccess => "danger-full-access",
         }
-    }
-
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        let mut event = generic_turn_event(self.name(), session_id, raw);
-
-        if let Some(error) = raw.get("error") {
-            event.kind = HarnessTurnEventKind::Error;
-            event.error = Some(
-                error
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| {
-                        error
-                            .get("message")
-                            .and_then(|message| message.as_str())
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_else(|| error.to_string()),
-            );
-            return vec![event];
-        }
-
-        match raw.get("type").and_then(|value| value.as_str()) {
-            Some("thread.started") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-                event.provider_thread_id = raw
-                    .get("thread_id")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-            }
-            Some("turn.started") => {
-                event.kind = HarnessTurnEventKind::TurnStarted;
-                event.provider_turn_id = raw
-                    .get("turn_id")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| {
-                        raw.get("turn")
-                            .and_then(|turn| turn.get("id"))
-                            .and_then(|value| value.as_str())
-                    })
-                    .map(str::to_string);
-            }
-            Some("item.started") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-                event.provider_item_id = raw
-                    .get("item")
-                    .and_then(|item| item.get("id"))
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-            }
-            Some("item.completed") => {
-                if let Some(item) = raw.get("item") {
-                    event.provider_item_id = item
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string);
-                    match item.get("type").and_then(|value| value.as_str()) {
-                        Some("agent_message") => {
-                            event.kind = HarnessTurnEventKind::Message;
-                            event.role = Some("assistant".into());
-                            event.text = item
-                                .get("text")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string);
-                        }
-                        Some("reasoning") => {
-                            event.kind = HarnessTurnEventKind::Reasoning;
-                            event.text = item
-                                .get("text")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string);
-                        }
-                        Some("command_execution") => {
-                            event.kind = HarnessTurnEventKind::ToolCall;
-                            let name = item
-                                .get("command")
-                                .and_then(|value| value.as_str())
-                                .filter(|value| !value.is_empty())
-                                .unwrap_or("command_execution")
-                                .to_string();
-                            event.tool_call = Some(HarnessToolCall {
-                                id: event.provider_item_id.clone(),
-                                name: name.clone(),
-                                args: item.clone(),
-                            });
-                            let output = item
-                                .get("aggregated_output")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let exit_code = item.get("exit_code").and_then(|value| value.as_i64());
-                            let failed = exit_code.is_some_and(|code| code != 0);
-                            // Emit a ToolResult whenever the command produced ANY
-                            // output (raw, not trimmed — whitespace-only output is
-                            // still real output and must not be discarded) or it
-                            // failed. Content is the actual output verbatim; fall
-                            // back to `exit N` only when there is literally no
-                            // output. Trimming/hide-if-blank is a render concern the
-                            // dashboard owns; the canonical event stays faithful.
-                            if !output.is_empty() || failed {
-                                let mut result = generic_turn_event(self.name(), session_id, raw);
-                                result.provider_item_id = event.provider_item_id.clone();
-                                result.kind = HarnessTurnEventKind::ToolResult;
-                                result.tool_result = Some(HarnessToolResult {
-                                    tool_call_id: event.provider_item_id.clone(),
-                                    name: Some(name),
-                                    content: if output.is_empty() {
-                                        format!("exit {}", exit_code.unwrap_or_default())
-                                    } else {
-                                        output
-                                    },
-                                    is_error: failed,
-                                });
-                                return vec![event, result];
-                            }
-                            return vec![event];
-                        }
-                        Some("file_change") => {
-                            let changes = item
-                                .get("changes")
-                                .and_then(|value| value.as_array())
-                                .filter(|changes| !changes.is_empty());
-                            if let Some(changes) = changes {
-                                let mut events = Vec::with_capacity(changes.len());
-                                for change in changes {
-                                    let name =
-                                        match change.get("kind").and_then(|value| value.as_str()) {
-                                            Some("add") => "Write",
-                                            Some("delete") => "Delete",
-                                            _ => "Edit",
-                                        };
-                                    let mut change_event =
-                                        generic_turn_event(self.name(), session_id, raw);
-                                    change_event.provider_item_id = event.provider_item_id.clone();
-                                    change_event.kind = HarnessTurnEventKind::ToolCall;
-                                    change_event.tool_call = Some(HarnessToolCall {
-                                        id: event.provider_item_id.clone(),
-                                        name: name.into(),
-                                        args: change.clone(),
-                                    });
-                                    events.push(change_event);
-                                }
-                                return events;
-                            }
-                            event.kind = HarnessTurnEventKind::ProviderMeta;
-                        }
-                        _ => {
-                            event.kind = HarnessTurnEventKind::ProviderMeta;
-                        }
-                    }
-                } else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                }
-            }
-            Some("turn.completed") | Some("turn_completed") => {
-                event.kind = HarnessTurnEventKind::TurnCompleted;
-                // The raw usage object lives where parse_codex_usage reads it, so
-                // the normalized usage also keeps codex's cached/reasoning subtotals.
-                let raw_usage = raw
-                    .get("usage")
-                    .or_else(|| raw.get("turn").and_then(|turn| turn.get("usage")));
-                event.usage =
-                    parse_codex_usage(std::slice::from_ref(raw)).map(|usage| HarnessTokenUsage {
-                        input_tokens: usage.input,
-                        output_tokens: usage.output,
-                        total_tokens: usage.total,
-                        cached_input_tokens: raw_usage
-                            .and_then(|usage| usage.get("cached_input_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                        reasoning_output_tokens: raw_usage
-                            .and_then(|usage| usage.get("reasoning_output_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                    });
-            }
-            // Codex emits `thread.idle` as the terminal idle marker (see
-            // codex_event_is_terminal); there is no `turn.idle`.
-            Some("thread.idle") | Some("thread_idle") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-            }
-            _ => {}
-        }
-
-        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -14879,7 +14100,6 @@ impl ProviderAdapter for CodexAdapter {
         let provider_turn_id =
             json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
         let event_id = generated_id("event");
-        let payload_ref = persist_hook_payload(store, &event_id, &payload)?;
         let now = now_string();
         let event = AgentEvent {
             id: event_id,
@@ -14892,7 +14112,7 @@ impl ProviderAdapter for CodexAdapter {
             provider_child_thread_id: json_str(&payload, "agent_id"),
             event_type: format!("codex_hook.{hook_event_name}"),
             summary: codex_hook_summary(&hook_event_name, &payload),
-            payload_ref: Some(payload_ref),
+            payload_ref: None,
             created_at: now.clone(),
         };
         store.append_event(&event)?;
@@ -14941,118 +14161,6 @@ impl ProviderAdapter for CodexAdapter {
             ctx.wall_clock_ms,
         )
     }
-
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()> {
-        let provider = self.name().to_string();
-        let text = fs::read_to_string(source_ref).unwrap_or_default();
-        for value in extract_provider_json_values(&text) {
-            let method = value
-                .get("method")
-                .and_then(|value| value.as_str())
-                .or_else(|| value.get("type").and_then(|value| value.as_str()))
-                .unwrap_or("provider_output");
-            let event_type = method.replace(['/', '.'], "_");
-            let summary = summarize_json_value(&value);
-            let provider_context = value.get("params").unwrap_or(&value);
-            let provider_thread_id = thread_id_from_container(provider_context);
-            let provider_turn_id = turn_id_from_container(provider_context);
-            let provider_child_thread_id =
-                provider_child_thread_id_from_container(provider_context);
-            let event = AgentEvent {
-                id: generated_id("event"),
-                agent_member_id: agent_member_id.into(),
-                provider_runtime_id: runtime_id.map(str::to_string),
-                task_id: task_id.map(str::to_string),
-                provider: provider.clone(),
-                provider_thread_id: provider_thread_id.clone(),
-                provider_turn_id: provider_turn_id.clone(),
-                provider_child_thread_id: provider_child_thread_id.clone(),
-                event_type: event_type.clone(),
-                summary,
-                payload_ref: Some(source_ref.into()),
-                created_at: now_string(),
-            };
-            store.append_event(&event)?;
-            if let Some(child_thread) = provider_child_thread_from_event(
-                &provider,
-                agent_member_id,
-                runtime_id,
-                task_id,
-                provider_thread_id.as_deref(),
-                &value,
-            ) {
-                store.append_provider_child_thread(&child_thread)?;
-            }
-            if event_type.contains("turn_plan_updated") || event_type.contains("turn_diff_updated")
-            {
-                if let Some(task_id) = task_id {
-                    let proposal = Proposal {
-                        id: generated_id("proposal"),
-                        task_id: task_id.into(),
-                        agent_member_id: agent_member_id.into(),
-                        title: format!("Provider {}", event_type),
-                        summary: "Proposal candidate from provider notification".into(),
-                        status: ProposalStatus::Draft,
-                        changed_paths: Vec::new(),
-                        evidence_ids: Vec::new(),
-                        created_at: now_string(),
-                        updated_at: now_string(),
-                    };
-                    store.append_proposal(&proposal)?;
-                }
-            }
-            if let Some(terminal_source) = terminal_source_from_provider_event(&value, &event_type)
-            {
-                let reconciled = reconcile_running_delivery_attempts(
-                    store,
-                    agent_member_id,
-                    task_id,
-                    provider_thread_id.as_deref(),
-                    provider_turn_id.as_deref(),
-                    terminal_source,
-                )?;
-                if reconciled {
-                    continue;
-                }
-            }
-            if event_type.contains("turn_completed") {
-                let report = Message {
-                    id: generated_id("msg"),
-                    task_id: task_id.map(str::to_string),
-                    from_agent_id: agent_member_id.into(),
-                    to_agent_id: None,
-                    channel: Some("provider-report".into()),
-                    kind: MessageKind::Report,
-                    delivery_status: MessageDeliveryStatus::Delivered,
-                    content: "Provider turn completed".into(),
-                    evidence_ids: Vec::new(),
-                    created_at: now_string(),
-                    delivery: Some(MessageDelivery {
-                        delivery_id: None,
-                        execution_status: Some(ProviderSessionStatus::Succeeded),
-                        native_session: None,
-                        started_at: None,
-                        provider_request_id: None,
-                        provider_thread_id,
-                        provider_turn_id,
-                        terminal_source: Some(MessageTerminalSource::TurnCompleted),
-                        delivered_at: Some(now_string()),
-                        last_error: None,
-                    }),
-                    sender_kind: SenderKind::Agent,
-                };
-                store.append_message(&report)?;
-            }
-        }
-        Ok(())
-    }
 }
 impl ProviderAdapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
@@ -15073,207 +14181,6 @@ impl ProviderAdapter for ClaudeAdapter {
             LaunchPermission::WorkspaceWrite => "acceptEdits",
             LaunchPermission::FullAccess => "bypassPermissions",
         }
-    }
-
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        let mut event = generic_turn_event(self.name(), session_id, raw);
-        let payload = raw;
-
-        match raw.get("type").and_then(|value| value.as_str()) {
-            Some("system") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-                event.model = payload
-                    .get("model")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                event.provider_thread_id = payload
-                    .get("session_id")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-            }
-            Some("assistant") => {
-                let Some(blocks) = payload
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-                    .and_then(|content| content.as_array())
-                else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                };
-
-                let mut events = Vec::new();
-
-                let thinking_parts: Vec<&str> = blocks
-                    .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(|value| value.as_str()) == Some("thinking")
-                    })
-                    .filter_map(|block| {
-                        block
-                            .get("thinking")
-                            .or_else(|| block.get("text"))
-                            .and_then(|value| value.as_str())
-                    })
-                    .collect();
-                if !thinking_parts.is_empty() {
-                    let mut reasoning_event = generic_turn_event(self.name(), session_id, raw);
-                    reasoning_event.kind = HarnessTurnEventKind::Reasoning;
-                    reasoning_event.text = Some(thinking_parts.join("\n"));
-                    events.push(reasoning_event);
-                }
-
-                let text_parts: Vec<&str> = blocks
-                    .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(|value| value.as_str()) == Some("text")
-                    })
-                    .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
-                    .collect();
-                if !text_parts.is_empty() {
-                    let mut message_event = generic_turn_event(self.name(), session_id, raw);
-                    message_event.kind = HarnessTurnEventKind::Message;
-                    message_event.role = Some("assistant".into());
-                    message_event.text = Some(text_parts.join("\n"));
-                    events.push(message_event);
-                }
-
-                for block in blocks.iter().filter(|block| {
-                    block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
-                }) {
-                    let mut tool_call_event = generic_turn_event(self.name(), session_id, raw);
-                    tool_call_event.kind = HarnessTurnEventKind::ToolCall;
-                    tool_call_event.provider_item_id = block
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    tool_call_event.tool_call = Some(HarnessToolCall {
-                        id: tool_call_event.provider_item_id.clone(),
-                        name: block
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .filter(|value| !value.is_empty())
-                            .unwrap_or("tool_use")
-                            .to_string(),
-                        args: block.get("input").cloned().unwrap_or_else(|| block.clone()),
-                    });
-                    events.push(tool_call_event);
-                }
-
-                if events.is_empty() {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                }
-                return events;
-            }
-            Some("user") => {
-                let Some(blocks) = payload
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-                    .and_then(|content| content.as_array())
-                else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                };
-
-                let mut events = Vec::new();
-                for block in blocks.iter().filter(|block| {
-                    block.get("type").and_then(|value| value.as_str()) == Some("tool_result")
-                }) {
-                    let mut tool_result_event = generic_turn_event(self.name(), session_id, raw);
-                    tool_result_event.kind = HarnessTurnEventKind::ToolResult;
-                    tool_result_event.provider_item_id = block
-                        .get("tool_use_id")
-                        .and_then(|value| value.as_str())
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    let content = block
-                        .get("content")
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_string)
-                                .unwrap_or_else(|| value.to_string())
-                        })
-                        .unwrap_or_default();
-                    tool_result_event.tool_result = Some(HarnessToolResult {
-                        tool_call_id: tool_result_event.provider_item_id.clone(),
-                        name: None,
-                        content,
-                        is_error: block
-                            .get("is_error")
-                            .and_then(|value| value.as_bool())
-                            .unwrap_or(false),
-                    });
-                    events.push(tool_result_event);
-                }
-
-                if events.is_empty() {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                }
-                return events;
-            }
-            Some("result") => {
-                let raw_usage = payload.get("usage");
-                event.usage =
-                    parse_claude_usage(std::slice::from_ref(raw)).map(|usage| HarnessTokenUsage {
-                        input_tokens: usage.input,
-                        output_tokens: usage.output,
-                        total_tokens: usage.total,
-                        cached_input_tokens: raw_usage
-                            .and_then(|usage| usage.get("cached_input_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                        reasoning_output_tokens: raw_usage
-                            .and_then(|usage| usage.get("reasoning_output_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                    });
-                let (_structured, cost_usd) = parse_claude_result_extras(std::slice::from_ref(raw));
-                event.cost_usd = cost_usd;
-                event.model = parse_worker_model(std::slice::from_ref(raw));
-                event.text = payload
-                    .get("result")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-
-                match payload.get("subtype").and_then(|value| value.as_str()) {
-                    Some(subtype) if subtype != "success" => {
-                        event.kind = HarnessTurnEventKind::Error;
-                        event.error = Some(
-                            payload
-                                .get("result")
-                                .and_then(|value| value.as_str())
-                                .or_else(|| payload.get("error").and_then(|value| value.as_str()))
-                                .map(str::to_string)
-                                .or_else(|| {
-                                    payload
-                                        .get("error")
-                                        .and_then(|error| error.get("message"))
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_string)
-                                })
-                                .or_else(|| payload.get("error").map(|value| value.to_string()))
-                                .unwrap_or_else(|| format!("claude result subtype {subtype}")),
-                        );
-                    }
-                    _ => {
-                        event.kind = HarnessTurnEventKind::TurnCompleted;
-                    }
-                }
-            }
-            Some("stream_event") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-            }
-            _ => {}
-        }
-
-        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -15316,25 +14223,6 @@ impl ProviderAdapter for ClaudeAdapter {
             ctx.timeout_ms,
             ctx.wall_clock_ms,
             ctx.max_budget_usd,
-        )
-    }
-
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()> {
-        let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_claude_stream_json(
-            store,
-            self.name(),
-            agent_member_id,
-            runtime_id,
-            task_id,
-            &text,
         )
     }
 }
@@ -15407,15 +14295,6 @@ fn resolve_kimi_bin() -> String {
 // array of blocks (tool/structured turns) — both are handled.
 // ============================================================================
 
-/// Parse Kimi stream-json NDJSON text into raw JSON frames (one per non-empty line).
-fn parse_kimi_frames(text: &str) -> Vec<serde_json::Value> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .collect()
-}
-
 /// The assistant reply: concatenate the `content` of every `role=="assistant"`
 /// frame in order. `content` is a string, or an array of blocks (each block's own
 /// string, or its `text`/`content` field). None when the turn produced no text.
@@ -15469,13 +14348,16 @@ fn extract_kimi_session_id(frames: &[serde_json::Value]) -> Option<String> {
 /// Session status for a `kimi -p` turn. There is no terminal success frame, so a
 /// clean child exit IS success; a non-zero exit (e.g. an arg error on stderr) is a
 /// failure; a clean exit with zero frames is stale (no reply produced).
-fn infer_kimi_status(frames: &[serde_json::Value], process_success: bool) -> ProviderSessionStatus {
+fn infer_kimi_status(
+    frames: &[serde_json::Value],
+    process_success: bool,
+) -> ProviderExecutionStatus {
     if !process_success {
-        ProviderSessionStatus::Failed
+        ProviderExecutionStatus::Failed
     } else if frames.is_empty() {
-        ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Stale
     } else {
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     }
 }
 
@@ -15540,7 +14422,7 @@ fn spawn_kimi_ephemeral(
         Some(OrphanRegistration {
             dir: session_dir
                 .parent()
-                .and_then(|provider_sessions| provider_sessions.parent())
+                .and_then(|delivery_dir| delivery_dir.parent())
                 .unwrap_or(session_dir)
                 .join("worker_pids"),
             run_id: run_id.to_string(),
@@ -15555,7 +14437,7 @@ fn spawn_kimi_ephemeral(
     let frames = &run.events;
     let ok = matches!(
         infer_kimi_status(frames, run.process_success),
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     );
     let reply = extract_kimi_reply_text(frames);
     // -p stream-json carries no usage/model/cost frame; degrade per kimi_exec()
@@ -15815,33 +14697,6 @@ impl ProviderAdapter for KimiAdapter {
         }
     }
 
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        // Kimi -p stream-json is flat and NOT claude-shaped, so map its frames
-        // directly: a `role=="assistant"` frame -> an assistant Message event with
-        // the reply text; the `session.resume_hint` meta frame -> ProviderMeta
-        // carrying the resume token; anything else -> a generic ProviderMeta. All
-        // stamped provider="kimi" via `generic_turn_event(self.name(), ...)`.
-        let mut event = generic_turn_event(self.name(), session_id, raw);
-        if raw.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-            event.kind = HarnessTurnEventKind::Message;
-            event.role = Some("assistant".into());
-            event.text = extract_kimi_reply_text(std::slice::from_ref(raw));
-        } else if raw.get("type").and_then(|t| t.as_str()) == Some("session.resume_hint") {
-            event.kind = HarnessTurnEventKind::ProviderMeta;
-            event.provider_thread_id = raw
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-        } else {
-            event.kind = HarnessTurnEventKind::ProviderMeta;
-        }
-        vec![event]
-    }
-
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
         start_kimi_runtime(store, member)
     }
@@ -15882,27 +14737,6 @@ impl ProviderAdapter for KimiAdapter {
             ctx.timeout_ms,
             ctx.wall_clock_ms,
             ctx.max_budget_usd,
-        )
-    }
-
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()> {
-        // Kimi -p stream-json is not claude-shaped → use the kimi-native reducer,
-        // stamping the durable rows provider="kimi".
-        let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_kimi_stream_json(
-            store,
-            self.name(),
-            agent_member_id,
-            runtime_id,
-            task_id,
-            &text,
         )
     }
 }
@@ -15995,38 +14829,28 @@ impl ClaudeStreamEvent {
 fn infer_claude_session_status(
     events: &[ClaudeStreamEvent],
     process_success: bool,
-) -> ProviderSessionStatus {
+) -> ProviderExecutionStatus {
     if !process_success {
-        return ProviderSessionStatus::Failed;
+        return ProviderExecutionStatus::Failed;
     }
     let has_result = events.iter().any(|e| e.event_type == "result");
     if has_result {
         if let Some(result_event) = events.iter().find(|e| e.event_type == "result") {
             if result_event.payload.get("error").is_some() {
-                return ProviderSessionStatus::Failed;
+                return ProviderExecutionStatus::Failed;
             }
         }
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     } else if events.is_empty() {
-        ProviderSessionStatus::Failed
+        ProviderExecutionStatus::Failed
     } else {
-        ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Stale
     }
 }
 
 /// Extract session_id from Claude stream events.
 fn extract_session_id_from_claude_events(events: &[ClaudeStreamEvent]) -> Option<String> {
     events.iter().find_map(|e| e.session_id())
-}
-
-/// Extract provider_thread_id from Claude stream events if present.
-fn extract_thread_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<String> {
-    None
-}
-
-/// Extract provider_turn_id from Claude stream events if present.
-fn extract_turn_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<String> {
-    None
 }
 
 /// Extract the assistant's ACTUAL reply text from a `claude -p
@@ -16076,129 +14900,18 @@ fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
-/// Parse Claude stream-json NDJSON and ingest as neutral AgentEvent / ProviderSession.
-/// Mirrors the Codex exec reducer: same neutral objects, provider-specific parsing.
-///
-/// `provider` stamps the written AgentEvent / ProviderSession rows. Kimi is
-/// claude-shaped on the wire, so it reuses this reducer but passes `provider="kimi"`
-/// so the durable trace is attributed to the real provider (not "claude").
-fn ingest_claude_stream_json(
-    store: &HarnessStore,
-    provider: &str,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    text: &str,
-) -> CliResult<()> {
-    // Parse NDJSON from text
-    let mut events = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            if let Some(event) = ClaudeStreamEvent::parse_line(trimmed) {
-                events.push(event);
-            }
-        }
-    }
-
-    // Extract session_id and infer status from the event stream.
-    // Ingest each event as a neutral AgentEvent.
-    for event in &events {
-        let event_kind = match event.event_type.as_str() {
-            "system" => "stream_system_init",
-            "stream_event" => {
-                // Extract the stream_event subtype if present.
-                event
-                    .payload
-                    .get("event")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("stream_event")
-            }
-            "result" => "stream_result",
-            _ => "unknown",
-        };
-
-        let summary = summarize_json_value(&event.payload);
-        let thread_id = extract_thread_id_from_claude_events(std::slice::from_ref(event));
-        let turn_id = extract_turn_id_from_claude_events(std::slice::from_ref(event));
-
-        let agent_event = AgentEvent {
-            id: generated_id("event"),
-            agent_member_id: agent_member_id.into(),
-            provider_runtime_id: runtime_id.map(str::to_string),
-            task_id: task_id.map(str::to_string),
-            provider: provider.into(),
-            provider_thread_id: thread_id,
-            provider_turn_id: turn_id,
-            provider_child_thread_id: None, // Subagents handled separately per ADR 0011
-            event_type: event_kind.to_string(),
-            summary,
-            payload_ref: None, // Inline payload
-            created_at: now_string(),
-        };
-        store.append_event(&agent_event)?;
-    }
-
-    Ok(())
-}
-
-/// Parse Kimi `-p --output-format stream-json` NDJSON and ingest as neutral
-/// AgentEvent / ProviderSession rows. Mirrors [`ingest_claude_stream_json`] but on
-/// the flat kimi-native frames (see the kimi stream banner). `provider` stamps the
-/// rows (always "kimi" here). The session id is read from the `session.resume_hint`
-/// meta frame; status is inferred from the frames (the live spawn path drives the
-/// authoritative status from the child exit code).
-fn ingest_kimi_stream_json(
-    store: &HarnessStore,
-    provider: &str,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    text: &str,
-) -> CliResult<()> {
-    let frames = parse_kimi_frames(text);
-    for frame in &frames {
-        let event_kind = match (
-            frame.get("role").and_then(|r| r.as_str()),
-            frame.get("type").and_then(|t| t.as_str()),
-        ) {
-            (Some("assistant"), _) => "assistant_message",
-            (_, Some("session.resume_hint")) => "session_resume_hint",
-            (Some(role), _) => role, // e.g. "meta", "user"
-            _ => "unknown",
-        };
-        let agent_event = AgentEvent {
-            id: generated_id("event"),
-            agent_member_id: agent_member_id.into(),
-            provider_runtime_id: runtime_id.map(str::to_string),
-            task_id: task_id.map(str::to_string),
-            provider: provider.into(),
-            provider_thread_id: None,
-            provider_turn_id: None,
-            provider_child_thread_id: None,
-            event_type: event_kind.to_string(),
-            summary: summarize_json_value(frame),
-            payload_ref: None,
-            created_at: now_string(),
-        };
-        store.append_event(&agent_event)?;
-    }
-
-    Ok(())
-}
-
-/// Map ProviderSessionStatus to terminal source.
-fn status_to_terminal_source(status: &ProviderSessionStatus) -> Option<MessageTerminalSource> {
+/// Map ProviderExecutionStatus to terminal source.
+fn status_to_terminal_source(status: &ProviderExecutionStatus) -> Option<MessageTerminalSource> {
     match status {
-        ProviderSessionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
-        ProviderSessionStatus::Failed => Some(MessageTerminalSource::Failed),
+        ProviderExecutionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
+        ProviderExecutionStatus::Failed => Some(MessageTerminalSource::Failed),
         _ => None,
     }
 }
 
 // --- Codex exec --json delivery (WP-2) ---
-// Parse NDJSON output from `codex exec --json` into AgentEvent + ProviderSession lifecycle.
-// Row parity with app-server path: identical ProviderSession/Evidence structure.
+// Parse NDJSON output from `codex exec --json` into AgentEvent + provider execution attempt lifecycle.
+// Row parity with app-server path: identical provider execution attempt/Evidence structure.
 
 #[derive(Debug, Clone, PartialEq)]
 struct CodexExecEvent {
@@ -16286,24 +14999,24 @@ fn parse_codex_ndjson_to<F: FnMut(&serde_json::Value)>(
 
 /// Infer the lifecycle status from a stream of CodexExecEvent.
 /// Follows the same logic as the app-server path: queued → running → (succeeded|failed).
-fn infer_provider_session_status(
+fn infer_provider_execution_status(
     events: &[CodexExecEvent],
     process_success: bool,
-) -> ProviderSessionStatus {
+) -> ProviderExecutionStatus {
     if !process_success {
-        return ProviderSessionStatus::Failed;
+        return ProviderExecutionStatus::Failed;
     }
     // If we saw a terminal event, we succeeded.
     let has_terminal = events
         .iter()
         .any(|e| codex_event_is_terminal(&e.event_type));
     if has_terminal {
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     } else if events.is_empty() {
-        ProviderSessionStatus::Failed
+        ProviderExecutionStatus::Failed
     } else {
         // We have events but no terminal: stale (timed out waiting for completion).
-        ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Stale
     }
 }
 
@@ -16312,7 +15025,7 @@ fn infer_provider_session_status(
 /// Codex `exec --json` emits a `thread.started` event carrying the real
 /// `thread_id` (e.g. `{"thread_id":"019e...","type":"thread.started"}`). We
 /// scan every event payload for a top-level `thread_id` string and return the
-/// first match so the ProviderSession records the provider's real thread id.
+/// first match so the provider execution attempt records the provider's real thread id.
 fn extract_thread_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String> {
     events.iter().find_map(|event| {
         event
@@ -16677,8 +15390,8 @@ fn run_codex_exec_delivery(
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
     // Infer the delivery status from events and process exit.
-    let status = infer_provider_session_status(&events, process_success);
-    let terminal_source = if matches!(status, ProviderSessionStatus::Succeeded) {
+    let status = infer_provider_execution_status(&events, process_success);
+    let terminal_source = if matches!(status, ProviderExecutionStatus::Succeeded) {
         events
             .iter()
             .find_map(|e| e.terminal_source())
@@ -16704,10 +15417,10 @@ fn run_codex_exec_delivery(
     )?;
 
     let summary = match status {
-        ProviderSessionStatus::Succeeded => reply
+        ProviderExecutionStatus::Succeeded => reply
             .clone()
             .unwrap_or_else(|| "Codex exec --json turn completed successfully".into()),
-        ProviderSessionStatus::Failed => {
+        ProviderExecutionStatus::Failed => {
             if stderr_log.is_empty() {
                 "Codex exec --json failed: no output".into()
             } else {
@@ -16717,7 +15430,7 @@ fn run_codex_exec_delivery(
                 )
             }
         }
-        ProviderSessionStatus::Stale => {
+        ProviderExecutionStatus::Stale => {
             "Codex exec --json produced output but did not complete before timeout".into()
         }
         _ => "Codex exec --json session ended".into(),
@@ -17302,21 +16015,6 @@ fn parse_hook_payload(input: &str) -> serde_json::Value {
     }
 }
 
-fn persist_hook_payload(
-    store: &HarnessStore,
-    event_id: &str,
-    payload: &serde_json::Value,
-) -> CliResult<String> {
-    let payload_dir = store.root().join("hook-payloads");
-    fs::create_dir_all(&payload_dir)?;
-    let path = payload_dir.join(format!("{event_id}.json"));
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(payload).expect("serialize hook payload"),
-    )?;
-    Ok(path.display().to_string())
-}
-
 fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -17449,14 +16147,14 @@ fn sender_kind_from_args(args: &[String]) -> CliResult<SenderKind> {
     }
 }
 
-fn parse_provider_session_status(value: &str) -> CliResult<ProviderSessionStatus> {
+fn parse_provider_execution_status(value: &str) -> CliResult<ProviderExecutionStatus> {
     match value {
-        "queued" => Ok(ProviderSessionStatus::Queued),
-        "running" => Ok(ProviderSessionStatus::Running),
-        "succeeded" => Ok(ProviderSessionStatus::Succeeded),
-        "failed" => Ok(ProviderSessionStatus::Failed),
-        "canceled" => Ok(ProviderSessionStatus::Canceled),
-        "stale" => Ok(ProviderSessionStatus::Stale),
+        "queued" => Ok(ProviderExecutionStatus::Queued),
+        "running" => Ok(ProviderExecutionStatus::Running),
+        "succeeded" => Ok(ProviderExecutionStatus::Succeeded),
+        "failed" => Ok(ProviderExecutionStatus::Failed),
+        "canceled" => Ok(ProviderExecutionStatus::Canceled),
+        "stale" => Ok(ProviderExecutionStatus::Stale),
         other => Err(CliError::Usage(format!(
             "unknown provider session status: {other}"
         ))),
@@ -17491,14 +16189,14 @@ fn terminal_source_label(source: &MessageTerminalSource) -> String {
     .into()
 }
 
-fn provider_status_label(status: &ProviderSessionStatus) -> &'static str {
+fn provider_status_label(status: &ProviderExecutionStatus) -> &'static str {
     match status {
-        ProviderSessionStatus::Queued => "queued",
-        ProviderSessionStatus::Running => "running",
-        ProviderSessionStatus::Succeeded => "succeeded",
-        ProviderSessionStatus::Failed => "failed",
-        ProviderSessionStatus::Canceled => "canceled",
-        ProviderSessionStatus::Stale => "stale",
+        ProviderExecutionStatus::Queued => "queued",
+        ProviderExecutionStatus::Running => "running",
+        ProviderExecutionStatus::Succeeded => "succeeded",
+        ProviderExecutionStatus::Failed => "failed",
+        ProviderExecutionStatus::Canceled => "canceled",
+        ProviderExecutionStatus::Stale => "stale",
     }
 }
 
@@ -17549,7 +16247,7 @@ fn print_help() {
   team create|list|show|close
   member register|list|providers
   agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close
-  workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers|gc-trace
+  workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
@@ -17630,7 +16328,6 @@ mod workflow_runtime_tests {
                 initiated_by: Some("test".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
                 terminal_reason: None,
@@ -17684,7 +16381,7 @@ mod workflow_runtime_tests {
         );
         assert_eq!(
             infer_kimi_status(&frames, true),
-            ProviderSessionStatus::Succeeded
+            ProviderExecutionStatus::Succeeded
         );
         // REGRESSION GUARD: the claude reply extractor must FAIL on this shape —
         // proving why the kimi-native parser is required (no `type:"result"` /
@@ -17716,13 +16413,13 @@ mod workflow_runtime_tests {
 
     #[test]
     fn kimi_status_failed_on_nonzero_exit_and_stale_when_empty() {
-        assert_eq!(infer_kimi_status(&[], true), ProviderSessionStatus::Stale);
+        assert_eq!(infer_kimi_status(&[], true), ProviderExecutionStatus::Stale);
         assert_eq!(
             infer_kimi_status(
                 &[serde_json::json!({"role": "assistant", "content": "x"})],
                 false
             ),
-            ProviderSessionStatus::Failed
+            ProviderExecutionStatus::Failed
         );
     }
 
@@ -18140,7 +16837,6 @@ mod workflow_runtime_tests {
             provider: spec.provider.clone(),
             isolation: spec.isolation.clone(),
             ok: true,
-            provider_session_id: Some(format!("session-{}", spec.label)),
             output_summary: format!("mock ok: {}", spec.label),
             step_id: None,
             started_at: None,
@@ -18387,7 +17083,7 @@ mod workflow_runtime_tests {
         structured: Option<serde_json::Value>,
     ) -> DeliveryOutcome {
         DeliveryOutcome {
-            status: ProviderSessionStatus::Succeeded,
+            status: ProviderExecutionStatus::Succeeded,
             native_session: None,
             provider_thread_id: None,
             provider_turn_id: None,
@@ -18508,7 +17204,7 @@ mod workflow_runtime_tests {
     fn delivery_outcome_defaults_have_no_telemetry_for_non_provider_paths() {
         let dry_run = delivery_outcome_for_test(None, None, None, None);
         let mut failure = delivery_outcome_for_test(None, None, None, None);
-        failure.status = ProviderSessionStatus::Failed;
+        failure.status = ProviderExecutionStatus::Failed;
         failure.exit_code = Some(1);
 
         for outcome in [dry_run, failure] {
@@ -18523,17 +17219,17 @@ mod workflow_runtime_tests {
     fn structured_is_surfaced_only_on_succeeded_status() {
         let value = serde_json::json!({ "verdict": "pass" });
         assert_eq!(
-            structured_for_status(&ProviderSessionStatus::Succeeded, Some(value.clone())),
+            structured_for_status(&ProviderExecutionStatus::Succeeded, Some(value.clone())),
             Some(value.clone())
         );
         // A turn that RAN but did not succeed must not report a (possibly partial /
         // schema-violating) structured result, even if one was extracted.
         for status in [
-            ProviderSessionStatus::Failed,
-            ProviderSessionStatus::Stale,
-            ProviderSessionStatus::Canceled,
-            ProviderSessionStatus::Running,
-            ProviderSessionStatus::Queued,
+            ProviderExecutionStatus::Failed,
+            ProviderExecutionStatus::Stale,
+            ProviderExecutionStatus::Canceled,
+            ProviderExecutionStatus::Running,
+            ProviderExecutionStatus::Queued,
         ] {
             assert_eq!(structured_for_status(&status, Some(value.clone())), None);
         }
@@ -18789,7 +17485,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: Some("worktree".into()),
             ok: true,
-            provider_session_id: Some("session-1".into()),
             output_summary: "done".into(),
             step_id: None,
             started_at: None,
@@ -18880,7 +17575,7 @@ new file mode 100644
         // A worker that emits one line then HANGS (stdout open, never exits) goes
         // SILENT, so the IDLE timeout fires and kills it — not block forever.
         let root = std::env::temp_dir().join(format!("mah-hang-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -18919,7 +17614,7 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_warns_and_keeps_valid_events_after_junk_stdout() {
         let root = std::env::temp_dir().join(format!("mah-junk-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -18957,7 +17652,7 @@ new file mode 100644
         // limit (300ms) — because it never goes silent that long. A fixed total-
         // wall-clock timeout would have wrongly killed it.
         let root = std::env::temp_dir().join(format!("mah-slow-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         // 8 events, ~100ms apart → ~800ms total, never silent for 300ms.
@@ -18990,7 +17685,7 @@ new file mode 100644
         // A worker that never goes idle is still bounded by the per-leaf wall-clock
         // timeout.
         let root = std::env::temp_dir().join(format!("mah-wall-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -19030,7 +17725,7 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_allows_worker_finishing_before_wall_clock_timeout() {
         let root = std::env::temp_dir().join(format!("mah-wall-ok-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -19062,7 +17757,7 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_without_orphan_registration_writes_no_pidfile() {
         let root = std::env::temp_dir().join(format!("mah-no-pidfile-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("printf '{\"type\":\"item\"}\\n'");
@@ -19097,7 +17792,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: None,
             ok: true,
-            provider_session_id: Some("s".into()),
             output_summary: "summary".into(),
             step_id: None,
             started_at: None,
@@ -19164,917 +17858,6 @@ new file mode 100644
         assert_eq!(steps[2].phase, "audit");
     }
 
-    /// Build a ProviderSession keyed by `session_id`. `jsonl_ref` carries the
-    /// durable per-session NDJSON path when retained; `None` is the live-only
-    /// "trace not retained" marker the Backend leaves after pruning.
-    fn provider_session_with_ref(session_id: &str, jsonl_ref: Option<String>) -> ProviderSession {
-        ProviderSession {
-            id: session_id.into(),
-            provider: "claude".into(),
-            agent_member_id: session_id.into(),
-            task_id: None,
-            workspace_ref: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: Some(MessageTerminalSource::TurnCompleted),
-            status: ProviderSessionStatus::Succeeded,
-            command: "harness".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: Some(0),
-            started_at: "unix-ms:1".into(),
-            ended_at: Some("unix-ms:2".into()),
-            evidence_ids: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn codex_normalize_thread_started_sets_provider_thread_id_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "thread.started",
-            "thread_id": "thread-1"
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-T");
-        assert_eq!(event.provider, "codex");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(event.provider_thread_id.as_deref(), Some("thread-1"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_turn_started_sets_kind_and_provider_turn_id_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "turn.started",
-            "turn_id": "turn-1"
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::TurnStarted);
-        assert_eq!(event.provider_turn_id.as_deref(), Some("turn-1"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_agent_message_item_completed_sets_message_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "item-1",
-                "type": "agent_message",
-                "text": "done"
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::Message);
-        assert_eq!(event.provider_item_id.as_deref(), Some("item-1"));
-        assert_eq!(event.role.as_deref(), Some("assistant"));
-        assert_eq!(event.text.as_deref(), Some("done"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_with_output_emits_call_and_result() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-1",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "ok\n",
-                "exit_code": 0
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-
-        let call = &events[0];
-        assert_eq!(call.kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(call.provider_item_id.as_deref(), Some("cmd-1"));
-        assert_eq!(
-            call.tool_call,
-            Some(HarnessToolCall {
-                id: Some("cmd-1".into()),
-                name: "cargo test".into(),
-                args: raw.get("item").unwrap().clone(),
-            })
-        );
-        assert_eq!(call.raw_provider_event, raw);
-
-        let result = &events[1];
-        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(result.provider_item_id.as_deref(), Some("cmd-1"));
-        assert_eq!(
-            result.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("cmd-1".into()),
-                name: Some("cargo test".into()),
-                content: "ok\n".into(),
-                is_error: false,
-            })
-        );
-        assert_eq!(result.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn live_normalize_codex_command_execution_assigns_seq_and_serializes_payload_events() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-live",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "ok\n",
-                "exit_code": 0
-            }
-        });
-
-        let events = normalize_live_turn_event("codex", "session-live", &raw, 41);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[0].seq, 41);
-        assert_eq!(events[0].raw_provider_event, raw);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[1].seq, 42);
-        assert_eq!(events[1].raw_provider_event, raw);
-
-        let payload = serde_json::json!({
-            "session_id": "session-live",
-            "events": events
-                .iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()
-                .expect("serialize events"),
-        });
-        let payload_events = payload
-            .get("events")
-            .and_then(|value| value.as_array())
-            .expect("payload events");
-        assert_eq!(payload_events.len(), 2);
-        assert_eq!(
-            payload_events[0].get("kind").and_then(|v| v.as_str()),
-            Some("tool_call")
-        );
-        assert_eq!(
-            payload_events[1].get("kind").and_then(|v| v.as_str()),
-            Some("tool_result")
-        );
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_without_output_or_error_emits_call_only() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-1",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "",
-                "exit_code": 0
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(event.provider_item_id.as_deref(), Some("cmd-1"));
-        assert_eq!(
-            event.tool_call,
-            Some(HarnessToolCall {
-                id: Some("cmd-1".into()),
-                name: "cargo test".into(),
-                args: raw.get("item").unwrap().clone(),
-            })
-        );
-        assert!(event.tool_result.is_none());
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_nonzero_exit_emits_error_result() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-1",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "",
-                "exit_code": 2
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[0].raw_provider_event, raw);
-
-        let result = &events[1];
-        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(
-            result.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("cmd-1".into()),
-                name: Some("cargo test".into()),
-                content: "exit 2".into(),
-                is_error: true,
-            })
-        );
-        assert_eq!(result.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_whitespace_output_is_preserved() {
-        // Whitespace-only output is still real output: the ToolResult must carry
-        // the verbatim string, NOT fall back to `exit N`. Emptiness is decided on
-        // the raw string, not a trimmed one, so a newline-only result survives.
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-ws",
-                "type": "command_execution",
-                "command": "printf '\\n'",
-                "aggregated_output": "\n",
-                "exit_code": 1
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-
-        let result = &events[1];
-        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(
-            result.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("cmd-ws".into()),
-                name: Some("printf '\\n'".into()),
-                content: "\n".into(),
-                is_error: true,
-            })
-        );
-        assert_eq!(result.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_file_change_emits_one_tool_call_per_change() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "file-1",
-                "type": "file_change",
-                "changes": [
-                    {"kind": "add", "path": "/a"},
-                    {"kind": "delete", "path": "/b"}
-                ]
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[0].provider_item_id.as_deref(), Some("file-1"));
-        let first_call = events[0].tool_call.as_ref().unwrap();
-        assert_eq!(first_call.id.as_deref(), Some("file-1"));
-        assert_eq!(first_call.name, "Write");
-        assert_eq!(
-            first_call.args.get("path").and_then(|path| path.as_str()),
-            Some("/a")
-        );
-        assert_eq!(events[0].raw_provider_event, raw);
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[1].provider_item_id.as_deref(), Some("file-1"));
-        let second_call = events[1].tool_call.as_ref().unwrap();
-        assert_eq!(second_call.id.as_deref(), Some("file-1"));
-        assert_eq!(second_call.name, "Delete");
-        assert_eq!(
-            second_call.args.get("path").and_then(|path| path.as_str()),
-            Some("/b")
-        );
-        assert_eq!(events[1].raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_file_change_without_changes_stays_provider_meta() {
-        for raw in [
-            serde_json::json!({
-                "type": "item.completed",
-                "item": {
-                    "id": "file-1",
-                    "type": "file_change",
-                    "changes": []
-                }
-            }),
-            serde_json::json!({
-                "type": "item.completed",
-                "item": {
-                    "id": "file-1",
-                    "type": "file_change"
-                }
-            }),
-        ] {
-            let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-            assert_eq!(events.len(), 1);
-            let event = &events[0];
-
-            assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-            assert_eq!(event.provider_item_id.as_deref(), Some("file-1"));
-            assert!(event.tool_call.is_none());
-            assert_eq!(event.raw_provider_event, raw);
-        }
-    }
-
-    #[test]
-    fn codex_normalize_turn_completed_sets_usage_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "turn.completed",
-            "usage": {
-                "input_tokens": 1200,
-                "output_tokens": 340,
-                "cached_input_tokens": 800,
-                "reasoning_output_tokens": 120
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(
-            event.usage,
-            Some(HarnessTokenUsage {
-                input_tokens: 1200,
-                output_tokens: 340,
-                total_tokens: 1540,
-                cached_input_tokens: Some(800),
-                reasoning_output_tokens: Some(120),
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_unrecognized_type_stays_unknown_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "provider_specific",
-            "payload": {"n": 1}
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-T");
-        assert_eq!(event.provider, "codex");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
-        assert_eq!(event.raw_provider_event, raw);
-        assert!(event.provider_thread_id.is_none());
-        assert!(event.provider_turn_id.is_none());
-        assert!(event.text.is_none());
-        assert!(event.tool_call.is_none());
-        assert!(event.usage.is_none());
-    }
-
-    #[test]
-    fn claude_normalize_system_sets_provider_meta_model_thread_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "system",
-            "subtype": "init",
-            "session_id": "claude-session-1",
-            "model": "claude-opus-4-8"
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-C");
-        assert_eq!(event.provider, "claude");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(event.model.as_deref(), Some("claude-opus-4-8"));
-        assert_eq!(
-            event.provider_thread_id.as_deref(),
-            Some("claude-session-1")
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_assistant_text_sets_message_role_text_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "hello"},
-                    {"type": "text", "text": "world"}
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::Message);
-        assert_eq!(event.role.as_deref(), Some("assistant"));
-        assert_eq!(event.text.as_deref(), Some("hello\nworld"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_assistant_tool_use_sets_tool_call_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_01",
-                        "name": "Read",
-                        "input": {"file_path": "Cargo.toml"}
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
-        assert_eq!(
-            event.tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_01".into()),
-                name: "Read".into(),
-                args: serde_json::json!({"file_path": "Cargo.toml"}),
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_assistant_text_then_tool_use_expands_in_order_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "checking"},
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_01",
-                        "name": "Read",
-                        "input": {"file_path": "Cargo.toml"}
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| event.raw_provider_event == raw));
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Message);
-        assert_eq!(events[0].role.as_deref(), Some("assistant"));
-        assert_eq!(events[0].text.as_deref(), Some("checking"));
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[1].provider_item_id.as_deref(), Some("toolu_01"));
-        assert_eq!(
-            events[1].tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_01".into()),
-                name: "Read".into(),
-                args: serde_json::json!({"file_path": "Cargo.toml"}),
-            })
-        );
-    }
-
-    #[test]
-    fn claude_normalize_assistant_thinking_text_and_tool_uses_expands_in_order_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "thinking", "thinking": "thinking one"},
-                    {"type": "text", "text": "done thinking"},
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_A",
-                        "name": "Read",
-                        "input": {"file_path": "Cargo.toml"}
-                    },
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_B",
-                        "name": "Write",
-                        "input": {"file_path": "README.md", "content": "notes"}
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 4);
-        assert!(events.iter().all(|event| event.raw_provider_event == raw));
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Reasoning);
-        assert_eq!(events[0].text.as_deref(), Some("thinking one"));
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::Message);
-        assert_eq!(events[1].role.as_deref(), Some("assistant"));
-        assert_eq!(events[1].text.as_deref(), Some("done thinking"));
-
-        assert_eq!(events[2].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[2].provider_item_id.as_deref(), Some("toolu_A"));
-        assert_eq!(
-            events[2].tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_A".into()),
-                name: "Read".into(),
-                args: serde_json::json!({"file_path": "Cargo.toml"}),
-            })
-        );
-
-        assert_eq!(events[3].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[3].provider_item_id.as_deref(), Some("toolu_B"));
-        assert_eq!(
-            events[3].tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_B".into()),
-                name: "Write".into(),
-                args: serde_json::json!({"file_path": "README.md", "content": "notes"}),
-            })
-        );
-    }
-
-    #[test]
-    fn claude_normalize_assistant_unknown_content_block_stays_provider_meta_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "server_tool_use", "id": "srv_01"}
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_user_tool_result_sets_tool_result_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_01",
-                        "content": [{"type": "text", "text": "file contents"}],
-                        "is_error": true
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
-        assert_eq!(
-            event.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("toolu_01".into()),
-                name: None,
-                content: serde_json::json!([{"type": "text", "text": "file contents"}]).to_string(),
-                is_error: true,
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_user_tool_results_expand_in_order_and_retain_raw() {
-        let raw = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u1",
-                        "content": "first"
-                    },
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u2",
-                        "content": [{"type": "text", "text": "second"}],
-                        "is_error": true
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| event.raw_provider_event == raw));
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[0].provider_item_id.as_deref(), Some("u1"));
-        assert_eq!(
-            events[0].tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("u1".into()),
-                name: None,
-                content: "first".into(),
-                is_error: false,
-            })
-        );
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[1].provider_item_id.as_deref(), Some("u2"));
-        assert_eq!(
-            events[1].tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("u2".into()),
-                name: None,
-                content: serde_json::json!([{"type": "text", "text": "second"}]).to_string(),
-                is_error: true,
-            })
-        );
-    }
-
-    #[test]
-    fn live_normalize_claude_expansion_assigns_monotonic_seq_from_next_seq() {
-        let raw = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u1",
-                        "content": "first"
-                    },
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u2",
-                        "content": "second"
-                    }
-                ]
-            }
-        });
-
-        let events = normalize_live_turn_event("claude", "session-C", &raw, 8);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[0].seq, 8);
-        assert_eq!(events[0].raw_provider_event, raw);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[1].seq, 9);
-        assert_eq!(events[1].raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_result_success_sets_completed_usage_cost_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "result": "final answer",
-            "total_cost_usd": 0.1866,
-            "structured_output": {"verdict": "pass"},
-            "usage": {
-                "input_tokens": 42,
-                "output_tokens": 15,
-                "cached_input_tokens": 7,
-                "reasoning_output_tokens": 3
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(event.text.as_deref(), Some("final answer"));
-        assert_eq!(
-            event.usage,
-            Some(HarnessTokenUsage {
-                input_tokens: 42,
-                output_tokens: 15,
-                total_tokens: 57,
-                cached_input_tokens: Some(7),
-                reasoning_output_tokens: Some(3),
-            })
-        );
-        assert_eq!(event.cost_usd, Some(0.1866));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_result_non_success_sets_error_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "result",
-            "subtype": "error_during_execution",
-            "result": "tool failed",
-            "usage": {"input_tokens": 1, "output_tokens": 2}
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::Error);
-        assert_eq!(event.text.as_deref(), Some("tool failed"));
-        assert_eq!(event.error.as_deref(), Some("tool failed"));
-        assert_eq!(
-            event.usage,
-            Some(HarnessTokenUsage {
-                input_tokens: 1,
-                output_tokens: 2,
-                total_tokens: 3,
-                cached_input_tokens: None,
-                reasoning_output_tokens: None,
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_unrecognized_type_stays_unknown_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "provider_specific",
-            "payload": {"n": 1}
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-C");
-        assert_eq!(event.provider, "claude");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
-        assert_eq!(event.raw_provider_event, raw);
-        assert!(event.provider_thread_id.is_none());
-        assert!(event.text.is_none());
-        assert!(event.tool_call.is_none());
-        assert!(event.tool_result.is_none());
-        assert!(event.usage.is_none());
-    }
-
-    #[test]
-    fn live_normalize_unknown_provider_falls_back_to_generic_event_with_seq() {
-        let raw = serde_json::json!({
-            "type": "provider_specific",
-            "payload": {"n": 1}
-        });
-
-        let events = normalize_live_turn_event("mystery", "session-U", &raw, 17);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-U");
-        assert_eq!(event.provider, "mystery");
-        assert_eq!(event.seq, 17);
-        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn read_provider_session_normalized_events_preserves_order_and_raw() {
-        let store = temp_store("normalized-events");
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join("session-N")
-            .join("claude.stream-json.ndjson");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        let raw0 = serde_json::json!({"type": "assistant", "text": "first"});
-        let raw1 = serde_json::json!({"type": "result", "status": "ok"});
-        fs::write(&ndjson, format!("{raw0}\nnot-json\n{raw1}\n")).expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                "session-N",
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append durable session");
-
-        let (events, truncated) =
-            read_provider_session_normalized_events(&store, "session-N").expect("read events");
-
-        assert!(!truncated);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].provider, "claude");
-        assert_eq!(events[0].seq, 0);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(events[0].raw_provider_event, raw0);
-        assert_eq!(events[1].provider, "claude");
-        assert_eq!(events[1].seq, 1);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(events[1].raw_provider_event, raw1);
-    }
-
-    /// Seed one durable run: a real per-session NDJSON + ProviderSession(jsonl_ref),
-    /// a completed WorkflowRun(trace_retention="durable") at `created`, and a step
-    /// linking them. Returns the NDJSON path so a test can assert its survival.
-    fn seed_durable_run(store: &HarnessStore, id: &str, created: u128) -> std::path::PathBuf {
-        let session = format!("sess-{id}");
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join(&session)
-            .join("events.jsonl");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        fs::write(&ndjson, "{\"type\":\"assistant\"}\n").expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                &session,
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append session");
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: id.into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Completed,
-                step_ids: vec![format!("{id}-s")],
-                created_at: format!("unix-ms:{created}"),
-                ended_at: Some(format!("unix-ms:{}", created + 1)),
-                summary: None,
-                args: None,
-                agents_spawned: 1,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: None,
-                dry_run: false,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_workflow_step(&WorkflowStep {
-                id: format!("{id}-s"),
-                run_id: id.into(),
-                phase: "work".into(),
-                label: "node".into(),
-                native_session: None,
-                status: WorkflowStepStatus::Completed,
-                output_summary: None,
-                result: None,
-                started_at: format!("unix-ms:{created}"),
-                ended_at: Some(format!("unix-ms:{}", created + 1)),
-                terminal_reason: None,
-                partial: false,
-            })
-            .expect("append step");
-        ndjson
-    }
-
     #[test]
     fn reap_stale_workflow_runs_finalizes_old_running_rows() {
         let store = temp_store("reap-stale");
@@ -20093,7 +17876,6 @@ new file mode 100644
             initiated_by: Some("op".into()),
             design_intent: None,
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -20150,7 +17932,6 @@ new file mode 100644
                 initiated_by: Some("op".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid: Some(dead_pid),
                 dry_run: false,
                 terminal_reason: None,
@@ -20190,7 +17971,6 @@ new file mode 100644
                 initiated_by: Some("op".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid: Some(std::process::id()),
                 dry_run: false,
                 terminal_reason: None,
@@ -20313,7 +18093,6 @@ new file mode 100644
                 initiated_by: Some("op".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid,
                 dry_run: false,
                 terminal_reason: None,
@@ -20423,7 +18202,7 @@ new file mode 100644
     #[test]
     fn running_step_carries_session_id_for_live_drill_in() {
         // The `running` row a step journals at start must carry the same
-        // provider_session_id as its terminal row — so the dashboard can link the
+        // native_session as its terminal row — so the dashboard can link the
         // step to its LIVE turn-event stream WHILE it runs, not only after it
         // finishes. (dry-run exercises the journaling without spawning a worker.)
         let store = temp_store("live-step-session");
@@ -20463,7 +18242,7 @@ new file mode 100644
             ordinal: Some(0),
         };
 
-        let result = workflow_real_agent_step(&store, "wfrun-live", &options, &spec);
+        let _result = workflow_real_agent_step(&store, "wfrun-live", &options, &spec);
 
         // Read the RAW append log (not the latest-wins projection) so we can
         // inspect the `running` row distinctly from the terminal row.
@@ -20484,7 +18263,6 @@ new file mode 100644
             })
             .expect("a terminal row was journaled at step finish");
         assert!(terminal.native_session.is_none());
-        assert!(result.provider_session_id.is_some());
     }
 
     #[test]
@@ -20571,143 +18349,6 @@ new file mode 100644
         assert_eq!(root, PathBuf::from("/explicit/store"));
         // Flag stripped so dispatch sees only the subcommand.
         assert_eq!(args, vec!["serve"]);
-    }
-
-    #[test]
-    fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
-        let store = temp_store("get-output");
-        let mk_step = |id: &str, label: &str, _sid: &str, summary: &str| WorkflowStep {
-            id: id.into(),
-            run_id: "wfrun-go".into(),
-            phase: "p".into(),
-            label: label.into(),
-            native_session: None,
-            status: WorkflowStepStatus::Completed,
-            output_summary: Some(summary.into()),
-            result: Some(serde_json::json!({
-                "ok": true,
-                "telemetry": "journaled"
-            })),
-            started_at: "unix-ms:1".into(),
-            ended_at: Some("unix-ms:2".into()),
-            terminal_reason: Some(WorkflowTerminalReason::Completed),
-            partial: false,
-        };
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-go".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Completed,
-                step_ids: vec!["s1".into(), "s2".into()],
-                created_at: "unix-ms:1".into(),
-                ended_at: Some("unix-ms:9".into()),
-                summary: None,
-                args: None,
-                agents_spawned: 2,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: None,
-                dry_run: false,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_workflow_step(&mk_step("s1", "scan", "sess-1", "scan summary"))
-            .expect("append s1");
-        store
-            .append_workflow_step(&mk_step(
-                "s2",
-                "synthesis",
-                "sess-2",
-                "synth summary (capped)",
-            ))
-            .expect("append s2");
-
-        // Persist a FULL reply only for s2's session (mirrors ingest writing reply.txt).
-        let full = "FULL synthesis output ".repeat(500); // > any summary cap
-        let dir = store.root().join("provider-sessions").join("sess-2");
-        std::fs::create_dir_all(&dir).expect("mk session dir");
-        std::fs::write(dir.join("reply.txt"), &full).expect("write reply");
-        let ndjson_path = dir.join("codex.exec.ndjson");
-        std::fs::write(
-            &ndjson_path,
-            concat!(
-                "{\"type\":\"item.completed\",\"item\":{\"id\":\"cmd-1\",\"type\":\"command_execution\",\"command\":\"python write.py\",\"aggregated_output\":\"ok\\n\",\"exit_code\":0}}\n",
-                "{\"type\":\"item.completed\",\"item\":{\"id\":\"msg-1\",\"type\":\"agent_message\",\"text\":\"final artifact note\"}}\n"
-            ),
-        )
-        .expect("write ndjson");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "sess-2".into(),
-                provider: "codex".into(),
-                agent_member_id: "sess-2".into(),
-                task_id: None,
-                workspace_ref: None,
-                provider_thread_id: None,
-                provider_turn_id: None,
-                terminal_source: Some(MessageTerminalSource::TurnCompleted),
-                status: ProviderSessionStatus::Succeeded,
-                command: "codex".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: Some(ndjson_path.display().to_string()),
-                jsonl_ref: Some(ndjson_path.display().to_string()),
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: Some(0),
-                started_at: "unix-ms:1".into(),
-                ended_at: Some("unix-ms:2".into()),
-                evidence_ids: Vec::new(),
-            })
-            .expect("append provider session");
-
-        let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
-        let steps = out["steps"].as_array().expect("steps array");
-        assert_eq!(steps.len(), 2);
-        // Order follows run.step_ids: scan (s1) then synthesis (s2).
-        assert_eq!(steps[0]["label"], "scan");
-        assert_eq!(steps[1]["label"], "synthesis");
-        // Workflow output is read from WorkflowStep, never an old Harness
-        // provider-session mirror even if stale legacy files are present.
-        assert_eq!(steps[0]["source"], "workflow_step");
-        assert_eq!(steps[0]["output"], "scan summary");
-        assert_eq!(steps[1]["source"], "workflow_step");
-        assert_eq!(steps[1]["output"], "synth summary (capped)");
-        assert_eq!(steps[1]["result"]["telemetry"], "journaled");
-        assert!(steps[1]["native_activity"].is_null());
-
-        // --step selects one leaf.
-        let one = workflow_get_output_value(
-            &store,
-            &[
-                "wfrun-go".to_string(),
-                "--step".to_string(),
-                "synthesis".to_string(),
-            ],
-        )
-        .expect("get-output --step");
-        let one_steps = one["steps"].as_array().unwrap();
-        assert_eq!(one_steps.len(), 1);
-        assert_eq!(one_steps[0]["label"], "synthesis");
-
-        // Unknown step / unknown run are usage errors.
-        assert!(workflow_get_output_value(
-            &store,
-            &[
-                "wfrun-go".to_string(),
-                "--step".to_string(),
-                "nope".to_string()
-            ]
-        )
-        .is_err());
-        assert!(workflow_get_output_value(&store, &["wfrun-missing".to_string()]).is_err());
     }
 
     #[test]
@@ -20916,7 +18557,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: Some("worktree".into()),
             ok: true,
-            provider_session_id: Some(format!("session-{label}")),
             output_summary: format!("{label} wrote {path}"),
             step_id: None,
             started_at: None,
@@ -20943,7 +18583,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("test writable patch and artifact manifest path".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -21038,7 +18677,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("test direct shared-repo write journaling".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -21051,7 +18689,6 @@ new file mode 100644
                 provider: "codex".into(),
                 isolation: None,
                 ok: true,
-                provider_session_id: Some("session-direct".into()),
                 output_summary: "direct edit [direct diff: 6 lines]".into(),
                 step_id: None,
                 started_at: None,
@@ -21294,7 +18931,6 @@ new file mode 100644
                 provider: "codex".into(),
                 isolation: Some("worktree".into()),
                 ok: true,
-                provider_session_id: Some(format!("session-{label}")),
                 output_summary: format!("{label} wrote {path}"),
                 step_id: None,
                 started_at: None,
@@ -21322,7 +18958,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("test discard and auto-apply patch behavior".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -21385,7 +19020,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("standalone D3a persistence gate".into()),
             spec: None, // NOT orchestrated
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -21397,7 +19031,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: Some("worktree".into()),
             ok: false, // step FAILED
-            provider_session_id: None,
             output_summary: "boom".into(),
             step_id: Some("wfstep-failed".into()),
             started_at: None,
@@ -21416,7 +19049,6 @@ new file mode 100644
             provider: "kimi".into(),
             isolation: Some("worktree".into()),
             ok: true,
-            provider_session_id: None,
             output_summary: "read but wrote anyway".into(),
             step_id: Some("wfstep-kimi".into()),
             started_at: None,
@@ -21478,7 +19110,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("standalone D3a positive control".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -21491,7 +19122,6 @@ new file mode 100644
                 provider: "codex".into(),
                 isolation: Some("worktree".into()),
                 ok: true,
-                provider_session_id: None,
                 output_summary: "ok".into(),
                 step_id: Some("wfstep-ok".into()),
                 started_at: None,
@@ -22079,177 +19709,6 @@ new file mode 100644
     }
 
     #[test]
-    fn gc_trace_prunes_old_durable_runs_and_keeps_recent() {
-        let store = temp_store("gc-trace");
-        let old1 = seed_durable_run(&store, "wfrun-old1", 1_000);
-        let old2 = seed_durable_run(&store, "wfrun-old2", 2_000);
-        let recent = seed_durable_run(&store, "wfrun-new", 9_000);
-
-        // Keep only the single most-recent durable run; prune the rest.
-        let out = workflow_gc_trace(&store, 1, None, false).expect("gc-trace");
-        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(2));
-        assert_eq!(out.get("kept_runs").and_then(|v| v.as_u64()), Some(1));
-
-        // Recent run's heavy trace survives intact.
-        assert!(recent.exists(), "recent NDJSON must remain");
-        assert!(
-            read_session_turn_events(&store, "sess-wfrun-new")
-                .unwrap()
-                .retained
-        );
-
-        // Harness no longer owns provider-native retention. Legacy files are
-        // ignored and left untouched; only the Workflow retention label changes.
-        assert!(
-            old1.exists() && old2.exists(),
-            "provider history is not deleted by Harness"
-        );
-        let latest = latest_workflow_runs_in_append_order(&store).unwrap();
-        let retention = |id: &str| {
-            latest
-                .iter()
-                .find(|r| r.id == id)
-                .unwrap()
-                .trace_retention
-                .clone()
-        };
-        assert_eq!(retention("wfrun-old1"), "expired");
-        assert_eq!(retention("wfrun-old2"), "expired");
-        assert_eq!(retention("wfrun-new"), "durable");
-    }
-
-    #[test]
-    fn gc_trace_dry_run_changes_nothing() {
-        let store = temp_store("gc-trace-dry");
-        let old = seed_durable_run(&store, "wfrun-old", 1_000);
-        seed_durable_run(&store, "wfrun-new", 9_000);
-        let out = workflow_gc_trace(&store, 1, None, true).expect("gc dry");
-        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(1));
-        assert!(old.exists(), "dry-run must not delete the NDJSON");
-        assert!(
-            read_session_turn_events(&store, "sess-wfrun-old")
-                .unwrap()
-                .retained
-        );
-    }
-
-    #[test]
-    fn durable_session_returns_persisted_turn_events_in_order() {
-        let store = temp_store("durable-events");
-        // Write the durable per-session NDJSON the jsonl_ref will point at.
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join("session-A")
-            .join("claude.stream-json.ndjson");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        fs::write(&ndjson, "{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n")
-            .expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                "session-A",
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append durable session");
-
-        let out = read_session_turn_events(&store, "session-A").expect("read events");
-        assert!(out.retained, "durable run must report retained");
-        assert!(!out.truncated);
-        assert_eq!(out.events.len(), 2);
-        assert_eq!(
-            out.events[0].get("type").and_then(|t| t.as_str()),
-            Some("assistant")
-        );
-        assert_eq!(
-            out.events[1].get("type").and_then(|t| t.as_str()),
-            Some("result")
-        );
-    }
-
-    #[test]
-    fn live_only_session_reports_not_retained() {
-        let store = temp_store("live-events");
-        // Live-only: the session row survives but its jsonl_ref/stdout_ref are None
-        // (the Backend pruned the NDJSON after the run).
-        store
-            .append_provider_session(&provider_session_with_ref("session-L", None))
-            .expect("append live-only session");
-
-        let out = read_session_turn_events(&store, "session-L").expect("read events");
-        assert!(!out.retained, "live run must report not retained");
-        assert!(out.events.is_empty(), "not-retained trace yields no events");
-        assert!(!out.truncated);
-    }
-
-    #[test]
-    fn unknown_session_reports_not_retained() {
-        let store = temp_store("missing-events");
-        // No ProviderSession row at all -> nothing to drill into.
-        let out = read_session_turn_events(&store, "session-Z").expect("read events");
-        assert!(!out.retained, "missing session has no retained trace");
-        assert!(out.events.is_empty());
-    }
-
-    #[test]
-    fn historical_normalized_events_normalize_durable_trace_and_report_retained() {
-        let store = temp_store("historical-normalized");
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join("session-HN")
-            .join("claude.stream-json.ndjson");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        // A real-ish claude trace: an assistant text block then a result.
-        fs::write(
-            &ndjson,
-            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
-        )
-        .expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                "session-HN",
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append durable session");
-
-        let (retained, events, truncated) =
-            read_session_turn_events_normalized(&store, "session-HN").expect("read normalized");
-        assert!(retained, "durable run must report retained");
-        assert!(!truncated);
-        assert_eq!(events.len(), 2);
-        // Provider-agnostic canonical kinds (claude assistant text -> Message,
-        // result -> TurnCompleted), monotonic seq, raw retained on each.
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Message);
-        assert_eq!(events[0].seq, 0);
-        assert_eq!(events[0].text.as_deref(), Some("hi"));
-        assert!(!events[0].raw_provider_event.is_null());
-        assert_eq!(events[1].kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(events[1].seq, 1);
-        assert!(!events[1].raw_provider_event.is_null());
-    }
-
-    #[test]
-    fn historical_normalized_events_report_not_retained_for_pruned_trace() {
-        let store = temp_store("historical-normalized-pruned");
-        // Live-only run: row survives, jsonl_ref pruned -> not retained, no events.
-        store
-            .append_provider_session(&provider_session_with_ref("session-HP", None))
-            .expect("append live-only session");
-
-        let (retained, events, truncated) =
-            read_session_turn_events_normalized(&store, "session-HP").expect("read normalized");
-        assert!(
-            !retained,
-            "pruned --trace live run must report not retained"
-        );
-        assert!(
-            events.is_empty(),
-            "not-retained trace yields no normalized events"
-        );
-        assert!(!truncated);
-    }
-
-    #[test]
     fn workflow_run_transitions_running_to_failed_on_failed_required_step() {
         let store = temp_store("failed");
         let registry = workflow::WorkflowRegistry::builtin();
@@ -22263,7 +19722,6 @@ new file mode 100644
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok,
-                provider_session_id: ok.then(|| "s".to_string()),
                 output_summary: "mock".to_string(),
                 step_id: None,
                 started_at: None,
@@ -22675,7 +20133,6 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: true,
-                provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.label),
                 step_id: Some(step_id.clone()),
                 started_at: Some(started_at.clone()),
@@ -22803,7 +20260,7 @@ mod tests {
         store: &HarnessStore,
         agent_id: &str,
         task_id: Option<&str>,
-        status: ProviderSessionStatus,
+        status: ProviderExecutionStatus,
         thread_id: Option<&str>,
         turn_id: Option<&str>,
     ) {
@@ -22940,15 +20397,15 @@ mod tests {
     #[test]
     fn running_delivery_is_acknowledged_not_delivered() {
         assert_eq!(
-            message_status_for_delivery(&ProviderSessionStatus::Running),
+            message_status_for_delivery(&ProviderExecutionStatus::Running),
             MessageDeliveryStatus::Acknowledged
         );
         assert_eq!(
-            message_status_for_delivery(&ProviderSessionStatus::Succeeded),
+            message_status_for_delivery(&ProviderExecutionStatus::Succeeded),
             MessageDeliveryStatus::Delivered
         );
         assert_eq!(
-            message_status_for_delivery(&ProviderSessionStatus::Failed),
+            message_status_for_delivery(&ProviderExecutionStatus::Failed),
             MessageDeliveryStatus::Failed
         );
     }
@@ -23078,49 +20535,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_member_ingest_dispatches_to_claude_stub() {
-        // WP-3: Test claude stream-json ingest (replaces stub).
-        let root = std::env::temp_dir().join(format!(
-            "harness-cli-test-{}",
-            generated_id("claude-ingest")
-        ));
-        let store = HarnessStore::new(&root);
-        let mut member = make_member("claude-agent");
-        member.provider = "claude".into();
-        store.append_member(&member).expect("append member");
-        let source = root.join("provider-output.ndjson");
-        std::fs::create_dir_all(&root).expect("create root");
-        // Use Claude stream-json format (NDJSON).
-        std::fs::write(
-            &source,
-            r#"{"type": "system", "session_id": "sess_test_123"}
-{"type": "stream_event", "event": "text_delta"}
-{"type": "result", "session_id": "sess_test_123"}"#,
-        )
-        .expect("write provider output");
-
-        // WP-3: Real claude ingest parses stream-json and creates neutral AgentEvent/ProviderSession
-        ingest_provider_output(
-            &store,
-            "claude-agent",
-            None,
-            None,
-            &source.display().to_string(),
-        )
-        .expect("claude ingest dispatch should succeed");
-
-        // Verify neutral objects were created from the stream.
-        let events = store.events().expect("events");
-        assert!(
-            !events.is_empty(),
-            "claude ingest should create AgentEvent from stream"
-        );
-        assert_eq!(events.len(), 3, "should ingest 3 events from stream-json");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn unknown_provider_runtime_start_fails_fast() {
         let root = std::env::temp_dir().join(format!(
             "harness-cli-test-{}",
@@ -23140,193 +20554,6 @@ mod tests {
         assert_eq!(
             message,
             "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn codex_member_ingest_stays_on_codex_path() {
-        // Regression guard: a codex member must still flow through the existing
-        // (regression-clean) codex parser and persist a codex-stamped event.
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("codex-ingest")));
-        let store = HarnessStore::new(&root);
-        let member = make_member("codex-agent");
-        assert_eq!(member.provider, "codex");
-        store.append_member(&member).expect("append member");
-        std::fs::create_dir_all(&root).expect("create root");
-        let source = root.join("provider-output.jsonl");
-        std::fs::write(
-            &source,
-            r#"{"method":"thread/started","params":{"threadId":"thread-1"}}"#,
-        )
-        .expect("write provider output");
-
-        ingest_provider_output(
-            &store,
-            "codex-agent",
-            None,
-            None,
-            &source.display().to_string(),
-        )
-        .expect("codex ingest must succeed via the codex dispatch branch");
-
-        let events = store.events().expect("events");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].provider, "codex");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn ingest_turn_completed_reconciles_running_delivery_session() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("reconcile")));
-        let store = HarnessStore::new(&root);
-        let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Running;
-        member.current_task_id = Some("task-1".into());
-        member.provider_runtime_id = Some("runtime-1".into());
-        store.append_member(&member).expect("append member");
-        store
-            .append_runtime(&AgentRuntime {
-                id: "runtime-1".into(),
-                agent_member_id: "agent-1".into(),
-                provider: "codex".into(),
-                status: AgentRuntimeStatus::Running,
-                pid: None,
-                control_endpoint: Some("unix://test.sock".into()),
-                command: "codex".into(),
-                args: Vec::new(),
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                last_event_at: Some("unix-ms:1".into()),
-                health: AgentRuntimeHealth {
-                    process_alive: true,
-                    socket_exists: true,
-                    protocol_probe: Some("pass".into()),
-                    delivery_probe: Some("pending: delivery accepted".into()),
-                    checked_at: Some("unix-ms:1".into()),
-                },
-            })
-            .expect("append runtime");
-        store
-            .append_message(&Message {
-                id: "message-1".into(),
-                task_id: Some("task-1".into()),
-                from_agent_id: "lead-1".into(),
-                to_agent_id: Some("agent-1".into()),
-                channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
-                content: "Do the task".into(),
-                evidence_ids: Vec::new(),
-                created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
-                    delivery_id: Some("delivery-1".into()),
-                    execution_status: Some(ProviderSessionStatus::Running),
-                    native_session: None,
-                    started_at: Some("unix-ms:1".into()),
-                    provider_request_id: None,
-                    provider_thread_id: Some("thread-1".into()),
-                    provider_turn_id: Some("turn-1".into()),
-                    terminal_source: Some(MessageTerminalSource::Unknown),
-                    delivered_at: Some("unix-ms:1".into()),
-                    last_error: None,
-                }),
-                sender_kind: SenderKind::Agent,
-            })
-            .expect("append acknowledged assignment");
-        let evidence = Evidence {
-            id: "evidence-1".into(),
-            task_id: Some("task-1".into()),
-            source_type: "claude_delivery_session".into(),
-            source_ref: root.display().to_string(),
-            summary: "running delivery evidence".into(),
-            created_at: "unix-ms:1".into(),
-            evidence_kind: None,
-            goal_id: None,
-        };
-        store.append_evidence(&evidence).expect("append evidence");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: vec!["evidence-1".into()],
-            })
-            .expect("append running provider session");
-        let source = root.join("turn-completed.jsonl");
-        std::fs::write(
-            &source,
-            r#"{"method":"turn/completed","params":{"threadId":"thread-1","turnId":"turn-1"}}"#,
-        )
-        .expect("write provider event");
-
-        ingest_provider_output(
-            &store,
-            "agent-1",
-            Some("runtime-1"),
-            Some("task-1"),
-            &source.display().to_string(),
-        )
-        .expect("ingest provider output");
-
-        let latest_member = latest_member(&store, "agent-1").expect("latest member");
-        assert_eq!(latest_member.status, AgentMemberStatus::Idle);
-        assert_eq!(latest_member.current_task_id, None);
-        let latest_runtime = latest_runtime(&store, "runtime-1")
-            .expect("runtime lookup")
-            .expect("latest runtime");
-        assert_eq!(
-            latest_runtime.health.delivery_probe.as_deref(),
-            Some("pass: turn_completed")
-        );
-        let latest_message = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(
-            latest_message.delivery_status,
-            MessageDeliveryStatus::Delivered
-        );
-        let delivery = latest_message.delivery.expect("message delivery");
-        assert_eq!(
-            delivery.terminal_source,
-            Some(MessageTerminalSource::TurnCompleted)
-        );
-        assert_eq!(delivery.last_error, None);
-        let reports: Vec<_> = store
-            .messages()
-            .expect("messages")
-            .into_iter()
-            .filter(|message| message.kind == MessageKind::Report)
-            .filter(|message| message.channel.as_deref() == Some("provider-report"))
-            .collect();
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0]
-            .delivery
-            .as_ref()
-            .is_some_and(|delivery| { delivery.delivery_id.as_deref() == Some("delivery-1") }));
-        assert_eq!(
-            reports[0].content,
-            "Delivery delivery-1 completed from provider-native activity"
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -23355,7 +20582,7 @@ mod tests {
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
                     delivery_id: Some("delivery-1".into()),
-                    execution_status: Some(ProviderSessionStatus::Running),
+                    execution_status: Some(ProviderExecutionStatus::Running),
                     native_session: None,
                     started_at: Some("unix-ms:1".into()),
                     provider_request_id: None,
@@ -23368,33 +20595,6 @@ mod tests {
                 sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged message");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: None,
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: vec!["evidence-1".into()],
-            })
-            .expect("append running provider session");
-
         reconcile_running_delivery_attempts(
             &store,
             "agent-1",
@@ -23432,41 +20632,14 @@ mod tests {
     }
 
     #[test]
-    fn running_provider_session_blocks_more_delivery() {
+    fn running_delivery_attempt_blocks_more_delivery() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("block")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: vec!["evidence-1".into()],
-            })
-            .expect("append running provider session");
-
         append_test_delivery_attempt(
             &store,
             "agent-1",
             Some("task-1"),
-            ProviderSessionStatus::Running,
+            ProviderExecutionStatus::Running,
             Some("thread-1"),
             Some("turn-1"),
         );
@@ -23476,7 +20649,7 @@ mod tests {
         mark_running_delivery_attempts_terminal(
             &store,
             "agent-1",
-            ProviderSessionStatus::Stale,
+            ProviderExecutionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )
         .expect("mark stale");
@@ -23492,41 +20665,14 @@ mod tests {
     }
 
     #[test]
-    fn stale_unknown_provider_session_blocks_more_delivery() {
+    fn stale_unknown_delivery_attempt_blocks_more_delivery() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("stale")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Stale,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append stale provider session");
-
         append_test_delivery_attempt(
             &store,
             "agent-1",
             Some("task-1"),
-            ProviderSessionStatus::Stale,
+            ProviderExecutionStatus::Stale,
             Some("thread-1"),
             Some("turn-1"),
         );
@@ -23537,7 +20683,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_failed_provider_session_marks_message_failed_and_clears_member() {
+    fn stale_failed_delivery_attempt_marks_message_failed_and_clears_member() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("stale-failed")));
         let store = HarnessStore::new(&root);
@@ -23559,7 +20705,7 @@ mod tests {
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
                     delivery_id: Some("delivery-1".into()),
-                    execution_status: Some(ProviderSessionStatus::Stale),
+                    execution_status: Some(ProviderExecutionStatus::Stale),
                     native_session: None,
                     started_at: Some("unix-ms:1".into()),
                     provider_request_id: None,
@@ -23572,37 +20718,10 @@ mod tests {
                 sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged message");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Stale,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append stale provider session");
-
         mark_running_delivery_attempts_terminal(
             &store,
             "agent-1",
-            ProviderSessionStatus::Stale,
+            ProviderExecutionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )
         .expect("mark stale failed");
@@ -23627,38 +20746,11 @@ mod tests {
         store
             .append_member(&make_member("agent-1"))
             .expect("append member");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append running provider session");
-
         append_test_delivery_attempt(
             &store,
             "agent-1",
             Some("task-1"),
-            ProviderSessionStatus::Running,
+            ProviderExecutionStatus::Running,
             Some("thread-1"),
             Some("turn-1"),
         );
@@ -23678,38 +20770,11 @@ mod tests {
     fn thread_idle_without_turn_id_reconciles_single_running_session() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("idle")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append running provider session");
-
         append_test_delivery_attempt(
             &store,
             "agent-1",
             Some("task-1"),
-            ProviderSessionStatus::Running,
+            ProviderExecutionStatus::Running,
             Some("thread-1"),
             Some("turn-1"),
         );
@@ -23774,38 +20839,11 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("turnless")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: None,
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append running provider session");
-
         append_test_delivery_attempt(
             &store,
             "agent-1",
             Some("task-1"),
-            ProviderSessionStatus::Running,
+            ProviderExecutionStatus::Running,
             Some("thread-1"),
             None,
         );
@@ -23826,51 +20864,6 @@ mod tests {
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
         assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn dashboard_snapshot_omits_legacy_provider_session_ledger() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("snapshot")));
-        let store = HarnessStore::new(&root);
-        let mut session = ProviderSession {
-            id: "delivery-1".into(),
-            provider: "codex".into(),
-            agent_member_id: "agent-1".into(),
-            task_id: Some("task-1".into()),
-            workspace_ref: None,
-            provider_thread_id: Some("thread-1".into()),
-            provider_turn_id: Some("turn-1".into()),
-            terminal_source: Some(MessageTerminalSource::Unknown),
-            status: ProviderSessionStatus::Running,
-            command: "harness".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref: None,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            evidence_ids: Vec::new(),
-        };
-        store
-            .append_provider_session(&session)
-            .expect("append running session");
-        session.status = ProviderSessionStatus::Succeeded;
-        session.terminal_source = Some(MessageTerminalSource::TurnCompleted);
-        session.ended_at = Some("unix-ms:2".into());
-        store
-            .append_provider_session(&session)
-            .expect("append succeeded session");
-
-        let snapshot = dashboard_snapshot(&store).expect("dashboard snapshot");
-        assert!(snapshot.get("provider_sessions").is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -23997,7 +20990,7 @@ mod tests {
         assert!(delivery.delivery_id.is_some());
         assert_eq!(
             delivery.execution_status,
-            Some(ProviderSessionStatus::Succeeded)
+            Some(ProviderExecutionStatus::Succeeded)
         );
         assert_eq!(
             delivery.terminal_source,
@@ -24005,10 +20998,7 @@ mod tests {
         );
 
         assert!(
-            store
-                .provider_sessions()
-                .expect("provider sessions")
-                .is_empty(),
+            !store.root().join("provider_sessions.jsonl").exists(),
             "delivery coordination must not create a Harness provider-session mirror"
         );
 
@@ -24066,10 +21056,7 @@ mod tests {
         );
         assert!(latest_message.delivery.is_none());
         assert!(
-            store
-                .provider_sessions()
-                .expect("provider sessions")
-                .is_empty(),
+            !store.root().join("provider_sessions.jsonl").exists(),
             "retrying a delivery attempt must not create a provider-session mirror"
         );
 
@@ -24126,10 +21113,7 @@ mod tests {
             latest_message.delivery_status,
             MessageDeliveryStatus::Failed
         );
-        assert!(store
-            .provider_sessions()
-            .expect("provider sessions")
-            .is_empty());
+        assert!(!store.root().join("provider_sessions.jsonl").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24223,7 +21207,7 @@ mod tests {
         let latest = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
         assert!(latest.delivery.is_none());
-        assert!(store.provider_sessions().expect("sessions").is_empty());
+        assert!(!store.root().join("provider_sessions.jsonl").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -24682,7 +21666,7 @@ invalid json line
 
     // Stage 1: Status inference tests
     #[test]
-    fn test_infer_provider_session_status_succeeded() {
+    fn test_infer_provider_execution_status_succeeded() {
         let events = vec![
             CodexExecEvent {
                 event_type: "tool_call".into(),
@@ -24694,12 +21678,12 @@ invalid json line
             },
         ];
 
-        let status = infer_provider_session_status(&events, true);
-        assert_eq!(status, ProviderSessionStatus::Succeeded);
+        let status = infer_provider_execution_status(&events, true);
+        assert_eq!(status, ProviderExecutionStatus::Succeeded);
     }
 
     #[test]
-    fn test_infer_provider_session_status_succeeded_real_codex_stream() {
+    fn test_infer_provider_execution_status_succeeded_real_codex_stream() {
         // Mirrors a real codex 0.13x exec --json stream.
         let events = vec![
             CodexExecEvent {
@@ -24727,8 +21711,8 @@ invalid json line
         ];
 
         assert_eq!(
-            infer_provider_session_status(&events, true),
-            ProviderSessionStatus::Succeeded
+            infer_provider_execution_status(&events, true),
+            ProviderExecutionStatus::Succeeded
         );
         assert_eq!(
             extract_thread_id_from_exec_events(&events).as_deref(),
@@ -24737,41 +21721,41 @@ invalid json line
     }
 
     #[test]
-    fn test_infer_provider_session_status_failed_exit() {
+    fn test_infer_provider_execution_status_failed_exit() {
         let events = vec![CodexExecEvent {
             event_type: "tool_call".into(),
             payload: serde_json::json!({}),
         }];
 
-        let status = infer_provider_session_status(&events, false);
-        assert_eq!(status, ProviderSessionStatus::Failed);
+        let status = infer_provider_execution_status(&events, false);
+        assert_eq!(status, ProviderExecutionStatus::Failed);
     }
 
     #[test]
-    fn test_infer_provider_session_status_stale() {
+    fn test_infer_provider_execution_status_stale() {
         let events = vec![CodexExecEvent {
             event_type: "tool_call".into(),
             payload: serde_json::json!({}),
         }];
 
-        let status = infer_provider_session_status(&events, true);
-        assert_eq!(status, ProviderSessionStatus::Stale);
+        let status = infer_provider_execution_status(&events, true);
+        assert_eq!(status, ProviderExecutionStatus::Stale);
     }
 
     #[test]
-    fn test_infer_provider_session_status_no_events_and_failed() {
+    fn test_infer_provider_execution_status_no_events_and_failed() {
         let events = vec![];
 
-        let status = infer_provider_session_status(&events, false);
-        assert_eq!(status, ProviderSessionStatus::Failed);
+        let status = infer_provider_execution_status(&events, false);
+        assert_eq!(status, ProviderExecutionStatus::Failed);
     }
 
     #[test]
-    fn test_infer_provider_session_status_empty_success() {
+    fn test_infer_provider_execution_status_empty_success() {
         let events = vec![];
 
-        let status = infer_provider_session_status(&events, true);
-        assert_eq!(status, ProviderSessionStatus::Failed);
+        let status = infer_provider_execution_status(&events, true);
+        assert_eq!(status, ProviderExecutionStatus::Failed);
     }
 
     // Stage 3: Delivery selector tests

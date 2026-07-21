@@ -22,7 +22,7 @@ provider restarts and may participate in multiple Missions or Workflows. A
 ```mermaid
 flowchart LR
   A["AgentMember\ndurable identity"] --> R["AgentRuntime"]
-  A --> S["ProviderSession"]
+  A --> S["NativeSessionRef"]
   A --> X["StandingAssignment\nread-only projection"]
   X --> M["Mission / Wave"]
   X --> W["WorkflowRun / Step"]
@@ -76,9 +76,8 @@ Projection rules:
 
 - Mission/Wave participation requires an explicit `MemberRun.agent_member_id`
   or equivalent stable source link.
-- Workflow participation may use an explicit step owner or the existing
-  `ProviderSession.agent_member_id` link when that session is the step's
-  recorded execution session.
+- Workflow participation uses an explicit step owner and the step's
+  `NativeSessionRef` when provider-native activity is available.
 - A direct assignment must be an explicit assignment/task message addressed to
   the durable AgentMember; ordinary conversation is activity, not assignment.
 - Missing links remain missing. The UI must not fall back to legacy

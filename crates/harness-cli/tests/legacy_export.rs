@@ -83,7 +83,7 @@ fn force_project_id(
 }
 
 fn seed_closed_legacy_store(store: &Path) -> BTreeMap<String, Vec<u8>> {
-    let rows: [(&str, &[u8]); 12] = [
+    let rows: [(&str, &[u8]); 11] = [
         (
             "goals.jsonl",
             b"{\"id\":\"g1\",\"goal_design_id\":\"gd1\",\"phases\":[{\"id\":\"p1\"}]}\n{\"id\":\"g1\",\"goal_design_id\":\"gd1\",\"phases\":[{\"id\":\"p1\"}],\"updated_at\":\"later\"}\n",
@@ -115,10 +115,6 @@ fn seed_closed_legacy_store(store: &Path) -> BTreeMap<String, Vec<u8>> {
         (
             "evidence.jsonl",
             b"{\"id\":\"e1\",\"goal_id\":\"g1\",\"task_id\":\"t1\"}\n",
-        ),
-        (
-            "provider_sessions.jsonl",
-            b"{\"id\":\"ps1\",\"task_id\":\"t1\"}\n",
         ),
         (
             "workflow_runs.jsonl",
@@ -177,12 +173,6 @@ fn export_preserves_bytes_latest_rows_and_verifies_closure() {
         b"{\"title\":\"Historical Goal\"}\n",
     )
     .unwrap();
-    std::fs::create_dir_all(store.join("provider-sessions/session-a")).unwrap();
-    std::fs::write(
-        store.join("provider-sessions/session-a/reply.txt"),
-        b"reply",
-    )
-    .unwrap();
     let archive = home.base().join("archive-v1");
 
     let output = run(&home, &project, &export_args(&id, &archive));
@@ -225,11 +215,6 @@ fn export_preserves_bytes_latest_rows_and_verifies_closure() {
             .len(),
         64
     );
-    assert!(manifest["sources"][0]["snapshot_files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|file| file["path"] == "provider-sessions/session-a/reply.txt"));
     let edges = std::fs::read_to_string(archive.join("edges.jsonl")).unwrap();
     assert!(edges.contains("\"field\":\"/evaluation_ref\""));
     assert!(edges.contains("\"target_kind\":\"goal_evaluation\""));

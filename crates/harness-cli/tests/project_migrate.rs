@@ -2,8 +2,8 @@
 //! (goal-multi-project, project-migrate task).
 //!
 //! Migration moves a repo-local `.harness/` store into the centralized
-//! `~/.harness/projects/<id>/` store: copying JSONL ledgers + provider-sessions /
-//! prompts / runtimes, writing `metadata.json` with `migrated_from`, and dropping a
+//! `~/.harness/projects/<id>/` store: copying active JSONL ledgers plus prompts /
+//! runtimes, writing `metadata.json` with `migrated_from`, and dropping a
 //! `MIGRATED_TO_CENTRAL` marker in the old store that points at the central one. It
 //! must preserve record counts, be idempotent, and fail safely.
 
@@ -17,10 +17,10 @@ use harness_env::{run_harness, TempHome};
 fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let repo = home.home().join(name);
     let local = repo.join(".harness");
-    std::fs::create_dir_all(local.join("provider-sessions").join("sess-1")).unwrap();
     std::fs::create_dir_all(local.join("prompts")).unwrap();
     std::fs::create_dir_all(local.join("runtimes")).unwrap();
-    // JSONL ledgers (goals/tasks/members/provider_sessions).
+    // Active JSONL ledgers plus one retired provider-session ledger that must
+    // not be copied into the new centralized store.
     std::fs::write(
         local.join("goals.jsonl"),
         "{\"id\":\"g1\"}\n{\"id\":\"g2\"}\n",
@@ -29,15 +29,6 @@ fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::pa
     std::fs::write(local.join("tasks.jsonl"), "{\"id\":\"t1\"}\n").unwrap();
     std::fs::write(local.join("members.jsonl"), "{\"id\":\"m1\"}\n").unwrap();
     std::fs::write(local.join("provider_sessions.jsonl"), "{\"id\":\"ps1\"}\n").unwrap();
-    // Payload files in the copied directories.
-    std::fs::write(
-        local
-            .join("provider-sessions")
-            .join("sess-1")
-            .join("events.jsonl"),
-        "event-row\n",
-    )
-    .unwrap();
     std::fs::write(local.join("prompts").join("worker.md"), "prompt body").unwrap();
     std::fs::write(local.join("runtimes").join("rt.json"), "{}").unwrap();
     (repo, local)
@@ -64,7 +55,7 @@ fn migrate_preserves_records_and_payloads_and_marks_old_store() {
     let home = TempHome::new("mig-preserve");
     let (repo, local) = seed_local_store(&home, "legacyrepo");
     let before = ledger_record_count(&local);
-    assert_eq!(before, 5, "seed sanity: 2 goals + 1 task + 1 member + 1 ps");
+    assert_eq!(before, 5, "seed includes one retired provider-session row");
 
     let out = run_harness(&home, &repo, &["project", "migrate"]);
     assert!(out.status.success(), "migrate failed: {out:?}");
@@ -74,10 +65,14 @@ fn migrate_preserves_records_and_payloads_and_marks_old_store() {
     let project_id = result["project_id"].as_str().unwrap().to_string();
     assert_eq!(project_id, "legacyrepo");
 
-    // The central store has the SAME record count as the source (preserved, not lost).
+    // The retired duplicate provider-session ledger is intentionally discarded.
     let central = home.projects_dir().join(&project_id);
     let after = ledger_record_count(&central);
-    assert_eq!(after, before, "record count changed across migration");
+    assert_eq!(
+        after,
+        before - 1,
+        "retired provider session should be omitted"
+    );
     assert_eq!(result["records_before"], before as u64);
     assert_eq!(result["records_after"], after as u64);
 
@@ -88,17 +83,8 @@ fn migrate_preserves_records_and_payloads_and_marks_old_store() {
     );
     assert!(central.join("tasks.jsonl").exists());
     assert!(central.join("members.jsonl").exists());
-    assert!(central.join("provider_sessions.jsonl").exists());
-    assert_eq!(
-        std::fs::read_to_string(
-            central
-                .join("provider-sessions")
-                .join("sess-1")
-                .join("events.jsonl")
-        )
-        .unwrap(),
-        "event-row\n"
-    );
+    assert!(!central.join("provider_sessions.jsonl").exists());
+    assert!(!central.join("provider-sessions").exists());
     assert!(central.join("prompts").join("worker.md").exists());
     assert!(central.join("runtimes").join("rt.json").exists());
 

@@ -21,7 +21,6 @@
     "member_actions.jsonl",
     "team_run_events.jsonl",
     "delegation_runs.jsonl",
-    "provider_sessions.jsonl",
     "evidence.jsonl"
   ],
   "invariants": [
