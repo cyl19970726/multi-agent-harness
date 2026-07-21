@@ -45,10 +45,12 @@ export function ActivityStream({
   items,
   empty,
   className,
+  variant = "rows",
 }: {
   items: WorkbenchActivityItem[];
   empty?: ReactNode;
   className?: string;
+  variant?: "rows" | "spine";
 }) {
   if (items.length === 0) {
     return (
@@ -59,28 +61,29 @@ export function ActivityStream({
   }
 
   return (
-    <ol className={cn("divide-y divide-border/60", className)}>
+    <ol className={cn(variant === "spine" ? "activity-spine" : "divide-y divide-border/60", className)}>
       {items.map((item) => (
         <li key={item.id}>
-          <ActivityRow item={item} />
+          <ActivityRow item={item} variant={variant} />
         </li>
       ))}
     </ol>
   );
 }
 
-export function ActivityRow({ item, className }: { item: WorkbenchActivityItem; className?: string }) {
+export function ActivityRow({ item, className, variant = "rows" }: { item: WorkbenchActivityItem; className?: string; variant?: "rows" | "spine" }) {
   const Icon = activityIcon(item.kind);
   const tone = item.tone ?? activityTone(item.kind);
   return (
     <article
       className={cn(
         "group flex min-w-0 gap-3 px-4 py-3.5 sm:px-5",
+        variant === "spine" && "activity-spine-row relative border-0 py-3",
         item.transient && "bg-status-info/5",
         className,
       )}
     >
-      <span className="relative mt-0.5 grid size-7 shrink-0 place-items-center rounded-md border border-border bg-card">
+      <span className={cn("relative mt-0.5 grid size-7 shrink-0 place-items-center border border-border bg-card", variant === "spine" ? "z-[1] rounded-full" : "rounded-md")}>
         <Icon className="size-3.5 text-muted-foreground" aria-hidden />
         <StatusDot
           tone={tone}

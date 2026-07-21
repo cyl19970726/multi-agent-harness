@@ -30,7 +30,7 @@ async function rows(name) {
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
   const repoRoot = resolve(dashboardRoot, "../..");
-  const [teamRunsSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource] = await Promise.all([
+  const [teamRunsSource, actionsSource, typesSource, missionSource, warRoomSource, avatarSource, captureSource, executionSource, activitySource, contextSource, cssSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/TeamRuns.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api/actions.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/types.ts"), "utf8"),
@@ -38,6 +38,10 @@ async function main() {
     readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/components/workbench/Avatar.tsx"), "utf8"),
     readFile(join(repoRoot, "scripts/capture-workbench-layout-v2.mjs"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/execution/ExecutionPrimitives.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/activity/ActivityStream.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/components/workbench/context/ContextRail.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/index.css"), "utf8"),
   ]);
   const [missions, waves, runs, members, messages, actions, events] = await Promise.all([
     rows("missions.jsonl"), rows("waves.jsonl"), rows("team_runs.jsonl"),
@@ -82,8 +86,31 @@ async function main() {
     "Execution identities reuse the shared portrait system with a text-backed fallback",
   );
   check(
-    warRoomSource.includes('terminal ? "Unresolved history" : "Needs you"'),
+    warRoomSource.includes('terminal ? "Unresolved history" : "QA approval required"'),
     "Terminal Team attempts distinguish unresolved history from active operator pressure",
+  );
+  check(
+    missionSource.includes("WaveJourneyCompact")
+      && missionSource.includes("LiveTrace")
+      && missionSource.includes("DecisionAnchor"),
+    "Mission V3 renders one continuous Wave journey with live and decision anchors",
+  );
+  check(
+    warRoomSource.includes('variant="spine"')
+      && warRoomSource.includes("Team presence")
+      && warRoomSource.includes("Review request"),
+    "Agent Team V3 exposes a presence rail, semantic event spine, and anchored review action",
+  );
+  check(
+    executionSource.includes('role="progressbar"')
+      && executionSource.includes("motion-reduce")
+      && cssSource.includes("@media (prefers-reduced-motion: reduce)"),
+    "Execution primitives expose semantic readiness and reduced-motion-safe transitions",
+  );
+  check(
+    activitySource.includes('variant?: "rows" | "spine"')
+      && contextSource.includes("quiet?: boolean"),
+    "Shared activity and context primitives add V3 treatments without changing their defaults",
   );
 
   console.log(`\n   workbench visual fixture checks: ${pass} pass, ${fail} fail`);

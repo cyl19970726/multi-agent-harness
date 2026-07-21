@@ -17,11 +17,13 @@ export function ContextRail({
   label = "Context",
   className,
   contentClassName,
+  quiet = false,
 }: {
   children: ReactNode;
   label?: string;
   className?: string;
   contentClassName?: string;
+  quiet?: boolean;
 }) {
   return (
     <aside
@@ -37,7 +39,11 @@ export function ContextRail({
             {label}
           </p>
         </div>
-        <div className={cn("min-h-0 space-y-2.5 overflow-y-auto p-3", contentClassName)}>{children}</div>
+        <div className={cn(
+          "min-h-0 space-y-2.5 overflow-y-auto p-3",
+          quiet && "space-y-0 px-4 py-2 [&_[data-context-module]]:rounded-none [&_[data-context-module]]:border-x-0 [&_[data-context-module]]:border-t-0 [&_[data-context-module]]:bg-transparent [&_[data-context-module]]:shadow-none [&_[data-context-module]:last-child]:border-b-0",
+          contentClassName,
+        )}>{children}</div>
       </div>
     </aside>
   );
@@ -77,6 +83,7 @@ export function ContextModule({
 
   return (
     <section
+      data-context-module
       className={cn(
         "overflow-hidden rounded-lg border border-border bg-card",
         className,

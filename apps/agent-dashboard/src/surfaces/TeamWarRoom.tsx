@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  CircleAlert,
   ExternalLink,
   MessageSquare,
   Play,
@@ -20,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail } from "@/components/workbench/context/ContextRail";
+import { DecisionAnchor, LiveTrace, ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
 import { EmptyState, StatusDot, type StatusTone } from "@/components/workbench/atoms";
 import { Select, TextArea } from "@/components/workbench/OperatorForms";
@@ -144,9 +144,11 @@ export function TeamWarRoom({
 
   return (
     <FocusShell
+      headerClassName="bg-background py-4 sm:py-5"
+      composerClassName="bg-background shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
       header={
         <FocusHeader
-          eyebrow="Agent Team War Room"
+          eyebrow="4 members active"
           breadcrumb={
             <button
               type="button"
@@ -221,7 +223,7 @@ export function TeamWarRoom({
         </section>
       }
       context={
-        <ContextRail label="Team context">
+        <ContextRail quiet label="Team context">
           <WaveModule wave={wave} onOpen={() => wave && onSelectionChange({ surface: "missions", missionId: wave.mission_id, waveId: wave.id, teamId: undefined })} />
           <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />
           <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} createdAt={run.created_at} completedAt={run.completed_at} />
@@ -240,11 +242,20 @@ export function TeamWarRoom({
         </ContextRail>
       }
     >
-      <div className="mx-auto flex w-full max-w-[980px] flex-col gap-4 px-4 py-4 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-4 sm:px-5">
         <div className="hidden items-center justify-end gap-1 text-[10px] font-medium text-muted-foreground sm:flex xl:hidden">
           Scroll members <ChevronRight className="size-3" />
         </div>
-        <section aria-label="Team members" className="grid grid-cols-1 gap-2 pb-1 sm:flex sm:overflow-x-auto xl:grid xl:grid-cols-4 xl:overflow-visible">
+        <section aria-label="Team members" className="relative border-b border-border/70 pb-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-[12px] font-semibold text-foreground">Team presence</h2>
+              <p className="text-[10px] text-muted-foreground">{members.length} members active in this attempt</p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-status-running"><StatusDot tone="running" pulse /> Live</span>
+          </div>
+          {status === "running" && <LiveTrace className="mb-3" />}
+          <div className="grid grid-cols-1 divide-y divide-border/60 sm:flex sm:divide-x sm:divide-y-0 sm:overflow-x-auto xl:grid xl:grid-cols-4 xl:overflow-visible">
           {orderedMembers.map((member, index) => (
             <MemberControl
               key={member.id}
@@ -254,6 +265,7 @@ export function TeamWarRoom({
               assignment={selectMemberAssignmentCorrelations(messages, member.id)[0]?.assignment?.body}
               currentAction={latestActionTitle(actions, member.id)}
               livePreview={liveActivityByMember.get(member.id)?.preview}
+              terminal={["completed", "failed", "cancelled"].includes(status)}
               onSelect={() => selectMember(member)}
               onOpen={() => openMember(member)}
             />
@@ -268,22 +280,11 @@ export function TeamWarRoom({
             </button>
           )}
           {members.length === 0 && <EmptyState icon={Users} title="No member runs" description="This attempt did not create any runnable member instances." />}
+          </div>
         </section>
 
-        <NeedsYouBand
-          total={needsYou.total}
-          runStatus={status}
-          waiting={needsYou.waitingMembers}
-          blocked={needsYou.blockedMembers}
-          approvals={needsYou.approvals}
-          deliveries={needsYou.unacknowledgedDeliveries}
-          memberById={memberById}
-          onSelectMember={selectMember}
-          onShowMessages={() => setFilter("messages")}
-        />
-
-        <section className="min-h-[28rem] overflow-hidden rounded-lg border border-border bg-card">
-          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3.5 py-2.5 sm:px-4">
+        <section className="min-h-[28rem] overflow-hidden bg-background">
+          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
             <div className="flex items-center gap-2">
               <MessageSquare className="size-3.5 text-muted-foreground" />
               <h2 className="text-[13px] font-semibold text-foreground">Team activity</h2>
@@ -308,6 +309,7 @@ export function TeamWarRoom({
           </header>
           <ActivityStream
             items={shownActivity}
+            variant="spine"
             empty={
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">No {filter === "all" ? "team activity" : filter} yet</p>
@@ -345,19 +347,26 @@ function AttemptActions({ status, actionsEnabled, onStart, onCancel, onComplete 
   return null;
 }
 
-function MemberControl({ member, selected, assignment, currentAction, livePreview, className, onSelect, onOpen }: {
+function MemberControl({ member, selected, assignment, currentAction, livePreview, terminal, className, onSelect, onOpen }: {
   member: MemberRun;
   selected: boolean;
   assignment?: string;
   currentAction?: string;
   livePreview?: string;
+  terminal: boolean;
   className?: string;
   onSelect: () => void;
   onOpen: () => void;
 }) {
   const tone = memberTone(member.status);
+  const blocked = member.status === "blocked";
   return (
-    <article className={cn("group relative w-full shrink-0 rounded-lg border bg-card p-3 sm:w-[15.5rem] xl:w-auto xl:min-w-0", selected ? "border-primary/45 ring-1 ring-primary/20" : "border-border", className)}>
+    <article className={cn(
+      "group relative w-full shrink-0 px-3 py-2.5 sm:w-[15.5rem] xl:w-auto xl:min-w-0",
+      selected && "bg-primary/[0.035]",
+      blocked && "bg-status-bad/[0.035]",
+      className,
+    )}>
       <div className="flex min-w-0 items-start gap-2">
         <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-start gap-2 text-left">
           <Avatar name={member.name ?? member.id} tone={tone} />
@@ -366,59 +375,24 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
             <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}{member.model ? ` · ${member.model}` : ""}<span className="sm:hidden"> · {member.status ?? "unknown"}</span></span>
           </span>
         </button>
-        <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-card/90 p-1 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>
+        <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-background/90 p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>
       </div>
       <div className="mt-2 hidden space-y-1 border-t border-border/60 pt-2 text-[10px] sm:block">
         <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction ?? assignment ?? "No durable action yet"}</p>
         {livePreview && <p className="truncate text-status-info"><span className="font-semibold">Live · </span>{livePreview}</p>}
         <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>
       </div>
-    </article>
-  );
-}
-
-function NeedsYouBand({ total, runStatus, waiting, blocked, approvals, deliveries, memberById, onSelectMember, onShowMessages }: {
-  total: number;
-  runStatus: string;
-  waiting: MemberRun[];
-  blocked: MemberRun[];
-  approvals: TeamMessage[];
-  deliveries: Array<{ message: TeamMessage; delivery: { member_id?: string; status?: string } }>;
-  memberById: Map<string, MemberRun>;
-  onSelectMember: (member: MemberRun) => void;
-  onShowMessages: () => void;
-}) {
-  if (!total) return null;
-  const subject = blocked[0] ?? waiting[0];
-  const approval = approvals[0];
-  const delivery = deliveries[0];
-  const deliveryMember = delivery?.delivery.member_id
-    ? memberById.get(delivery.delivery.member_id)
-    : undefined;
-  const urgent = blocked.length > 0 || approval?.kind === "blocker";
-  const terminal = ["completed", "failed", "cancelled"].includes(runStatus);
-  return (
-    <section className={cn("flex flex-wrap items-start gap-3 rounded-lg border px-3.5 py-2.5 sm:items-center", urgent && !terminal ? "border-status-bad/35 bg-status-bad/8" : "border-status-warn/35 bg-status-warn/8")}>
-      <CircleAlert className={cn("mt-0.5 size-4 shrink-0 sm:mt-0", urgent && !terminal ? "text-status-bad" : "text-status-warn")} />
-      <div className="min-w-0 flex-1">
-        <p className="text-[12px] font-semibold text-foreground">{terminal ? "Unresolved history" : "Needs you"} · {total}</p>
-        <p className="truncate text-[11px] text-muted-foreground">
-          {subject
-            ? `${subject.name ?? subject.id} is ${subject.status}`
-            : approval?.body ??
-              (delivery
-                ? `${deliveryMember?.name ?? delivery.delivery.member_id ?? "A member"} has not acknowledged ${delivery.message.kind ?? "a message"}.`
-                : "A team signal needs review.")}
-        </p>
-        {terminal && <p className="mt-0.5 text-[10px] text-muted-foreground">The attempt is terminal; these signals remain visible until explicitly acknowledged.</p>}
-      </div>
-      {(subject || approval) && (
-        <div className="ml-7 flex w-full gap-2 sm:ml-0 sm:w-auto">
-          {subject && <Button className="flex-1 sm:flex-none" size="sm" variant="secondary" onClick={() => onSelectMember(subject)}>Inspect member</Button>}
-          {approval && <Button className="flex-1 sm:flex-none" size="sm" variant="secondary" onClick={onShowMessages}>View message</Button>}
-        </div>
+      {blocked && (
+        <DecisionAnchor
+          compact
+          className="mt-2"
+          title={terminal ? "Unresolved history" : "QA approval required"}
+          detail={terminal ? "This attempt is no longer active" : "Review test results"}
+          actionLabel={terminal ? "Inspect history" : "Review request"}
+          onAction={onSelect}
+        />
       )}
-    </section>
+    </article>
   );
 }
 
@@ -444,6 +418,8 @@ function WaveModule({ wave, onOpen }: { wave?: Wave; onOpen: () => void }) {
 
 function GateReadinessModule({ wave, runStatus, needsYouCount }: { wave?: Wave; runStatus: string; needsYouCount: number }) {
   const gate = wave?.gate_status ?? "pending";
+  const criteria = (wave?.exit_criteria ?? "").split(";").map((item) => item.trim()).filter(Boolean);
+  const readiness = teamGateReadiness(wave, criteria.length);
   return (
     <ContextModule title="Gate readiness" kicker="Wave gate" tone={gateTone(gate)} icon={<ShieldCheck className="size-3.5" />}>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -454,10 +430,22 @@ function GateReadinessModule({ wave, runStatus, needsYouCount }: { wave?: Wave; 
         <Fact label="Open signals" value={String(needsYouCount)} />
         {wave?.accepted_run_id && <Fact label="Accepted attempt" value={shortId(wave.accepted_run_id)} mono />}
       </div>
+      {criteria.length > 0 && readiness != null && <ReadinessMeter className="mt-3" value={readiness} total={criteria.length} />}
       {wave?.gate_note && <p className="mt-2 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">{wave.gate_note}</p>}
       <p className="mt-2 text-[10px] font-medium text-status-warn">This page cannot accept the Wave.</p>
     </ContextModule>
   );
+}
+
+function teamGateReadiness(wave: Wave | undefined, total: number): number | undefined {
+  if (!wave || !total) return undefined;
+  if (wave.gate_status === "accepted") return total;
+  const note = wave.gate_note?.toLowerCase() ?? "";
+  const numeric = note.match(/\b(\d+)\s+(?:of\s+\d+\s+)?criteria?\b/);
+  if (numeric) return Math.min(total, Number(numeric[1]));
+  const words: Record<string, number> = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5 };
+  const spelled = note.match(/\b(zero|one|two|three|four|five)\s+(?:of\s+\w+\s+)?criteria?\b/);
+  return spelled ? Math.min(total, words[spelled[1]]) : undefined;
 }
 
 function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; createdAt?: string; completedAt?: string | null }) {

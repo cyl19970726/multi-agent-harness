@@ -17,6 +17,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Avatar } from "@/components/workbench/Avatar";
 import {
   DocProperties,
   DocSection,
@@ -27,7 +28,7 @@ import {
   type StatusTone,
 } from "@/components/workbench/atoms";
 import { ContextModule, ContextRail } from "@/components/workbench/context/ContextRail";
-import { WaveCompact } from "@/components/workbench/entities/WaveControls";
+import { DecisionAnchor, LiveTrace, ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import {
   Dialog,
   DialogFooter,
@@ -303,9 +304,9 @@ function MissionDetail({
     latestSelectedRun?.status === "completed";
 
   return (
-    <DocumentSurface className="max-w-[1240px] space-y-4">
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_23rem] xl:gap-0">
-        <section className="min-w-0 space-y-4 xl:pr-5">
+    <DocumentSurface className="max-w-[1280px] space-y-0">
+      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_21rem] xl:gap-0">
+        <section className="min-w-0 xl:pr-6">
           <button
             type="button"
             onClick={() =>
@@ -316,17 +317,13 @@ function MissionDetail({
             <ChevronLeft className="size-3.5" /> Missions
           </button>
 
-          <header className="flex flex-col items-stretch gap-3 border-b border-border pb-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+          <header className="mt-3 flex flex-col items-stretch gap-3 border-b border-border/70 pb-5 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1 space-y-1.5 sm:min-w-72">
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                <Flag className="size-3.5" /> Mission canvas
-              </div>
-              <h1 className="text-xl font-semibold tracking-tight text-foreground">{mission.title}</h1>
-              <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{mission.objective}</p>
+              <h1 className="text-2xl font-semibold tracking-[-0.025em] text-foreground">{mission.title}</h1>
+              <p className="line-clamp-2 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{mission.objective}</p>
               <div className="flex flex-wrap items-center gap-1.5">
-                <Badge tone={missionTone(mission.status)}>{mission.status ?? "planned"}</Badge>
                 <Badge tone="muted">{waves.length} ordered waves</Badge>
-                <MonoId>{mission.id}</MonoId>
+                <Badge tone={missionTone(mission.status)}>{mission.status ?? "planned"}</Badge>
               </div>
             </div>
             <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
@@ -367,14 +364,36 @@ function MissionDetail({
               description="Start with one small ordered unit, its executor, and a clear exit criterion."
             />
           ) : (
-            <div className="space-y-2.5">
-              <div className="flex items-center gap-2 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                <Waves className="size-3.5" /> Ordered execution
-              </div>
-              {waves.map((wave, index) => (
-                <div key={wave.id} className="relative">
-                  {index > 0 && <div className="absolute -top-2.5 bottom-full left-5 w-px bg-border" />}
-                  {selectedWave?.id === wave.id ? (
+            <div className="mt-5">
+              {waves.map((wave, index) => {
+                const selected = selectedWave?.id === wave.id;
+                const accepted = wave.gate_status === "accepted" || wave.status === "completed";
+                return (
+                <div key={wave.id} className="relative grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3">
+                  <div className="relative flex justify-center">
+                    {index < waves.length - 1 && (
+                      <span className="absolute bottom-0 top-8 w-px bg-border/90">
+                        {wave.status === "running" && <LiveTrace axis="vertical" className="absolute inset-x-0 top-0 h-full" />}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onSelectionChange({ surface: "missions", missionId: mission.id, waveId: wave.id })}
+                      aria-label={`Open Wave ${wave.index}: ${wave.title}`}
+                      aria-current={selected ? "step" : undefined}
+                      className={`relative z-[1] mt-0.5 grid size-8 place-items-center rounded-full border text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        accepted
+                          ? "border-status-good bg-status-good text-white"
+                          : selected
+                            ? "border-status-running bg-status-running text-white shadow-sm"
+                            : "border-border bg-background text-muted-foreground hover:border-status-running/40"
+                      }`}
+                    >
+                      {accepted ? <CheckCircle2 className="size-4" /> : wave.index}
+                    </button>
+                  </div>
+                  <div className={index < waves.length - 1 ? "pb-5" : "pb-1"}>
+                  {selected ? (
                     <WaveCanvasCard
                       wave={wave}
                       runs={runsForWave(model, wave)}
@@ -389,28 +408,28 @@ function MissionDetail({
                       onAction={onAction}
                     />
                   ) : (
-                    <WaveCompact
+                    <WaveJourneyCompact
                       wave={wave}
                       onOpen={() =>
                         onSelectionChange({ surface: "missions", missionId: mission.id, waveId: wave.id })
                       }
-                      className="pl-3.5"
                     />
                   )}
                   {wave.plan_note && index < waves.length - 1 && (
-                    <div className="ml-5 mt-2 border-l-2 border-status-decision/70 bg-status-decision/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                    <div className="mt-3 border-l-2 border-status-decision/70 bg-status-decision/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
                       <span className="mr-1 font-semibold uppercase tracking-wider text-status-decision">Re-plan</span>
                       {wave.plan_note}
                     </div>
                   )}
+                  </div>
                 </div>
-              ))}
+              )})}
             </div>
           )}
         </section>
 
         <div id="mission-context" className="scroll-mt-3 xl:sticky xl:top-0 xl:self-start">
-        <ContextRail label="Mission context" className="h-fit" contentClassName="flex flex-col gap-2.5 space-y-0">
+        <ContextRail quiet label="Mission context" className="h-fit" contentClassName="flex flex-col space-y-0">
           <ContextModule className="order-5 xl:order-1" title="Mission brief" kicker="Durable intent" icon={<Flag className="size-3.5" />}>
             <dl className="space-y-2 text-[11px] leading-relaxed">
               <ContextFact label="Objective" value={mission.objective} />
@@ -615,11 +634,35 @@ function executorLabel(executor?: string | null): string {
 interface WaveCanvasCardProps {
   wave: Wave;
   runs: TeamRun[];
-  members: { team_run_id?: string; name?: string | null; role?: string | null; status?: string | null }[];
+  members: { id: string; team_run_id?: string; name?: string | null; role?: string | null; status?: string | null }[];
   onSelect: () => void;
   onSelectionChange: MissionsProps["onSelectionChange"];
   actionsEnabled: boolean;
   onAction: MissionsProps["onAction"];
+}
+
+function WaveJourneyCompact({ wave, onOpen }: { wave: Wave; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full items-start gap-4 border-b border-border/70 px-1 pb-5 text-left transition-colors hover:border-status-running/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-[15px] font-semibold tracking-tight text-foreground">Wave {wave.index} · {wave.title}</span>
+          <Badge tone={waveTone(wave.status)}>{wave.status ?? "planned"}</Badge>
+        </span>
+        <span className="mt-1.5 line-clamp-2 block text-[12px] leading-relaxed text-muted-foreground">{wave.objective}</span>
+        <span className="mt-2.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-[10px] text-muted-foreground">
+          <span><span className="font-semibold uppercase tracking-wider">Executor</span> · {executorLabel(wave.executor_kind)}</span>
+          <span><span className="font-semibold uppercase tracking-wider">Gate</span> · {wave.gate_status ?? "pending"}</span>
+          <span><span className="font-semibold uppercase tracking-wider">Artifacts</span> · {wave.artifact_refs?.length ?? 0}</span>
+        </span>
+      </span>
+      <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transform-none" />
+    </button>
+  );
 }
 
 function WaveCanvasCard({
@@ -639,54 +682,47 @@ function WaveCanvasCard({
     ["planning", "running", "waiting", "reviewing"].includes(run.status ?? ""),
   );
   const waveAccepted = wave.gate_status === "accepted" || wave.status === "completed";
+  const activeMembers = latest ? members.filter((member) => member.team_run_id === latest.id) : [];
+  const blockedMember = activeMembers.find((member) => member.status === "blocked");
+  const criteria = exitCriteriaFor(wave);
+  const readyCriteria = reportedGateReadiness(wave, criteria.length);
 
   return (
-    <section className="relative overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-      <div
-        className={`absolute bottom-0 left-0 top-0 w-1 ${
-          wave.status === "running" ? "bg-status-running" : "bg-status-decision"
-        }`}
-      />
+    <section className="relative min-w-0 border-b border-border/80 bg-background">
       <button
         type="button"
         onClick={onSelect}
-        className="flex w-full items-start gap-3 px-4 py-3.5 text-left hover:bg-accent/30"
+        className="flex w-full items-start gap-3 px-1 pb-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-[11px] font-semibold text-muted-foreground">{wave.index}</span>
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
-            <StatusDot tone={waveTone(wave.status)} pulse={wave.status === "running"} />
             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Current wave</span>
             <Badge tone={waveTone(wave.status)}>{wave.status ?? "planned"}</Badge>
             <Badge tone={gateTone(wave.gate_status)}>gate {wave.gate_status ?? "pending"}</Badge>
           </span>
-          <span className="mt-1 block text-[15px] font-semibold text-foreground">{wave.title}</span>
-          <span className="mt-1 block text-[12px] leading-relaxed text-muted-foreground">{wave.objective}</span>
+          <span className="mt-1.5 block text-lg font-semibold tracking-tight text-foreground">Wave {wave.index} · {wave.title}</span>
+          <span className="mt-1 block max-w-3xl text-[12px] leading-relaxed text-muted-foreground">{wave.objective}</span>
         </span>
       </button>
 
-      <div className="space-y-3 border-t border-border/60 px-3 py-3 sm:px-4">
-        <div className="grid gap-3 text-[12px] sm:grid-cols-2">
-          <div className="rounded-md bg-muted/45 px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Executor</p>
-            <p className="mt-1 font-medium text-foreground">{executorLabel(wave.executor_kind)}</p>
-          </div>
-          <div className="rounded-md bg-muted/45 px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Exit criteria</p>
-            <p className="mt-1 leading-relaxed text-foreground">{wave.exit_criteria || "Not declared"}</p>
-          </div>
+      {wave.status === "running" && <LiveTrace className="mb-4" />}
+
+      <div className="space-y-4 px-1 pb-5">
+        <div className="flex flex-wrap gap-x-7 gap-y-2 text-[11px]">
+          <p><span className="mr-2 font-semibold uppercase tracking-wider text-muted-foreground">Executor</span><span className="font-medium text-foreground">{executorLabel(wave.executor_kind)}</span></p>
+          <p className="min-w-0 flex-1"><span className="mr-2 font-semibold uppercase tracking-wider text-muted-foreground">Exit</span><span className="text-foreground">{wave.exit_criteria || "Not declared"}</span></p>
         </div>
 
         {canTeamRun ? (
-          <section className="rounded-md border border-border bg-background/35">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-2.5">
+          <section className="border-y border-border/70 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="flex items-center gap-2 text-[12px] font-semibold text-foreground"><Users className="size-3.5 text-muted-foreground" /> Agent Team</span>
               <span className="flex items-center gap-1.5">
                 <Badge tone="muted">{runs.length} attempt{runs.length === 1 ? "" : "s"}</Badge>
                 {latest && <Badge tone={waveTone(latest.status)}>{latest.status ?? "planning"}</Badge>}
               </span>
             </div>
-            <div className="space-y-2 px-3 py-2.5">
+            <div className="mt-3 space-y-3">
               <div className="flex flex-wrap gap-2">
             {canTeamRun && (
               <ActionButton
@@ -703,7 +739,7 @@ function WaveCanvasCard({
               {runs.length === 0 ? (
                 <p className="text-[12px] text-muted-foreground">No Agent Team attempt yet. Create one when this Wave is ready to execute.</p>
               ) : (
-                <div className="overflow-hidden rounded-md border border-border bg-background/30">
+                <div className="overflow-hidden rounded-md bg-muted/35">
               {latest && (
                 <button
                   key={latest.id}
@@ -728,16 +764,27 @@ function WaveCanvasCard({
               )}
                 </div>
               )}
-              {members.length > 0 && (
-                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                  {members.map((member) => (
-                    <span key={`${member.team_run_id}:${member.name}:${member.role}`} className="inline-flex items-center gap-1">
-                      <StatusDot tone={waveTone(member.status)} />
-                      <span>{member.name || "Member"}</span>
-                      <span className="text-[10px]">{member.status || "unknown"}</span>
+              {activeMembers.length > 0 && (
+                <div className="flex flex-wrap gap-4">
+                  {activeMembers.map((member) => (
+                    <span key={`${member.team_run_id}:${member.name}:${member.role}`} className="inline-flex min-w-0 items-center gap-2">
+                      <Avatar name={member.name || member.role || "Member"} tone={waveTone(member.status)} size="sm" />
+                      <span className="min-w-0">
+                        <span className="block max-w-28 truncate text-[10px] font-medium text-foreground">{member.name || "Member"}</span>
+                        <span className="block text-[9px] text-muted-foreground">{member.status || "unknown"}</span>
+                      </span>
                     </span>
                   ))}
                 </div>
+              )}
+              {blockedMember && latest && (
+                <DecisionAnchor
+                  compact
+                  title="QA approval required"
+                  detail={`${blockedMember.name ?? "A member"} is blocked`}
+                  actionLabel="Review request"
+                  onAction={() => onSelectionChange({ surface: "team", teamId: latest.id, memberRunId: blockedMember.id, missionId: wave.mission_id, waveId: wave.id })}
+                />
               )}
             </div>
           </section>
@@ -747,7 +794,8 @@ function WaveCanvasCard({
           </p>
         )}
 
-        <section className="rounded-md border border-border bg-background/35 px-3 py-2.5">
+        <section className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-end">
+          <div>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-[12px] font-semibold text-foreground"><FileCheck2 className="size-3.5 text-muted-foreground" /> Evidence & gate</span>
             <Badge tone={gateTone(wave.gate_status)}>gate {wave.gate_status ?? "pending"}</Badge>
@@ -769,6 +817,8 @@ function WaveCanvasCard({
               <ShieldCheck className="size-3.5" /> Gate Wave
             </ActionButton>
           </div>
+          </div>
+          {criteria.length > 0 && readyCriteria != null && <ReadinessMeter value={readyCriteria} total={criteria.length} />}
         </section>
       </div>
 

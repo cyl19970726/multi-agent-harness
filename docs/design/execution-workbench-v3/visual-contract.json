@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "workstream": "execution-workbench-v3",
+  "artifact_policy": {
+    "expected": "durable under docs/design/execution-workbench-v3/expected",
+    "selected_comparisons": "durable under docs/design/execution-workbench-v3/comparisons",
+    "raw_browser_runs": ".visual-evidence/execution-workbench-v3"
+  },
+  "cases": [
+    {
+      "id": "mission-wave-canvas--running-gate-pending--desktop",
+      "priority": "P0",
+      "page": "mission-wave-canvas",
+      "state": "running-gate-pending",
+      "route": "/?surface=missions&mission=<mission-id>&wave=<wave-id>",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+      "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/mission-wave-canvas--workbench-v2--desktop-1440x1000.png",
+      "expected": "expected/mission-wave-canvas/running-gate-pending--desktop-concept-1536x1024.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/implemented/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+      "comparison": "comparisons/mission-wave-canvas/running-gate-pending--desktop.png",
+      "prompt": "prompts/mission-wave-canvas/running-gate-pending.md",
+      "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
+      "review": {
+        "status": "pass_with_deviations",
+        "intentional_deviations": [
+          "The generated expected design is 1536x1024 while deterministic browser evidence uses 1440x1000.",
+          "The implementation keeps the full real Mission objective and Re-plan note visible because they are canonical stored context.",
+          "Aggregate 2/3 readiness comes from the existing gate note; individual criteria are not falsely marked complete."
+        ],
+        "defects": [],
+        "follow_ups": ["Replace gate-note readiness parsing with structured criterion evidence when that contract exists."]
+      }
+    },
+    {
+      "id": "team-war-room--running-needs-you--desktop",
+      "priority": "P0",
+      "page": "team-war-room",
+      "state": "running-needs-you",
+      "route": "/?surface=team&team=<team-run-id>",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+      "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/team-war-room--workbench-v2--desktop-1440x1000.png",
+      "expected": "expected/team-war-room/running-needs-you--desktop-concept-1536x1024.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/implemented/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/team-war-room/running-needs-you--desktop.png",
+      "prompt": "prompts/team-war-room/running-needs-you.md",
+      "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
+      "review": {
+        "status": "pass_with_deviations",
+        "intentional_deviations": [
+          "The generated expected design is 1536x1024 while deterministic browser evidence uses 1440x1000.",
+          "The blocked member is ordered first to make pressure visible on mobile; member ordering does not imply hierarchy or ownership.",
+          "The Agent Teams primary navigation item remains selected because this is the direct TeamRun surface; the breadcrumb preserves Mission and Wave continuity.",
+          "Real fixture events and correlations replace the abbreviated generated activity copy."
+        ],
+        "defects": [],
+        "follow_ups": ["Validate the sticky composer with a software keyboard and long drafted message on a real mobile browser."]
+      }
+    }
+  ]
+}
