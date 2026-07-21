@@ -23,6 +23,7 @@
       .actual { border-style:dashed !important; }
       section { margin:0 0 56px; }
       .compare { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+      .compare.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
       figure { margin:0; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 18px 50px rgba(49,43,35,.08); }
       img { display:block; width:100%; height:auto; }
       figcaption { padding:14px 16px; border-top:1px solid var(--line); color:var(--muted); }
@@ -31,6 +32,7 @@
       .note { margin:18px 0 0; padding:18px 20px; border-left:3px solid var(--accent); background:rgba(255,255,255,.5); }
       .note b { color:var(--ink); }
       code { padding:2px 6px; border-radius:5px; background:#ece7dc; color:var(--ink); }
+      @media (max-width:1100px) { .compare.three{grid-template-columns:1fr} }
       @media (max-width:900px) { h1{font-size:40px}.truth,.compare,.grid{grid-template-columns:1fr} header{padding-top:40px} }
     </style>
   </head>
@@ -40,23 +42,24 @@
       <p>公司任务总账的第二轮设计：不是再加一个 Project 层，也不是把 Mission/Wave 变成普通任务，而是让同一批 WorkItem 通过 Board、Ledger、Milestone、Timeline 与 Workload 被不同角色清楚地使用。</p>
       <div class="meta">
         <span class="pill">Mission mission-1784612384857-p36041-0</span>
-        <span class="pill">7 expected screens</span>
+        <span class="pill">7 expected · 18 Store-live actual</span>
         <span class="pill">1536 × 1024</span>
         <span class="pill">Human review required</span>
       </div>
     </header>
     <main>
       <section class="truth">
-        <article class="current"><strong>Current · Store-live</strong><p>已实现单条商标 WorkItem、显式责任字段与生命周期 Action。当前截图是事实证据，但还没有原生 Milestone、多业务线查询和 Workload。</p></article>
+        <article class="current"><strong>Current-before · Store-live</strong><p>历史基线只有单条商标 WorkItem、显式责任字段与生命周期 Action，没有原生 Milestone、多业务线查询和 Workload。</p></article>
         <article class="expected"><strong>Expected · 本轮目标</strong><p>以下七张图是跨 Brand &amp; IP、Content、Finance、Product &amp; Engineering 的产品设计数据，用于讨论和实现验收。</p></article>
-        <article class="actual"><strong>Actual · 等待实现</strong><p>原生模型、查询和页面完成后，在相同 viewport 捕获真实浏览器截图，并在此处形成 Current → Expected → Actual 的三段证据。</p></article>
+        <article class="actual"><strong>Actual · Store-live candidate</strong><p>六个真实页面由原生 Milestone、WorkType、业务线关系和同源查询投影驱动；6 WorkItems、4 Milestones、4 BusinessModules。</p></article>
       </section>
 
       <section>
         <h2>从当前单项工作到公司总账</h2>
-        <div class="compare">
+        <div class="compare three">
           <figure><img src="current/work--store-live-before--desktop-1536x1024.png" alt="Current Store-live Work page" /><figcaption><b>Current</b> · 真实 Store 投影；诚实显示一个未归类 Milestone 的商标任务。</figcaption></figure>
           <figure><img src="expected/work-overview--desktop-1536x1024.png" alt="Expected Work overview" /><figcaption><b>Expected Overview</b> · 跨业务线健康度、注意力队列、进行中 Milestone 与 Saved Views。</figcaption></figure>
+          <figure><img src="actual/work-overview--desktop-1536x1024.png" alt="Actual Store-live Work overview" /><figcaption><b>Actual Overview</b> · 原生跨业务线总账；压力队列、Actor 头像和 Milestone pulse 均来自 Store。</figcaption></figure>
         </div>
         <p class="note"><b>最重要的变化：</b>Work 不是“一个项目详情”，而是整家公司所有承诺的入口；任何视图都不能复制或篡改 WorkItem 真相。</p>
       </section>
@@ -65,7 +68,9 @@
         <h2>Flow 与完整总账</h2>
         <div class="grid">
           <figure><img src="expected/work-board--desktop-1536x1024.png" alt="Expected Work Board" /><figcaption><b>Board</b> · 用于看 Inbox 到 Completed 的状态流、阻塞、审批和当下执行人。</figcaption></figure>
+          <figure><img src="actual/work-board--desktop-1536x1024.png" alt="Actual Store-live Work Board" /><figcaption><b>Actual Board</b> · 同一批 WorkItem 按真实状态投影；空列不被设计数据填满。</figcaption></figure>
           <figure><img src="expected/work-all--desktop-1536x1024.png" alt="Expected All Work ledger" /><figcaption><b>All Work</b> · 最高密度的查询面，分开显示 Accountable 与 Assignees，并保留 Source、Approval 和 Execution。</figcaption></figure>
+          <figure><img src="actual/work-all--desktop-1536x1024.png" alt="Actual Store-live All Work" /><figcaption><b>Actual All Work</b> · 原生类型、业务线、Milestone、责任、Approval、日期与执行方式保持一行一条真相。</figcaption></figure>
         </div>
       </section>
 
@@ -73,18 +78,30 @@
         <h2>Outcome、时间与组织容量</h2>
         <div class="grid">
           <figure><img src="expected/work-milestones--desktop-1536x1024.png" alt="Expected Milestones" /><figcaption><b>Milestones</b> · 业务结果检查点；Acceptance criteria 比百分比更重要，不等同于 Wave。</figcaption></figure>
+          <figure><img src="actual/work-milestones--desktop-1536x1024.png" alt="Actual Store-live Milestones" /><figcaption><b>Actual Milestones</b> · 进度由链接 WorkItems 派生，At risk、Blocked 与 Waiting pressure 保持可解释。</figcaption></figure>
           <figure><img src="expected/work-timeline--desktop-1536x1024.png" alt="Expected Work Timeline" /><figcaption><b>Timeline</b> · 只表达日期、排期冲突和 Approval 延迟，不引入依赖图。</figcaption></figure>
+          <figure><img src="actual/work-timeline--desktop-1536x1024.png" alt="Actual Store-live Work Timeline" /><figcaption><b>Actual Timeline</b> · 只按 due date 投影，不制造依赖边或 Task Graph。</figcaption></figure>
           <figure><img src="expected/work-workload--desktop-1536x1024.png" alt="Expected Workload" /><figcaption><b>Workload</b> · 人类与常驻 Agent 的 Accountable、Assigned、容量和 Unassigned 清楚分离。</figcaption></figure>
+          <figure><img src="actual/work-workload--desktop-1536x1024.png" alt="Actual Store-live Workload" /><figcaption><b>Actual Workload</b> · Accountable 与 Assigned 分开计数，并保留明确的 Unassigned lane。</figcaption></figure>
           <figure><img src="expected/work-item-focus--desktop-1536x1024.png" alt="Expected WorkItem focus" /><figcaption><b>WorkItem Focus</b> · 文档来源、责任链、审批、财务、执行、证据和结果回写在一个工作台闭环。</figcaption></figure>
         </div>
       </section>
 
       <section>
+        <h2>Responsive Actual</h2>
+        <div class="compare three">
+          <figure><img src="actual/work-overview--desktop-1536x1024.png" alt="Desktop Store-live Work overview" /><figcaption><b>Desktop · 1536×1024</b> · 完整总账、注意力队列和 Milestone pulse。</figcaption></figure>
+          <figure><img src="actual/work-overview--tablet-1024x900.png" alt="Tablet Store-live Work overview" /><figcaption><b>Tablet · 1024×900</b> · 保留同一信息顺序并收紧横向密度。</figcaption></figure>
+          <figure><img src="actual/work-overview--mobile-390x844.png" alt="Mobile Store-live Work overview" /><figcaption><b>Mobile · 390×844</b> · 视图与指标采用局部横向浏览，页面本身不溢出。</figcaption></figure>
+        </div>
+        <p class="note">六个 Work 视图均已在三种 viewport 捕获；完整 18 张截图及 SHA-256 见 <code>manifest.json</code>。</p>
+      </section>
+
+      <section>
         <h2>实现边界</h2>
-        <p>先实现原生 Milestone、WorkType 与业务线关系和查询，再实现多视图投影。Board 拖拽必须调用受治理的 <code>work_item.transition</code>；Timeline 不产生依赖；Workload 不把临时 Agent Team member 冒充常驻 Agent。</p>
+        <p>原生 Milestone、WorkType、业务线关系和六视图查询已经实现。Board 拖拽仍必须调用受治理的 <code>work_item.transition</code>；Timeline 不产生依赖；Workload 不把临时 Agent Team member 冒充常驻 Agent。</p>
         <p>设计图中的头像、图标和版式用于建立明确的视觉语言。最终产品以代码和语义组件实现，PNG 不作为 UI 运行时资产。</p>
       </section>
     </main>
   </body>
 </html>
-

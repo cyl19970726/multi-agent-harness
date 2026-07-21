@@ -2,9 +2,11 @@
 
 ## Result
 
-The seven-screen family is coherent enough for product review. It keeps the
-approved V2.2 editorial workbench language while making the Work information
-architecture materially more explicit than the original single ledger screen.
+The native Work model and six-view Store-live workspace are now implemented as
+an acceptance candidate. `Milestone`, `WorkType`, business-line relations, and
+the shared query projection drive the real Overview, Board, All Work,
+Milestones, Timeline, and Workload pages. WorkItem Focus remains the existing
+governed detail surface and is not being expanded in this slice.
 
 ## Strong decisions
 
@@ -18,7 +20,18 @@ architecture materially more explicit than the original single ledger screen.
 - Human and Standing Agent portraits improve recognition without collapsing
   their lifecycles.
 
-## Design-data caveats
+## Actual evidence
+
+- Eighteen Actual captures cover all six views at desktop, tablet, and mobile
+  sizes using six native WorkItems, four Milestones, four BusinessModules, and
+  explicit Human/Standing Agent responsibility.
+- Capture passed canonical-reference, no-Payment, no-thinking, console, and
+  horizontal-overflow checks.
+- Actual is intentionally not pixel-identical to generated Expected imagery;
+  it preserves the approved information hierarchy while using real semantic
+  components and Store facts.
+
+## Remaining caveats
 
 - Names, counts, dates, capacity, and cross-line records in Expected images are
   illustrative and not Store-live evidence.
@@ -27,12 +40,11 @@ architecture materially more explicit than the original single ledger screen.
   BusinessModule labels or an explicitly defined display alias.
 - Capacity values need a future provenance contract; `Unknown` is preferable
   to an invented percentage.
-- Drag/drop, bulk editing, saved-view persistence, and responsive compositions
-  remain interaction work after the desktop family is approved.
+- Drag/drop, bulk editing, saved-view persistence, and governed Milestone
+  mutation remain later interaction work.
 
 ## Recommendation
 
-Approve this family as the information-architecture target, then implement the
-model/query Wave before visual convergence. Do not retrofit the target into the
-single V2.2 fixture by fabricating Milestones or actors.
-
+Accept the native read-model and responsive six-view workspace as one completed
+slice. Governed intake/Milestone actions remain a following Wave and must not be
+inferred from this read-only workspace evidence.

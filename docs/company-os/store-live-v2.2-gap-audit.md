@@ -39,7 +39,7 @@ was completed on 2026-07-20; the other items remain:
 | --- | --- | --- | --- |
 | Document / Block / TypedRecord / Relation / View / BusinessModule | `implemented` | [`crates/harness-core/src/company_os.rs`](../../crates/harness-core/src/company_os.rs), [`crates/harness-store/src/company_os.rs`](../../crates/harness-store/src/company_os.rs), [`schemas/company-os/knowledge.schema.json`](../../schemas/company-os/knowledge.schema.json) | No second document substrate is needed. |
 | Human / Standing Agent / External / Service and OrgUnit membership | `implemented` | Separate native actor records and ledgers in Core/Store; actor and organization schemas; Store transition tests | Standing Agent collaboration and organization mutation are not yet connected from the product UI. |
-| WorkItem and Assignment | `partial` | Native `WorkItem`, `Assignment`, HTTP resources, plus governed `work_item.transition` lifecycle, responsibility, provenance, Approval-gate, replay, audit, and Store-live browser acceptance | Native `Milestone`, `WorkItem.milestone_ref`, and `WorkItem.work_type` are absent even though the canonical product docs require them. Assignment acknowledgement/reassignment still needs its own governed action. |
+| WorkItem and Assignment | `partial` | Native `Milestone`, `WorkType`, `WorkItem.business_module_ref`, shared Work query projection, `Assignment`, HTTP resources, plus governed `work_item.transition` lifecycle, responsibility, provenance, Approval-gate, replay, audit, multi-business-line Store-live seed acceptance, and six-view desktop/tablet/mobile evidence | Assignment acknowledgement/reassignment and governed intake still need their own implementation. |
 | Approval / Commitment / Payment governance | `implemented` | Native records, monotonic transition checks, Human authority enforcement, idempotent `ActionCommand`, and atomic audit writes in Store/API tests | Product controls do not dispatch these commands yet. Existing V2.2 approval buttons are deliberately disabled. |
 | Company OS HTTP reads and writes | `implemented` | [`crates/harness-cli/src/company_os_api.rs`](../../crates/harness-cli/src/company_os_api.rs) exposes Store snapshot, typed resources, administrative import, and declared actions protected by `HARNESS_COMPANY_OS_TOKEN` | Approval Focus and WorkItem Focus use the transport. Its session capability is a local operator boundary, not final Human authentication. |
 | Authoritative Dashboard projection | `implemented` | Snapshot uses `snapshot_contract=company-os-v1`, `projection_kind=live_company_os`, Store source metadata, and a revision hash; [`sourceTruth.ts`](../../apps/agent-dashboard/src/company-os/sourceTruth.ts) recognizes it fail-closed | None for read authority. Page-level completeness still depends on the adapter and supplied records. |
@@ -48,8 +48,8 @@ was completed on 2026-07-20; the other items remain:
 | Governed programmable-page backend | `implemented` | Server-owned action policy shapes, declaration scope checks, Human gates, idempotency, effect validation, and audit reservations | The frontend demonstration runtime is not the browser-to-server transport used by Company OS pages. |
 | Frontend programmable-page action contract | `partial` | [`apps/agent-dashboard/src/company-os/runtime/`](../../apps/agent-dashboard/src/company-os/runtime/) denies undeclared actions, enforces policy and Human proof, and rejects undeclared effects in focused tests | Its example commands (`finance.commitment.request`, `finance.commitment.authorize`, and others) do not match the backend command vocabulary (`commitment.append`, `approval.decide`, and others). The runtime is not mounted into `CompanyOsRouter`. |
 | WorkItem, Approval, Governance and Agent interaction controls | `partial` | WorkItem Focus dispatches `work_item.transition` from explicit Agent preparation through accountable Human completion; Approval Focus dispatches `approval.decide`. Both refresh Store truth and preserve replay/audit boundaries. [`work-item-lifecycle-actions.md`](work-item-lifecycle-actions.md), [`browser-action-transport.md`](browser-action-transport.md), and their Store-live galleries are the evidence. | Replace the local operator capability with actor-bound sessions; add native Request changes/follow-up Work and Assignment actions. Governance and Standing Agent collaboration remain missing. |
-| Milestone | `design-only` | [`work-items-and-approvals.md`](work-items-and-approvals.md) defines Milestone as the only Work grouping above WorkItem; V2.2 Work honestly shows `Unassigned milestone` | Add native type, schema, ledger, API projection, relations, Work grouping, and acceptance. Do not add `Project`. |
-| Work type | `design-only` | Canonical Work contract defines development, legal, procurement, finance, governance, and other types | Add the field and migration/default policy to the native WorkItem contract and UI filters. |
+| Milestone | `implemented` | Native type, schema, append-only ledger, API resource, Work projection, grouping UI, Store tests, and responsive Store-live acceptance | Governed create/update/close actions remain future interaction work. Do not add `Project`. |
+| Work type | `implemented` | Native enum, backward-compatible WorkItem default, typed query projection, UI grouping, and Store/API tests | Saved filter persistence and module-defined extensions remain future work. |
 | MetricDefinition / MetricObservation | `partial` | BusinessModule can reference metric-definition IDs; Blocks and views can render metric-shaped content; the trademark seed stores a metric as a `TypedRecord` | Native MetricDefinition/MetricObservation types, ledgers, API resources, and authority rules are absent. |
 | Governance Proposal | `partial` | The trademark seed stores the proposal as a `TypedRecord`; adapters can read typed governance proposal records | There is no native GovernanceProposal type or ledger and the top-level live snapshot currently emits `governance_proposals: []`. Decide whether it remains a typed business record or becomes a native governed object, then make docs and UI consistent. |
 | Standing Agent subject-linked collaboration | `missing` | Standing Agent focus separates organization identity from execution identity and never persists thinking | Composer is disabled; no durable subject-linked conversation/action API is connected. Direct-report activity and delegation still need a product contract. |
@@ -75,13 +75,16 @@ The trademark seed stores `Metric_Observation` and `Governance_Proposal` as
 that these are module-defined typed records. It must not simultaneously claim a
 native `MetricObservation` or native Governance Proposal lifecycle exists.
 
-### The Work contract and implementation have diverged
+### The Work contract gap is now narrowed to acceptance and actions
 
-Canonical docs state that `Milestone` is the only durable grouping above a
-WorkItem and that WorkItem carries `milestone_ref` and `work_type`. The native
-Rust `WorkItem` has neither field. The V2.2 Work page correctly exposes this
-gap instead of fabricating data; the model now needs to catch up with the
-approved product decision.
+`Milestone` is now the only native durable grouping above WorkItem, and native
+WorkItem rows carry `milestone_ref`, `work_type`, and
+`business_module_ref`. The Store and HTTP snapshot expose their shared derived
+Work projection, while historical rows safely resolve to explicit unclassified
+values. A six-WorkItem, four-Milestone, four-business-line Store-live dataset
+now has desktop, tablet, and mobile acceptance. Remaining gaps are governed
+Milestone/intake/reassignment actions and saved-view persistence; direct
+administrative append is not the eventual operator workflow.
 
 ## Ordered implementation after this audit
 
@@ -126,11 +129,12 @@ created. See `docs/design/company-os-v2/workitem-action-v1/review.html`.
 
 ### Next Wave C — Work model completion
 
-- add `Milestone` and `WorkType` to Core, schema, Store, API, projections, and UI;
-- migrate existing WorkItems to an explicit unassigned state without inventing
-  a Milestone;
-- add Work overview, Milestones, All WorkItems, and typed filters;
-- add Git Issue/PR only as an adapter after native acceptance is stable.
+**Read-model and workspace slice completed 2026-07-21.** `Milestone`,
+`WorkType`, business-line relations, backward-compatible unclassified rows,
+the typed Work projection, six primary views, and responsive Store-live visual
+evidence are implemented. Follow-up work is governed intake/reassignment,
+saved-view persistence, and a Git Issue/PR adapter after those native actions
+are stable.
 
 ### Next Wave D — metrics, governance, and collaboration
 

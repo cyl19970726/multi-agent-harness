@@ -396,6 +396,25 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "updated_at": NOW
         })),
     );
+    post_ok(
+        &serve,
+        "/v1/company-os/milestones",
+        admin(json!({
+            "id": "milestone-trademark-submitted",
+            "title": "Trademark application submitted",
+            "outcome": "The governed filing has durable receipt evidence",
+            "status": "active",
+            "accountable_owner": actor("human", "human-brand-owner"),
+            "source_document_ref": document["id"],
+            "business_module_ref": "module-trademark",
+            "target_at": "2026-07-31T18:00:00+08:00",
+            "acceptance_criteria": ["Filing receipt is linked"],
+            "work_item_refs": [],
+            "created_at": NOW,
+            "updated_at": NOW,
+            "achieved_at": null
+        })),
+    );
     let work_item = json!({
         "id": "work-trademark-filing",
         "title": "Trademark filing for Brand A",
@@ -403,6 +422,9 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         "status": "waiting_for_approval",
         "source_document_ref": document["id"],
         "source_record_refs": ["trademark-application-cn-2026-018"],
+        "milestone_ref": "milestone-trademark-submitted",
+        "work_type": "legal",
+        "business_module_ref": "module-trademark",
         "result_document_ref": null,
         "result_record_refs": [],
         "submitted_by": actor("agent", "agent-trademark"),
@@ -1185,6 +1207,19 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         Some(1)
     );
     assert_eq!(
+        snapshot["result"]["milestones"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(snapshot["result"]["work"]["summary"]["total"], 1);
+    assert_eq!(
+        snapshot["result"]["work"]["work_types"]["legal"],
+        json!(["work-trademark-filing"])
+    );
+    assert_eq!(
+        snapshot["result"]["work"]["business_lines"]["module-trademark"],
+        json!(["work-trademark-filing"])
+    );
+    assert_eq!(
         snapshot["result"]["commitments"].as_array().map(Vec::len),
         Some(2)
     );
@@ -1213,6 +1248,11 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     assert_eq!(status, 200, "{detail}");
     assert_eq!(detail["result"]["title"], "Trademark filing for Brand A");
     assert_eq!(detail["result"]["status"], "completed");
+    assert_eq!(detail["result"]["work_type"], "legal");
+    assert_eq!(
+        detail["result"]["milestone_ref"],
+        "milestone-trademark-submitted"
+    );
     assert_eq!(
         detail["result"]["result_record_refs"],
         json!(["trademark-application-cn-2026-018"])
@@ -1220,6 +1260,31 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     let (status, list) = serve.get_json("/v1/company-os/actors");
     assert_eq!(status, 200, "{list}");
     assert_eq!(list["result"]["count"], 4);
+    let (status, work_projection) = serve.get_json("/v1/company-os/work-projection");
+    assert_eq!(status, 200, "{work_projection}");
+    assert_eq!(work_projection["result"]["summary"]["total"], 1);
+    assert_eq!(
+        work_projection["result"]["milestones"][0]["progress_percent"],
+        100
+    );
+    let (status, filtered_work) = post_json(
+        &serve,
+        "/v1/company-os/work-query",
+        &json!({
+            "statuses": ["completed"],
+            "work_types": ["legal"],
+            "business_module_refs": ["module-trademark"],
+            "milestone_refs": ["milestone-trademark-submitted"],
+            "accountable_owner": actor("human", "human-brand-owner"),
+            "assignee": actor("agent", "agent-trademark")
+        }),
+    );
+    assert_eq!(status, 200, "{filtered_work}");
+    assert_eq!(filtered_work["result"]["summary"]["total"], 1);
+    assert_eq!(
+        filtered_work["result"]["work_items"][0]["id"],
+        "work-trademark-filing"
+    );
 
     let (status, dashboard) = serve.get_json(&format!("/v1/snapshot{query}"));
     assert_eq!(status, 200, "{dashboard}");

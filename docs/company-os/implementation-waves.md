@@ -20,8 +20,9 @@ next product slice does not extend every Agent focus page. It prioritizes:
 2. Organization Overview with compact Actor configuration for responsibility,
    prompt, tools/Skills, permissions, maintained Docs, and linked WorkItems;
 3. native Milestone, WorkType, business-line relations, and the multi-view Work
-   Operating System; and
-4. Current → Expected → Actual evidence for those surfaces.
+   Operating System — implemented; and
+4. Current → Expected → Actual responsive evidence for the Work candidate —
+   captured for desktop, tablet, and mobile across all six Work views.
 
 Dedicated Governance or Business Agent workspaces are deferred visual
 references. Existing Agent Focus implementation remains valid evidence but is

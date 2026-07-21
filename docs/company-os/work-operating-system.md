@@ -1,7 +1,7 @@
 # Work Operating System
 
 ```text
-status: canonical product contract; native implementation incomplete
+status: canonical product contract; native model, projection, and first Work workspace implemented
 owner_role: product
 canonical_for: company-wide Work information architecture, views, filters, and Milestone boundary
 ```
@@ -72,9 +72,19 @@ All primary and saved views use the same filter vocabulary:
 - priority, risk, and due range;
 - source document and execution mode.
 
-The implemented V1 store does not yet prove every dimension. In particular,
-native Milestone persistence and multi-business-line query support remain
-planned until schemas, store, API, and browser evidence exist.
+The native store now persists `Milestone`, carries `work_type`,
+`business_module_ref`, and optional `milestone_ref` on `WorkItem`, and exposes
+one filtered `WorkProjection` for Board, business-line, Work type, Milestone,
+and workload reads. `GET /v1/company-os/work-projection` returns the default
+ledger projection; read-only `POST /v1/company-os/work-query` accepts the typed
+`WorkQuery` filter body without granting a mutation capability. Historical
+WorkItem rows remain readable and are projected
+honestly as `general`, unclassified, and without a Milestone. The first real
+Work workspace consumes this projection across Overview, Board, All Work,
+Milestones, Timeline, and Workload. Multi-business-line store tests are present;
+the Store-live acceptance dataset now supplies six WorkItems, four Milestones,
+and four business lines. Desktop, tablet, and mobile captures cover all six
+views without document-level horizontal overflow or console errors.
 
 ## Board contract
 
@@ -154,6 +164,6 @@ The initial multi-business-line target dataset should include at least:
 - Product & Engineering: implement a governed Company OS capability with Git
   delivery references.
 
-This dataset exists to prove cross-line query and responsibility semantics. It
-must be clearly labelled expected/design data until native records exist.
-
+This dataset exists to prove cross-line query and responsibility semantics.
+Generated Expected imagery remains illustrative; Actual captures must identify
+the native Store projection, project, revision, viewport, and capture run.

@@ -410,6 +410,7 @@ pub enum EntityKind {
     Document,
     TypedRecord,
     BusinessModule,
+    Milestone,
     WorkItem,
     Approval,
     FinancialRecord,
@@ -716,6 +717,151 @@ pub enum WorkItemStatus {
     Archived,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkType {
+    Development,
+    Design,
+    Research,
+    Content,
+    Legal,
+    Procurement,
+    Finance,
+    Operations,
+    Governance,
+    HumanAction,
+    #[default]
+    General,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MilestoneStatus {
+    Planned,
+    Active,
+    AtRisk,
+    Achieved,
+    Cancelled,
+    Archived,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Milestone {
+    pub id: String,
+    pub title: String,
+    pub outcome: String,
+    pub status: MilestoneStatus,
+    pub accountable_owner: ActorRef,
+    #[serde(default)]
+    pub source_document_ref: Option<String>,
+    #[serde(default)]
+    pub business_module_ref: Option<String>,
+    #[serde(default)]
+    pub target_at: Option<String>,
+    pub acceptance_criteria: Vec<String>,
+    pub work_item_refs: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub achieved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkQuery {
+    #[serde(default)]
+    pub statuses: Vec<WorkItemStatus>,
+    #[serde(default)]
+    pub work_types: Vec<WorkType>,
+    #[serde(default)]
+    pub business_module_refs: Vec<String>,
+    #[serde(default)]
+    pub milestone_refs: Vec<String>,
+    #[serde(default)]
+    pub accountable_owner: Option<ActorRef>,
+    #[serde(default)]
+    pub assignee: Option<ActorRef>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkSummary {
+    pub total: u64,
+    pub active: u64,
+    pub completed: u64,
+    pub blocked: u64,
+    pub waiting_for_approval: u64,
+    pub unassigned: u64,
+    pub without_milestone: u64,
+    pub without_business_line: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MilestoneProgress {
+    pub milestone: Milestone,
+    pub total_work_items: u64,
+    pub completed_work_items: u64,
+    pub blocked_work_items: u64,
+    pub waiting_for_approval_work_items: u64,
+    pub progress_percent: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorWorkload {
+    pub actor: ActorRef,
+    pub accountable_count: u64,
+    pub assigned_count: u64,
+    pub active_count: u64,
+    pub work_item_refs: Vec<String>,
+}
+
+/// One derived read model shared by Overview, Board, All Work, Milestones,
+/// Timeline, and Workload. It owns no facts; every id points back to a native
+/// WorkItem or Milestone row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkProjection {
+    pub query: WorkQuery,
+    pub summary: WorkSummary,
+    pub work_items: Vec<WorkItem>,
+    pub milestones: Vec<MilestoneProgress>,
+    pub board: std::collections::BTreeMap<String, Vec<String>>,
+    pub business_lines: std::collections::BTreeMap<String, Vec<String>>,
+    pub work_types: std::collections::BTreeMap<String, Vec<String>>,
+    pub workload: Vec<ActorWorkload>,
+}
+
+impl ValidateCompanyOs for Milestone {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        required(&self.id, "Milestone.id")?;
+        required(&self.title, "Milestone.title")?;
+        required(&self.outcome, "Milestone.outcome")?;
+        self.accountable_owner.validate()?;
+        if let Some(reference) = &self.source_document_ref {
+            required(reference, "Milestone.source_document_ref")?;
+        }
+        if let Some(reference) = &self.business_module_ref {
+            required(reference, "Milestone.business_module_ref")?;
+        }
+        if let Some(target_at) = &self.target_at {
+            required(target_at, "Milestone.target_at")?;
+        }
+        required_strings(&self.acceptance_criteria, "Milestone.acceptance_criteria")?;
+        required_strings(&self.work_item_refs, "Milestone.work_item_refs")?;
+        if self.status == MilestoneStatus::Achieved
+            && self
+                .achieved_at
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(CompanyOsValidationError::Required {
+                field: "Milestone.achieved_at",
+            });
+        }
+        required(&self.created_at, "Milestone.created_at")?;
+        required(&self.updated_at, "Milestone.updated_at")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
@@ -761,6 +907,15 @@ pub struct WorkItem {
     pub status: WorkItemStatus,
     pub source_document_ref: String,
     pub source_record_refs: Vec<String>,
+    /// Optional company checkpoint. This is never a Mission Wave.
+    #[serde(default)]
+    pub milestone_ref: Option<String>,
+    /// Stable company-work classification used by every Work projection.
+    #[serde(default)]
+    pub work_type: WorkType,
+    /// Explicit business-line relation. Absence means unclassified, not inferred.
+    #[serde(default)]
+    pub business_module_ref: Option<String>,
     pub result_document_ref: Option<String>,
     pub result_record_refs: Vec<String>,
     pub submitted_by: ActorRef,
@@ -790,6 +945,12 @@ impl ValidateCompanyOs for WorkItem {
         required(&self.title, "WorkItem.title")?;
         required(&self.objective, "WorkItem.objective")?;
         required(&self.source_document_ref, "WorkItem.source_document_ref")?;
+        if let Some(reference) = &self.milestone_ref {
+            required(reference, "WorkItem.milestone_ref")?;
+        }
+        if let Some(reference) = &self.business_module_ref {
+            required(reference, "WorkItem.business_module_ref")?;
+        }
         self.submitted_by.validate()?;
         if let Some(requester) = &self.requested_by {
             requester.validate()?;
