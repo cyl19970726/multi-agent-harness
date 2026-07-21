@@ -1,0 +1,23 @@
+{
+  "contract": "company-os-four-system-collaboration-v1",
+  "truth_class": "expected-explainer",
+  "viewport": {
+    "width": 1536,
+    "height": 1024
+  },
+  "assets": [
+    {
+      "id": "responsibility-map",
+      "file": "expected/four-system-responsibility-map--1536x1024.png",
+      "prompt": "prompts/system-map.md",
+      "sha256": "36bee26c770a108391accc3620aeb60358ab1c8aff95f5f5dd8df269a5d7513c"
+    },
+    {
+      "id": "trademark-loop",
+      "file": "expected/trademark-operating-loop--1536x1024.png",
+      "prompt": "prompts/trademark-loop.md",
+      "sha256": "3b90b753dfdc3cc987db28005f25db40875778e3e020d16e937a34c26b08b414"
+    }
+  ]
+}
+

@@ -67,6 +67,9 @@ Review artifacts:
 - [`work-operating-system-v1/`](work-operating-system-v1/) — the next Work
   target family: Overview, Board, All Work, Milestones, Workload, and WorkItem
   Focus over one shared company task ledger.
+- [`company-os-four-systems-v1/`](company-os-four-systems-v1/) — visual
+  responsibility map and trademark operating loop for Docs, Organization,
+  Work, and Finance.
 
 Reproduce the Store-live evidence with
 `pnpm visual:capture:company-os-v2:live`, then update the checked-in comparison

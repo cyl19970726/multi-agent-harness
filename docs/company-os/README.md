@@ -84,6 +84,9 @@ model.
 - [Work Operating System](work-operating-system.md): the company-wide task
   ledger, primary and saved views, Milestone boundary, workload, and responsive
   behavior.
+- [Four-system collaboration](four-system-collaboration.md): what Docs,
+  Organization, Work, and Finance each own and how linked operations move
+  through them without duplicating truth.
 - [Financial relations](financial-relations.md): budget, commitment, invoice,
   payment, refund, metrics, and cross-module linkage.
 - [Governance](governance.md): document architecture, organization evolution,
