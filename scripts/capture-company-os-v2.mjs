@@ -151,6 +151,8 @@ async function main() {
   if (dataMode === "live" && !apiBaseUrl) throw new Error("live capture requires --api-base-url");
   const approvalActionToken = argument("--approval-action-token");
   if (approvalActionToken && dataMode !== "live") throw new Error("--approval-action-token requires --data-mode live");
+  const workItemActionToken = argument("--workitem-action-token");
+  if (workItemActionToken && dataMode !== "live") throw new Error("--workitem-action-token requires --data-mode live");
   const approvalActionDecision = argument("--approval-action-decision", "approved");
   if (!new Set(["approved", "rejected"]).has(approvalActionDecision)) throw new Error("--approval-action-decision must be approved or rejected");
   const outputRoot = resolve(argument("--output", join(repoRoot, ".visual-evidence/company-os-v2", runId)));
@@ -200,6 +202,51 @@ async function main() {
       await page.screenshot({ path, fullPage: false });
       const bytes = await readFile(path);
       results.push({ ...item, viewport: "desktop-1536x1024", final_url: page.url(), file: relative(repoRoot, path), sha256: hash(bytes), status: "captured" });
+    }
+    let workItemAction;
+    if (workItemActionToken) {
+      const actionRoot = join(outputRoot, "workitem-action");
+      await mkdir(actionRoot, { recursive: true });
+      const workItemId = "workitem-trademark-filing-brand-a";
+      const url = new URL(`/?surface=work&workItem=${workItemId}`, base);
+      url.searchParams.set("api", base);
+      url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      let root = page.locator('[data-company-os-page="work-item-focus"][data-company-os-ready="true"][data-company-os-data-mode="store-live"]').first();
+      await root.waitFor({ state: "visible", timeout: 15_000 });
+      await root.locator('[data-company-os-action-state="available"]').waitFor({ state: "visible", timeout: 15_000 });
+      const waitingPath = join(actionRoot, "workitem-waiting--before.png");
+      await page.screenshot({ path: waitingPath, fullPage: false });
+      await root.locator("[data-company-os-work-note]").fill("Trademark preparation started by the assigned Standing Agent.");
+      await root.locator("[data-company-os-action-token]").fill(workItemActionToken);
+      await root.getByRole("button", { name: "Start preparation", exact: true }).click();
+      await page.locator(`[data-company-os-ref="${workItemId}"][data-work-item-status="in_progress"]`).waitFor({ state: "visible", timeout: 15_000 });
+      const progressPath = join(actionRoot, "workitem-in-progress--after-start.png");
+      await page.screenshot({ path: progressPath, fullPage: false });
+      root = page.locator('[data-company-os-page="work-item-focus"]').first();
+      await root.locator("[data-company-os-work-note]").fill("Filing package and evidence are ready for accountable review.");
+      await root.locator("[data-company-os-action-token]").fill(workItemActionToken);
+      await root.getByRole("button", { name: "Submit result", exact: true }).click();
+      await page.locator(`[data-company-os-ref="${workItemId}"][data-work-item-status="in_review"]`).waitFor({ state: "visible", timeout: 15_000 });
+      const reviewPath = join(actionRoot, "workitem-in-review--after-submit.png");
+      await page.screenshot({ path: reviewPath, fullPage: false });
+      const snapshot = await readJson(liveSource.snapshot_endpoint, "post-submit WorkItem snapshot");
+      const workItem = latestRecords(snapshot.company_os.work_items).find((record) => record.id === workItemId);
+      const commands = latestRecords(snapshot.company_os.action_commands).filter((record) => record.command_name === "work_item.transition");
+      const payments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      if (workItem?.status !== "in_review" || workItem?.requested_by?.actor_type !== "human") throw new Error("browser WorkItem submission did not preserve Store truth and responsibility");
+      if (commands.length < 2 || commands.some((command) => command.status !== "executed")) throw new Error("browser WorkItem start/submit lacks executed ActionCommands");
+      if (payments.length !== 0) throw new Error("work_item.transition created a Payment");
+      workItemAction = {
+        status: "in_review",
+        work_item_id: workItemId,
+        action_command_ids: commands.map((command) => command.id),
+        payment_count: payments.length,
+        capability_storage: "browser-session-memory-only; omitted from evidence",
+        waiting: { file: relative(repoRoot, waitingPath), sha256: hash(await readFile(waitingPath)) },
+        in_progress: { file: relative(repoRoot, progressPath), sha256: hash(await readFile(progressPath)) },
+        in_review: { file: relative(repoRoot, reviewPath), sha256: hash(await readFile(reviewPath)) },
+      };
     }
     let approvalAction;
     if (approvalActionToken) {
@@ -281,6 +328,49 @@ async function main() {
         snapshot: relative(repoRoot, join(actionRoot, "post-decision-snapshot.json")),
       };
     }
+    if (workItemActionToken && approvalActionDecision === "approved" && approvalAction?.status === "passed") {
+      const actionRoot = join(outputRoot, "workitem-action");
+      const workItemId = workItemAction.work_item_id;
+      let completedBody;
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname !== "/v1/company-os/actions/dispatch" || request.method() !== "POST") return;
+        const body = request.postDataJSON();
+        if (body?.command_name === "work_item.transition" && body?.payload?.record?.status === "completed") completedBody = body;
+      });
+      const url = new URL(`/?surface=work&workItem=${workItemId}`, base);
+      url.searchParams.set("api", base);
+      url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      const root = page.locator('[data-company-os-page="work-item-focus"][data-company-os-ready="true"][data-company-os-data-mode="store-live"]').first();
+      await root.locator("[data-company-os-work-note]").fill("Accountable owner accepted the linked result after Human approval.");
+      await root.locator("[data-company-os-action-token]").fill(workItemActionToken);
+      await root.getByRole("button", { name: "Complete", exact: true }).click();
+      await page.locator(`[data-company-os-ref="${workItemId}"][data-work-item-status="completed"]`).waitFor({ state: "visible", timeout: 15_000 });
+      const completedPath = join(actionRoot, "workitem-completed--after-approval.png");
+      await page.screenshot({ path: completedPath, fullPage: false });
+      const snapshot = await readJson(liveSource.snapshot_endpoint, "completed WorkItem snapshot");
+      const workItem = latestRecords(snapshot.company_os.work_items).find((record) => record.id === workItemId);
+      const payments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      if (workItem?.status !== "completed" || !workItem?.completed_at || !workItem?.outcome_summary) throw new Error("browser WorkItem completion lacks durable result state");
+      if (payments.length !== 0) throw new Error("WorkItem completion created a Payment");
+      if (!completedBody) throw new Error("browser WorkItem completion request body was not observed");
+      const replayResponse = await fetch(`${apiBaseUrl}/v1/company-os/actions/dispatch?project=${encodeURIComponent(liveSource.project_id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-harness-company-os-token": workItemActionToken },
+        body: JSON.stringify(completedBody),
+      });
+      const replayBody = await replayResponse.json();
+      if (!replayResponse.ok || replayBody?.result?.idempotent_replay !== true) throw new Error(`WorkItem completion replay was not idempotent: ${JSON.stringify(replayBody)}`);
+      workItemAction = {
+        ...workItemAction,
+        status: "completed",
+        completed_at: workItem.completed_at,
+        outcome_summary: workItem.outcome_summary,
+        payment_count: payments.length,
+        idempotent_replay: true,
+        completed: { file: relative(repoRoot, completedPath), sha256: hash(await readFile(completedPath)) },
+      };
+    }
     await context.close();
     const manifest = {
       contract: "company-os-v2-implementation-capture-v2",
@@ -299,6 +389,7 @@ async function main() {
       assertions: ["explicit data truth mode", "canonical record refs", "no Payment before settlement", "no persisted thinking", "no horizontal overflow", dataMode === "live" ? "no console errors" : "fixture API errors are non-evidence"],
       results,
       ...(approvalAction ? { approval_action: approvalAction } : {}),
+      ...(workItemAction ? { work_item_action: workItemAction } : {}),
     };
     await writeFile(join(outputRoot, "capture-run.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(JSON.stringify(manifest, null, 2));

@@ -46,7 +46,38 @@ export interface WorkItemView {
   reviewer?: ActorSummary;
   legalReviewer?: ActorSummary;
   approver?: ActorSummary;
+  outcomeSummary?: string;
   updatedAt: string;
+  /** Present only when Store truth declares the governed lifecycle Action. */
+  transitionContext?: WorkItemTransitionContext;
+}
+
+export type WorkItemTransitionStatus = "in_progress" | "blocked" | "in_review" | "completed";
+
+export interface WorkItemTransitionContext {
+  definitionId: string;
+  actionPolicyRef: string;
+  record: Record<string, unknown>;
+  accountableOwner: CanonicalActorRef;
+  assignees: CanonicalActorRef[];
+  reviewer?: CanonicalActorRef;
+}
+
+export interface WorkItemTransitionCommand {
+  id: string;
+  command_name: "work_item.transition";
+  subject_ref: CanonicalEntityRef;
+  requested_by: CanonicalActorRef;
+  payload: { definition_id: string; record: Record<string, unknown> };
+  required_permission: "company.work.execute";
+  policy_ref: string;
+  risk_tier: "r2";
+  requires_human_approval: false;
+  approval_refs: [];
+  status: "requested";
+  audit_event_refs: string[];
+  requested_at: string;
+  completed_at: null;
 }
 
 export interface FinancialRecordView {

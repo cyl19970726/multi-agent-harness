@@ -51,11 +51,40 @@ fn action(
     approval_refs: Vec<&str>,
     audit_event: &str,
 ) -> Value {
+    action_by(
+        id,
+        command_name,
+        subject,
+        record,
+        actor("human", "human-brand-owner"),
+        policy_ref,
+        required_permission,
+        risk_tier,
+        requires_human_approval,
+        approval_refs,
+        audit_event,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn action_by(
+    id: &str,
+    command_name: &str,
+    subject: Value,
+    record: Value,
+    requested_by: Value,
+    policy_ref: &str,
+    required_permission: &str,
+    risk_tier: &str,
+    requires_human_approval: bool,
+    approval_refs: Vec<&str>,
+    audit_event: &str,
+) -> Value {
     json!({
         "id": id,
         "command_name": command_name,
         "subject_ref": subject,
-        "requested_by": actor("human", "human-brand-owner"),
+        "requested_by": requested_by,
         "payload": {"definition_id": "page-trademark", "record": record},
         "required_permission": required_permission,
         "policy_ref": policy_ref,
@@ -84,7 +113,8 @@ fn human(id: &str, name: &str) -> Value {
                 "company_os.admin",
                 "finance.commitment.write",
                 "finance.payment.write",
-                "company.records.write"
+                "company.records.write",
+                "company.work.execute"
             ],
             "authority_policy_refs": ["company.approve", "policy-finance"],
             "created_at": NOW,
@@ -106,8 +136,8 @@ fn agent_record(id: &str, name: &str, role: &str) -> Value {
             "exclusive_assignment_ref": null,
             "membership_refs": [],
             "responsibility_summary": role,
-            "capability_refs": ["company.records.write"],
-            "permission_policy_refs": ["company.records.write"],
+            "capability_refs": ["company.records.write", "company.work.execute"],
+            "permission_policy_refs": ["company.records.write", "company.work.execute"],
             "runtime_refs": [],
             "provider_session_refs": [],
             "created_at": NOW,
@@ -160,8 +190,11 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         "Finance Agent",
         "Review financial commitments",
     );
-    finance_agent["actor"]["permission_policy_refs"] =
-        json!(["company.records.write", "finance.payment.write"]);
+    finance_agent["actor"]["permission_policy_refs"] = json!([
+        "company.records.write",
+        "company.work.execute",
+        "finance.payment.write"
+    ]);
     post_ok(
         &serve,
         "/v1/company-os/actors",
@@ -329,7 +362,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
                 "permission_policy_ref": "policy-finance"
             }],
             "approved_ui_components": ["FinancialRecordCard", "ApprovalCard"],
-            "action_command_refs": ["approval.decide", "commitment.append", "payment.append"],
+            "action_command_refs": ["approval.decide", "work_item.transition", "commitment.append", "payment.append"],
             "standard_view_fallback_ref": "view-trademark-standard",
             "owner": actor("human", "human-brand-owner"),
             "package_ref": "package-trademark",
@@ -338,6 +371,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "visual_contract_ref": "visual-contract-v1",
             "policy_refs": [
                 "page-trademark:approval.decide",
+                "page-trademark:work_item.transition",
                 "page-trademark:commitment.append",
                 "page-trademark:payment.append"
             ],
@@ -362,38 +396,39 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "updated_at": NOW
         })),
     );
+    let work_item = json!({
+        "id": "work-trademark-filing",
+        "title": "Trademark filing for Brand A",
+        "objective": "Prepare and submit the filing after approval",
+        "status": "waiting_for_approval",
+        "source_document_ref": document["id"],
+        "source_record_refs": ["trademark-application-cn-2026-018"],
+        "result_document_ref": null,
+        "result_record_refs": [],
+        "submitted_by": actor("agent", "agent-trademark"),
+        "requested_by": actor("human", "human-brand-owner"),
+        "accountable_owner": actor("human", "human-brand-owner"),
+        "assignees": [actor("agent", "agent-trademark")],
+        "contributors": [actor("external", "external-lawyer")],
+        "reviewer": actor("agent", "agent-finance"),
+        "approver": actor("human", "human-brand-owner"),
+        "execution_mode": "mixed",
+        "execution_refs": [],
+        "approval_refs": [],
+        "evidence_refs": ["evidence-filing-package"],
+        "artifact_refs": [],
+        "outcome_summary": null,
+        "due_at": "2026-07-31T18:00:00+08:00",
+        "priority": "high",
+        "risk_level": "legal",
+        "created_at": NOW,
+        "updated_at": NOW,
+        "completed_at": null
+    });
     post_ok(
         &serve,
         "/v1/company-os/work-items",
-        admin(json!({
-            "id": "work-trademark-filing",
-            "title": "Trademark filing for Brand A",
-            "objective": "Prepare and submit the filing after approval",
-            "status": "waiting_for_approval",
-            "source_document_ref": document["id"],
-            "source_record_refs": ["trademark-application-cn-2026-018"],
-            "result_document_ref": null,
-            "result_record_refs": [],
-            "submitted_by": actor("agent", "agent-trademark"),
-            "requested_by": actor("human", "human-brand-owner"),
-            "accountable_owner": actor("human", "human-brand-owner"),
-            "assignees": [actor("agent", "agent-trademark")],
-            "contributors": [actor("external", "external-lawyer")],
-            "reviewer": actor("agent", "agent-finance"),
-            "approver": actor("human", "human-brand-owner"),
-            "execution_mode": "mixed",
-            "execution_refs": [],
-            "approval_refs": [],
-            "evidence_refs": ["evidence-filing-package"],
-            "artifact_refs": [],
-            "outcome_summary": null,
-            "due_at": "2026-07-31T18:00:00+08:00",
-            "priority": "high",
-            "risk_level": "legal",
-            "created_at": NOW,
-            "updated_at": NOW,
-            "completed_at": null
-        })),
+        admin(work_item.clone()),
     );
     post_ok(
         &serve,
@@ -514,6 +549,148 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "audit-commitment-entered-queue",
         ),
     );
+
+    // WorkItem execution is a governed transition, not a broad append. The
+    // assignee can start and submit durable results, but cannot complete work
+    // while a linked Approval is still requested.
+    let mut governed_work = work_item.clone();
+    governed_work["approval_refs"] = json!(["approval-trademark-commitment"]);
+    post_ok(
+        &serve,
+        "/v1/company-os/work-items",
+        admin(governed_work.clone()),
+    );
+    let mut in_progress_work = governed_work;
+    in_progress_work["status"] = json!("in_progress");
+    in_progress_work["updated_at"] = json!("2026-07-20T10:05:00+08:00");
+    let mut rewritten_work = in_progress_work.clone();
+    rewritten_work["title"] = json!("Rewritten outside the lifecycle contract");
+    let (status, body) = post_json(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        &action_by(
+            "action-rewrite-trademark-work",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            rewritten_work,
+            actor("agent", "agent-trademark"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-rewrite-trademark-work",
+        ),
+    );
+    assert_eq!(status, 409, "{body}");
+    let (status, body) = post_json(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        &action_by(
+            "action-unowned-trademark-work",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            in_progress_work.clone(),
+            actor("agent", "agent-finance"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-unowned-trademark-work",
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("does not own")));
+    let mut outside_result_work = in_progress_work.clone();
+    outside_result_work["result_document_ref"] = json!("document-outside-trademark-module");
+    let (status, body) = post_json(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        &action_by(
+            "action-cross-module-trademark-work",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            outside_result_work,
+            actor("agent", "agent-trademark"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-cross-module-trademark-work",
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-start-trademark-work",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            in_progress_work.clone(),
+            actor("agent", "agent-trademark"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-start-trademark-work",
+        ),
+    );
+    let mut in_review_work = in_progress_work;
+    in_review_work["status"] = json!("in_review");
+    in_review_work["result_record_refs"] = json!(["trademark-application-cn-2026-018"]);
+    in_review_work["artifact_refs"] = json!(["artifact://trademark/filing-package-v1"]);
+    in_review_work["outcome_summary"] =
+        json!("Filing package prepared and submitted for accountable review.");
+    in_review_work["updated_at"] = json!("2026-07-20T10:10:00+08:00");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-submit-trademark-result",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            in_review_work.clone(),
+            actor("agent", "agent-trademark"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-submit-trademark-result",
+        ),
+    );
+    let mut completed_work = in_review_work;
+    completed_work["status"] = json!("completed");
+    completed_work["completed_at"] = json!("2026-07-20T10:20:00+08:00");
+    completed_work["updated_at"] = json!("2026-07-20T10:20:00+08:00");
+    let premature_complete = action(
+        "action-complete-trademark-work-before-approval",
+        "work_item.transition",
+        json!({"kind": "work_item", "id": "work-trademark-filing"}),
+        completed_work.clone(),
+        "page-trademark:work_item.transition",
+        "company.work.execute",
+        "r2",
+        false,
+        vec![],
+        "audit-complete-trademark-work-before-approval",
+    );
+    let (status, body) = post_json(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        &premature_complete,
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("every linked Approval")));
+
     let mut approved_commitment_approval = requested_commitment_approval;
     approved_commitment_approval["status"] = json!("approved");
     approved_commitment_approval["decided_by"] = json!([actor("human", "human-brand-owner")]);
@@ -542,6 +719,41 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         ),
     );
     assert_eq!(result["command"]["status"], "executed");
+
+    let completed = post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action(
+            "action-complete-trademark-work",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            completed_work.clone(),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-complete-trademark-work",
+        ),
+    );
+    assert_eq!(completed["record"]["status"], "completed");
+    let replay = post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action(
+            "action-complete-trademark-work",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-trademark-filing"}),
+            completed_work,
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-complete-trademark-work",
+        ),
+    );
+    assert_eq!(replay["idempotent_replay"], true);
 
     let mut second_commitment = commitment.clone();
     second_commitment["id"] = json!("commitment-other-fee");
@@ -984,22 +1196,27 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         snapshot["result"]["action_policy_definitions"]
             .as_array()
             .map(Vec::len),
-        Some(3)
+        Some(4)
     );
     assert_eq!(
         snapshot["result"]["action_commands"]
             .as_array()
             .map(Vec::len),
-        Some(9)
+        Some(12)
     );
     assert_eq!(
         snapshot["result"]["audit_events"].as_array().map(Vec::len),
-        Some(18)
+        Some(24)
     );
 
     let (status, detail) = serve.get_json("/v1/company-os/work-items/work-trademark-filing");
     assert_eq!(status, 200, "{detail}");
     assert_eq!(detail["result"]["title"], "Trademark filing for Brand A");
+    assert_eq!(detail["result"]["status"], "completed");
+    assert_eq!(
+        detail["result"]["result_record_refs"],
+        json!(["trademark-application-cn-2026-018"])
+    );
     let (status, list) = serve.get_json("/v1/company-os/actors");
     assert_eq!(status, 200, "{list}");
     assert_eq!(list["result"]["count"], 4);

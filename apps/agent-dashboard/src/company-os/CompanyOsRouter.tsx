@@ -212,7 +212,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     case "docs-workspace": content = <DocsWorkspace workspace={docs.workspace} />; break;
     case "document-focus": content = <BasicDocumentPage document={docs.document} />; break;
     case "workboard": content = <WorkboardPage data={operations} />; break;
-    case "work-item-focus": content = <WorkItemFocus data={operations} />; break;
+    case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
     case "agents-organization": content = <OrganizationPage data={operations} />; break;
     case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} />; break;

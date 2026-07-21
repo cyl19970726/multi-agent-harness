@@ -52,9 +52,10 @@ horizontal overflow. Independent re-review confirmed that the final three P1
 findings—Home requester identity, Document Focus mobile clipping, and Approval
 controls outside the first viewport—are resolved.
 
-This historical evidence does not prove interactive V2.2 Approval,
-organization mutation, or Standing Agent messaging. Approval gained a later
-browser Action slice documented in `browser-action-transport.md`; the other
+This historical evidence does not prove later interactive V2.2 actions,
+organization mutation, or Standing Agent messaging. Approval and WorkItem
+lifecycle gained later browser Action slices documented in
+`browser-action-transport.md` and `work-item-lifecycle-actions.md`; the other
 controls remain open in the V2.2 gap audit. V1 generated Expected references
 also retain their own historical approval state; later V2.2 work does not
 retroactively rewrite it.

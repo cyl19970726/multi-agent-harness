@@ -70,6 +70,8 @@ model.
 - [Browser Action transport](browser-action-transport.md): the implemented
   `approval.decide` browser slice, session capability, evidence, and the honest
   boundary before actor-bound Human authentication.
+- [WorkItem lifecycle actions](work-item-lifecycle-actions.md): the governed
+  `work_item.transition` graph, responsibility rules, and result provenance.
 - [Skill contracts](skill-contracts.md): the optional module-designer and
   page-builder capabilities.
 - [Organization and actors](organization-and-actors.md): human, Standing Agent,

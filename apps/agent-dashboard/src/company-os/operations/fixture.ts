@@ -304,6 +304,8 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
   const approvalRecord = pick(approvalRecords, text((Array.isArray(workRecord.approval_refs) ? workRecord.approval_refs[0] : undefined), "approval-trademark-filing-fee-cn-2026-018"));
   const approvalDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
     && definition.action_command_refs.includes("approval.decide"));
+  const workTransitionDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
+    && definition.action_command_refs.includes("work_item.transition"));
   const proposalRecord = pick(proposalRecords, "governance-proposal-trademark-management");
   const moduleRecord = pick(moduleRecords, "module-trademark-management");
   const metricRecord = pick(metrics, "metric-july-spend");
@@ -329,8 +331,28 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
       ? actor(workRecord.legal_reviewer_ref)
       : (Array.isArray(workRecord.contributors) ? workRecord.contributors.map(actor).find((entry) => entry.kind === "external") : undefined),
     approver: workRecord.approver_ref || workRecord.approver ? actor(workRecord.approver_ref ?? workRecord.approver) : undefined,
+    outcomeSummary: text(workRecord.outcome_summary) || undefined,
     updatedAt: text(workRecord.updated_at),
   };
+  const workAccountableOwner = canonicalActorRef(workRecord.accountable_owner);
+  const workAssignees = Array.isArray(workRecord.assignees)
+    ? workRecord.assignees.map(canonicalActorRef).filter((value): value is CanonicalActorRef => Boolean(value))
+    : [];
+  const workReviewer = canonicalActorRef(workRecord.reviewer);
+  const workDefinitionId = text(workTransitionDefinition?.id);
+  const workActionPolicyRef = Array.isArray(workTransitionDefinition?.policy_refs)
+    ? workTransitionDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":work_item.transition"))
+    : undefined;
+  if (workAccountableOwner && workAssignees.length > 0 && workDefinitionId && workActionPolicyRef) {
+    workItem.transitionContext = {
+      definitionId: workDefinitionId,
+      actionPolicyRef: workActionPolicyRef,
+      record: { ...workRecord },
+      accountableOwner: workAccountableOwner,
+      assignees: workAssignees,
+      reviewer: workReviewer,
+    };
+  }
   const commitment: FinancialRecordView = {
     id: text(commitmentRecord.id, "unresolved-financial-record"),
     label: financialBusinessLabel(commitmentRecord),

@@ -1,0 +1,89 @@
+{
+  "contract": "company-os-workitem-browser-action-v1",
+  "status": "human_review_pending",
+  "source_capture": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/capture-run.json",
+  "assertions": [
+    "the named Standing Agent starts and submits the WorkItem",
+    "result, evidence, responsibility, and source provenance survive every transition",
+    "completion remains unavailable until every linked Approval is approved",
+    "the accountable Human completes the reviewed WorkItem",
+    "the exact completion request is idempotent",
+    "no Payment is created by a WorkItem transition",
+    "the browser capability is not persisted or copied into evidence"
+  ],
+  "work_item_action": {
+    "status": "completed",
+    "work_item_id": "workitem-trademark-filing-brand-a",
+    "action_command_ids": [
+      "action-browser-workitem-trademark-filing-brand-a-in_progress-85576c4b-ea36-4d58-8520-8ee29d78acc9",
+      "action-browser-workitem-trademark-filing-brand-a-in_review-1b327eb8-8eba-4606-a264-8b90b6646a5e"
+    ],
+    "payment_count": 0,
+    "capability_storage": "browser-session-memory-only; omitted from evidence",
+    "waiting": {
+      "file": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-waiting--before.png",
+      "sha256": "sha256:74278e1808d6e65da7fd562ec11143689f064bfcb23ec13213f229cbbb5983e1"
+    },
+    "in_progress": {
+      "file": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-in-progress--after-start.png",
+      "sha256": "sha256:ceb78f67da938cd57f3c947bda55e032744f9f0a3c550e3f3262608547d02c5b"
+    },
+    "in_review": {
+      "file": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-in-review--after-submit.png",
+      "sha256": "sha256:7b7bb751dc81305217154576d42590efbdbe2e55a556499d0cb4762faff78c14"
+    },
+    "completed_at": "2026-07-21T02:36:43.695Z",
+    "outcome_summary": "Accountable owner accepted the linked result after Human approval.",
+    "idempotent_replay": true,
+    "completed": {
+      "file": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-completed--after-approval.png",
+      "sha256": "sha256:723556647e6ca7d4d156cd08498d5d2a3cedf74bcb808e63fa64ff0c6a8c640b"
+    }
+  },
+  "approval_action": {
+    "approval_id": "approval-trademark-filing-fee-cn-2026-018",
+    "approval_status": "approved",
+    "decided_by": [
+      {
+        "actor_id": "actor-human-brand-owner",
+        "actor_type": "human"
+      }
+    ],
+    "commitment_status": "pending_approval",
+    "payment_count": 0
+  },
+  "states": [
+    {
+      "id": "waiting",
+      "title": "1 · Waiting for approval",
+      "caption": "Preparation may start, but completion remains governed.",
+      "source": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-waiting--before.png",
+      "file": "waiting--desktop-1536x1024.png",
+      "sha256": "sha256:74278e1808d6e65da7fd562ec11143689f064bfcb23ec13213f229cbbb5983e1"
+    },
+    {
+      "id": "in-progress",
+      "title": "2 · Standing Agent working",
+      "caption": "The explicit assignee started preparation through work_item.transition.",
+      "source": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-in-progress--after-start.png",
+      "file": "in-progress--desktop-1536x1024.png",
+      "sha256": "sha256:ceb78f67da938cd57f3c947bda55e032744f9f0a3c550e3f3262608547d02c5b"
+    },
+    {
+      "id": "in-review",
+      "title": "3 · Result submitted",
+      "caption": "Durable outcome and evidence are ready; completion is blocked until Approval.",
+      "source": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-in-review--after-submit.png",
+      "file": "in-review--desktop-1536x1024.png",
+      "sha256": "sha256:7b7bb751dc81305217154576d42590efbdbe2e55a556499d0cb4762faff78c14"
+    },
+    {
+      "id": "completed",
+      "title": "4 · Accountable owner completed",
+      "caption": "After Human Approval, the owner accepted the result. No Payment was created.",
+      "source": ".visual-evidence/company-os-v2/company-os-workitem-action-v1/workitem-action/workitem-completed--after-approval.png",
+      "file": "completed--desktop-1536x1024.png",
+      "sha256": "sha256:723556647e6ca7d4d156cd08498d5d2a3cedf74bcb808e63fa64ff0c6a8c640b"
+    }
+  ]
+}

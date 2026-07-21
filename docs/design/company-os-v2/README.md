@@ -61,6 +61,9 @@ Review artifacts:
 - [`approval-action-v1/review.html`](approval-action-v1/review.html) — the first
   governed browser interaction: requested, invalid capability denied, approved,
   and rejected, with ActionCommand/audit evidence in the adjacent manifest.
+- [`workitem-action-v1/review.html`](workitem-action-v1/review.html) — Store-live
+  WorkItem lifecycle proof from explicit Standing Agent execution through
+  accountable Human completion, without creating a Payment.
 
 Reproduce the Store-live evidence with
 `pnpm visual:capture:company-os-v2:live`, then update the checked-in comparison

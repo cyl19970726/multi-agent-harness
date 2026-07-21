@@ -11,7 +11,7 @@ use harness_core::{
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
     MemberStatus, OrgUnit, OrganizationMembership, Payment, Relation, RiskTier, TypedRecord,
-    ValidateCompanyOs, View, WorkItem,
+    ValidateCompanyOs, View, WorkItem, WorkItemStatus,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -571,6 +571,9 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
     if command.command_name == "approval.decide" {
         validate_approval_decision(store, &command, &record)?;
     }
+    if command.command_name == "work_item.transition" {
+        validate_work_item_transition(store, &command, &record)?;
+    }
     ensure_authorization_audit_ids_available(store, &command, &record)?;
     let audit_reservations = action_audit_reservation_ids(&command);
     match store.claim_action_command_with_audit_reservations(&command, &audit_reservations)? {
@@ -844,6 +847,13 @@ fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError
             vec![ActorType::Human],
             ActionEffect::TransitionState,
         ),
+        "work_item.transition" => (
+            "company.work.execute",
+            RiskTier::R2,
+            false,
+            vec![ActorType::Human, ActorType::Agent],
+            ActionEffect::TransitionState,
+        ),
         "commitment.append" => (
             "finance.commitment.write",
             RiskTier::R3,
@@ -963,10 +973,28 @@ fn validate_definition_scope(
                 .and_then(|value| serde_json::from_value::<harness_core::EntityRef>(value).ok())
                 .is_some_and(|reference| entity_in_module(store, definition, &reference, 0))
         }),
-        "work_item.append" => record
-            .get("source_document_ref")
-            .and_then(Value::as_str)
-            .is_some_and(|id| document_in_module(store, definition, id)),
+        "work_item.append" | "work_item.transition" => {
+            serde_json::from_value::<WorkItem>(record.clone())
+                .ok()
+                .is_some_and(|item| {
+                    document_in_module(store, definition, &item.source_document_ref)
+                        && item
+                            .result_document_ref
+                            .as_deref()
+                            .is_none_or(|id| document_in_module(store, definition, id))
+                        && item.result_record_refs.iter().all(|id| {
+                            entity_in_module(
+                                store,
+                                definition,
+                                &harness_core::EntityRef {
+                                    kind: EntityKind::TypedRecord,
+                                    id: id.clone(),
+                                },
+                                0,
+                            )
+                        })
+                })
+        }
         "assignment.append" => record
             .get("work_item_id")
             .and_then(Value::as_str)
@@ -1139,6 +1167,133 @@ fn validate_approval_decision(
     require_approval_authority(store, &command.requested_by, &approval.policy_ref)
 }
 
+fn validate_work_item_transition(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let target: WorkItem = parse(record)?;
+    if command.subject_ref.kind != EntityKind::WorkItem || command.subject_ref.id != target.id {
+        return Err(ApiError::forbidden(
+            "work_item.transition subject must be the WorkItem being transitioned",
+        ));
+    }
+    let previous = store
+        .latest_work_items()?
+        .into_iter()
+        .find(|candidate| candidate.id == target.id)
+        .ok_or_else(|| ApiError::not_found(format!("WorkItem:{}", target.id)))?;
+    if previous.status == target.status {
+        return Err(ApiError::conflict(
+            "work_item.transition must change the WorkItem status",
+        ));
+    }
+    let allowed = matches!(
+        (previous.status, target.status),
+        (
+            WorkItemStatus::Submitted
+                | WorkItemStatus::Triaged
+                | WorkItemStatus::Accepted
+                | WorkItemStatus::Blocked,
+            WorkItemStatus::InProgress
+        ) | (
+            WorkItemStatus::InProgress,
+            WorkItemStatus::Blocked | WorkItemStatus::InReview | WorkItemStatus::WaitingForApproval
+        ) | (
+            WorkItemStatus::InReview,
+            WorkItemStatus::InProgress
+                | WorkItemStatus::WaitingForApproval
+                | WorkItemStatus::Completed
+        ) | (
+            WorkItemStatus::WaitingForApproval,
+            WorkItemStatus::InProgress | WorkItemStatus::Blocked | WorkItemStatus::Completed
+        )
+    );
+    if !allowed {
+        return Err(ApiError::conflict(format!(
+            "unsupported WorkItem transition {:?} -> {:?}",
+            previous.status, target.status
+        )));
+    }
+    let immutable_changed = previous.title != target.title
+        || previous.objective != target.objective
+        || previous.source_document_ref != target.source_document_ref
+        || previous.source_record_refs != target.source_record_refs
+        || previous.submitted_by != target.submitted_by
+        || previous.requested_by != target.requested_by
+        || previous.accountable_owner != target.accountable_owner
+        || previous.assignees != target.assignees
+        || previous.contributors != target.contributors
+        || previous.reviewer != target.reviewer
+        || previous.approver != target.approver
+        || previous.execution_mode != target.execution_mode
+        || previous.approval_refs != target.approval_refs
+        || previous.due_at != target.due_at
+        || previous.priority != target.priority
+        || previous.risk_level != target.risk_level
+        || previous.created_at != target.created_at;
+    if immutable_changed {
+        return Err(ApiError::conflict(
+            "work_item.transition cannot change business context or responsibility",
+        ));
+    }
+    let result_document_preserved = previous.result_document_ref.is_none()
+        || previous.result_document_ref == target.result_document_ref;
+    let preserves = |old: &[String], next: &[String]| old.iter().all(|item| next.contains(item));
+    if !result_document_preserved
+        || !preserves(&previous.result_record_refs, &target.result_record_refs)
+        || !preserves(&previous.evidence_refs, &target.evidence_refs)
+        || !preserves(&previous.artifact_refs, &target.artifact_refs)
+        || !target.execution_refs.starts_with(&previous.execution_refs)
+    {
+        return Err(ApiError::conflict(
+            "work_item.transition cannot remove or replace result, evidence, artifact, or execution provenance",
+        ));
+    }
+    let executor = command.requested_by == previous.accountable_owner
+        || previous.assignees.contains(&command.requested_by);
+    let closer = command.requested_by == previous.accountable_owner
+        || previous.reviewer.as_ref() == Some(&command.requested_by);
+    if (target.status == WorkItemStatus::Completed && !closer)
+        || (target.status != WorkItemStatus::Completed && !executor)
+    {
+        return Err(ApiError::forbidden(
+            "requesting Actor does not own this WorkItem transition",
+        ));
+    }
+    if target.status == WorkItemStatus::InReview {
+        let has_result =
+            target.result_document_ref.is_some() || !target.result_record_refs.is_empty();
+        let has_evidence = !target.evidence_refs.is_empty() || !target.artifact_refs.is_empty();
+        let has_summary = target
+            .outcome_summary
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_result || !has_evidence || !has_summary {
+            return Err(ApiError::validation(
+                "entering in_review requires a durable result destination, evidence or artifacts, and an outcome summary",
+            ));
+        }
+    }
+    if target.status == WorkItemStatus::Completed {
+        let approvals = store.latest_approvals()?;
+        if target.approval_refs.iter().any(|id| {
+            !approvals
+                .iter()
+                .any(|approval| approval.id == *id && approval.status == ApprovalStatus::Approved)
+        }) {
+            return Err(ApiError::forbidden(
+                "completed WorkItem requires every linked Approval to be approved",
+            ));
+        }
+    } else if target.completed_at.is_some() {
+        return Err(ApiError::validation(
+            "only a completed WorkItem may set completed_at",
+        ));
+    }
+    Ok(())
+}
+
 fn dispatch_declared_record(
     store: &HarnessStore,
     command: &ActionCommand,
@@ -1155,7 +1310,7 @@ fn dispatch_declared_record(
         "actor.append" => "actors",
         "org_unit.append" => "org-units",
         "membership.append" => "memberships",
-        "work_item.append" => "work-items",
+        "work_item.append" | "work_item.transition" => "work-items",
         "assignment.append" => "assignments",
         "approval.decide" => "approvals",
         "commitment.append" => "commitments",
