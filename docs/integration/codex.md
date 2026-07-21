@@ -1,15 +1,15 @@
 # Codex Integration
 
 本文档定义 Star Harness 如何集成 Codex。这里的重点不是“让
-Codex 能跑一次任务”，而是把 Codex 变成 harness 里的持久
-`AgentMember` provider：可以创建、投递消息、观察状态、回收运行时，并让
-Harness 通过 Codex 原生 session 读取执行过程，同时只保存跨系统需要的
-协调、结果引用和控制事实。
+Codex 能跑一次请求”，而是把 Codex 变成 harness 的 provider：可以投递、
+观察、恢复并关闭 provider session，同时把可观察执行结果关联到 Mission/Wave、
+Agent Team、Dynamic Workflow、Host 或 Company OS WorkItem。Codex 原生 session
+保存执行过程；Harness 只保存跨系统需要的协调、结果引用和控制事实。
 
 Provider-neutral runtime contracts live in [../agent-runtime.md](../agent-runtime.md).
 This file should explain only how Codex implements those contracts. Shared
-object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
-`Decision` must not be redefined here.
+object semantics such as Mission/Wave, executor-native assignments and outcomes,
+WorkItem, Approval and organization authority must not be redefined here.
 
 Detailed source-audit notes live in
 [codex-source-audit.md](codex.md). Keep long source findings out
@@ -481,8 +481,8 @@ command；生产路径应切到 trusted harness plugin 或 managed requirements 
 
 Skills 是 “Codex 如何工作” 的操作指南，不是运行时对象。我们需要两类 skill：
 
-- generic harness skill：如何使用 `Goal -> Task -> Message -> Evidence ->
-  Decision -> outcome evaluation` 工作流；
+- generic harness capability：如何使用 Mission/Wave 和当前 executor 的原生
+  assignment、outcome、artifact 与 gate；
 - project adapter skill：如何使用某个项目的 CLI、Dashboard、回测、实盘、
   CI/CD 和证据体系。
 

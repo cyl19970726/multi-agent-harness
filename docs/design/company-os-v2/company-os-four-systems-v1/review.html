@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Company OS · Four Systems</title>
+    <style>
+      :root { --paper:#f7f3eb; --ink:#24231f; --muted:#716f68; --line:#d9d2c6; --blue:#2d638c; --sage:#6f8e65; --coral:#e56f52; --amber:#c88a2b; }
+      *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      header,main{padding-left:max(24px,5vw);padding-right:max(24px,5vw)} header{padding-top:58px;padding-bottom:34px;border-bottom:1px solid var(--line)}
+      h1,h2{font-family:Georgia,"Times New Roman",serif;font-weight:500;letter-spacing:-.02em} h1{margin:0 0 12px;font-size:52px} h2{margin:0 0 14px;font-size:32px}
+      p{max-width:980px;color:var(--muted)} main{padding-top:38px;padding-bottom:72px} section{margin-bottom:54px}
+      figure{margin:18px 0;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#fff;box-shadow:0 18px 50px rgba(49,43,35,.08)} img{display:block;width:100%;height:auto} figcaption{padding:14px 18px;border-top:1px solid var(--line);color:var(--muted)}
+      .rules{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.rule{padding:18px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.55)}.rule b{display:block;margin-bottom:6px}.docs b{color:var(--blue)}.org b{color:var(--sage)}.work b{color:var(--coral)}.finance b{color:var(--amber)}
+      .callout{padding:18px 22px;border-left:3px solid var(--coral);background:rgba(255,255,255,.55)}
+      @media(max-width:850px){h1{font-size:39px}.rules{grid-template-columns:1fr 1fr}}@media(max-width:520px){.rules{grid-template-columns:1fr}}
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Docs × Organization × Work × Finance</h1>
+      <p>四个模块不是四份重复数据，而是四种互相链接的公司真相。阅读下面的图时：盒子表示“谁拥有”，箭头表示“谁请求、谁引用、结果回到哪里”。</p>
+    </header>
+    <main>
+      <section>
+        <h2>从架构进入真正的产品页面</h2>
+        <figure><img src="expected/organization-overview-ui--1536x1024.png" alt="Expected Organization Overview UI" /><figcaption>Organization Overview：中心是可操作的组织树；协作线可以开关；右侧直接暴露 Org/HR 的能力缺口、Proposal 和权限边界。</figcaption></figure>
+        <figure><img src="expected/hr-governance-agent-focus-ui--1536x1024.png" alt="Expected Org HR Governance Agent Focus UI" /><figcaption>Org/HR Governance Agent Focus 参考图：解释复用、临时执行、外部协作或新增 Standing Agent 的决策模型；暂不作为独立页面实现基线。</figcaption></figure>
+      </section>
+      <section>
+        <h2>Governance Agent 工作台 · 仅作未来参考</h2>
+        <p>当前不要求实现独立 Agent 详情页。近期只需要在 Organization 中说明责任、Prompt、Tools/Skills、Permissions、维护文档和关联 WorkItems。以下图片保留决策模型，不作为近期实现基线。</p>
+        <figure><img src="expected/docs-governance-agent-focus-ui--1536x1024.png" alt="Docs Governance Agent reference workspace" /><figcaption>Docs Governance 参考：决定知识位置、结构和结果回收。</figcaption></figure>
+        <figure><img src="expected/work-governance-agent-focus-ui--1536x1024.png" alt="Work Governance Agent reference workspace" /><figcaption>Work Governance 参考：决定 WorkItem 分类、责任、跨系统影响和执行路由。近期实现重点仍是公司级 Work 页面。</figcaption></figure>
+      </section>
+      <section>
+        <h2>谁管理谁，谁只是协作</h2>
+        <figure><img src="expected/governance-led-organization--1536x1024.png" alt="Governance-led Organization" /><figcaption>组织母图：Lead 只直接管理四个 Governance Agents；所有 Business Agents 由 Org/HR 管理生命周期。实线是组织关系，虚线是受治理的工作协作。</figcaption></figure>
+        <p class="callout"><b>组织规则：</b>业务 Agent 不直接挂在 Lead、Docs、Work 或 Finance Governance Agent 下面。Work 可以路由任务，Docs 可以要求结果回写，Finance 可以执行财务控制，但新增、权限、组织位置、评估和退休始终由 Org/HR 治理。</p>
+      </section>
+      <section>
+        <h2>各自分管什么</h2>
+        <div class="rules">
+          <div class="rule docs"><b>Docs · 上下文与记忆</b>知识、业务结构、来源、决策和最终结果。</div>
+          <div class="rule org"><b>Organization · 身份与权力</b>谁存在、向谁负责、能做什么、谁有权批准。</div>
+          <div class="rule work"><b>Work · 承诺与责任</b>要做什么、谁负责、处于什么状态、怎样执行和验收。</div>
+          <div class="rule finance"><b>Finance · 金钱与实际影响</b>预算、承诺、发票、支付、退款和财务指标。</div>
+        </div>
+        <figure><img src="expected/four-system-responsibility-map--1536x1024.png" alt="Four system responsibility map" /><figcaption>责任边界图：跨模块页面可以渲染关联数据，但只有拥有者系统可以改变对应记录的真相。</figcaption></figure>
+      </section>
+      <section>
+        <h2>它们怎样完成一次真实工作</h2>
+        <figure><img src="expected/trademark-operating-loop--1536x1024.png" alt="Trademark operating loop" /><figcaption>商标申请：Docs 发起上下文，Work 建立承诺，Org 提供责任与授权，Finance 记录 ¥3,000 Commitment，执行完成后证据与结果回到 Work 和 Docs。</figcaption></figure>
+        <p class="callout"><b>最重要的产品规则：</b>Approval 是敏感动作的治理桥梁；它不是普通评论，也不是 Wave gate。Mission/Wave、Agent Team 和 Workflow 只是 Work 的执行引用，不会吸收公司责任、权限或财务真相。</p>
+      </section>
+    </main>
+  </body>
+</html>

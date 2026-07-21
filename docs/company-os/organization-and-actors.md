@@ -13,12 +13,12 @@ external participants, and technical services. It establishes durable
 responsibility and authority around Docs and WorkItems; it is not a projection
 of a provider runtime, an Agent Team attempt, or a chat roster.
 
-The initial product is deliberately **lead-first**. One Human Owner governs one
-Lead Agent; several second-level Standing Agents report directly to that Lead.
-This gives the company a legible assignment and escalation path without
-inventing departments. The same contract supports later, deliberate nesting
-when a business area has enough distinct responsibility, policy, or capacity
-to warrant it.
+The initial product is deliberately **governance-led**. One Human Owner governs
+one Lead Agent. The Lead directly manages four Governance Agents for Docs,
+Work, Finance, and Org/HR. All Business Agents report to Org/HR, which manages
+their organizational lifecycle; they collaborate with the other Governance
+Agents through governed records and Actions. This keeps the Lead's management
+span stable while allowing business capability to grow deliberately.
 
 ## Organization model
 
@@ -53,16 +53,19 @@ Org-unit names, charts, and reporting views are projections of these records;
 they must not infer a reporting relationship from document authorship, a task
 assignee, or a provider session.
 
-### Initial lead-first example
+### Initial governance-led example
 
 ```text
 Company
 └── Human Owner
     └── Lead Agent
-        ├── Document Architecture Agent
-        ├── Finance Agent
-        ├── Content Strategy Agent
-        └── Trademark Agent
+        ├── Docs Governance Agent
+        ├── Work Governance Agent
+        ├── Finance Governance Agent
+        └── Org / HR Governance Agent
+            ├── Trademark Agent
+            ├── Development Agent
+            └── Content Agent
 ```
 
 ### Elastic hierarchy example
@@ -80,8 +83,8 @@ Company
 │   └── Analytics Agent (Standing Agent)
 └── Governance
     ├── Governance Owner (human)
-    ├── Document Architecture Agent (Standing Agent)
-    └── Organization Governance Agent (Standing Agent)
+    ├── Docs Governance Agent (Standing Agent)
+    └── Org / HR Governance Agent (Standing Agent)
 ```
 
 Membership is many-to-many: an actor can be a member of more than one unit,
@@ -114,9 +117,10 @@ ReportingRelation
 - effective_from / effective_until?
 ```
 
-V1 optimizes for `Human Owner -> Lead Agent -> direct Standing Agents`.
-Second-level Agents may collaborate through a shared WorkItem or business
-object, but the Lead remains their default assignment and escalation path.
+V1 optimizes for `Human Owner -> Lead -> four Governance Agents`, followed by
+`Org/HR -> Business Agents`. Reporting and collaboration are separate graphs:
+Docs, Work, and Finance Governance Agents may collaborate with Business Agents
+through shared records, but do not become their organizational manager.
 
 ## A shared reference, distinct actor lifecycles
 
@@ -148,8 +152,9 @@ HumanMember
 - permission and authority policies
 
 StandingAgent
-- id, display_name, role, availability, assignment_capacity?
+- id, display_name, role, responsibility_scope, availability, assignment_capacity?
 - organization memberships, capabilities, permissions
+- system_prompt_ref?, tool_refs[], skill_refs[]
 - runtime and provider-session references
 
 ExternalParticipant
@@ -197,12 +202,12 @@ The Lead Agent is a durable organizational role, not the temporary lead member
 of an AgentTeamRun. Within policy it may:
 
 - receive intent from the Human Owner and create or assign WorkItems;
-- coordinate direct reports and inspect their explicit work, blockers, and
-  durable outcomes;
+- coordinate the four Governance Agent direct reports and inspect company-level
+  work, blockers, proposals, and durable outcomes;
 - start a Mission, AgentTeamRun, WorkflowRun, or direct execution for a complex
   WorkItem;
-- propose a new second-level Standing Agent when recurring work exposes a
-  missing capability; and
+- ask Org/HR to evaluate a recurring capability gap and sponsor the resulting
+  Agent proposal when justified; and
 - propose role, permission, capacity, or reporting changes.
 
 Adding a temporary MemberRun to one execution does not change Organization.
@@ -220,14 +225,16 @@ an audit event. Typical changes include creating or nesting an OrgUnit, adding
 or retiring a Standing Agent, changing authority, moving an actor, or inviting
 an external participant.
 
-The Organization Governance Agent may identify overlap, uncovered work,
-capacity pressure, stale permissions, or a need for a new role. It may draft a
-proposal and assemble evidence. It must not auto-grant itself or any other
-actor authority beyond policy. A human approval is mandatory where the policy
-marks the change as financial, legal, security-sensitive, employment-related,
-or a change to organization-level authority.
+The Org/HR Governance Agent owns the Business Agent lifecycle. It evaluates
+whether a capability gap should reuse an existing Actor, use temporary
+execution, engage an external collaborator, or justify a new Standing Agent.
+It may draft an `OrgChangeProposal`, provision after approval, evaluate, pause,
+and propose retirement. It must not auto-grant itself or any other actor
+authority beyond policy. A human approval is mandatory where the policy marks
+the change as financial, legal, security-sensitive, employment-related, or a
+change to organization-level authority.
 
-The Document Architecture Agent is a peer governance role: it proposes document
+The Docs Governance Agent is a peer governance role: it proposes document
 spaces, templates, typed records, relations, and lifecycle rules when new
 business domains arise. It does not independently create a department or grant
 an Actor authority. The two roles coordinate through a documented module or
@@ -238,8 +245,8 @@ new organizational capacity.
 
 The `Organization` area is a mixed company structure, not a flat runtime list:
 
-- default to a compact organization chart/list with the root unit and direct
-  members; disclose children only where they exist;
+- default to a connected hierarchy that first shows Human Owner, Lead, the four
+  Governance Agents, and the Business Agent branch beneath Org/HR;
 - visually distinguish humans, Standing Agents, external participants, and
   services without judging their importance by type;
 - show role, unit membership, accountable document spaces, declared
@@ -247,21 +254,21 @@ The `Organization` area is a mixed company structure, not a flat runtime list:
 - distinguish a Standing Agent's organizational status from runtime health and
   from provider-session history;
 - show external scope and expiry prominently, never as an ordinary employee;
-- allow a person or agent detail page to show memberships, authority scope,
-  explicit WorkItems, and documented activity across units.
-- make the initial Human Owner, Lead Agent, and direct-report structure obvious
-  before presenting optional deeper OrgUnits;
-- give the Lead a collaboration workspace with direct-report status, assigned
-  WorkItems, blockers, active one-time executions, organization proposals, and
-  a durable object-linked conversation surface;
-- give each second-level Agent a workspace centred on its conversation and
-  activity with the Lead, with related WorkItems, BusinessModules, Documents,
-  and execution attempts composed in context.
+- provide a compact Actor configuration view for responsibility, reporting,
+  prompt, tools/Skills, permissions, maintained Docs, and explicit WorkItems;
+- make solid reporting relations distinct from optional dashed work
+  collaboration overlays;
+- surface capability gaps and `OrgChangeProposal`s from the Organization area.
+
+Dedicated Agent workspaces are not required for the next implementation slice.
+The current product may use the Organization overview plus an Actor drawer or
+profile route. Rich Governance Agent workspace designs remain future references
+until the organization model, Actions, and Work surfaces are implemented.
 
 The organization chart is never the only responsibility view. Every visible
 lead, ownership, or membership relation must link to its durable source record.
 Agent Team `MemberRun`s and provider-native child threads may appear as
-execution history on an eligible Standing Agent detail page only through an
+execution history on an eligible Standing Agent profile only through an
 explicit stable link; they are not organization members and cannot populate a
 chart.
 

@@ -89,7 +89,7 @@ flowchart TD
   MS --> WI
   CD --> FR["Related financial record"]
   CD --> AP
-  A --> SA["Standing Agent detail"]
+  A --> SA["Agent configuration / profile"]
   A --> HM["Human member detail"]
   SA --> WI
   HM --> WI
@@ -115,10 +115,12 @@ The user must be able to travel in both directions:
 - a Standing Agent profile can show explicit assignments, maintained document
   spaces, and participation history, but only through stable links.
 
-The first Organization experience is lead-first: Human Owner, Lead Agent, and
-the Lead's direct second-level Standing Agents. The Lead workspace is the
-coordination surface for direct-report work, blockers, organization proposals,
-and object-linked conversation. It is not an AgentTeamRun console.
+The first Organization experience is governance-led: Human Owner, Lead Agent,
+the four Governance Agents, and the Business Agent branch beneath Org/HR. Solid
+lines show reporting and lifecycle management; optional dashed lines show work
+collaboration. The Organization overview and a compact Actor configuration
+surface are the near-term product. Dedicated Governance or Business Agent
+workspaces are deferred design references, not implementation prerequisites.
 
 ## Actor and organization policy
 
@@ -197,11 +199,11 @@ Conversation, Message, Activity, Handoff, Artifact, Presence, Composer, and
 Context widgets. Organization and execution reuse those primitives but retain
 different page semantics and lifecycles.
 
-The Lead Agent page centres durable company collaboration. Mission, Wave,
+The Organization area centres durable identity, responsibility, prompt,
+tools/Skills, permissions, reporting, and capability gaps. Mission, Wave,
 AgentTeamRun, MemberRun, and Workflow pages centre one-time execution. Valuable
-execution summaries, evidence, deliverables, and decision requests are
-promoted back to Work, Docs, Approval, or Finance rather than copying the raw
-run stream.
+execution summaries, evidence, deliverables, and decision requests are promoted
+back to Work, Docs, Approval, or Finance rather than copying the raw run stream.
 
 ## Responsive policy
 

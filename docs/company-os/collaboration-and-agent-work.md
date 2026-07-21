@@ -17,7 +17,8 @@ components, but they do not share identity or lifecycle.
 ```text
 Human Owner
   -> Lead Agent
-     -> second-level Standing Agents
+     -> Docs / Work / Finance / Org-HR Governance Agents
+        -> Org-HR manages Business Agents
      -> starts one-time execution when a WorkItem needs it
         Mission -> ordered Wave -> Agent Team | Workflow | Host/direct work
 ```
@@ -62,31 +63,34 @@ Approval; financial truth requires FinancialRecord.
 | WorkItem | Who owns delivery, what is blocked, and what is the result? | assignments, handoffs, progress reports, evidence, review |
 | BusinessModule | How does a recurring business function coordinate? | role roster, active Milestones, WorkItems, decisions, operating changes |
 | Approval | What evidence and impact inform this controlled decision? | questions, recommendations, evidence, formal decision link |
-| Lead Agent workspace | What do direct reports need, and what must the Lead coordinate? | object-linked conversation, assignments, blockers, summaries, org proposals |
-| Standing Agent workspace | What is this Agent responsible for and how is it collaborating with the Lead? | explicit WorkItems, maintained Docs, handoffs, promoted execution outcomes |
+| Organization overview | Who reports to whom, what capability is missing, and which changes are pending? | reporting relations, configuration, explicit WorkItems, capability gaps, org proposals |
+| Agent configuration/profile | What responsibility, prompt, tools/Skills, permissions, and records are assigned? | declared configuration and stable linked records; rich standalone workspace deferred |
 | Mission/Team console | How is one bounded execution progressing? | execution messages, member handoffs, artifacts, review requests, live state |
 
 ## Lead and direct-report flow
 
-1. Human gives the Lead business intent in the Lead workspace or a Document.
-2. Lead links or creates the appropriate Milestone and WorkItem.
-3. Lead assigns a direct Standing Agent, preserving sender, recipient, scope,
-   acceptance, source, and result destination.
-4. The direct report performs simple work directly or asks the Lead to start a
-   one-time Mission, Agent Team, or Workflow.
+1. Human gives the Lead business intent in a Document or governed company
+   surface.
+2. Lead routes the need to the appropriate Governance Agent.
+3. Docs Governance places durable context; Work Governance creates or routes
+   the WorkItem; Finance handles monetary effects; Org/HR supplies organization
+   identity, capacity, and Business Agents.
+4. A Business Agent performs simple work directly or uses a linked one-time
+   Mission, Agent Team, Workflow, Host, external, or human execution path.
 5. Blockers and review requests roll up to the Lead's Needs Attention view.
 6. Execution produces summaries, evidence, artifacts, and decision requests.
 7. Only promoted outcomes update the WorkItem, source Document, Approval, or
    FinancialRecord.
 
-Direct reports may communicate through shared object conversations. V1 does
-not require an unstructured peer-to-peer channel graph; the Lead remains the
-default assignment and escalation path.
+Actors may communicate through shared object conversations. V1 does not require
+an unstructured peer-to-peer channel graph. Lead is the company escalation
+path; Org/HR is the organizational manager for Business Agents; WorkItem roles
+remain the source of execution responsibility.
 
 ## Creating organizational capability
 
-The Lead distinguishes temporary execution capacity from a durable company
-role:
+Org/HR evaluates temporary execution capacity versus a durable company role,
+and Lead sponsors or approves within policy:
 
 - a temporary specialist becomes a MemberRun in the current one-time
   execution;
@@ -95,8 +99,8 @@ role:
 A Standing Agent proposal declares role charter, `reports_to`, responsibilities,
 BusinessModule and Document scope, allowed actions, approval boundaries,
 provider/budget policy, creation reason, and responsible Human authority.
-Policy decides whether the Lead may activate a low-risk Agent directly or must
-obtain Human approval. Financial, legal, external-access, credential, and
+Policy decides whether Org/HR may provision a low-risk Agent after Lead approval
+or must obtain Human approval. Financial, legal, external-access, credential, and
 organization-wide authority changes require Human approval.
 
 ## Thinking and live state
@@ -113,7 +117,10 @@ Organization and execution may reuse Actor cards, Conversation, Message,
 Activity, Handoff, Artifact, Composer, Presence, compact Team/Wave controls,
 and Context Rail modules. They do not reuse the same complete page template:
 
-- Lead and Standing Agent workspaces emphasize long-lived responsibility,
-  organizational relationships, WorkItems, Docs, and BusinessModules;
+- Organization profiles emphasize declared responsibility, prompt,
+  tools/Skills, permissions, reporting, WorkItems, Docs, and BusinessModules;
 - Mission, Wave, TeamRun, and MemberRun pages emphasize one-time execution,
   attempts, member state, delivery, evidence, and gates.
+
+Rich standalone Agent workspaces are optional future composition, not a current
+prerequisite for the organization or Work operating model.

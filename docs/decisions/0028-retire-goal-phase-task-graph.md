@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. The detailed removal record and historical evidence are archived at
-[the original ADR](../archive/legacy-goal-task-v1/decisions/0028-retire-goal-phase-task-graph.md).
+Accepted. This document is the complete active retirement policy. The final
+runtime export is preserved outside the repository and is independently
+verifiable; detailed implementation history remains recoverable from Git.
 
 ## Active Decision
 
@@ -20,8 +21,15 @@ context.
 Residual field names in internal schemas are removal debt, not product
 contracts. New code and documentation must not depend on them.
 
-## Why this tombstone exists
+## Preservation result
+
+The repository's final frozen export for this project was verified with 106
+files, 2,814 relationship edges, referential closure, and one declared known
+anomaly. Runtime archives remain external to active product documentation.
+
+## Why this policy exists
 
 Active architecture documents need a stable, resolvable policy reference
-without loading the archived model into normal context. Implementation history,
-migration evidence, and deleted-surface inventories remain in the archive.
+without loading the retired model into normal context. Deleted prose and
+surface inventories remain recoverable from Git; runtime records remain in the
+verified native export.

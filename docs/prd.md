@@ -64,17 +64,18 @@ Organization models `HumanMember`, standing `AgentMember`, external
 collaborators, and services through common `ActorRef` references while
 preserving their distinct identity and runtime rules.
 
-The initial operating model is deliberately lead-first: one Human Owner, one
-Lead Agent, and several second-level Standing Agents that report directly to
-the Lead. The Lead receives company intent, assigns WorkItems, starts optional
-long-running execution, monitors blockers, and proposes missing organizational
-capability. `reports_to_actor_ref` and `OrgUnit.parent_unit_id` keep deeper
-hierarchy additive without making it part of the first-release experience.
+The initial operating model is deliberately governance-led: one Human Owner,
+one Lead Agent, and four direct Governance Agents for Docs, Work, Finance, and
+Org/HR. All Business Agents report to Org/HR. Docs, Work, and Finance Governance
+Agents collaborate with them through governed records and Actions without
+becoming their organizational manager. `reports_to_actor_ref` and
+`OrgUnit.parent_unit_id` keep later hierarchy explicit and additive.
 
 Organization collaboration is object-centred. Human and Agent conversation,
 handoff, activity, and artifacts remain linked to a Document, BusinessModule,
-Milestone, WorkItem, Approval, or execution attempt. A Lead workspace composes
-those explicit links; it is not a free-floating chat history or provider log.
+Milestone, WorkItem, Approval, or execution attempt. The Organization overview
+and compact Actor configuration compose those explicit links; dedicated Agent
+workspaces are deferred and ordinary provider logs are never company context.
 
 ### Work and approvals
 
@@ -114,9 +115,14 @@ retain their source.
 
 ### Governance
 
-- Document Architecture Agent proposes new or reorganized Module structures.
-- Organization Governance Agent proposes roles, OrgUnits, permissions, and
-  Agent changes.
+- Docs Governance Agent proposes new or reorganized Document and Module
+  structures.
+- Work Governance Agent classifies and routes durable WorkItems and their
+  cross-system effects.
+- Finance Governance Agent manages monetary requests, controls, evidence, and
+  authorized financial transitions.
+- Org/HR Governance Agent evaluates capability gaps and proposes, provisions,
+  evaluates, or retires Business Agents through governed organization Actions.
 - Finance, legal, security, and domain reviewers evaluate affected relations.
 - A Lead or human authority approves changes according to risk policy.
 - Proposals and decisions remain reconstructable from source to effect.

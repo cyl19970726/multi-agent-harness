@@ -10,8 +10,8 @@ use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
-    MemberStatus, OrgUnit, OrganizationMembership, Payment, Relation, RiskTier, TypedRecord,
-    ValidateCompanyOs, View, WorkItem, WorkItemStatus,
+    MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, Relation, RiskTier,
+    TypedRecord, ValidateCompanyOs, View, WorkItem, WorkItemStatus, WorkQuery,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -109,6 +109,17 @@ pub fn handle_get(store: &HarnessStore, path: &str) -> Option<ApiResponse> {
     if path == "/v1/company-os/snapshot" {
         return Some(finish(snapshot(store).map_err(ApiError::from)));
     }
+    if path == "/v1/company-os/work-projection" {
+        return Some(finish(
+            store
+                .work_projection(&WorkQuery::default())
+                .map_err(ApiError::from)
+                .and_then(|projection| {
+                    serde_json::to_value(projection)
+                        .map_err(|error| ApiError::internal(error.to_string()))
+                }),
+        ));
+    }
     let suffix = path.strip_prefix("/v1/company-os/")?;
     let mut parts = suffix.split('/');
     let resource = parts.next().unwrap_or_default();
@@ -128,6 +139,19 @@ pub fn handle_post(
 ) -> Option<ApiResponse> {
     if !path.starts_with("/v1/company-os/") {
         return None;
+    }
+    // Work queries are read-only projections. They accept a typed filter body
+    // but never require or consume the mutation capability token.
+    if path == "/v1/company-os/work-query" {
+        return Some(finish(parse::<WorkQuery>(body).and_then(|query| {
+            store
+                .work_projection(&query)
+                .map_err(ApiError::from)
+                .and_then(|projection| {
+                    serde_json::to_value(projection)
+                        .map_err(|error| ApiError::internal(error.to_string()))
+                })
+        })));
     }
     if let Err(error) = authenticate_write_transport(transport_token) {
         return Some(error.response());
@@ -201,7 +225,9 @@ pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
             "org_units": store.latest_org_units()?,
             "memberships": store.latest_organization_memberships()?,
         },
+        "milestones": store.latest_milestones()?,
         "work_items": store.latest_work_items()?,
+        "work": store.work_projection(&WorkQuery::default())?,
         "assignments": store.latest_assignments()?,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
@@ -294,6 +320,7 @@ fn read_resource(
             .collect::<Result<Vec<_>, _>>()?,
         "org-units" => to_values(store.latest_org_units()?)?,
         "memberships" => to_values(store.latest_organization_memberships()?)?,
+        "milestones" => to_values(store.latest_milestones()?)?,
         "work-items" => to_values(store.latest_work_items()?)?,
         "assignments" => to_values(store.latest_assignments()?)?,
         "approvals" => to_values(store.latest_approvals()?)?,
@@ -447,6 +474,7 @@ fn append_resource(
         }
         "org-units" => append!(OrgUnit, append_org_unit),
         "memberships" => append!(OrganizationMembership, append_organization_membership),
+        "milestones" => append!(Milestone, append_milestone),
         "work-items" => append!(WorkItem, append_work_item),
         "assignments" => append!(Assignment, append_assignment),
         "approvals" => append!(Approval, append_approval),
@@ -1063,7 +1091,10 @@ fn work_item_in_module(
         .latest_work_items()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.id == work_item_id))
-        .is_some_and(|item| document_in_module(store, definition, &item.source_document_ref))
+        .is_some_and(|item| {
+            item.business_module_ref.as_deref() == Some(definition.module_id.as_str())
+                || document_in_module(store, definition, &item.source_document_ref)
+        })
 }
 
 fn entity_in_module(
@@ -1083,6 +1114,19 @@ fn entity_in_module(
             .and_then(|records| records.into_iter().find(|record| record.id == reference.id))
             .is_some_and(|record| record.module_id == definition.module_id),
         EntityKind::BusinessModule => reference.id == definition.module_id,
+        EntityKind::Milestone => store
+            .latest_milestones()
+            .ok()
+            .and_then(|milestones| milestones.into_iter().find(|item| item.id == reference.id))
+            .is_some_and(|milestone| {
+                milestone.business_module_ref.as_deref() == Some(definition.module_id.as_str())
+                    || milestone
+                        .source_document_ref
+                        .as_deref()
+                        .is_some_and(|document_id| {
+                            document_in_module(store, definition, document_id)
+                        })
+            }),
         EntityKind::WorkItem => work_item_in_module(store, definition, &reference.id),
         EntityKind::Approval => store
             .latest_approvals()
@@ -1219,6 +1263,9 @@ fn validate_work_item_transition(
         || previous.objective != target.objective
         || previous.source_document_ref != target.source_document_ref
         || previous.source_record_refs != target.source_record_refs
+        || previous.milestone_ref != target.milestone_ref
+        || previous.work_type != target.work_type
+        || previous.business_module_ref != target.business_module_ref
         || previous.submitted_by != target.submitted_by
         || previous.requested_by != target.requested_by
         || previous.accountable_owner != target.accountable_owner
@@ -1368,6 +1415,7 @@ fn resource_history(store: &HarnessStore, resource: &str) -> Result<Vec<Value>, 
             .collect(),
         "org-units" => to_values(store.org_units()?),
         "memberships" => to_values(store.organization_memberships()?),
+        "milestones" => to_values(store.milestones()?),
         "work-items" => to_values(store.work_items()?),
         "assignments" => to_values(store.assignments()?),
         "approvals" => to_values(store.approvals()?),

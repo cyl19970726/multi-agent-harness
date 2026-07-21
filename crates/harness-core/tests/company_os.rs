@@ -4,10 +4,10 @@ use harness_core::{
     Block, BlockKind, BusinessModule, Commitment, CommitmentStatus, CompanyOsValidationError,
     CustomPageDefinition, CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, Document,
     DocumentKind, EntityKind, EntityRef, ExecutionMode, ExternalParticipant, HumanMember,
-    LifecycleStatus, MemberStatus, Money, OrgUnit, OrgUnitStatus, OrganizationMembership,
-    OrganizationMembershipRole, OrganizationMembershipStatus, Payment, PaymentStatus, Relation,
-    RelationRule, RiskTier, ServiceActor, StandingAgent, TypedRecord, ValidateCompanyOs, View,
-    ViewMode, WorkItem, WorkItemStatus,
+    LifecycleStatus, MemberStatus, Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus,
+    OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
+    PaymentStatus, Relation, RelationRule, RiskTier, ServiceActor, StandingAgent, TypedRecord,
+    ValidateCompanyOs, View, ViewMode, WorkItem, WorkItemStatus, WorkType,
 };
 use serde_json::json;
 
@@ -242,6 +242,9 @@ fn trademark_work_item() -> WorkItem {
         status: WorkItemStatus::WaitingForApproval,
         source_document_ref: "doc-trademark-cn-2026-018".into(),
         source_record_refs: vec!["record-cn-2026-018".into()],
+        milestone_ref: Some("milestone-trademark-filed".into()),
+        work_type: WorkType::Legal,
+        business_module_ref: Some("module-trademark".into()),
         result_document_ref: Some("doc-trademark-cn-2026-018".into()),
         result_record_refs: vec![],
         submitted_by: agent(),
@@ -276,6 +279,42 @@ fn work_item_has_business_provenance_without_requiring_an_executor() {
     assert!(serde_json::to_string(&work)
         .unwrap()
         .contains("waiting_for_approval"));
+}
+
+#[test]
+fn milestone_is_a_company_checkpoint_not_an_execution_wave() {
+    let milestone = Milestone {
+        id: "milestone-trademark-filed".into(),
+        title: "Trademark application submitted".into(),
+        outcome: "The CN application has a durable filing receipt".into(),
+        status: MilestoneStatus::Active,
+        accountable_owner: human(),
+        source_document_ref: Some("doc-trademark-cn-2026-018".into()),
+        business_module_ref: Some("module-trademark".into()),
+        target_at: Some("2026-07-31T00:00:00Z".into()),
+        acceptance_criteria: vec!["Receipt evidence is linked".into()],
+        work_item_refs: vec!["work-trademark-filing".into()],
+        created_at: NOW.into(),
+        updated_at: NOW.into(),
+        achieved_at: None,
+    };
+    milestone.validate().unwrap();
+    let wire = serde_json::to_value(milestone).unwrap();
+    assert!(wire.get("wave_id").is_none());
+    assert_eq!(wire["business_module_ref"], "module-trademark");
+}
+
+#[test]
+fn historical_work_rows_default_to_general_without_inventing_relations() {
+    let mut wire = serde_json::to_value(trademark_work_item()).unwrap();
+    let object = wire.as_object_mut().unwrap();
+    object.remove("work_type");
+    object.remove("milestone_ref");
+    object.remove("business_module_ref");
+    let decoded: WorkItem = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded.work_type, WorkType::General);
+    assert_eq!(decoded.milestone_ref, None);
+    assert_eq!(decoded.business_module_ref, None);
 }
 
 #[test]

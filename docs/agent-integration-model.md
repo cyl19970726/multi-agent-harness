@@ -3,14 +3,13 @@
 This is the canonical answer to one question: **to integrate a new agent,
 provider, or platform into Star Harness, what do you have to define?**
 
-It sits above the provider-neutral runtime contract in
-[agent-runtime.md](agent-runtime.md) and the prompt/identity contract in
-[agent-control-plane.md](company-os/execution-foundation.md), and above the concrete
+It sits above the provider runtime implementation reference in
+[agent-runtime.md](agent-runtime.md) and the execution boundary in
+[execution-foundation.md](company-os/execution-foundation.md), and above the concrete
 provider implementations in [integration/codex.md](integration/codex.md),
 [integration/claude.md](integration/claude.md), and
-[integration/kimi.md](integration/kimi.md). It does not redefine `Goal`,
-`Task`, `Message`, `Evidence`, `Proposal`, or `Decision`; those stay owned by
-the core object model.
+[integration/kimi.md](integration/kimi.md). It does not redefine Mission/Wave,
+executor-native records, WorkItems, Approvals, or organization authority.
 
 Integration is organized around **three pillars** plus a single
 **provider-neutral launch spec** that maps uniformly onto every platform:
@@ -74,13 +73,12 @@ prompt artifact, not inline chat text**. The contract:
   full system prompt per delivery from this stack:
 
 ```text
-harness base system prompt          (message-first workflow, evidence, gates)
+harness base system prompt          (Mission/Wave, honest execution records, gates)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
-  -> standing team context           (teammates, peer norms, reviewers)
-  -> active vision context           (long-term target state)
-  -> selected historical work design context    (scenario, non-goals, legacy dependency graph)
-  -> task message envelope           (current Message(kind=task))
+  -> execution context               (Mission, Wave, executor, run and assignments)
+  -> optional company context        (WorkItem, source Document, Actors, approval policy)
+  -> delivery envelope               (current executor-owned assignment or host request)
   -> permission and evidence policy   (allowed tools, approval, report format)
 ```
 
@@ -113,10 +111,11 @@ contract for resolving and injecting skills:
   via `skill_refs`. Codex passes a skill input item on `turn/start`; Claude
   injects via the system prompt. Either way the rule is the same: the harness
   chooses skills, the platform consumes them.
-- **Kinds.** Two skill kinds are recognized: a **generic harness skill** (how to
-  use the `Goal -> Task -> Message -> Evidence -> Decision -> outcome evaluation`
-  workflow) and a **project/adapter skill** (how to use a project's CLI,
-  dashboard, evidence, and safety boundaries).
+- **Kinds.** Two skill kinds are recognized: a **generic harness capability**
+  (how to use Mission/Wave and the selected executor honestly) and a
+  **project/adapter skill** (how to use a project's CLI, Dashboard, acceptance
+  evidence, and safety boundaries). Skills are optional tools, never product
+  authority.
 
 ### Capabilities: the vocabulary
 
@@ -486,8 +485,8 @@ abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals
 
-- Do not redefine `Goal`, `Task`, `Message`, `Evidence`, `Proposal`, or
-  `Decision` here; those stay in the core object model.
+- Do not redefine Mission/Wave, executor-native records, WorkItem, Approval or
+  organization authority here; those stay in their owning contracts.
 - Do not let one platform's wire vocabulary become the neutral spec.
 - Do not treat provider-native subagents as durable members unless promoted.
 - Do not evolve the implemented contracts (skills, MCP, capability declaration)

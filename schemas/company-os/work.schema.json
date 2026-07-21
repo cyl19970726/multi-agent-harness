@@ -3,6 +3,7 @@
   "$id": "https://star-harness.local/schemas/company-os/work.schema.json",
   "title": "Company OS work and approval",
   "oneOf": [
+    { "$ref": "#/$defs/milestone" },
     { "$ref": "#/$defs/workItem" },
     { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/approval" }
@@ -24,7 +25,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["kind", "id"],
       "properties": {
-        "kind": { "enum": ["actor", "document", "typed_record", "business_module", "work_item", "approval", "financial_record", "evidence", "execution"] },
+        "kind": { "enum": ["actor", "document", "typed_record", "business_module", "milestone", "work_item", "approval", "financial_record", "evidence", "execution"] },
         "id": { "$ref": "#/$defs/string" }
       }
     },
@@ -40,10 +41,38 @@
         "ended_at": { "type": ["string", "null"], "minLength": 1 }
       }
     },
+    "milestone": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "title", "outcome", "status", "accountable_owner",
+        "source_document_ref", "business_module_ref", "target_at",
+        "acceptance_criteria", "work_item_refs", "created_at", "updated_at", "achieved_at"
+      ],
+      "allOf": [{
+        "if": { "properties": { "status": { "const": "achieved" } }, "required": ["status"] },
+        "then": { "properties": { "achieved_at": { "$ref": "#/$defs/string" } } }
+      }],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "title": { "$ref": "#/$defs/string" },
+        "outcome": { "$ref": "#/$defs/string" },
+        "status": { "enum": ["planned", "active", "at_risk", "achieved", "cancelled", "archived"] },
+        "accountable_owner": { "$ref": "#/$defs/actorRef" },
+        "source_document_ref": { "type": ["string", "null"], "minLength": 1 },
+        "business_module_ref": { "type": ["string", "null"], "minLength": 1 },
+        "target_at": { "type": ["string", "null"], "minLength": 1 },
+        "acceptance_criteria": { "$ref": "#/$defs/refs" },
+        "work_item_refs": { "$ref": "#/$defs/refs" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" },
+        "achieved_at": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
     "workItem": {
       "type": "object", "additionalProperties": false,
       "required": [
         "id", "title", "objective", "status", "source_document_ref", "source_record_refs",
+        "milestone_ref", "work_type", "business_module_ref",
         "result_document_ref", "result_record_refs", "submitted_by", "requested_by",
         "accountable_owner", "assignees", "contributors", "reviewer", "approver",
         "execution_mode", "execution_refs", "approval_refs", "evidence_refs", "artifact_refs",
@@ -69,6 +98,9 @@
         "status": { "enum": ["draft", "submitted", "triaged", "accepted", "in_progress", "waiting_for_approval", "blocked", "in_review", "completed", "cancelled", "archived"] },
         "source_document_ref": { "$ref": "#/$defs/string" },
         "source_record_refs": { "$ref": "#/$defs/refs" },
+        "milestone_ref": { "type": ["string", "null"], "minLength": 1 },
+        "work_type": { "enum": ["development", "design", "research", "content", "legal", "procurement", "finance", "operations", "governance", "human_action", "general"] },
+        "business_module_ref": { "type": ["string", "null"], "minLength": 1 },
         "result_document_ref": { "type": ["string", "null"], "minLength": 1 },
         "result_record_refs": { "$ref": "#/$defs/refs" },
         "submitted_by": { "$ref": "#/$defs/actorRef" },

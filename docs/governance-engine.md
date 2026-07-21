@@ -51,6 +51,13 @@ required_fields = ["path", "ownerRole", "status", "lifecycle", "canonicalFor",
 allowed_statuses = ["idea", "planned", "stable", "deprecated", "archival"]
 allowed_lifecycles = ["volatile", "stable", "archival"]
 core_docs = ["README.md", "docs/README.md", "docs/architecture.md"]
+coverage_roots = ["docs/product", "docs/operations"]
+coverage_exclude = []
+
+[retired_vocabulary]                # optional; requires [registry]
+terms = ["Goal -> Task", "Goal/Task Workbench"]
+allowed_paths = ["docs/migrations/old-model.md"]
+context_markers = ["archived", "compatibility", "historical", "retired"]
 ```
 
 A project with docs in `book/` sets `doc_roots` accordingly; an mdBook project
@@ -63,13 +70,17 @@ drops the `[registry]` block and keeps `links` + `size`.
 | `links` | blocker | every relative Markdown link resolves to a file | `check-doc-links.mjs` |
 | `size` | warning | markdown over `max_lines` (warn, never block) | `check-doc-size.mjs` |
 | `skills` | blocker | SKILL.md frontmatter + `agents/openai.yaml` + member `skill_refs` resolve | `check-skills.mjs` |
-| `registry` | blocker | required fields, allowed enums, path/dependency existence, no dupes, core docs registered, valid `reviewAfter` | `check-doc-governance.mjs` |
+| `registry` | blocker | required fields, allowed enums, path/dependency existence, no duplicate paths or active canonical scopes, core docs and every Markdown file under configured coverage roots registered, valid `reviewAfter` | extended native port |
+| `retired_vocabulary` | blocker | exact retired phrases cannot appear as current language in active registered Markdown; archival/deprecated docs, configured owner paths and explicitly historical lines are allowed | native governance extension |
 
 The ports are faithful 1:1 (same roots, rules, and messages), with two
 deliberate refinements: directory entries are sorted (deterministic output,
 unlike Node's `readdirSync`), and a missing root is skipped rather than throwing.
-On a repo where every root exists, the output is byte-identical to the legacy
-gates.
+On a repo where every root exists, the four ported gates retain the legacy
+behavior. `retired_vocabulary` is an opt-in native extension: it uses the
+registry to scan only active documents, so migration and archive evidence remain
+readable without letting superseded product language return to normal planning
+context.
 
 ## Parity and self-host
 

@@ -1,0 +1,54 @@
+{
+  "contract": "company-os-four-system-collaboration-v1",
+  "truth_class": "expected-explainer",
+  "viewport": {
+    "width": 1536,
+    "height": 1024
+  },
+  "assets": [
+    {
+      "id": "docs-governance-agent-focus-ui-reference",
+      "file": "expected/docs-governance-agent-focus-ui--1536x1024.png",
+      "prompt": "prompts/docs-governance-agent-focus-ui.md",
+      "implementation_priority": "deferred-reference-only",
+      "sha256": "22b050a9efb377f6fb5417adab65f09edaf89382cf5790e36646e550f0dcd566"
+    },
+    {
+      "id": "work-governance-agent-focus-ui-reference",
+      "file": "expected/work-governance-agent-focus-ui--1536x1024.png",
+      "prompt": "prompts/work-governance-agent-focus-ui.md",
+      "implementation_priority": "deferred-reference-only",
+      "sha256": "d224e8ae71d1b74b0e9236f83cafba1269518eafa6dfb50a8dc08c5599f1a0e6"
+    },
+    {
+      "id": "organization-overview-ui",
+      "file": "expected/organization-overview-ui--1536x1024.png",
+      "prompt": "prompts/organization-overview-ui.md",
+      "sha256": "02690610ad5bd5386c7a09a17c6178151f57a55c5551f016be274fa4e5a9f19b"
+    },
+    {
+      "id": "hr-governance-agent-focus-ui",
+      "file": "expected/hr-governance-agent-focus-ui--1536x1024.png",
+      "prompt": "prompts/hr-agent-focus-ui.md",
+      "sha256": "bb8f7eafb777a1ceaa8debbdedf886a66169c5fd89de194d2b81243c65285f64"
+    },
+    {
+      "id": "governance-led-organization",
+      "file": "expected/governance-led-organization--1536x1024.png",
+      "prompt": "prompts/governance-led-organization.md",
+      "sha256": "894f1de6f3c2f7a37c77135c650024040833a4e5582e964436b9a7432562bc49"
+    },
+    {
+      "id": "responsibility-map",
+      "file": "expected/four-system-responsibility-map--1536x1024.png",
+      "prompt": "prompts/system-map.md",
+      "sha256": "36bee26c770a108391accc3620aeb60358ab1c8aff95f5f5dd8df269a5d7513c"
+    },
+    {
+      "id": "trademark-loop",
+      "file": "expected/trademark-operating-loop--1536x1024.png",
+      "prompt": "prompts/trademark-loop.md",
+      "sha256": "3b90b753dfdc3cc987db28005f25db40875778e3e020d16e937a34c26b08b414"
+    }
+  ]
+}

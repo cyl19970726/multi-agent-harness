@@ -19,7 +19,7 @@ flowchart TB
   Collab["Collaboration spine\nconversation · activity · handoff · artifacts"]
   Work["Work\nMilestones · WorkItems · Assignments"]
   Approval["Approvals and Needs You"]
-  Gov["Document and Organization Governance"]
+  Gov["Governance Agents\nDocs · Work · Finance · Org / HR"]
   Finance["Finance and Metrics"]
   Exec["Execution selection"]
   Mission["Mission / ordered Waves"]
@@ -62,6 +62,8 @@ flowchart TB
   Finance --> Docs
   Gov --> Docs
   Gov --> Org
+  Gov --> Work
+  Gov --> Finance
   Gov --> Approval
 ```
 
@@ -70,7 +72,7 @@ flowchart TB
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | Docs and Modules | business structure, content, record types, relations, views, templates | provider execution lifecycle |
-| Organization | Actor identity, Lead/direct-report hierarchy, role, authority, permissions, availability, capacity | one TeamRun attempt |
+| Organization | Actor identity, Human Owner → Lead → four Governance Agents, Org/HR → Business Agent hierarchy, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
 | Collaboration | assignments, cross-actor messages, interaction routing, handoff, artifacts, explicit outcomes, and provider-native session links | responsibility, approval, finance truth, copied provider transcripts, or raw thinking |
 | Work and Approval | Milestones, WorkItem responsibility, source/result provenance, policy gates, execution reference | Project hierarchy or executor-internal planning |
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |

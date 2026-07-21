@@ -25,6 +25,10 @@ function argument(name, fallback = "") {
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
 }
 
+function flag(name) {
+  return process.argv.includes(name);
+}
+
 function hash(buffer) {
   return `sha256:${createHash("sha256").update(buffer).digest("hex")}`;
 }
@@ -156,6 +160,10 @@ async function main() {
   const approvalActionDecision = argument("--approval-action-decision", "approved");
   if (!new Set(["approved", "rejected"]).has(approvalActionDecision)) throw new Error("--approval-action-decision must be approved or rejected");
   const outputRoot = resolve(argument("--output", join(repoRoot, ".visual-evidence/company-os-v2", runId)));
+  const viewportWidth = Number(argument("--viewport-width", "1536"));
+  const viewportHeight = Number(argument("--viewport-height", "1024"));
+  const viewportName = argument("--viewport-name", `desktop-${viewportWidth}x${viewportHeight}`);
+  if (!Number.isInteger(viewportWidth) || !Number.isInteger(viewportHeight) || viewportWidth < 320 || viewportHeight < 480) throw new Error("invalid capture viewport");
   const actualRoot = join(outputRoot, dataMode === "live" ? "store-live-actual" : "actual");
   await mkdir(actualRoot, { recursive: true });
   const fixtureText = await readFile(fixturePath, "utf8");
@@ -168,11 +176,12 @@ async function main() {
   try {
     await waitFor(base, "Vite dashboard").catch((error) => { throw new Error(`${error.message}\n${vite.failure()}`); });
     browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({ viewport: { width: 1536, height: 1024 }, deviceScaleFactor: 1, reducedMotion: "reduce" });
+    const context = await browser.newContext({ viewport: { width: viewportWidth, height: viewportHeight }, deviceScaleFactor: 1, reducedMotion: "reduce" });
     if (dataMode === "fixture") await context.addInitScript((value) => { window.__COMPANY_OS_FIXTURE__ = value; }, fixture);
     const page = await context.newPage();
     const results = [];
-    for (const item of cases) {
+    const workViewResults = [];
+    for (const item of flag("--work-views-only") ? [] : cases) {
       const url = new URL(item.route, base);
       url.searchParams.set("api", dataMode === "live" ? base : "http://127.0.0.1:9");
       if (liveSource) url.searchParams.set("project", liveSource.project_id);
@@ -199,9 +208,32 @@ async function main() {
       await verifyPage(page, root, item, dataMode);
       if (dataMode === "live" && consoleErrors.length) throw new Error(`${item.id} console errors: ${consoleErrors.join(" | ")}`);
       const path = join(actualRoot, `${item.id}.png`);
-      await page.screenshot({ path, fullPage: false });
+      await page.screenshot({ path, fullPage: false, timeout: 60_000 });
       const bytes = await readFile(path);
-      results.push({ ...item, viewport: "desktop-1536x1024", final_url: page.url(), file: relative(repoRoot, path), sha256: hash(bytes), status: "captured" });
+      results.push({ ...item, viewport: viewportName, final_url: page.url(), file: relative(repoRoot, path), sha256: hash(bytes), status: "captured" });
+    }
+    if (flag("--capture-work-views")) {
+      const workRoot = join(outputRoot, "work-views");
+      await mkdir(workRoot, { recursive: true });
+      const url = new URL("/?surface=work", base);
+      url.searchParams.set("api", dataMode === "live" ? base : "http://127.0.0.1:9");
+      if (liveSource) url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      const root = page.locator('[data-company-os-page="workboard"][data-company-os-ready="true"]').first();
+      await root.waitFor({ state: "visible", timeout: 15_000 });
+      const views = [
+        ["overview", "Overview"], ["board", "Board"], ["all", "All Work"],
+        ["milestones", "Milestones"], ["timeline", "Timeline"], ["workload", "Workload"],
+      ];
+      for (const [id, label] of views) {
+        await root.getByRole("button", { name: label, exact: true }).click();
+        await root.locator(`[data-work-view="${id}"]`).waitFor({ state: "visible" });
+        const overflow = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+        if (overflow.scroll > overflow.width) throw new Error(`work-${id} has horizontal overflow: ${JSON.stringify(overflow)}`);
+        const path = join(workRoot, `work-${id}--${viewportName}.png`);
+        await page.screenshot({ path, fullPage: false, timeout: 60_000 });
+        workViewResults.push({ id, label, viewport: viewportName, file: relative(repoRoot, path), sha256: hash(await readFile(path)), status: "captured" });
+      }
     }
     let workItemAction;
     if (workItemActionToken) {
@@ -216,20 +248,20 @@ async function main() {
       await root.waitFor({ state: "visible", timeout: 15_000 });
       await root.locator('[data-company-os-action-state="available"]').waitFor({ state: "visible", timeout: 15_000 });
       const waitingPath = join(actionRoot, "workitem-waiting--before.png");
-      await page.screenshot({ path: waitingPath, fullPage: false });
+      await page.screenshot({ path: waitingPath, fullPage: false, timeout: 60_000 });
       await root.locator("[data-company-os-work-note]").fill("Trademark preparation started by the assigned Standing Agent.");
       await root.locator("[data-company-os-action-token]").fill(workItemActionToken);
       await root.getByRole("button", { name: "Start preparation", exact: true }).click();
       await page.locator(`[data-company-os-ref="${workItemId}"][data-work-item-status="in_progress"]`).waitFor({ state: "visible", timeout: 15_000 });
       const progressPath = join(actionRoot, "workitem-in-progress--after-start.png");
-      await page.screenshot({ path: progressPath, fullPage: false });
+      await page.screenshot({ path: progressPath, fullPage: false, timeout: 60_000 });
       root = page.locator('[data-company-os-page="work-item-focus"]').first();
       await root.locator("[data-company-os-work-note]").fill("Filing package and evidence are ready for accountable review.");
       await root.locator("[data-company-os-action-token]").fill(workItemActionToken);
       await root.getByRole("button", { name: "Submit result", exact: true }).click();
       await page.locator(`[data-company-os-ref="${workItemId}"][data-work-item-status="in_review"]`).waitFor({ state: "visible", timeout: 15_000 });
       const reviewPath = join(actionRoot, "workitem-in-review--after-submit.png");
-      await page.screenshot({ path: reviewPath, fullPage: false });
+      await page.screenshot({ path: reviewPath, fullPage: false, timeout: 60_000 });
       const snapshot = await readJson(liveSource.snapshot_endpoint, "post-submit WorkItem snapshot");
       const workItem = latestRecords(snapshot.company_os.work_items).find((record) => record.id === workItemId);
       const commands = latestRecords(snapshot.company_os.action_commands).filter((record) => record.command_name === "work_item.transition");
@@ -268,7 +300,7 @@ async function main() {
       await root.waitFor({ state: "visible", timeout: 15_000 });
       await root.locator('[data-company-os-action-state="available"]').waitFor({ state: "visible", timeout: 15_000 });
       const beforePath = join(actionRoot, "approval-requested--before.png");
-      await page.screenshot({ path: beforePath, fullPage: false });
+      await page.screenshot({ path: beforePath, fullPage: false, timeout: 60_000 });
       await root.locator("[data-company-os-decision-note]").fill(`${approvalActionDecision === "approved" ? "Approved" : "Rejected"} in Store-live browser acceptance; no Payment is authorized.`);
       await root.locator("[data-company-os-action-token]").fill("invalid-browser-capability");
       await root.getByRole("button", { name: decisionButton, exact: true }).click();
@@ -277,17 +309,17 @@ async function main() {
       const deniedApproval = latestRecords(deniedSnapshot.company_os.approvals).find((record) => record.id === approvalId);
       if (deniedApproval?.status !== "requested") throw new Error("invalid browser capability mutated the Approval");
       const denialPath = join(actionRoot, "approval-denied-invalid-capability.png");
-      await page.screenshot({ path: denialPath, fullPage: false });
+      await page.screenshot({ path: denialPath, fullPage: false, timeout: 60_000 });
       await root.locator("[data-company-os-action-token]").fill(approvalActionToken);
       await root.getByRole("button", { name: decisionButton, exact: true }).click();
       await root.getByText(`Decision recorded: ${approvalActionDecision}.`, { exact: false }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
         const failurePath = join(actionRoot, "approval-action-failure.png");
-        await page.screenshot({ path: failurePath, fullPage: false });
+        await page.screenshot({ path: failurePath, fullPage: false, timeout: 60_000 });
         const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
         throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
       });
       const afterPath = join(actionRoot, `approval-${approvalActionDecision}--after.png`);
-      await page.screenshot({ path: afterPath, fullPage: false });
+      await page.screenshot({ path: afterPath, fullPage: false, timeout: 60_000 });
       const snapshot = await readJson(liveSource.snapshot_endpoint, "post-decision snapshot");
       const companyOs = snapshot.company_os;
       const approval = latestRecords(companyOs.approvals).find((record) => record.id === approvalId);
@@ -347,7 +379,7 @@ async function main() {
       await root.getByRole("button", { name: "Complete", exact: true }).click();
       await page.locator(`[data-company-os-ref="${workItemId}"][data-work-item-status="completed"]`).waitFor({ state: "visible", timeout: 15_000 });
       const completedPath = join(actionRoot, "workitem-completed--after-approval.png");
-      await page.screenshot({ path: completedPath, fullPage: false });
+      await page.screenshot({ path: completedPath, fullPage: false, timeout: 60_000 });
       const snapshot = await readJson(liveSource.snapshot_endpoint, "completed WorkItem snapshot");
       const workItem = latestRecords(snapshot.company_os.work_items).find((record) => record.id === workItemId);
       const payments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "payment");
@@ -388,6 +420,7 @@ async function main() {
       git_dirty: Boolean(execFileSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).trim()),
       assertions: ["explicit data truth mode", "canonical record refs", "no Payment before settlement", "no persisted thinking", "no horizontal overflow", dataMode === "live" ? "no console errors" : "fixture API errors are non-evidence"],
       results,
+      ...(workViewResults.length ? { work_views: workViewResults } : {}),
       ...(approvalAction ? { approval_action: approvalAction } : {}),
       ...(workItemAction ? { work_item_action: workItemAction } : {}),
     };
