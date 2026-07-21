@@ -18,9 +18,9 @@ Mission
   -> next Wave or Mission closeout
 ```
 
-The Workbench must not require or introduce a legacy dependency graph for Mission, Wave, or
-Agent Team. Current Goal/legacy phase record/Task pages remain labeled compatibility
-surfaces until their data is dual-read into Mission/Wave views.
+The Workbench must not require or introduce a dependency graph for Mission,
+Wave, or Agent Team. Retired coordination pages and unlinked Team Runs are not
+part of active navigation or authoring.
 
 ## Key Questions
 
@@ -34,7 +34,7 @@ surfaces until their data is dual-read into Mission/Wave views.
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
 | What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
 | What needs the user? | Authorization, blocker, failed delivery, budget, retry, and Wave-gate alerts. |
-| Can I trust the view? | Capability labels and compatibility gaps are explicit; unsupported joins are never fabricated. |
+| Can I trust the view? | Capability gaps are explicit; unsupported joins are never fabricated. |
 
 ## Information Architecture
 
@@ -50,7 +50,6 @@ flowchart TD
   Artifacts[Artifacts and outcomes]
   Gate[Wave gate]
   Warnings[Approvals and warnings]
-  Compat[Goal/legacy phase record compatibility]
 
   Missions --> Mission
   Mission --> Waves
@@ -65,7 +64,6 @@ flowchart TD
   Gate --> Waves
   Team --> Warnings
   Workflow --> Warnings
-  Compat -. dual read .-> Mission
 ```
 
 ## Core Views
@@ -80,7 +78,6 @@ flowchart TD
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, attach result to gate |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
 | Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, revise Wave |
-| Compatibility | Keep current Goal/legacy phase record/Task data usable during migration. | open legacy surface with explicit label |
 
 ## Agent Team Proof
 
@@ -101,7 +98,7 @@ sends can reuse that assignment correlation or inherit it from a validated
 same-run cause. The UI should render these structural joins and label messages
 with omitted lineage as unanchored rather than fabricating ownership.
 
-## Backward Data Requirements
+## Data Requirements
 
 | Workbench need | Required contract |
 | --- | --- |
@@ -113,7 +110,6 @@ with omitted lineage as unanchored rather than fabricating ownership.
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
 | Wave gate | accepted/revise/blocked, actor/time, note, artifacts, accepted run |
-| Compatibility | honest Goal/legacy phase record/Task dual-read/deprecation metadata |
 
 Fields that affect acceptance, authorization, or ownership belong in schemas
 and runtime contracts, not frontend-only state.
@@ -126,9 +122,9 @@ SSE `member_activity` frame, includes an expiry, and disappears on refresh or
 TTL expiry. It never enters snapshot history, JSONL, replay, evidence,
 messages, or peer context.
 
-New Kimi writes do not persist thinking, and product snapshots filter historical
-`MemberAction(type=thinking)` rows without deleting the ledger. The live preview
-is intentionally display-only and cannot be used to reconstruct an attempt.
+New Kimi writes do not persist thinking, and active stores do not retain
+`MemberAction(type=thinking)` rows. The live preview is intentionally
+display-only and cannot be used to reconstruct an attempt.
 
 ## Warnings
 
@@ -148,13 +144,6 @@ is intentionally display-only and cannot be used to reconstruct an attempt.
 Warnings link to a real repair action or clearly state that no repair surface
 exists yet.
 
-## Compatibility Surfaces
-
-Goal, legacy phase record, legacy dependency graph/Kanban, Proposal, Review, Decision, and
-outcome evaluation views remain useful for current self-hosting history and stricter
-repository governance. They must be visually labeled `Compatibility` and may
-not define the Mission/Wave information architecture.
-
 ## Document Boundary
 
 | Document | Owns |
@@ -163,10 +152,10 @@ not define the Mission/Wave information architecture.
 | `docs/dashboard.md` | Workbench product purpose and information architecture |
 | `docs/dashboard/pages/*.md` | page purpose, proof, actions, and layout contracts |
 | `docs/dashboard/frontend-architecture.md` | frontend modules, routing, and read-model plumbing |
-| `docs/dashboard/read-model.md` | projections and compatibility joins |
-| `docs/dashboard/acceptance.md` | browser, screenshot, responsive, and workflow acceptance |
+| `apps/agent-dashboard/src/model/*.ts` | implemented projections and selectors |
+| `docs/design/execution-workbench-v3/visual-contract.json` | browser, screenshot, responsive, and visual acceptance |
 | `docs/dashboard/runbook.md` | local run/build/snapshot entry points |
-| `docs/dashboard/layout-history.md` | historical layout candidates and rejected decisions |
+| `docs/company-os/frontend-information-architecture.md` | shared visual doctrine and layout decisions |
 
 ## Acceptance
 
@@ -183,7 +172,7 @@ Workbench acceptance requires fixtures plus at least one live Mission showing:
 9. an asynchronous attempt start whose durable updates arrive in the selected
    project's SSE read model;
 10. transient thinking that is absent after reload/expiry and from snapshots;
-11. Goal/legacy phase record data still reachable as labeled compatibility state;
+11. no retired coordination or unlinked-TeamRun surface in active navigation;
 12. desktop, tablet, and mobile screenshot evidence with no horizontal overflow.
 
 ## Invariants

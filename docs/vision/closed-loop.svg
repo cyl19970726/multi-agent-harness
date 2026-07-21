@@ -13,7 +13,7 @@
 <text x="340" y="120" text-anchor="middle">propose goal</text><text x="340" y="137" text-anchor="middle" font-size="11" fill="#656d76">human opens it today (stub)</text>
 
 <rect x="230" y="164" width="220" height="46" rx="7" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
-<text x="340" y="184" text-anchor="middle">design + plan</text><text x="340" y="201" text-anchor="middle" font-size="11" fill="#656d76">knowledge to phases + task DAG</text>
+<text x="340" y="184" text-anchor="middle">design + plan</text><text x="340" y="201" text-anchor="middle" font-size="11" fill="#656d76">knowledge to ordered Waves</text>
 
 <rect x="230" y="228" width="220" height="46" rx="7" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
 <text x="340" y="248" text-anchor="middle">run phases</text><text x="340" y="265" text-anchor="middle" font-size="11" fill="#656d76">execute per phase + worktree land</text>

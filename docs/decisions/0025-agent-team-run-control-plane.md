@@ -51,7 +51,7 @@ reuse shared runtime infrastructure without adopting Agent Team semantics.
 ### v0 object model
 
 ```text
-AgentTeamRun    id, mission_id?, wave_id?, objective, status, wave_index?, budget_limit_usd?,
+AgentTeamRun    id, mission_id?, wave_id?, objective, status, budget_limit_usd?,
                 host{surface, thread_id}, member_run_ids[],
                 created_at / started_at / ended_at
 
@@ -99,8 +99,9 @@ Rules:
 - `MemberAction` stores explicit work facts. It does not store private
   reasoning.
 - `TeamRunEvent` is a single ordered durable event log with sanitized payloads.
-- A native attempt links both `mission_id` and `wave_id`; an unlinked TeamRun is
-  compatibility-only historical/manual state, not a native planning alternative.
+- A native attempt links both `mission_id` and `wave_id`. Optional identifiers
+  remain at the Store/API boundary only for reading imported records; unlinked
+  runs are excluded from active Agent Team product navigation and authoring.
 - Attempt completion (`reviewing -> completed`) is separate from the Wave gate;
   only a completed attempt can be accepted by that parent Wave.
 
@@ -169,10 +170,9 @@ object model.
 
 Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 
-New Kimi adapter writes no longer append provider reasoning as durable
-`MemberAction(type=thinking)` rows. Historical rows remain in JSONL for
-non-destructive compatibility but are filtered from current snapshots and
-status reads. The Console now receives a sanitized `member_activity` preview
+New Kimi adapter writes do not append provider reasoning as durable
+`MemberAction(type=thinking)` rows. Active stores are cleaned rather than
+retaining those rows as a compatibility contract. The Console receives a sanitized `member_activity` preview
 only through project-scoped SSE: it carries an expiry, is never tailed from a
 ledger, never appears in a snapshot, and is not replayed after reconnect.
 
@@ -193,13 +193,13 @@ back to the user's default model.
 ## Consequences
 
 - ADR 0025 remains the canonical v0 substrate for the `agent_team` executor.
-- Mission/Wave product hierarchy and compatibility migration are owned by ADR
-  0026, not by this file.
+- Mission/Wave product hierarchy is owned by ADR 0026; retirement of the old
+  coordination stack is owned by ADR 0028.
 - A future dashboard or host surface should explain Agent Team ownership through
   assignment-message correlation and wave context rather than through a
   first-class legacy dependency graph concept.
-- Current runtime fields such as `current_task_id` may remain during migration,
-  but they are compatibility seams, not the preferred product explanation.
+- Residual internal fields such as `current_task_id` are removal debt, not an
+  active product contract, ownership model, or reason to retain old UI.
 
 ## Non-goals
 

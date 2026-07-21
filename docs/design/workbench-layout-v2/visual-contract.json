@@ -1,9 +1,12 @@
 {
-  "version": 1,
-  "workstream": "workbench-layout-v2",
+  "version": 2,
+  "workstream": "workbench-layout-v2-remaining-pages",
+  "superseded_pages": {
+    "mission-wave-canvas": "../execution-workbench-v3/visual-contract.json",
+    "team-war-room": "../execution-workbench-v3/visual-contract.json"
+  },
   "artifact_policy": {
-    "expected": "durable under docs/design/workbench-layout-v2/expected",
-    "selected_comparisons": "durable under docs/design/workbench-layout-v2/comparisons",
+    "expected": "durable only for pages without an approved V3 replacement",
     "raw_browser_runs": "/Users/hhh0x/multi-agent-harness/.visual-evidence/workbench-layout-v2"
   },
   "cases": [
@@ -14,105 +17,21 @@
       "state": "running-needs-you",
       "route": "/?surface=team&team=<team-run-id>&memberRun=<member-run-id>",
       "fixture": "workbench-layout-v2-native-v1",
-      "viewport": {
-        "width": 1440,
-        "height": 1000,
-        "device_scale_factor": 1
-      },
+      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/workbench-layout-v2/baseline/member-run-focus--current-drawer--desktop-1440x1000.png",
       "expected": "expected/member-run-focus/running-needs-you--desktop-concept-1536x1024.png",
       "implemented": "../../../.visual-evidence/workbench-layout-v2/implemented/member-run-focus--running-needs-you--desktop-1440x1000.png",
       "comparison": "comparisons/member-run-focus/running-needs-you--desktop.png",
       "prompt": "prompts/member-run-focus/running-needs-you.md",
-      "expected_approval": {
-        "status": "approved",
-        "by": "user",
-        "date": "2026-07-19"
-      },
+      "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-19" },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
-          "The generated expected design is 1536x1024 while browser evidence uses the contract viewport 1440x1000.",
-          "The historical baseline is the former member drawer and is retained as a product-direction comparison, not same-state regression evidence."
+          "The approved expected design is 1536x1024 while browser evidence uses 1440x1000.",
+          "Execution portraits are illustrative; provider, model, role, and status remain explicit text."
         ],
         "defects": [],
-        "follow_ups": [
-          "Validate the composer with long messages and an open mobile keyboard."
-        ]
-      }
-    },
-    {
-      "id": "team-war-room--running-needs-you--desktop",
-      "priority": "P0",
-      "page": "team-war-room",
-      "state": "running-needs-you",
-      "route": "/?surface=team&team=<team-run-id>",
-      "fixture": "workbench-layout-v2-native-v1",
-      "viewport": {
-        "width": 1440,
-        "height": 1000,
-        "device_scale_factor": 1
-      },
-      "baseline": "../../../.visual-evidence/workbench-layout-v2/baseline/team-war-room--current-completed--desktop-1440x1000.png",
-      "expected": "expected/team-war-room/running-needs-you--desktop-concept-1536x1024.png",
-      "implemented": "../../../.visual-evidence/workbench-layout-v2/implemented/team-war-room--running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/team-war-room/running-needs-you--desktop.png",
-      "prompt": "prompts/team-war-room/running-needs-you.md",
-      "expected_approval": {
-        "status": "approved",
-        "by": "user",
-        "date": "2026-07-19"
-      },
-      "review": {
-        "status": "pass_with_deviations",
-        "intentional_deviations": [
-          "Mobile shows the highest-pressure member first and collapses the remaining member list so activity remains primary.",
-          "The historical baseline is a compatibility TeamRun page and is retained as a product-direction comparison, not same-state regression evidence.",
-          "Tablet uses a 64px compact navigation rail rather than the full desktop sidebar."
-        ],
-        "defects": [],
-        "follow_ups": [
-          "Validate the composer with long messages and an open mobile keyboard."
-        ]
-      }
-    },
-    {
-      "id": "mission-wave-canvas--running-gate-pending--desktop",
-      "priority": "P0",
-      "page": "mission-wave-canvas",
-      "state": "running-gate-pending",
-      "route": "/?surface=missions&mission=<mission-id>&wave=<wave-id>",
-      "fixture": "workbench-layout-v2-native-v1",
-      "viewport": {
-        "width": 1440,
-        "height": 1000,
-        "device_scale_factor": 1
-      },
-      "baseline": "../../../.visual-evidence/workbench-layout-v2/baseline/mission-wave-canvas--current-native-waves--desktop-1440x1000.png",
-      "expected": "expected/mission-wave-canvas/running-gate-pending--desktop-concept-1536x1024.png",
-      "implemented": "../../../.visual-evidence/workbench-layout-v2/implemented/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
-      "comparison": "comparisons/mission-wave-canvas/running-gate-pending--desktop.png",
-      "prompt": "prompts/mission-wave-canvas/running-gate-pending.md",
-      "expected_approval": {
-        "status": "approved",
-        "by": "user",
-        "date": "2026-07-19"
-      },
-      "review": {
-        "status": "pass_with_deviations",
-        "intentional_deviations": [
-          "The generated expected design is 1536x1024 while browser evidence uses the contract viewport 1440x1000.",
-          "The historical baseline is retained as a product-direction comparison, not same-state regression evidence.",
-          "The Agent Team compact uses a dense status row instead of avatar cards so Re-plan and Wave 3 remain visible in the first viewport.",
-          "On mobile the Context action scrolls to prioritized inline Mission context instead of opening a separate bottom sheet.",
-          "The aggregate 2/3 readiness is reported by the current gate note; criterion-level evidence mapping is explicitly left unassigned."
-        ],
-        "defects": [],
-        "follow_ups": [
-          "Replace gate-note readiness parsing with a structured criterion-to-evidence contract.",
-          "Evaluate a bottom sheet or return anchor for mobile Mission context.",
-          "Compress or reorder the desktop context rail if all Gate details must appear without rail scrolling."
-        ]
+        "follow_ups": ["Validate the composer with long messages and an open mobile keyboard."]
       }
     },
     {
@@ -133,7 +52,7 @@
         "status": "blocked",
         "intentional_deviations": [],
         "defects": [
-          "The current read model has no explicit availability/capacity contract or cross-executor StandingAssignment projection; implementing the candidate image would require inferred data.",
+          "The read model has no explicit availability/capacity contract or cross-executor StandingAssignment projection.",
           "The expected design remains pending focused user approval."
         ]
       }
@@ -146,10 +65,7 @@
       "route": "/?surface=missions",
       "fixture": "workbench-layout-v2-native-v1",
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
-      "baseline": "",
       "expected": "expected/missions-collection/active-needs-you--desktop-concept-1536x1024.png",
-      "implemented": "",
-      "comparison": "",
       "prompt": "prompts/missions-collection/active-needs-you.md",
       "expected_approval": { "status": "pending" },
       "review": { "status": "not_started", "intentional_deviations": [], "defects": [] }
@@ -162,10 +78,7 @@
       "route": "/?surface=workflows&workflowRun=<workflow-run-id>",
       "fixture": "workbench-layout-v2-workflow-v1",
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
-      "baseline": "",
       "expected": "expected/workflow-run-focus/running-parallel--desktop-concept-1536x1024.png",
-      "implemented": "",
-      "comparison": "",
       "prompt": "prompts/workflow-run-focus/running-parallel.md",
       "expected_approval": { "status": "pending" },
       "review": { "status": "not_started", "intentional_deviations": [], "defects": [] }
@@ -178,10 +91,7 @@
       "route": "component-specification",
       "fixture": "workbench-layout-v2-component-fixture-v1",
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
-      "baseline": "",
       "expected": "expected/context-controls/micro-compact-panel--desktop-concept-1536x1024.png",
-      "implemented": "",
-      "comparison": "",
       "prompt": "prompts/context-controls/micro-compact-panel.md",
       "expected_approval": { "status": "pending" },
       "review": { "status": "not_started", "intentional_deviations": [], "defects": [] }

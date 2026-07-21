@@ -46,11 +46,11 @@ async function waitFor(url, label, timeoutMs = 30_000) {
   throw new Error(`${label} did not become ready: ${lastError?.message ?? "timeout"}`);
 }
 
-function start(command, args, name) {
+function start(command, args, name, env = {}) {
   const child = spawn(command, args, {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, FORCE_COLOR: "0" },
+    env: { ...process.env, FORCE_COLOR: "0", ...env },
   });
   let output = "";
   for (const stream of [child.stdout, child.stderr]) {
@@ -122,6 +122,7 @@ async function main() {
       process.execPath,
       [join(repoRoot, "node_modules/vite/bin/vite.js"), "--config", "apps/agent-dashboard/vite.config.ts", "--host", "127.0.0.1", "--port", String(webPort)],
       "Vite dashboard",
+      { HARNESS_CAPTURE_API_PROXY: apiBase },
     );
     await Promise.race([
       Promise.all([
@@ -134,8 +135,9 @@ async function main() {
 
     browser = await chromium.launch();
     const cases = [
+      ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
-      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Implement the Wave-centered Team Console"],
+      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Console · Agent Team"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
     ];
     const viewports = [
@@ -163,7 +165,10 @@ async function main() {
 
       for (const [pageName, state, route, readyText] of cases) {
         const separator = route.includes("?") ? "&" : "?";
-        const url = `${webBase}${route}${separator}api=${encodeURIComponent(apiBase)}&project=_store`;
+        // Keep browser reads and SSE same-origin. Vite forwards /v1 and /health
+        // to this run's isolated Harness API; Node-side fixture writes still use
+        // apiBase directly.
+        const url = `${webBase}${route}${separator}api=${encodeURIComponent(webBase)}&project=_store`;
         await page.goto(url, { waitUntil: "domcontentloaded" });
         await page.getByRole("heading", { name: readyText, exact: false }).first().waitFor({ state: "visible", timeout: 15_000 });
         await page.evaluate(() => document.fonts.ready);
@@ -187,7 +192,7 @@ async function main() {
         await page.screenshot({ path: output });
         captures.push({ page: pageName, state, viewport: viewportName, route, output });
 
-        if (width <= 900) {
+        if (width <= 900 && pageName !== "agent-teams-home") {
           if (pageName === "mission-wave-canvas") {
             await page.getByRole("button", { name: "Context", exact: true }).click();
           } else {

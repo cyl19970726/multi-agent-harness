@@ -24,7 +24,7 @@ harness state without relying on chat memory or provider transcripts.
 
 | Question | Data-model answer |
 | --- | --- |
-| What is the durable intent? | Native `Mission`; old Goals appear only as provenance-marked read-only projections. |
+| What is the durable intent? | Native `Mission`. |
 | What is the ordered work boundary? | Native `Wave` rows ordered by `index`; there is no required work graph. |
 | Which execution happened? | `Wave.executor_run_ids`; executor-specific ledgers own internal state. |
 | How is Agent Team work assigned? | `TeamMessage(kind=assignment)` plus its `correlation_id`. |
@@ -41,7 +41,7 @@ harness state without relying on chat memory or provider transcripts.
 | Product purpose | PRD and design basis | README summaries |
 | Object meaning | [concept-model.md](concept-model.md) and schemas | Dashboard labels, CLI help |
 | Coordination state | Harness store | Provider transcripts, hooks, logs |
-| Mission status | latest native `Mission` row | Goal compatibility projection, Dashboard summary |
+| Mission status | latest native `Mission` row | Dashboard summary |
 | Wave order and gate | latest native `Wave` rows | Dashboard Wave timeline |
 | Agent Team attempts | `AgentTeamRun` rows linked by Mission/Wave ids | run cards |
 | Agent Team assignment | assignment `TeamMessage` plus correlation lineage | member current action, lane UI |
@@ -52,10 +52,8 @@ harness state without relying on chat memory or provider transcripts.
 | Wave acceptance | `Wave.gate_status` + `accepted_run_id` + outcome/artifacts | reviewer comment or provider self-report alone |
 | Optional evaluator output | `Review` | report message text |
 | Defect / risk ledger | `Gap` (Bug = `Gap(category=bug)`) | `product-gap-inbox.md` flat file |
-| Legacy Goal plan | `legacy plan record` (or legacy `Evidence(source_type=historical work design)`) | chat plan |
-| Legacy Goal retrospective | `outcome evaluation` (or legacy `Evidence(source_type=outcome evaluation)`) | final chat summary |
-| Reusable lesson | `reusable learning note` + `examples/reusable learning notes/**` | full transcript |
-| Long-lived target | `Vision`; `Goal.vision_id` links a goal | loose `vision_ref` text |
+| Reusable lesson | `LearningNote` or an explicit reusable document | full transcript |
+| Long-lived target | `Vision`; Missions link to the intent they advance | loose text reference |
 
 ## Object Clusters
 
@@ -77,60 +75,17 @@ flowchart TD
   Gate --> Wave
 ```
 
-## Legacy Goal/Task Compatibility Model
+## Optional Governance Objects
 
-The remaining Goal/Task sections document the still-readable classic runtime.
-They do not define native Mission/Wave execution and must not be used to require
-a legacy dependency graph, Proposal, Decision, or outcome evaluation for every Wave.
+`Review`, `Gap`, `Evidence`, `Decision`, `Evaluation`, and `LearningNote` may be
+used when a domain or repository gate needs them. They enrich execution proof;
+they are not mandatory levels between Wave outcome and gate. Product-specific
+WorkItems, Approvals, finance, metrics, and documents are defined by the
+Company OS contracts rather than by a generic task graph.
 
-## legacy dependency graph Edges
-
-The legacy dependency graph is a view over tasks and their edges, not a separate competing
-state machine.
-
-| Edge | Field or source | Meaning |
-| --- | --- | --- |
-| Goal membership | `task.execution_ref` | Task contributes to one goal. |
-| Decomposition | `task.parent_task_id` | Task is a child of a broader task. |
-| Execution dependency | `depends_on_task_ids` | Task waits for prior work. |
-| Review | `reviewer_agent_id` | Reviewer or critic expected before acceptance. |
-| Assignment | delivered `Message(kind=task)` | Work was sent to a member or channel. |
-| Handoff | task-linked message | Context moved between members. |
-| Follow-up | decision or evaluation evidence | New task created from result or learning. |
-
-## Generic Objects And Edges
-
-Six generic objects extend the model (full field lists and vocabularies in
-[concept-model.md](concept-model.md) and [schemas.md](schemas.md)). They add the
-following edges over existing objects:
-
-| Object | Edge fields | Meaning |
-| --- | --- | --- |
-| `Review` | `task_id` / `execution_ref`, `reviewer_agent_id`, `evidence_ids` | Structured evaluator verdict for a task or goal; backs a `Decision`. |
-| `Gap` | `execution_ref` / `task_id`, `owner_agent_id`, `evidence_ids` | Defect or risk row; a Bug is `category=bug`. `severity`/`status` are closed enums. |
-| `legacy plan record` | `execution_ref`, `dependency graph[]` (task ids), `agent_team` | The goal's plan; `Goal.historical work design_id` may point back to it. |
-| `outcome evaluation` | `execution_ref`, `follow_up_task_ids[]`, `proposed_execution_refs[]` | The retrospective; closes the learning loop into the next round. |
-| `reusable learning note` | `source_execution_ref`, `historical work design_ref`, `evaluation_ref` | Sanitized reusable lesson. |
-| `Vision` | referenced by `Goal.vision_id` | Long-lived target a goal collection moves toward. |
-
-New scalar links on existing objects: `Goal.vision_id` /
-`Goal.historical work design_id` / `Goal.closed_by_decision_id`; `Task.phase_id`
-(the join key to a `legacy phase record`; the legacy free-text `Task.phase` label was
-retired) / `Task.scope_refs[]` / `Task.requires_human_approval` /
-`Task.verdict_decision_id`;
-`Evidence.evidence_kind` / `Evidence.execution_ref`; `Decision.decision_kind` /
-`Decision.execution_ref` / `Decision.is_waiver` / `Decision.follow_up_task_id`.
-
-### Evidence-to-Object Graduation (dual-read)
-
-`legacy plan record` and `outcome evaluation` first existed as
-`Evidence(source_type=historical work design | outcome evaluation)`. They have now graduated
-to first-class objects, and **both representations are read at once**: the
-read model and the `operational learning_status` gate union legacy `Evidence` rows and
-the graduated objects by `execution_ref`, with no backfill. Old goals keep their
-`Evidence` rows; new goals write the objects; the gate is satisfied by either.
-The graduation contract is documented in
-[Company OS governance](company-os/governance.md).
+Retired object fields that remain in internal schemas are removal debt governed
+by [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md). They must not be
+read into native Mission/Wave projections or used as a reason to retain old UI.
 
 ## Projection Rules
 
@@ -163,9 +118,8 @@ Native invariants:
 7. Parallel file-changing members need distinct workspaces, branches, or
    explicit owned-path coordination.
 
-Legacy Goal/Task flows retain their own assignment, proposal, decision, and
-learning gates while they remain supported. Those invariants do not migrate
-implicitly into native Wave.
+Retired coordination flows have no separate active invariants. Archive records
+exist only to explain removal history.
 
 ## Relationship To Schemas
 

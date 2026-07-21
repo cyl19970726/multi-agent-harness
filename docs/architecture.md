@@ -56,20 +56,14 @@ Dependencies, branches, worktrees, or workflow fan-out may still exist inside
 current implementations, but they are internal execution mechanics, not the
 product concept a future operator should start from.
 
-## Compatibility Terms
+## Active Coordination Contract
 
-Mission/Wave is the canonical product vocabulary. Native Mission/Wave ledgers,
-schemas, public authoring, Agent Team linkage, retry lineage, and the Wave gate
-now exist, while older Goal surfaces remain readable compatibility paths.
-
-| Canonical product term | Current compatibility surface | Rule |
-| --- | --- | --- |
-| `Mission` | Read-only provenance projection from existing `Goal` rows | Native Mission is authoritative for new work. Compatibility projections use `compat-goal:*` ids and are never written back. |
-| `Wave` | Existing `legacy phase record` ids are compatibility provenance only | Native Wave is authoritative for new work. A legacy phase record is never synthesized into a Wave because its dependency graph semantics differ. |
-| Mission closeout | Optional legacy `outcome evaluation` | Native closeout uses an explicit Mission outcome summary; richer evaluation remains an optional compatibility/governance layer. |
-
-The migration is non-destructive: old ledgers stay readable and are not
-rewritten by Mission/Wave commands.
+Mission/Wave is the only active coordination vocabulary. Native ledgers,
+schemas, authoring, Agent Team linkage, retry lineage, Wave gates, and Mission
+closeout are implemented. The superseded stack is removed from active reads,
+commands, and UI under [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md).
+Optional evaluation remains governance layered on an outcome, not a second
+closeout model.
 
 ## Executor Kinds
 
@@ -143,8 +137,8 @@ The target contract makes thinking transient live-only state.
 
 Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
 
-New Kimi execution no longer persists `thinking` actions, and current snapshots
-hide historical thinking rows without deleting the ledger. The Console now has a
+New Kimi execution does not persist `thinking` actions, and active stores do
+not retain historical thinking rows. The Console has a
 sanitized `member_activity` SSE preview with expiry: it is delivered only to
 currently connected clients, is project-scoped, and is never added to JSONL,
 snapshots, replay, messages, or evidence. It is a preview, not an audit trail.
@@ -169,29 +163,19 @@ Standing Agents + Docs
   -> not part of the current implementation goal
 ```
 
-Standing Agents + Docs is future architecture. The current documentation goal
-must not imply that it is already implemented or that Agent Team runs are
-standing organizations.
+Standing Agents + Docs are the current product direction with additive
+contracts still being implemented. Documentation must distinguish those
+planned Company OS contracts from proven schemas and must never treat Agent
+Team runs as standing organizations.
 
-## Compatibility Migration
+## Current Implementation Boundary
 
-The accepted migration is staged and non-destructive:
-
-1. Docs: make Mission/Wave canonical, mark Goal/legacy phase record references
-   transitional, and add one architecture map.
-2. Schema and store: implemented for native Mission/Wave plus non-destructive
-   Goal compatibility projection.
-3. Runtime: Agent Team joins, attempts, and gate are implemented; Dynamic
-   Workflow and Host Wave routing remain.
-4. CLI/API/MCP/Dashboard: native authoring and the Mission-first Console are
-   implemented for Agent Team Waves. Dynamic Workflow and Host retain executor
-   seams rather than falsely claiming routed Console execution.
-5. Stored data, fixtures, tests, skills, and governance: update validators,
-   snapshots, docs registry, and acceptance paths after the runtime seam is
-   stable.
-
-No stage should require deleting existing runtime code before the replacement is
-proven.
+Native Mission/Wave authoring, Agent Team joins and attempts, explicit gates,
+Mission closeout, CLI/API/MCP calls, and the Mission-first Dashboard are
+implemented. Dynamic Workflow and Host retain their executor-specific truth;
+the UI must show an honest unavailable state where routed controls are not yet
+implemented. Residual names from the superseded stack are tracked as code
+removal debt, not compatibility commitments.
 
 ## Surface Responsibility
 

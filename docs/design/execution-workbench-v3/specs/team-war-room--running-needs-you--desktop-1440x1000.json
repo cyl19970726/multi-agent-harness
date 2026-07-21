@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "status": "approved_and_implemented",
+  "page": "team-war-room",
+  "expected": "../expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png",
+  "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+  "geometry": {
+    "regions": [
+      { "name": "primary-navigation", "x": 0, "y": 0, "width": 230, "height": 1000, "behavior": "fixed" },
+      { "name": "topbar", "x": 230, "y": 0, "width": 1210, "height": 58, "behavior": "sticky" },
+      { "name": "team-workspace", "x": 250, "y": 75, "width": 795, "height": 890, "behavior": "primary-scroll-owner" },
+      { "name": "team-context", "x": 1070, "y": 58, "width": 370, "height": 942, "behavior": "independent-context-rail" },
+      { "name": "composer", "x": 250, "y": 884, "width": 795, "height": 62, "behavior": "sticky-bottom" }
+    ],
+    "grid": { "shell_columns": [230, 840, 370], "presence_columns": [1, 1, 1, 1], "activity_columns": ["36px semantic node and spine", "80px independent timestamp", "fluid durable content", "optional pressure action"] },
+    "gutters": { "workspace_left": 20, "workspace_right": 25, "context_horizontal": 24 },
+    "max_content_width": 1440,
+    "scroll_owner": "team-activity",
+    "sticky_regions": ["primary-navigation", "topbar", "composer", "team-context-footer"]
+  },
+  "vertical_landmarks": [
+    { "name": "team-heading", "y": 108 },
+    { "name": "presence-start", "y": 190 },
+    { "name": "presence-end", "y": 338 },
+    { "name": "activity-tabs", "y": 365 },
+    { "name": "activity-stream-start", "y": 410 },
+    { "name": "pressure-attachment", "y": 792 },
+    { "name": "composer", "y": 884 }
+  ],
+  "typography": [
+    { "role": "page-title", "size": 20, "weight": 650, "line_height": 26 },
+    { "role": "section-title", "size": 14, "weight": 620, "line_height": 20 },
+    { "role": "activity-primary", "size": 12, "weight": 560, "line_height": 18 },
+    { "role": "body", "size": 12, "weight": 400, "line_height": 18 },
+    { "role": "meta", "size": 10, "weight": 500, "line_height": 15 },
+    { "role": "eyebrow", "size": 9, "weight": 650, "line_height": 13, "letter_spacing": 0.08 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 20, 24, 32],
+  "surfaces": [
+    { "name": "workspace", "fill": "#fffefd", "border": "none", "radius": 0, "shadow": "none" },
+    { "name": "presence-member", "fill": "transparent", "border": "right #eceae7", "radius": 0, "shadow": "none" },
+    { "name": "semantic-icon", "fill": "status-tint", "border": "status-hairline", "radius": 999, "shadow": "none" },
+    { "name": "composer", "fill": "#ffffff", "border": "#e4e2df", "radius": 8, "shadow": "0 2px 10px rgba(17,24,39,.05)" },
+    { "name": "pressure-action", "fill": "#fff7f7", "border": "#ffb7bf", "radius": 8, "shadow": "none" }
+  ],
+  "colors": [
+    { "token": "accent", "value": "#f43f5e", "use": "review pressure and send" },
+    { "token": "live", "value": "#1688f8", "use": "assignments, messages, active members" },
+    { "token": "accepted", "value": "#16a05d", "use": "approved decisions and valid evidence" },
+    { "token": "pending", "value": "#e99a08", "use": "waiting Lead and gate" },
+    { "token": "decision", "value": "#7c4de8", "use": "decision event" },
+    { "token": "foreground", "value": "#17191e", "use": "headings" },
+    { "token": "muted", "value": "#6f7279", "use": "metadata" },
+    { "token": "hairline", "value": "#e8e6e3", "use": "stream and rail structure" }
+  ],
+  "icons_and_assets": [
+    { "asset": "company-mark", "strategy": "reuse project SVG/code primitive", "size": "34x34" },
+    { "asset": "activity-semantic-icons", "strategy": "code-native SVG with assignment/action/handoff/decision mapping", "size": "16 inside 34x34 tinted circle", "stroke": 1.7 },
+    { "asset": "agent-portraits", "strategy": "reuse approved shared portrait sprites", "size": "32x32 presence and 28x28 context" },
+    { "asset": "status-dots", "strategy": "deterministic CSS primitive", "size": "7x7" },
+    { "asset": "activity-spine", "strategy": "deterministic CSS line", "size": "1px wide" },
+    { "asset": "pressure-connector", "strategy": "deterministic CSS/SVG dashed connector", "size": "context-dependent" }
+  ],
+  "component_strategy": {
+    "reuse": ["AppNavigation", "TopWorkbenchBar", "StatusPill", "AgentPortrait", "SemanticIcon", "ConnectionFooter"],
+    "page_specific": ["TeamPresenceStrip", "CorrelatedActivityTimeline", "ActivityEventRow", "AttachedMemberPressure", "TeamComposer", "TeamContextRail"],
+    "replace_or_split": ["replace generic member cards with a border-separated presence strip", "replace admin event rows with a semantic chronological timeline whose node, timestamp, content, and pressure action have independent columns", "default All to attempt creation, assignments, and latest pressure while retaining a one-click full durable record", "split selected member pressure from generic resources", "keep message composition distinct from durable activity records"]
+  },
+  "responsive_transformations": [
+    "Tablet turns the four-column presence strip into a horizontally scrollable strip and moves context to a drawer.",
+    "Mobile places the blocked member first, uses a compact presence carousel, and keeps the composer reachable below the latest event.",
+    "The selected member and Gate readiness appear in a bottom sheet; pressure remains attached to the QA activity row."
+  ],
+  "design_risks": [
+    "Generated correlations are visually shortened; implementation must use full durable correlation IDs with truncation and accessible full text.",
+    "The stream must summarize explicit actions and must not render or persist provider thinking.",
+    "Sticky composer height must adapt to multiline drafts and software keyboards without covering the latest event.",
+    "Member ordering communicates pressure, not organization hierarchy or ownership."
+  ],
+  "unresolved_decisions": []
+}

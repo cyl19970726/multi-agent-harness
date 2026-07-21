@@ -1,7 +1,7 @@
 # Mission / Wave Canvas Page Spec
 
 ```text
-status: planned
+status: implemented
 owner_role: product-design
 canonical_for: Mission planning, ordered Wave execution, and Wave gate decisions
 route_or_surface: Missions -> Mission -> selected Wave
@@ -44,8 +44,8 @@ executor = agent_team | dynamic_workflow | host
 ```
 
 A Wave is a lightweight integration boundary, not an implementation phase,
-legacy dependency graph, or provider session. Compatibility Goal projections may be
-displayed with provenance, but legacy phase record is never silently converted to a Wave.
+dependency graph, or provider session. Retired coordination records are not
+loaded into the active Mission/Wave authoring or Dashboard path.
 
 For an agent-team Wave, TeamRun completion makes an attempt available for
 review. It never updates `Wave.gate_status` by implication. A Host gate action
@@ -56,7 +56,7 @@ completed attempt if accepted.
 
 The visual reference is the approved
 `mission-wave-canvas/running-gate-pending--desktop` expected design in
-[`../../design/workbench-layout-v2/`](../../design/workbench-layout-v2/README.md).
+[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
 
 ### Desktop — `1440x1000`
 
@@ -134,16 +134,22 @@ collapse but do not become user-authored dashboard widgets in the first release.
 
 ## Actions
 
-- Create, select, reorder, or edit planned Waves only within Mission planning
-  permissions.
+Implemented now:
+
+- Create a Mission, create ordered Waves, and select a Wave.
 - Open a selected Wave's Team War Room, MemberRun Focus, WorkflowRun, host
   output, artifact, or check.
-- Record a re-plan delta that changes a later Wave after clear plan-vs-actual
-  evidence.
 - Gate the selected Wave as `accepted`, `revise`, or `blocked` when its
   executor outcome and required evidence are available.
 - Retry an agent-team Wave by creating a new TeamRun attempt linked to the same
   Wave; do not mutate an old attempt away or create a fake replacement Wave.
+- Close a Mission with an explicit outcome after all Waves are accepted.
+
+Target follow-up, not an implemented contract:
+
+- reorder or edit a planned Wave after creation; and
+- mutate a structured re-plan delta after plan-versus-actual evidence. The
+  current implementation records the re-plan note when a Wave is created.
 
 The gate action explicitly selects a completed attempt for acceptance. It must
 reject a running/incomplete attempt and state why. No button may imply that
@@ -163,8 +169,6 @@ finishing a TeamRun has already accepted the Wave.
 - **Missing evidence:** GateOutcome lists the missing criterion/proof and keeps
   accept unavailable; artifacts may legitimately be absent when they are not a
   Wave requirement.
-- **Compatibility Mission projection:** mark it read-only/provenance-labeled;
-  do not offer native Wave editing against legacy Goal data.
 - **Read error/offline:** retain a clearly stale last projection and scoped
   retry; do not erase the ordered flow with a generic empty state.
 
@@ -187,8 +191,7 @@ For `mission-wave-canvas--running-gate-pending--desktop`:
 
 ## Explicit Boundaries
 
-- Mission/Wave is the primary product hierarchy; Goal/legacy phase record are
-  compatibility objects, not authoring defaults.
+- Mission/Wave is the only active coordination hierarchy for new work.
 - A Wave needs neither a legacy dependency graph nor universal member/task ownership.
 - Team, Workflow, and Host executor controls share shell components but retain
   separate canonical records.

@@ -55,7 +55,7 @@ async function main() {
   );
 
   const [teamSource, missionSource] = await Promise.all([
-    readFile(join(dashboardRoot, "src/surfaces/TeamRuns.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
   ]);
   check(
@@ -64,7 +64,7 @@ async function main() {
     "Dashboard offers ACK only for delivered Host recipient rows",
   );
   check(
-    teamSource.includes('starting ? "Starting…" : "Start orchestration"'),
+    teamSource.includes('starting ? "Starting…" : "Start attempt"'),
     "TeamRun start has an explicit pending state",
   );
   check(

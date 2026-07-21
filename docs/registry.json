@@ -149,14 +149,14 @@
    "reorgTrigger": "Company OS product boundary, Docs/Organization model, execution-foundation requirements, near-term scope, scenarios, or non-goals change."
   },
   {
-   "path": "docs/mvp.md",
+  "path": "docs/mvp.md",
    "ownerRole": "product",
    "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Mission/Wave MVP slice",
     "executor acceptance gates",
-    "non-destructive compatibility acceptance"
+    "retired coordination exclusion acceptance"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -183,7 +183,7 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Mission/Wave MVP scope, executor acceptance, compatibility strategy, or build order changes."
+   "reorgTrigger": "Mission/Wave MVP scope, executor acceptance, retirement policy, or build order changes."
   },
   {
    "path": "docs/design-basis.md",
@@ -212,15 +212,15 @@
    "reorgTrigger": "A new core layer, module, surface, or governance rule becomes stable."
   },
   {
-   "path": "docs/concept-model.md",
+  "path": "docs/concept-model.md",
    "ownerRole": "product-architecture",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "core object relationships",
-    "Mission/Wave semantics and compatibility mapping",
+    "Mission/Wave semantics and retired-coordination boundary",
     "executor kinds and assignment-message correlation",
-    "generic object model (Review, Gap, historical work design, outcome evaluation, reusable learning note, Vision)",
+    "optional governance object model (Review, Gap, Evaluation, LearningNote, Vision)",
     "closeout gate and open-enum vocabularies",
     "anti-drift invariants"
    ],
@@ -244,14 +244,14 @@
    "reorgTrigger": "Core object semantics, the generic object set, closeout gate, open-enum vocabularies, assignment flow, evidence flow, or Dashboard projection rules change."
   },
   {
-   "path": "docs/architecture.md",
+  "path": "docs/architecture.md",
    "ownerRole": "architecture",
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
     "Mission/Wave product hierarchy",
     "executor kinds and shared infrastructure",
-    "compatibility migration plan"
+    "retired coordination boundary"
    ],
    "dependsOn": [
     "docs/design-basis.md",
@@ -312,18 +312,17 @@
    "reorgTrigger": "The Company OS product hierarchy, Docs/Organization relationship model, executor kinds, shared runtime diagrams, or compatibility migration map change."
   },
   {
-   "path": "docs/data-model.md",
+  "path": "docs/data-model.md",
    "ownerRole": "schema",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "data model relationships",
     "source-of-truth rules",
     "projection semantics",
     "Mission/Wave and executor attempt edges",
-    "legacy dependency graph compatibility edges",
-    "generic object edges",
-    "Evidence-to-object graduation (dual-read)"
+    "optional governance object edges",
+    "retired-field removal boundary"
    ],
    "dependsOn": [
     "docs/prd.md",
@@ -341,7 +340,7 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, legacy generic object edges, projections, source-of-truth rules, or schema responsibilities change."
+   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change."
   },
   {
    "path": "docs/agent-runtime.md",
@@ -376,15 +375,15 @@
    "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes."
   },
   {
-   "path": "docs/dashboard.md",
+  "path": "docs/dashboard.md",
    "ownerRole": "product-design",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Mission/Wave Workbench information architecture",
     "executor control-plane views",
     "Agent Team ownership visibility",
-    "compatibility UI boundary"
+    "retired-surface exclusion boundary"
    ],
    "dependsOn": [
     "docs/architecture-map.md",
@@ -409,7 +408,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Mission/Wave navigation, executor views, read models, safe actions, or compatibility UI boundaries change."
+   "reorgTrigger": "Mission/Wave navigation, executor views, read models, safe actions, or retired-surface boundaries change."
   },
   {
    "path": "docs/dashboard/README.md",
@@ -440,13 +439,13 @@
    "reorgTrigger": "Workbench docs gain new stable surfaces, readers, or source-of-truth boundaries."
   },
   {
-   "path": "docs/dashboard/frontend-design.md",
+  "path": "docs/dashboard/frontend-design.md",
    "ownerRole": "product-design",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Agent Workbench frontend design index",
-    "Mission/Wave frontend migration boundary",
+    "Mission/Wave frontend implementation boundary",
     "Workbench page-spec map",
     "Workbench page-local layout contract map",
     "Workbench implementation-readiness summary"
@@ -471,15 +470,15 @@
    "reorgTrigger": "Workbench page specs, page-local layout contracts, implementation readiness, or frontend design reading order changes."
   },
   {
-   "path": "docs/dashboard/frontend-architecture.md",
+  "path": "docs/dashboard/frontend-architecture.md",
    "ownerRole": "frontend-architecture",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Agent Workbench frontend architecture",
     "Workbench technical stack decision",
-    "Workbench old-code disposition",
-    "Workbench primitive boundaries"
+    "Workbench data-flow and module boundaries",
+    "Workbench primitive and visual implementation policy"
    ],
    "dependsOn": [
     "docs/dashboard.md",
@@ -500,12 +499,12 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Frontend stack, dependency policy, primitive boundaries, graph strategy, or old-code disposition changes."
+   "reorgTrigger": "Frontend stack, data flow, dependency policy, primitive boundaries, or visual implementation policy changes."
   },
   {
-   "path": "docs/dashboard/runbook.md",
+  "path": "docs/dashboard/runbook.md",
    "ownerRole": "operations",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Agent Workbench run instructions",
@@ -534,15 +533,15 @@
    "reorgTrigger": "Workbench run commands, API port, build output, or static artifact workflow changes."
   },
   {
-   "path": "docs/workflow-git-pr.md",
+  "path": "docs/workflow-git-pr.md",
    "ownerRole": "lead-operations",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Git worktree workflow",
     "PR integration",
-    "proposal and review flow",
-    "task concurrency rules"
+    "executor-aware change attribution and review flow",
+    "Wave-scoped concurrency rules"
    ],
    "dependsOn": [
     "docs/concept-model.md",
@@ -561,7 +560,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Task concurrency, worktree, PR, proposal, review, or decision workflow changes."
+   "reorgTrigger": "Wave executor concurrency, worktree, WorkflowPatch, PR, review, or gate workflow changes."
   },
   {
    "path": "docs/integration/README.md",
@@ -929,35 +928,6 @@
    "reorgTrigger": "Debug page contract, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
   },
   {
-   "path": "docs/dashboard/pages/team-run-console.md",
-   "ownerRole": "product-design",
-   "status": "planned",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Agent Team war-room page spec",
-    "Mission/Wave agent_team executor observation UI contract",
-    "assignment-message correlation proof surface",
-    "page-local layout contract"
-   ],
-   "dependsOn": [
-    "docs/prd.md",
-    "docs/concept-model.md",
-    "docs/dashboard.md",
-    "docs/dashboard/frontend-design.md",
-    "docs/decisions/0025-agent-team-run-control-plane.md",
-    "docs/decisions/0026-mission-wave-architecture.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-09-30",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "The Team page contract, assignment-message correlation proof surface, layout contract dimensions, ASCII diagrams, first viewport, or scroll ownership changes."
-  },
-  {
    "path": "docs/decisions/0016-tailwind-shadcn-adoption.md",
    "ownerRole": "frontend-architecture",
    "status": "stable",
@@ -1101,7 +1071,7 @@
     "docs/agent-runtime.md",
     "docs/architecture-map.md",
     "docs/integration/kimi.md",
-    "docs/dashboard/pages/team-run-console.md",
+    "docs/dashboard/pages/team-run-war-room.md",
     "docs/decisions/0011-provider-neutral-runtime.md",
     "docs/decisions/0018-exec-stream-primary-substrate.md",
     "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md",
@@ -1736,17 +1706,18 @@
    "reorgTrigger": "The governance engine's commands, config schema, gate kinds, or the doc-sync integration change; or the full cut lands and the .mjs gates are retired."
   },
   {
-   "path": "docs/design/agent-team-goal-wave-layout.md",
+   "path": "docs/design/agent-team-mission-wave-layout.md",
    "ownerRole": "product-design",
    "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "agent team frontend information architecture (Missions / Waves / Agent Teams / member pages)",
-    "Mission/Wave model and compatibility copy for the UI",
+    "implemented Mission/Wave and Agent Team UI model",
     "transient live-only thinking policy"
    ],
    "dependsOn": [
-    "docs/dashboard/pages/team-run-console.md",
+    "docs/dashboard/pages/mission-wave-canvas.md",
+    "docs/dashboard/pages/team-run-war-room.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
@@ -1758,7 +1729,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, compatibility-copy policy, or transient-thinking policy changes."
+   "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, active-navigation policy, or transient-thinking policy changes."
   },
   {
    "path": "docs/company-os/README.md",
@@ -2141,13 +2112,13 @@
    "reorgTrigger": "The primary cross-module acceptance scenario, trademark module contract, or finance/approval linkage changes."
   },
   {
-   "path": "docs/company-os/document-migration.md",
+  "path": "docs/company-os/document-migration.md",
    "ownerRole": "documentation-governance",
    "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Company OS documentation lifecycle map",
-    "canonical, execution, compatibility, and historical documentation boundary"
+    "canonical, execution, implemented, and historical documentation boundary"
    ],
    "dependsOn": [
     "docs/company-os/README.md",
@@ -2163,7 +2134,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "A canonical, execution, compatibility, historical, or superseded document family changes lifecycle."
+   "reorgTrigger": "A canonical, execution, implemented, historical, or superseded document family changes lifecycle."
   },
   {
    "path": "docs/decisions/0027-company-os-primary-model.md",
@@ -2289,9 +2260,9 @@
    "reorgTrigger": "MemberRun execution semantics, assignment proof, activity truth, or responsive page contract changes."
   },
   {
-   "path": "docs/dashboard/pages/mission-wave-canvas.md",
+  "path": "docs/dashboard/pages/mission-wave-canvas.md",
    "ownerRole": "product-design",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Mission and Wave execution canvas",
@@ -2300,7 +2271,7 @@
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0026-mission-wave-architecture.md",
-    "docs/design/workbench-layout-v2/README.md"
+    "docs/design/execution-workbench-v3/README.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2313,9 +2284,9 @@
    "reorgTrigger": "Mission/Wave execution semantics, gate rendering, source-context return path, or responsive page contract changes."
   },
   {
-   "path": "docs/dashboard/pages/team-run-war-room.md",
+  "path": "docs/dashboard/pages/team-run-war-room.md",
    "ownerRole": "product-design",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "AgentTeamRun execution war room",
@@ -2324,7 +2295,7 @@
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
-    "docs/design/workbench-layout-v2/README.md"
+    "docs/design/execution-workbench-v3/README.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2361,6 +2332,76 @@
     "npx pnpm@9.15.4 check"
    ],
    "reorgTrigger": "Standing Agent identity, availability, assignment, organization, execution-link, or responsive page contract changes."
+  },
+  {
+   "path": "docs/decisions/0028-retire-goal-phase-task-graph.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "active retirement policy for the superseded coordination stack",
+    "stable pointer to archived ADR 0028 removal evidence"
+   ],
+   "dependsOn": [
+    "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/archive/legacy-goal-task-v1/decisions/0028-retire-goal-phase-task-graph.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-12-31",
+   "lastVerifiedWith": [
+    "harness governance check"
+   ],
+   "reorgTrigger": "A retired coordination object or surface is proposed for active product use."
+  },
+  {
+  "path": "docs/design/execution-workbench-v3/README.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Execution Workbench V3 visual direction",
+    "Mission Canvas and Agent Team War Room expected-versus-actual evidence"
+   ],
+   "dependsOn": [
+    "docs/dashboard/pages/mission-wave-canvas.md",
+    "docs/dashboard/pages/team-run-war-room.md",
+    "docs/design/execution-workbench-v3/visual-contract.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "visual acceptance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:dashboard"
+   ],
+   "reorgTrigger": "The approved Mission Canvas or Agent Team War Room visual direction changes."
+  },
+  {
+  "path": "docs/design/execution-workbench-v3/visual-contract.json",
+   "ownerRole": "frontend-quality",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "machine-readable Execution Workbench V3 screenshot contract"
+   ],
+   "dependsOn": [
+    "docs/dashboard/pages/mission-wave-canvas.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "visual acceptance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:dashboard"
+   ],
+   "reorgTrigger": "Expected, implemented, comparison, overlay, fixture, or route evidence changes."
   },
   {
    "path": "docs/decisions/0029-agent-programmable-document-runtime.md",

@@ -1,25 +1,8 @@
 import { Bot, Landmark, LibraryBig, Scale, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 
-import companyLead from "@/assets/company-os/avatars/company-lead.png";
-import contentStrategy from "@/assets/company-os/avatars/content-strategy-agent.png";
-import documentArchitecture from "@/assets/company-os/avatars/document-architecture-agent.png";
-import financeAgent from "@/assets/company-os/avatars/finance-agent.png";
-import trademarkAgent from "@/assets/company-os/avatars/trademark-agent.png";
+import { portraitFor } from "@/components/workbench/identity/portraits";
 import { cn } from "@/lib/utils";
-
-const portraits: Array<{ match: RegExp; src: string }> = [
-  { match: /document|architecture|governance/i, src: documentArchitecture },
-  { match: /ip lead|company lead|brand owner|human/i, src: companyLead },
-  { match: /trademark/i, src: trademarkAgent },
-  { match: /finance/i, src: financeAgent },
-  { match: /content|strategy|analytics/i, src: contentStrategy },
-  { match: /lead/i, src: companyLead },
-];
-
-export function portraitFor(identity: string): string | undefined {
-  return portraits.find(({ match }) => match.test(identity))?.src;
-}
 
 export function ActorAvatar({
   identity,

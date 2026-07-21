@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { portraitFor } from "@/components/workbench/identity/portraits";
 import { StatusDot, type StatusTone } from "./atoms";
 
 export function initials(value: string): string {
@@ -12,24 +13,30 @@ export function initials(value: string): string {
   );
 }
 
-/** Square monogram avatar with a live status dot. */
+/** Shared portrait or monogram fallback with a live status dot. */
 export function Avatar({
   name,
+  identity,
   tone = "idle",
   size = "sm",
 }: {
   name: string;
+  identity?: string;
   tone?: StatusTone;
   size?: "sm" | "lg";
 }) {
+  const portrait = portraitFor(`${identity ?? ""} ${name}`);
   return (
     <span
       className={cn(
-        "relative grid shrink-0 place-items-center rounded-md bg-secondary font-mono font-semibold text-foreground/80 ring-1 ring-border",
+        "relative grid shrink-0 place-items-center overflow-hidden rounded-full bg-secondary font-mono font-semibold text-foreground/80 ring-1 ring-border",
         size === "lg" ? "size-12 text-sm" : "size-8 text-[11px]",
       )}
+      aria-label={name}
     >
-      {initials(name)}
+      {portrait ? (
+        <img src={portrait} alt="" className="size-full object-cover saturate-[.88] contrast-[.98]" />
+      ) : initials(name)}
       <StatusDot
         tone={tone}
         pulse={tone === "running"}

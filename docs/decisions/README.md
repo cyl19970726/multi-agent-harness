@@ -28,8 +28,9 @@ consequences, affected modules, and validation path.
 | [0022](0022-dynamic-workflow-runtime-json-ir.md) | Dynamic Workflow Runtime — skill + CLI entry, JSON-IR spec (not embedded JS), new `harness-workflow` crate |
 | [0023](0023-starlark-workflow-frontend.md) | Starlark program front-end — third authoring surface (loops/conditionals/data-driven fan-out) via a hermetic interpreter; reuses the 0022 backend |
 | [0025](0025-agent-team-run-control-plane.md) | Agent Team run control plane v0 — the `agent_team` Wave executor substrate, delegation guardrails, and Plugin/MCP/Skill/CLI/Hook call-surface split |
-| [0026](0026-mission-wave-architecture.md) | Mission/Wave architecture — Mission -> Wave -> executor (`agent_team`, `dynamic_workflow`, `host`), shared runtime contracts, transient-thinking policy, and non-destructive Goal/legacy phase record migration |
+| [0026](0026-mission-wave-architecture.md) | Mission/Wave architecture — Mission -> Wave -> executor (`agent_team`, `dynamic_workflow`, `host`), shared runtime contracts, and transient-thinking policy; its earlier legacy migration policy is superseded by ADR 0028 |
 | [0027](0027-company-os-primary-model.md) | Company OS primary model — Docs + mixed Organization are the product cores; WorkItem/Approval link business intent to the Mission/Wave execution foundation |
+| [0028](0028-retire-goal-phase-task-graph.md) | Retire the superseded Goal/GoalPhase/task-graph coordination stack from active product, docs, and authoring paths |
 | [0029](0029-agent-programmable-document-runtime.md) | Agent-programmable document runtime — basic docs, structured views, and governed custom HTML/React pages over canonical facts |
 
 ## Split Rule

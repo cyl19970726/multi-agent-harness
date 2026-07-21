@@ -14,7 +14,7 @@ which surface owns the claim, then place it there.
 | `README.md` | Workbench docs map, placement rules, and change order | Product semantics or component implementation |
 | `frontend-design.md` | Workbench frontend design index, reading order, page-spec map, and implementation readiness summary | Page-level details, React internals, or run commands |
 | `pages/README.md` | Page-spec index and template | Hard dimensions, ASCII wireframes, or implementation internals |
-| `pages/*.md` | One page/workspace product, UX, and layout contract. `pages/team-run-console.md` is the planned current Agent Team page. | Component implementation |
+| `pages/*.md` | One page/workspace product, UX, and layout contract. `mission-wave-canvas.md` and `team-run-war-room.md` are the implemented execution pages. | Component implementation |
 | `frontend-architecture.md` | React/Vite + Tailwind v4 + shadcn/Radix architecture, component responsibilities, app-local boundaries | Product PRD, visual doctrine, or runbook commands |
 | `runbook.md` | Local run, build, snapshot, live API, and safe action entry points | Architecture rationale or UI doctrine |
 | `../decisions/*` | Durable architectural decisions and hard-to-reverse tradeoffs | Day-to-day run instructions or unstable sketches |

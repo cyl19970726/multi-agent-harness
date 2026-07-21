@@ -7,7 +7,7 @@ updating this model first.
 
 Source-of-truth rules and gate invariants live in
 [data-model.md](data-model.md). This document owns product meaning,
-relationship rules, compatibility vocabulary, and anti-drift invariants.
+relationship rules, active vocabulary, and anti-drift invariants.
 
 ## Vision
 
@@ -23,29 +23,25 @@ Mission -> Scenario -> Infra -> Wave -> executor
 The harness is the coordination and evidence system. Project-specific tools are
 connected through adapters.
 
-## Compatibility Terms
+## Active Vocabulary
 
-Mission/Wave is the canonical product vocabulary and native contract for new
-work. Existing Goal data remains visible through an explicit read-only
-compatibility projection.
-
-| Canonical term | Current compatibility surface | Rule |
-| --- | --- | --- |
-| `Mission` | `Goal` compatibility projection with provenance | Native Mission is used for new execution; the projection cannot be mutated as a Mission. |
-| `Wave` | legacy phase record ids exposed only as compatibility provenance | A native Wave is not a renamed legacy phase record and never inherits its legacy dependency graph. |
-| Mission closeout | Optional `outcome evaluation` compatibility object | Native Mission closeout is an explicit outcome summary; evaluation may be layered on when useful. |
+Mission/Wave is the only active coordination vocabulary and native contract
+for new work. The superseded coordination stack is governed by
+[ADR 0028](decisions/0028-retire-goal-phase-task-graph.md) and is not exposed
+through product projections or authoring paths. Optional review and evaluation
+records may strengthen a high-risk gate, but they do not replace Mission
+closeout or become mandatory hierarchy levels.
 
 ## Core Object Relationships
 
 ```mermaid
 flowchart TD
   Vision[Product Vision]
-  Mission[Mission / read-only Goal projection]
+  Mission[Mission]
   Wave[Native Wave]
   TeamRun[AgentTeamRun]
   WorkflowRun[WorkflowRun]
   HostExec[Host execution]
-  Task[Task compat / internal execution unit]
   Message[Message]
   TeamMessage[TeamMessage]
   Member[AgentMember or MemberRun]
@@ -57,7 +53,7 @@ flowchart TD
   Proposal[Proposal]
   Review[Review / Critic]
   Decision[Decision]
-  Eval[Optional evaluation / outcome evaluation compat]
+  Eval[Optional evaluation]
   Case[reusable learning note]
 
   Vision --> Mission
@@ -69,7 +65,6 @@ flowchart TD
   TeamRun --> Member
   WorkflowRun --> Event
   HostExec --> Event
-  Task --> Message
   Message --> Member
   TeamMessage --> Member
   Member --> Provider
@@ -80,7 +75,7 @@ flowchart TD
   Evidence --> Gate
   Gate --> Outcome
   Mission --> Outcome
-  Outcome -. optional evaluation .-> Eval
+  Outcome -. optional governance .-> Eval
   Evidence -. repository governance .-> Proposal
   Proposal --> Review
   Review --> Decision
@@ -149,26 +144,13 @@ The Host executor is direct work by the resident Host Agent. The host may use
 provider-native subagents internally. Those subagents are optional observation
 targets, not canonical child records unless the harness actually controls them.
 
-## Tasks And Messages
+## Messages And Ownership
 
-`Task` and `Message` remain important current-runtime objects, but they are no
-longer the canonical explanation of a Wave.
-
-Rules:
-
-- a `Task` is still the smallest assignable and reviewable unit in the current
-  task system and in compatibility flows;
-- `Message(kind=task)` remains current proof of assignment for classic task
-  execution;
-- task DAGs, `Task.phase_id`, and `legacy phase record` joins may continue internally
-  while Mission/Wave migration is underway;
-- not every Wave must expose a legacy dependency graph to the user or planner;
-- when Agent Team is the executor, TeamMessage assignment correlation explains
-  ownership more directly than a task DAG does.
-
-Failure mode this prevents: forcing every orchestration mode through the legacy
-dependency graph story even when the real proof is message-driven collaboration or a
-one-shot workflow run.
+Messages remain runtime facts, but a Wave does not contain a task graph. Agent
+Team ownership begins with `TeamMessage(kind=assignment)` and its correlation;
+Dynamic Workflow owns its steps; Host execution records its observable outcome.
+Residual task-named internal fields are removal debt and cannot define a new
+product flow.
 
 ## Agent Team Objects
 
@@ -193,8 +175,8 @@ Relationship rules:
 - `TeamMessage` and `MemberAction` may reference artifacts or `Evidence`; the
   Wave gate needs an explicit outcome and acceptance note but does not require
   Proposal/Review/Decision objects;
-- current runtime code may still reference Goal/legacy phase record/task fields during
-  migration, but those fields are compatibility seams, not the product model.
+- residual task-named runtime fields are removal debt, not the product model or
+  a supported ownership path.
 
 ## Generic Object Model
 
@@ -204,10 +186,9 @@ The learning and governance layer remains domain-neutral.
 | --- | --- |
 | `Review` | Structured evaluator or critic output. Evidence for a Decision, never the Decision itself. |
 | `Gap` | Defect/risk ledger row. `category=bug` is a bug; there is no separate Bug object. |
-| `legacy plan record` | Current compatibility object for the Mission design/plan. |
-| `outcome evaluation` | Current compatibility object for Mission closeout and learning. |
-| `reusable learning note` | Reusable teaching artifact distilled from a closed Mission/Goal. |
-| `Vision` | Long-lived target that Missions/Goals advance toward. |
+| `Evaluation` | Optional structured assessment layered on a high-risk outcome. |
+| `LearningNote` | Reusable teaching artifact distilled from a closed Mission. |
+| `Vision` | Long-lived target that Missions advance toward. |
 
 ## Agent Runtime And Provider Session
 

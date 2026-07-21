@@ -5,7 +5,7 @@
 > Mission/Wave and AgentTeamRun semantics are owned by
 > [the architecture map](../../../architecture-map.md),
 > [ADR 0026](../../../decisions/0026-mission-wave-architecture.md), and
-> [the Agent Team page spec](../../../dashboard/pages/team-run-console.md).
+> [the Agent Team War Room spec](../../../dashboard/pages/team-run-war-room.md).
 
 This document owns the core UI/UX principles for the Agent Workbench. Concrete
 screen layout and page cards belong in

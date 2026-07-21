@@ -98,5 +98,5 @@ model.
   responsive behavior, and truth constraints.
 - [Trademark registration example](examples/trademark-registration.md): the
   first cross-module acceptance scenario.
-- [Document migration map](document-migration.md): canonical, compatibility,
+- [Document migration map](document-migration.md): canonical, implemented,
   historical, and superseded documentation.
