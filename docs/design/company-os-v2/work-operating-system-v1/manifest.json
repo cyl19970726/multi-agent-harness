@@ -1,0 +1,64 @@
+{
+  "contract": "company-os-work-operating-system-v1",
+  "mission_id": "mission-1784612384857-p36041-0",
+  "viewport": {
+    "width": 1536,
+    "height": 1024
+  },
+  "truth_boundary": {
+    "current": "Store-live browser evidence copied from the merged V2.2 baseline",
+    "expected": "generated product intent using illustrative multi-business-line design data",
+    "actual": "pending native model and browser implementation"
+  },
+  "current": {
+    "file": "current/work--store-live-before--desktop-1536x1024.png",
+    "sha256": "7b16be8aec46c44597b1356610493abc43a8f2d686c8844f8eef50f752dfa956",
+    "source": "../store-live-actual/work--milestones-and-workitems--desktop.png",
+    "implemented_truth": "one trademark WorkItem, lifecycle Action, no native Milestone or multi-line query"
+  },
+  "expected": [
+    {
+      "id": "overview",
+      "file": "expected/work-overview--desktop-1536x1024.png",
+      "prompt": "prompts/overview.md",
+      "sha256": "e899e9f55ec82de65d48b7311333abe97d462920df92b6d91d817ba18baed40f"
+    },
+    {
+      "id": "board",
+      "file": "expected/work-board--desktop-1536x1024.png",
+      "prompt": "prompts/board.md",
+      "sha256": "4c0f6e2a5f3bf4c993a66edf79eefb3e9faa3aca1a60a12874f1b1ca8e001202"
+    },
+    {
+      "id": "all-work",
+      "file": "expected/work-all--desktop-1536x1024.png",
+      "prompt": "prompts/all-work.md",
+      "sha256": "e73c68ce7d17eb58f7e710a5823cc30dd9bc36f38adf28807ec27ac66cb1d293"
+    },
+    {
+      "id": "milestones",
+      "file": "expected/work-milestones--desktop-1536x1024.png",
+      "prompt": "prompts/milestones.md",
+      "sha256": "284a3e69642c4be74b2ad424ed4b6ebfc76f985d1c3f5550127aae7986c31da4"
+    },
+    {
+      "id": "timeline",
+      "file": "expected/work-timeline--desktop-1536x1024.png",
+      "prompt": "prompts/timeline.md",
+      "sha256": "a5048c23317e4846d58d507c82a190f188f0d68cea29728e5c34442afa62ae69"
+    },
+    {
+      "id": "workload",
+      "file": "expected/work-workload--desktop-1536x1024.png",
+      "prompt": "prompts/workload.md",
+      "sha256": "4146a1a90fb9a766c6a3835766953a9fb2dafbb497f425f01cf99b347070107c"
+    },
+    {
+      "id": "work-item-focus",
+      "file": "expected/work-item-focus--desktop-1536x1024.png",
+      "prompt": "prompts/work-item-focus.md",
+      "sha256": "9371e63e23e4b30bcff97389cab259f47968070bc68b9742beab7e9b42ebfacc"
+    }
+  ]
+}
+

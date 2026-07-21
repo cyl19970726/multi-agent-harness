@@ -81,6 +81,9 @@ model.
   boundary between Standing Agents and temporary execution members.
 - [WorkItems and approvals](work-items-and-approvals.md): responsibility,
   submission provenance, execution references, review, and human gates.
+- [Work Operating System](work-operating-system.md): the company-wide task
+  ledger, primary and saved views, Milestone boundary, workload, and responsive
+  behavior.
 - [Financial relations](financial-relations.md): budget, commitment, invoice,
   payment, refund, metrics, and cross-module linkage.
 - [Governance](governance.md): document architecture, organization evolution,

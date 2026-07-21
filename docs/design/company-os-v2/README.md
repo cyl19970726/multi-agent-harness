@@ -64,6 +64,9 @@ Review artifacts:
 - [`workitem-action-v1/review.html`](workitem-action-v1/review.html) — Store-live
   WorkItem lifecycle proof from explicit Standing Agent execution through
   accountable Human completion, without creating a Payment.
+- [`work-operating-system-v1/`](work-operating-system-v1/) — the next Work
+  target family: Overview, Board, All Work, Milestones, Workload, and WorkItem
+  Focus over one shared company task ledger.
 
 Reproduce the Store-live evidence with
 `pnpm visual:capture:company-os-v2:live`, then update the checked-in comparison
