@@ -6497,140 +6497,6 @@ fn handle_http_connection(
                     )?,
                 }
             }
-            // GET /v1/provider-sessions/{id}/normalized-events — normalized
-            // HarnessTurnEvent[] computed on read from the retained RAW
-            // per-session provider NDJSON. This does not write new storage and
-            // intentionally uses provider adapter defaults until S2b/S2c add
-            // provider-specific mappings.
-            session_path
-                if session_path.starts_with("/v1/provider-sessions/")
-                    && session_path.ends_with("/normalized-events") =>
-            {
-                // Session ids are generated tokens (delivery-<ts>-<n>): safe
-                // path chars, no URL-decoding needed.
-                let session_id = session_path
-                    .strip_prefix("/v1/provider-sessions/")
-                    .and_then(|rest| rest.strip_suffix("/normalized-events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_provider_session_normalized_events(store, &session_id) {
-                    Ok((events, truncated)) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "events": events,
-                            "truncated": truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
-                    )?,
-                }
-            }
-            // GET /v1/provider-sessions/{id}/events — the RAW provider turn,
-            // 1:1: every line of the persisted claude/codex stream as parsed
-            // JSON, so the dashboard can show the agent's actual events
-            // (assistant text, tool_use, tool_result, result) instead of a
-            // wrapped "succeeded: N events" summary.
-            session_path
-                if session_path.starts_with("/v1/provider-sessions/")
-                    && session_path.ends_with("/events") =>
-            {
-                // Session ids are generated tokens (delivery-<ts>-<n>): safe
-                // path chars, no URL-decoding needed.
-                let session_id = session_path
-                    .strip_prefix("/v1/provider-sessions/")
-                    .and_then(|rest| rest.strip_suffix("/events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_provider_session_events(store, &session_id) {
-                    Ok((events, truncated)) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "events": events,
-                            "truncated": truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
-                    )?,
-                }
-            }
-            // GET /v1/sessions/{id}/normalized-events — the normalized
-            // (HarnessTurnEvent[]) companion to the historical raw endpoint
-            // below, computed on read from the DURABLE per-session NDJSON. Same
-            // `retained` semantics: a pruned `--trace live` run returns
-            // `retained: false` with an empty list so the dashboard can render
-            // "trace not retained" provider-agnostically. Matched BEFORE the raw
-            // `/events` arm because it is the more specific suffix.
-            sessions_norm_path
-                if sessions_norm_path.starts_with("/v1/sessions/")
-                    && sessions_norm_path.ends_with("/normalized-events") =>
-            {
-                let session_id = sessions_norm_path
-                    .strip_prefix("/v1/sessions/")
-                    .and_then(|rest| rest.strip_suffix("/normalized-events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_session_turn_events_normalized(store, &session_id) {
-                    Ok((retained, events, truncated)) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "retained": retained,
-                            "events": events,
-                            "truncated": truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
-                    )?,
-                }
-            }
-            // GET /v1/sessions/{id}/events — the PERSISTED per-session turn
-            // events for a completed durable run's historical drill-in (two-tier
-            // persistence read side). Reads the durable per-session NDJSON the
-            // ProviderSession's jsonl_ref/stdout_ref points at (survives a serve
-            // restart). A `--trace live` run whose trace was pruned after
-            // execution left those refs None, so we return `retained: false`
-            // ("trace not retained") and the UI can distinguish it.
-            sessions_path
-                if sessions_path.starts_with("/v1/sessions/")
-                    && sessions_path.ends_with("/events") =>
-            {
-                let session_id = sessions_path
-                    .strip_prefix("/v1/sessions/")
-                    .and_then(|rest| rest.strip_suffix("/events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_session_turn_events(store, &session_id) {
-                    Ok(result) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "retained": result.retained,
-                            "events": result.events,
-                            "truncated": result.truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
-                    )?,
-                }
-            }
             // GET /v1/workflows — the registered (built-in) workflow catalog,
             // run-independent { name, summary } pairs from the compiled registry.
             "/v1/workflows" => {
@@ -23965,7 +23831,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_snapshot_uses_latest_provider_session_per_id() {
+    fn dashboard_snapshot_omits_legacy_provider_session_ledger() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("snapshot")));
         let store = HarnessStore::new(&root);
@@ -24004,15 +23870,7 @@ mod tests {
             .expect("append succeeded session");
 
         let snapshot = dashboard_snapshot(&store).expect("dashboard snapshot");
-        let sessions = snapshot
-            .get("provider_sessions")
-            .and_then(|value| value.as_array())
-            .expect("provider sessions");
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(
-            sessions[0].get("status").and_then(|value| value.as_str()),
-            Some("succeeded")
-        );
+        assert!(snapshot.get("provider_sessions").is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }

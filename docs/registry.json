@@ -2761,9 +2761,18 @@
     "cargo test -p harness-cli --test team_run_api"
    ],
    "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change.",
-   "authorityClass": "actual_evidence",
-   "implementationState": "verified",
-   "truthRefs": []
+  "authorityClass": "actual_evidence",
+  "implementationState": "verified",
+  "truthRefs": [
+   {
+    "kind": "runtime_evidence",
+    "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+   },
+   {
+    "kind": "test",
+    "ref": "crates/harness-cli/tests/team_run_api.rs"
+   }
+  ]
   },
   {
    "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
