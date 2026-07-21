@@ -28,6 +28,13 @@ product responsibility without maintaining a second progress count.
 | 11 | Business Module Focus | How does one domain compose knowledge, records, work, money, actors, and governance? | Module, Documents, Views, TypedRecords, Relations, WorkItems, Approvals, finance, people, decisions. |
 | 12 | Human Member Focus | What does this person own, decide, and participate in? | Org membership, authority, responsible Docs, WorkItems, Approvals, decisions, activity; no provider/runtime fiction. |
 
+The twelve-page matrix remains the broad visual coverage contract. It is not
+the current implementation order. Near-term Company OS work prioritizes
+Organization Overview and the multi-view Work Operating System. New rich
+Standing/Governance Agent detail workspaces are deferred; the product may show
+their responsibility, prompt, tools/Skills, permissions, maintained Docs, and
+WorkItems in a compact profile or Context Rail first.
+
 ## Shared layout and navigation
 
 ```text

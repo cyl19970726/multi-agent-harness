@@ -2110,7 +2110,7 @@ mod tests {
         let vision = Vision {
             id: "vision-1".to_string(),
             summary: "Generic harness object-model with a closed learning loop.".to_string(),
-            source_refs: vec!["docs/goal-learning-loop.md".to_string()],
+            source_refs: vec!["docs/company-os/vision.md".to_string()],
             created_at: "2026-05-30T00:00:00Z".to_string(),
         };
 

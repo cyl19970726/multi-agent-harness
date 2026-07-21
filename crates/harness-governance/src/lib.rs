@@ -18,7 +18,7 @@
 //!   this one — the output is identical.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,6 +83,11 @@ pub struct GovernanceConfig {
     /// with no doc registry still gets links/size/skills).
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+    /// Optional blocker that prevents explicitly retired product language from
+    /// returning to active registered documents. Archival/deprecated entries
+    /// and lines that clearly label migration/history remain readable.
+    #[serde(default)]
+    pub retired_vocabulary: Option<RetiredVocabularyConfig>,
 }
 
 /// Config for the `registry` gate (the doc-governance registry validator).
@@ -94,6 +99,26 @@ pub struct RegistryConfig {
     pub allowed_statuses: Vec<String>,
     pub allowed_lifecycles: Vec<String>,
     pub core_docs: Vec<String>,
+    /// Roots whose Markdown files must all appear in the registry. This catches
+    /// important but invisible documents, complementing `core_docs`.
+    #[serde(default)]
+    pub coverage_roots: Vec<String>,
+    /// Exact repository-relative paths intentionally excluded from coverage.
+    #[serde(default)]
+    pub coverage_exclude: Vec<String>,
+}
+
+/// Rules for the active-document retired-vocabulary gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetiredVocabularyConfig {
+    /// Exact, case-sensitive phrases that must not be taught as current.
+    pub terms: Vec<String>,
+    /// Registered paths that intentionally own compatibility or migration text.
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    /// Case-insensitive markers that make a matching line explicitly historical.
+    #[serde(default)]
+    pub context_markers: Vec<String>,
 }
 
 impl GovernanceConfig {
@@ -146,17 +171,29 @@ impl GovernanceConfig {
                 core_docs: [
                     "README.md",
                     "docs/README.md",
+                    "docs/documentation-governance.md",
                     "docs/prd.md",
                     "docs/design-basis.md",
                     "docs/architecture.md",
                     "docs/operations.md",
                     "docs/schemas.md",
                     "docs/decisions/README.md",
+                    "docs/company-os/product-system-map.md",
                 ]
                 .iter()
                 .map(|v| s(v))
                 .collect(),
+                coverage_roots: [
+                    "docs/company-os",
+                    "docs/dashboard/pages",
+                    "docs/integration",
+                ]
+                .iter()
+                .map(|v| s(v))
+                .collect(),
+                coverage_exclude: Vec::new(),
             }),
+            retired_vocabulary: None,
         }
     }
 
@@ -173,6 +210,7 @@ impl GovernanceConfig {
             max_lines: 500,
             member_data_root: None,
             registry: None,
+            retired_vocabulary: None,
         }
     }
 
@@ -218,6 +256,9 @@ pub fn run_check_at(root: &Path, config: &GovernanceConfig, today: &str) -> Gove
     ];
     if let Some(reg) = &config.registry {
         gates.push(check_governance(root, reg, today));
+        if let Some(retired) = &config.retired_vocabulary {
+            gates.push(check_retired_vocabulary(root, reg, retired));
+        }
     }
     GovernanceReport { gates }
 }
@@ -360,6 +401,7 @@ pub fn check_governance(root: &Path, cfg: &RegistryConfig, today: &str) -> GateR
     let allowed_lifecycles: BTreeSet<&str> =
         cfg.allowed_lifecycles.iter().map(String::as_str).collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut canonical_owners: BTreeMap<String, String> = BTreeMap::new();
 
     for (index, doc) in documents.iter().enumerate() {
         let label = format!("{registry_path}: documents[{index}]");
@@ -407,6 +449,28 @@ pub fn check_governance(root: &Path, cfg: &RegistryConfig, today: &str) -> GateR
             failures.push(format!(
                 "{label}: canonicalFor must be a non-empty string array"
             ));
+        } else {
+            let status = doc.get("status").and_then(|value| value.as_str());
+            let lifecycle = doc.get("lifecycle").and_then(|value| value.as_str());
+            let is_active =
+                !matches!(status, Some("deprecated" | "archival")) && lifecycle != Some("archival");
+            if is_active {
+                for scope in doc
+                    .get("canonicalFor")
+                    .and_then(|value| value.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str())
+                {
+                    if let Some(owner) = canonical_owners.get(scope) {
+                        failures.push(format!(
+                            "{label}: active canonical scope `{scope}` is already owned by {owner}"
+                        ));
+                    } else {
+                        canonical_owners.insert(scope.to_string(), doc_path.clone());
+                    }
+                }
+            }
         }
         match doc.get("dependsOn") {
             Some(v) if is_string_array(Some(v)) => {
@@ -450,6 +514,16 @@ pub fn check_governance(root: &Path, cfg: &RegistryConfig, today: &str) -> GateR
         }
     }
 
+    let coverage_exclude: BTreeSet<&str> =
+        cfg.coverage_exclude.iter().map(String::as_str).collect();
+    for path in collect_markdown(root, &cfg.coverage_roots) {
+        if !coverage_exclude.contains(path.as_str()) && !seen.contains(&path) {
+            failures.push(format!(
+                "{registry_path}: active coverage path is not registered: {path}"
+            ));
+        }
+    }
+
     governance_report(failures, warnings, registry_path)
 }
 
@@ -464,6 +538,99 @@ fn governance_report(
         failures,
         warnings,
         summary: format!("checked docs governance registry: {registry_path}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// gate: retired vocabulary
+// ---------------------------------------------------------------------------
+
+/// Prevent retired product vocabulary from being presented as current in
+/// active registry documents. Historical and migration material remains
+/// available through archival/deprecated entries or explicit context markers.
+pub fn check_retired_vocabulary(
+    root: &Path,
+    registry_cfg: &RegistryConfig,
+    cfg: &RetiredVocabularyConfig,
+) -> GateReport {
+    let mut failures = Vec::new();
+    let registry_path = root.join(&registry_cfg.path);
+    let raw = match std::fs::read_to_string(&registry_path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            failures.push(format!("{}: {e}", registry_cfg.path));
+            return retired_vocabulary_report(failures, 0);
+        }
+    };
+    let registry: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(e) => {
+            failures.push(format!("{}: {e}", registry_cfg.path));
+            return retired_vocabulary_report(failures, 0);
+        }
+    };
+    let Some(documents) = registry.get("documents").and_then(|value| value.as_array()) else {
+        failures.push(format!("{}: documents must be an array", registry_cfg.path));
+        return retired_vocabulary_report(failures, 0);
+    };
+
+    let allowed_paths: BTreeSet<&str> = cfg.allowed_paths.iter().map(String::as_str).collect();
+    let context_markers: Vec<String> = cfg
+        .context_markers
+        .iter()
+        .map(|marker| marker.to_lowercase())
+        .collect();
+    let mut checked = 0usize;
+
+    for doc in documents {
+        let status = doc
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let lifecycle = doc
+            .get("lifecycle")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if matches!(status, "deprecated" | "archival") || lifecycle == "archival" {
+            continue;
+        }
+        let Some(path) = doc.get("path").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if allowed_paths.contains(path) || !path.ends_with(".md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else {
+            continue;
+        };
+        checked += 1;
+        for (index, line) in text.lines().enumerate() {
+            let lower = line.to_lowercase();
+            let is_explicit_history = context_markers.iter().any(|marker| lower.contains(marker));
+            if is_explicit_history {
+                continue;
+            }
+            for term in &cfg.terms {
+                if line.contains(term) {
+                    failures.push(format!(
+                        "{path}:{}: retired vocabulary `{term}` needs explicit historical context or replacement",
+                        index + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    retired_vocabulary_report(failures, checked)
+}
+
+fn retired_vocabulary_report(failures: Vec<String>, checked: usize) -> GateReport {
+    GateReport {
+        kind: "retired_vocabulary".into(),
+        severity: Severity::Blocker,
+        failures,
+        warnings: Vec::new(),
+        summary: format!("checked {checked} active registered markdown documents"),
     }
 }
 
@@ -1003,6 +1170,75 @@ mod tests {
     }
 
     #[test]
+    fn governance_rejects_duplicate_active_canonical_scope() {
+        let root = tmp("gov-duplicate-scope");
+        write(&root, "README.md", "x");
+        write(&root, "other.md", "x");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md"), valid_doc("other.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let r = check_governance(&root, &reg_cfg(), "2026-06-21");
+        assert!(r
+            .failures
+            .iter()
+            .any(|failure| failure
+                .contains("active canonical scope `x` is already owned by README.md")));
+    }
+
+    #[test]
+    fn governance_allows_duplicate_scope_in_archival_doc() {
+        let root = tmp("gov-archival-scope");
+        write(&root, "README.md", "x");
+        write(&root, "archive.md", "x");
+        let mut archive = valid_doc("archive.md");
+        archive["status"] = serde_json::json!("archival");
+        archive["lifecycle"] = serde_json::json!("archival");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md"), archive]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let r = check_governance(&root, &reg_cfg(), "2026-06-21");
+        assert!(r.failures.is_empty(), "got {:?}", r.failures);
+    }
+
+    #[test]
+    fn governance_requires_markdown_under_coverage_roots_to_be_registered() {
+        let root = tmp("gov-coverage");
+        write(&root, "README.md", "x");
+        write(&root, "docs/product/hidden.md", "important but invisible");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let mut cfg = reg_cfg();
+        cfg.coverage_roots = vec!["docs/product".into()];
+        let r = check_governance(&root, &cfg, "2026-06-21");
+        assert!(r.failures.iter().any(|failure| failure
+            .contains("active coverage path is not registered: docs/product/hidden.md")));
+    }
+
+    #[test]
+    fn governance_allows_explicit_coverage_exclusion() {
+        let root = tmp("gov-coverage-exclude");
+        write(&root, "README.md", "x");
+        write(&root, "docs/product/generated.md", "generated");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let mut cfg = reg_cfg();
+        cfg.coverage_roots = vec!["docs/product".into()];
+        cfg.coverage_exclude = vec!["docs/product/generated.md".into()];
+        let r = check_governance(&root, &cfg, "2026-06-21");
+        assert!(r.failures.is_empty(), "got {:?}", r.failures);
+    }
+
+    #[test]
     fn governance_stale_review_after_is_warning_not_failure() {
         let root = tmp("gov-stale");
         write(&root, "README.md", "x");
@@ -1028,6 +1264,53 @@ mod tests {
             .failures
             .iter()
             .any(|f| f.contains("missing docs governance registry")));
+    }
+
+    #[test]
+    fn retired_vocabulary_blocks_active_docs_but_allows_labeled_history() {
+        let root = tmp("retired-vocabulary");
+        write(&root, "README.md", "Goal -> Task is the current model.");
+        write(
+            &root,
+            "docs/history.md",
+            "The retired Goal -> Task model is retained for migration history.",
+        );
+        write(&root, "docs/archive.md", "Goal -> Task was used here.");
+        let mut archive = valid_doc("docs/archive.md");
+        archive["status"] = serde_json::json!("archival");
+        archive["lifecycle"] = serde_json::json!("archival");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md"), valid_doc("docs/history.md"), archive]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let cfg = RetiredVocabularyConfig {
+            terms: vec!["Goal -> Task".into()],
+            allowed_paths: Vec::new(),
+            context_markers: vec!["retired".into(), "migration".into()],
+        };
+        let r = check_retired_vocabulary(&root, &reg_cfg(), &cfg);
+        assert_eq!(r.failures.len(), 1, "got {:?}", r.failures);
+        assert!(r.failures[0].contains("README.md:1"));
+        assert!(r.failures[0].contains("Goal -> Task"));
+    }
+
+    #[test]
+    fn retired_vocabulary_allows_explicit_compatibility_owner_path() {
+        let root = tmp("retired-vocabulary-owner");
+        write(&root, "README.md", "Goal -> Task compatibility table.");
+        let registry = serde_json::json!({
+            "schema": "agent_harness.docs_registry.v1",
+            "documents": [valid_doc("README.md")]
+        });
+        write(&root, "docs/registry.json", &registry.to_string());
+        let cfg = RetiredVocabularyConfig {
+            terms: vec!["Goal -> Task".into()],
+            allowed_paths: vec!["README.md".into()],
+            context_markers: Vec::new(),
+        };
+        let r = check_retired_vocabulary(&root, &reg_cfg(), &cfg);
+        assert!(r.failures.is_empty(), "got {:?}", r.failures);
     }
 
     #[test]

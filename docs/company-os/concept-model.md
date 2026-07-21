@@ -158,7 +158,7 @@ refs, lifecycle rules, and expected metric definitions.
 Creating a module is a governed design action, not merely creating a folder.
 The Module Design must specify at least the document structure, records,
 relations, financial linkage, work/approval rules, permissions, and archival
-policy. The Document Architecture Agent may propose it; applicable governance
+policy. The Docs Governance Agent may propose it; applicable governance
 and human gates approve it.
 
 ### TypedRecord, Relation, View, and custom-page package

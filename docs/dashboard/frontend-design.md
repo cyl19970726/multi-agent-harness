@@ -88,12 +88,8 @@ copied into Mission/Wave IA.
 
 | Page spec | Owns |
 | --- | --- |
-| [Team workspace](pages/team-workspace.md) | Future Standing Agents workspace; not current AgentTeamRun IA. |
 | [Mission/Wave Canvas](pages/mission-wave-canvas.md) | One Mission's ordered Waves, executor attempts, gates, retry, and closeout. |
 | [Agent Team War Room](pages/team-run-war-room.md) | One linked AgentTeamRun attempt: assignment/message ownership, member presence, unified activity, artifacts, and gate context. |
-| [AgentMember workbench](pages/agent-member-workbench.md) | One durable member as a teammate: current work, inbox/outbox, activity, runtime, prompt/skills, actions. |
-| [Evidence/Review/Decision](pages/evidence-review-decision.md) | Acceptance proof chain and decision queues. |
-| [Warnings/repair](pages/warnings-repair.md) | Workflow risks, affected objects, navigation, repair metadata. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
 
 ## Source Of Truth Boundary

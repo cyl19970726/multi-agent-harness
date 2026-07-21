@@ -1,0 +1,91 @@
+{
+  "contract": "company-os-work-operating-system-v1",
+  "mission_id": "mission-1784612384857-p36041-0",
+  "viewport": {
+    "width": 1536,
+    "height": 1024
+  },
+  "truth_boundary": {
+    "current": "Store-live browser evidence copied from the merged V2.2 baseline",
+    "expected": "generated product intent using illustrative multi-business-line design data",
+    "actual": "Store-live browser evidence from the implemented native Work projection"
+  },
+  "current": {
+    "file": "current/work--store-live-before--desktop-1536x1024.png",
+    "sha256": "7b16be8aec46c44597b1356610493abc43a8f2d686c8844f8eef50f752dfa956",
+    "source": "../store-live-actual/work--milestones-and-workitems--desktop.png",
+    "implemented_truth": "one trademark WorkItem, lifecycle Action, no native Milestone or multi-line query"
+  },
+  "expected": [
+    {
+      "id": "overview",
+      "file": "expected/work-overview--desktop-1536x1024.png",
+      "prompt": "prompts/overview.md",
+      "sha256": "e899e9f55ec82de65d48b7311333abe97d462920df92b6d91d817ba18baed40f"
+    },
+    {
+      "id": "board",
+      "file": "expected/work-board--desktop-1536x1024.png",
+      "prompt": "prompts/board.md",
+      "sha256": "4c0f6e2a5f3bf4c993a66edf79eefb3e9faa3aca1a60a12874f1b1ca8e001202"
+    },
+    {
+      "id": "all-work",
+      "file": "expected/work-all--desktop-1536x1024.png",
+      "prompt": "prompts/all-work.md",
+      "sha256": "e73c68ce7d17eb58f7e710a5823cc30dd9bc36f38adf28807ec27ac66cb1d293"
+    },
+    {
+      "id": "milestones",
+      "file": "expected/work-milestones--desktop-1536x1024.png",
+      "prompt": "prompts/milestones.md",
+      "sha256": "284a3e69642c4be74b2ad424ed4b6ebfc76f985d1c3f5550127aae7986c31da4"
+    },
+    {
+      "id": "timeline",
+      "file": "expected/work-timeline--desktop-1536x1024.png",
+      "prompt": "prompts/timeline.md",
+      "sha256": "a5048c23317e4846d58d507c82a190f188f0d68cea29728e5c34442afa62ae69"
+    },
+    {
+      "id": "workload",
+      "file": "expected/work-workload--desktop-1536x1024.png",
+      "prompt": "prompts/workload.md",
+      "sha256": "4146a1a90fb9a766c6a3835766953a9fb2dafbb497f425f01cf99b347070107c"
+    },
+    {
+      "id": "work-item-focus",
+      "file": "expected/work-item-focus--desktop-1536x1024.png",
+      "prompt": "prompts/work-item-focus.md",
+      "sha256": "9371e63e23e4b30bcff97389cab259f47968070bc68b9742beab7e9b42ebfacc"
+    }
+  ],
+  "actual": {
+    "truth": "Store-live browser capture over six native WorkItems, four Milestones, and four business lines",
+    "capture_runs": {
+      "desktop": ".visual-evidence/company-os-v2/work-os-desktop-actual-final/capture-run.json",
+      "tablet": ".visual-evidence/company-os-v2/work-os-tablet-actual-final/capture-run.json",
+      "mobile": ".visual-evidence/company-os-v2/work-os-mobile-actual-final/capture-run.json"
+    },
+    "items": [
+      { "id": "overview", "viewport": "desktop", "file": "actual/work-overview--desktop-1536x1024.png", "sha256": "0bcd3a5ca05a58dce9a4e74787d30a7b08c45ae9da5a8944e5fc8527f8ced760" },
+      { "id": "board", "viewport": "desktop", "file": "actual/work-board--desktop-1536x1024.png", "sha256": "5ed85d062e59ec6dfa3b2ecf99aba126ecc8a843434f1428841f93e1fd17464b" },
+      { "id": "all-work", "viewport": "desktop", "file": "actual/work-all--desktop-1536x1024.png", "sha256": "d7f2599be81d691ceb784e63d566480bbed89bfe1e0d918a849135e365e091e1" },
+      { "id": "milestones", "viewport": "desktop", "file": "actual/work-milestones--desktop-1536x1024.png", "sha256": "ef1828727e7faa771dba329e09096e82ad1b4b0e1fa2b7e3f90a0928d32d95f2" },
+      { "id": "timeline", "viewport": "desktop", "file": "actual/work-timeline--desktop-1536x1024.png", "sha256": "75130ce3df891a3344b2fd94818ba65736649b0e603919ebd5b2340fb8e02135" },
+      { "id": "workload", "viewport": "desktop", "file": "actual/work-workload--desktop-1536x1024.png", "sha256": "f511059200860b40db3cfd78dc08b5eeac8bb212133d927b6a8800fafeae9ef2" },
+      { "id": "overview", "viewport": "tablet", "file": "actual/work-overview--tablet-1024x900.png", "sha256": "52d83ef8ee50515a4731a10d6d01fd0553908136f9b1f72a4f3b4fa2ea86042f" },
+      { "id": "board", "viewport": "tablet", "file": "actual/work-board--tablet-1024x900.png", "sha256": "1bb2a1c5226bd42cad6b001407f3276b5d5827245c552f9f7b632aedccb81d9b" },
+      { "id": "all-work", "viewport": "tablet", "file": "actual/work-all--tablet-1024x900.png", "sha256": "c0844b32e15ddefd0d60dc86cd651441d7996f334c74aadc3d7b9cbf561c308d" },
+      { "id": "milestones", "viewport": "tablet", "file": "actual/work-milestones--tablet-1024x900.png", "sha256": "730f4f82bf39da2adcb7a57b98e8efadb20382abad03ddb63ffd6772efd6a3c8" },
+      { "id": "timeline", "viewport": "tablet", "file": "actual/work-timeline--tablet-1024x900.png", "sha256": "8338f666bf3a80673c9abac863231c324e722e5e37418e25bb3cf2d3ad0f7b91" },
+      { "id": "workload", "viewport": "tablet", "file": "actual/work-workload--tablet-1024x900.png", "sha256": "9546fd488eb7278d006aa29960acd52dc3f6fd9d84d9acb9821919e610b05746" },
+      { "id": "overview", "viewport": "mobile", "file": "actual/work-overview--mobile-390x844.png", "sha256": "7215e68304b32b277c5badac977edcfeb69221a776ef874425fa867e32dc6994" },
+      { "id": "board", "viewport": "mobile", "file": "actual/work-board--mobile-390x844.png", "sha256": "33bbf3e4f4ba55ff5836d3c2de02fb4bedd038e8739db7cb7cc1f9a8a2711918" },
+      { "id": "all-work", "viewport": "mobile", "file": "actual/work-all--mobile-390x844.png", "sha256": "a5c6894ae19b9e6ad49ae07528ca21d968e6d2f838b0a07a58770e0b71a2409d" },
+      { "id": "milestones", "viewport": "mobile", "file": "actual/work-milestones--mobile-390x844.png", "sha256": "40f2791f7087a25cd9606f585633ea0d24c60d5c2bdcebb27c5c5e0ddf073193" },
+      { "id": "timeline", "viewport": "mobile", "file": "actual/work-timeline--mobile-390x844.png", "sha256": "379738ba2816fffc50e86134781c743566184d3277bc94b22df91356af37342b" },
+      { "id": "workload", "viewport": "mobile", "file": "actual/work-workload--mobile-390x844.png", "sha256": "db90f5083ac9f7fa440105b7f39c42926e9115039e14b7a3e4341a24ba753138" }
+    ]
+  }
+}

@@ -358,6 +358,22 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
   });
 
   const work = fixture.work_items[0];
+  const milestoneRecord = {
+    id: "milestone-trademark-application-submitted",
+    title: "Trademark application submitted",
+    outcome: "The governed CN application has durable filing receipt evidence.",
+    status: "active",
+    accountable_owner: actorRef("human", work.accountable_owner_ref),
+    source_document_ref: work.source_document_ref,
+    business_module_ref: "module-trademark-management",
+    target_at: "2026-07-31T18:00:00+08:00",
+    acceptance_criteria: ["Human approval is recorded", "Filing receipt evidence is linked"],
+    work_item_refs: [],
+    created_at: work.created_at,
+    updated_at: work.updated_at,
+    achieved_at: null,
+  };
+  await post("milestones", milestoneRecord);
   const workRecord = {
     id: work.id,
     title: work.title,
@@ -365,6 +381,9 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     status: "waiting_for_approval",
     source_document_ref: work.source_document_ref,
     source_record_refs: work.source_record_refs,
+    milestone_ref: milestoneRecord.id,
+    work_type: "legal",
+    business_module_ref: "module-trademark-management",
     result_document_ref: work.result_document_ref,
     result_record_refs: ["trademark-application-cn-2026-018"],
     submitted_by: actorRef("agent", work.submitted_by_ref),
@@ -390,6 +409,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     completed_at: null,
   };
   await post("work-items", workRecord);
+  await post("milestones", { ...milestoneRecord, work_item_refs: [workRecord.id] });
   const assignment = fixture.assignments[0];
   await post("assignments", {
     id: assignment.id,
@@ -454,6 +474,96 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
   await post("approvals", requestedApproval);
   await post("work-items", { ...workRecord, approval_refs: [requestedApproval.id] });
 
+  // A small native cross-line ledger proves that Work views are projections,
+  // not a trademark-specific page. These records use existing governed Actors
+  // and durable source Documents; they create no Project or task graph.
+  const workExpansionDocuments = [
+    ["document-finance-july-review", "July finance operating review", "Finance"],
+    ["document-company-os-work-rollout", "Company OS · Work rollout", "Product & Engineering"],
+  ];
+  for (const [id, title, space] of workExpansionDocuments) await post("documents", {
+    id, space_id: space, parent_document_id: null, title, kind: "page",
+    lifecycle_status: "active", block_ids: [], template_ref: null,
+    permission_policy_refs: ["company.records.write"], reference_refs: [],
+    created_by: actorRef("human", ADMIN_ID), updated_by: actorRef("human", ADMIN_ID),
+    created_at: NOW, updated_at: NOW,
+  });
+  const workExpansionModules = [
+    ["module-content-operations", "Content Operations", "document-brand-a-content-operating-plan", "Plan, publish, and measure content work."],
+    ["module-finance-operations", "Finance Operations", "document-finance-july-review", "Review commitments and maintain company financial operations."],
+    ["module-product-engineering", "Product & Engineering", "document-company-os-work-rollout", "Deliver governed Company OS product capabilities."],
+  ];
+  for (const [id, name, root_document_ref, purpose] of workExpansionModules) await post("business-modules", {
+    id, name, purpose, root_document_ref, record_types: [], relation_rules: [],
+    default_view_refs: [], policy_refs: ["company.records.write"], lifecycle_rules: [],
+    metric_definition_refs: [], custom_page_definition_refs: [], status: "active",
+    owner: actorRef("human", ADMIN_ID), created_at: NOW, updated_at: NOW,
+  });
+  const workExpansionMilestones = [
+    {
+      id: "milestone-content-campaign-live", title: "Brand campaign live",
+      outcome: "The campaign is published and its first performance observation is recorded.", status: "active",
+      accountable_owner: actorRef("agent", "actor-agent-content-strategy"),
+      source_document_ref: "document-brand-a-content-operating-plan", business_module_ref: "module-content-operations",
+      target_at: "2026-07-28T18:00:00+08:00", acceptance_criteria: ["Campaign is published", "First metric observation is linked"], work_item_refs: [],
+    },
+    {
+      id: "milestone-july-finance-reviewed", title: "July commitments reviewed",
+      outcome: "Open commitments have accountable review and explicit approval pressure.", status: "at_risk",
+      accountable_owner: actorRef("agent", "actor-agent-finance"),
+      source_document_ref: "document-finance-july-review", business_module_ref: "module-finance-operations",
+      target_at: "2026-07-25T18:00:00+08:00", acceptance_criteria: ["Every open commitment has a review state"], work_item_refs: [],
+    },
+    {
+      id: "milestone-work-os-released", title: "Work operating system released",
+      outcome: "Company work is visible through one native multi-view ledger.", status: "active",
+      accountable_owner: actorRef("agent", "actor-agent-document-architecture"),
+      source_document_ref: "document-company-os-work-rollout", business_module_ref: "module-product-engineering",
+      target_at: "2026-08-05T18:00:00+08:00", acceptance_criteria: ["Native queries pass", "Actual visual evidence is linked"], work_item_refs: [],
+    },
+  ];
+  for (const milestone of workExpansionMilestones) await post("milestones", {
+    ...milestone, created_at: NOW, updated_at: NOW, achieved_at: null,
+  });
+  const additionalWork = [
+    {
+      id: "work-content-publish-launch-video", title: "Publish Brand A launch video", objective: "Publish the approved launch asset and return its URL to the content plan.",
+      status: "in_progress", source_document_ref: "document-brand-a-content-operating-plan", milestone_ref: "milestone-content-campaign-live", work_type: "content", business_module_ref: "module-content-operations",
+      accountable_owner: actorRef("agent", "actor-agent-content-strategy"), assignees: [actorRef("agent", "actor-agent-content-strategy")], reviewer: actorRef("human", ADMIN_ID), due_at: "2026-07-26T18:00:00+08:00", priority: "high", risk_level: "medium",
+    },
+    {
+      id: "work-content-measure-first-24h", title: "Measure first 24-hour campaign performance", objective: "Record views, engagement, and the next adjustment recommendation.",
+      status: "submitted", source_document_ref: "document-brand-a-content-operating-plan", milestone_ref: "milestone-content-campaign-live", work_type: "research", business_module_ref: "module-content-operations",
+      accountable_owner: actorRef("agent", "actor-agent-content-strategy"), assignees: [actorRef("agent", "actor-agent-analytics")], reviewer: actorRef("agent", "actor-agent-content-strategy"), due_at: "2026-07-29T18:00:00+08:00", priority: "medium", risk_level: "low",
+    },
+    {
+      id: "work-finance-review-open-commitments", title: "Review July open commitments", objective: "Confirm owner, evidence, and approval pressure for every July commitment.",
+      status: "blocked", source_document_ref: "document-finance-july-review", milestone_ref: "milestone-july-finance-reviewed", work_type: "finance", business_module_ref: "module-finance-operations",
+      accountable_owner: actorRef("human", ADMIN_ID), assignees: [actorRef("agent", "actor-agent-finance")], reviewer: actorRef("human", ADMIN_ID), due_at: "2026-07-25T18:00:00+08:00", priority: "high", risk_level: "financial",
+    },
+    {
+      id: "work-engineering-native-work-query", title: "Ship native Work query projection", objective: "Expose Milestone, WorkType, business-line, Board, and workload truth through one read model.",
+      status: "in_review", source_document_ref: "document-company-os-work-rollout", milestone_ref: "milestone-work-os-released", work_type: "development", business_module_ref: "module-product-engineering",
+      accountable_owner: actorRef("agent", "actor-agent-document-architecture"), assignees: [actorRef("agent", "actor-agent-document-architecture")], reviewer: actorRef("human", ADMIN_ID), due_at: "2026-07-23T18:00:00+08:00", priority: "high", risk_level: "product",
+    },
+    {
+      id: "work-governance-review-work-taxonomy", title: "Review Work type governance", objective: "Confirm the company taxonomy stays small and domain-neutral.",
+      status: "accepted", source_document_ref: "document-company-os-work-rollout", milestone_ref: "milestone-work-os-released", work_type: "governance", business_module_ref: "module-product-engineering",
+      accountable_owner: actorRef("agent", "actor-agent-organization-governance"), assignees: [], reviewer: actorRef("human", ADMIN_ID), due_at: "2026-07-24T18:00:00+08:00", priority: "medium", risk_level: "governance",
+    },
+  ];
+  for (const item of additionalWork) await post("work-items", {
+    ...item, source_record_refs: [], result_document_ref: null, result_record_refs: [],
+    submitted_by: actorRef("agent", "actor-agent-document-architecture"), requested_by: actorRef("human", ADMIN_ID),
+    contributors: [], approver: null, execution_mode: "direct", execution_refs: [], approval_refs: [],
+    evidence_refs: [], artifact_refs: [], outcome_summary: null, created_at: NOW, updated_at: NOW, completed_at: null,
+  });
+  for (const milestone of workExpansionMilestones) await post("milestones", {
+    ...milestone,
+    work_item_refs: additionalWork.filter((item) => item.milestone_ref === milestone.id).map((item) => item.id),
+    created_at: NOW, updated_at: NOW, achieved_at: null,
+  });
+
   const pendingCommitment = {
     ...proposedCommitment,
     status: "pending_approval",
@@ -499,6 +609,13 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
   }
   if (snapshot.approvals.some((entry) => entry.status === "approved")) {
     throw new Error("seed created an approved Approval; Wave 7 must stop at requested Human approval");
+  }
+  if (snapshot.milestones?.length !== 4
+      || snapshot.work?.work_types?.legal?.[0] !== workRecord.id
+      || snapshot.work?.business_lines?.["module-trademark-management"]?.[0] !== workRecord.id
+      || snapshot.work?.business_lines?.["module-content-operations"]?.length !== 2
+      || snapshot.work?.business_lines?.["module-product-engineering"]?.length !== 2) {
+    throw new Error(`seed did not produce the native Work projection: ${JSON.stringify(snapshot.work)}`);
   }
   return snapshot;
 }
@@ -602,6 +719,16 @@ async function main() {
       }
       if (captureContract === "v2.2" && flag("--capture-workitem-action")) {
         captureArgs.push("--workitem-action-token", token);
+      }
+      if (captureContract === "v2.2" && flag("--capture-work-views")) {
+        captureArgs.push("--capture-work-views");
+      }
+      if (captureContract === "v2.2" && flag("--work-views-only")) {
+        captureArgs.push("--work-views-only");
+      }
+      for (const option of ["--viewport-width", "--viewport-height", "--viewport-name"]) {
+        const value = argument(option);
+        if (value) captureArgs.push(option, value);
       }
       const capture = spawnSync(process.execPath, captureArgs, { cwd: repoRoot, env: process.env, stdio: "inherit" });
       if (capture.status !== 0) throw new Error(`live Company OS capture failed with status ${capture.status}`);

@@ -14,8 +14,8 @@ almost identical on the surface and are built on opposite foundations:
 > Companion docs: [`external-workflow-gap-analysis.md`](./external-workflow-gap-analysis.md)
 > frames the difference as _program quality_ ("external programs were naive").
 > This doc frames it as _architecture_ ("here is why the two systems differ at
-> all, and what is forced versus chosen"). The catalog
-> ([`internal-workflow-catalog.md`](./internal-workflow-catalog.md)) inventories
+> all, and what is forced versus chosen"). The historical workflow-corpus audit
+> (recoverable from Git history) inventoried
 > the 12 reference programs the patterns come from.
 
 ---

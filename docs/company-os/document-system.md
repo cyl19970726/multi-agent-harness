@@ -173,7 +173,7 @@ folder. When a new domain appears, the system evaluates whether an existing
 space, record type, relation, and template can safely contain it. If not, the
 next step is a Module Design proposal, not an orphaned page.
 
-The Document Architecture Agent may inspect orphaned pages, duplicate
+The Docs Governance Agent may inspect orphaned pages, duplicate
 structures, oversized documents, broken relations, missing source links,
 obsolete templates, and new recurring work patterns. It may propose a move,
 split, merge, new space, record type, template, relation, standard View, or

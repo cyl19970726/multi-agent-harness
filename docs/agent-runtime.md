@@ -1,24 +1,31 @@
-# Agent Runtime
+# Provider Runtime Contract
 
-This document defines the provider-neutral Agent Runtime Object Model
-(A-ROM). Provider-specific files under `docs/integration/` explain how a
-concrete provider implements this contract.
+This implementation reference defines the provider-neutral runtime substrate
+shared by Host execution, Agent Team members, Dynamic Workflow steps and future
+Standing Agent operation. Provider-specific files under `docs/integration/`
+explain how a concrete provider implements the substrate.
+
+Provider records are execution infrastructure. They do not own company
+identity, organization authority, WorkItem responsibility, Mission/Wave
+acceptance or business results. The owning executor and product systems keep
+those truths.
 
 ## Vision Link
 
-The product needs persistent agent members that can be created, messaged,
-observed, reviewed, and closed. A provider turn is useful only after the harness
-can relate it to a member, task, message, evidence, proposal, and decision.
+The product needs provider turns that can be launched, correlated, observed,
+resumed and closed. A provider turn is useful only after the Harness can relate
+it to the executor or Host that requested it and preserve its observable output
+without inventing lifecycle control.
 
 Final acceptance for this mechanism:
 
 ```text
-create AgentMember
-  -> start AgentRuntime
-  -> send Message(kind=task)
+select Mission/Wave executor or direct WorkItem action
+  -> start or resume AgentRuntime
+  -> deliver bounded request / executor-native assignment
   -> record delivery and provider session
   -> reduce provider events into harness state
-  -> receive report/evidence/proposal
+  -> return outcome, artifacts, checks and optional attribution
   -> close or recover runtime
 ```
 
@@ -26,22 +33,23 @@ create AgentMember
 
 | Question | Runtime answer |
 | --- | --- |
-| Who is the agent? | `AgentMember` durable identity, role, skills, permissions, team, and workspace policy. |
+| What requested execution? | Mission/Wave executor, Host action or linked WorkItem execution reference. |
+| Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | `ProviderSession` plus `AgentEvent` stream. |
-| How does a member receive work? | `MessageDelivery` maps harness messages to provider turns or native inputs. |
+| How does it receive work? | Delivery maps the requesting executor's assignment or Host request to provider input. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
-| How is context built? | Harness packages bounded task context, evidence refs, skill refs, and permissions per delivery. |
+| How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
 | How are providers swapped? | Providers implement the same interfaces and cannot own harness state. |
 
 ## A-ROM Objects
 
 | Object | Owns | Refuses |
 | --- | --- | --- |
-| `AgentMember` | identity, role, prompt refs, skill refs, permission profile, team, current projections | provider transcript as identity |
-| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | task ownership or decisions |
-| `MessageDelivery` | message to provider request correlation and terminal delivery state | hidden chat assignment |
-| `ProviderSession` | one provider interaction and reproducible request/output refs | canonical task state |
+| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity or organization authority |
+| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment or acceptance ownership |
+| `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
+| `ProviderSession` | one provider interaction and reproducible request/output refs | canonical WorkItem or Wave state |
 | `AgentEvent` | normalized provider/runtime/hook events | raw provider-specific semantics |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
@@ -51,33 +59,33 @@ create AgentMember
 
 ```text
 AgentProvider
-  create_runtime(member, workspace, permissions)
+  create_runtime(actor_config, workspace, permissions)
   close_runtime(runtime)
   health(runtime)
-  deliver(message, context)
+  deliver(request, context)
   interrupt(runtime, reason)
   read_events(runtime, cursor)
 
-MessageDelivery
-  package_context(message, task, evidence_refs, skill_refs, permissions)
+Delivery
+  package_context(request, execution_refs, artifact_refs, skill_refs, permissions)
   send(provider_request)
   correlate_response(response_or_event)
   record_delivery(status, provider_session)
 
 EventReducer
   provider_event -> AgentEvent
-  AgentEvent -> member/task/message/proposal/evidence projections
+  AgentEvent -> runtime health and executor-specific projections
 
 WorkspaceProvider
-  prepare_workspace(task)
-  attach_branch_or_pr(task)
-  inspect_changed_paths(task)
-  cleanup_or_archive(task)
+  prepare_workspace(execution)
+  attach_branch_or_pr(execution)
+  inspect_changed_paths(execution)
+  cleanup_or_archive(execution)
 ```
 
 Codex, Claude Code, Kimi, OpenClaw, a Permission Agent, or a future cloud
-provider should implement these boundaries without changing `Goal`, `Task`,
-`Message`, `Evidence`, `Proposal`, or `Decision` semantics.
+provider should implement these boundaries without changing Mission/Wave,
+executor-native records, WorkItem, Approval or organization semantics.
 
 ## Queue And Context Policy
 
@@ -93,9 +101,10 @@ The harness owns delivery policy:
 | `closed` / `error` | fail delivery and create evidence/blocker |
 
 Provider context is ephemeral. Harness state is durable. Each delivery should
-include only the bounded context needed for that turn: task objective,
-acceptance criteria, relevant messages, evidence refs, skill refs, owned paths,
-workspace refs, and permission profile.
+include only the bounded context needed for that turn: objective, acceptance
+criteria, relevant executor-native assignments/messages, artifact refs, skill
+refs, owned paths, workspace refs, permission profile and necessary Company OS
+links.
 
 Delivery queues must be built from the latest projection of mutable objects.
 For an append-only store, this means selecting the latest row per `Message.id`
@@ -113,10 +122,10 @@ Closed, closing, or retired members cannot be revived by delivery. A provider
 may expose an explicit reopen operation later, but normal message delivery and
 runtime start must fail visibly for those states.
 
-The delivered provider input must carry a stable harness envelope containing at
-least message id, kind, task id, sender, recipient, channel, delivery attempt,
-and content. Provider-specific transcript text is not a substitute for this
-correlation envelope.
+The delivered provider input must carry a stable Harness envelope containing
+the requesting Mission/Wave/run or WorkItem reference, sender, recipient,
+delivery attempt and content as applicable. Provider-specific transcript text
+is not a substitute for this correlation envelope.
 
 ## Provider-Specific Docs
 
@@ -124,7 +133,7 @@ Use this split:
 
 ```text
 docs/agent-integration-model.md  # how to integrate a new agent (three pillars + launch spec)
-docs/agent-runtime.md        # provider-neutral A-ROM and interfaces
+docs/agent-runtime.md        # provider-neutral runtime substrate and interfaces
 docs/integration/README.md   # integration rules and template
 docs/integration/codex.md    # Codex implementation
 docs/integration/claude.md   # Claude implementation
@@ -133,14 +142,15 @@ docs/integration/<name>.md   # future provider implementation
 ```
 
 The [Agent Integration Model](agent-integration-model.md) is the canonical
-"to integrate a new agent you define X, Y, Z" doc; this file is the runtime
-object model it builds on. Do not let the first provider implementation define
-the generic runtime.
+"to integrate a new provider you define X, Y, Z" doc; this file is the runtime
+substrate it builds on. Do not let the first provider implementation define the
+generic runtime or product authority.
 
 ## Invariants
 
-1. Harness store is canonical; provider transcript is evidence.
-2. Hooks and provider notifications are event inputs, not the message bus.
+1. Executor-native and Company OS stores are canonical; provider transcript is
+   an execution reference, never product authority.
+2. Hooks and provider notifications are event inputs, not assignment ownership.
 3. A runtime can fail while the member identity remains recoverable.
 4. Provider-native subagents are visible child threads, not harness members
    unless explicitly promoted.

@@ -21,9 +21,9 @@ import {
   OrganizationPage,
   StandingAgentFocus,
   WorkItemFocus,
-  WorkboardPage,
   adaptTrademarkOperationsProjection,
 } from "./operations";
+import { WorkOperatingPage } from "./work/WorkOperatingPage";
 
 type CompanyOsPage =
   | "home"
@@ -211,7 +211,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     case "home": content = <CompanyHome data={docs.home} />; break;
     case "docs-workspace": content = <DocsWorkspace workspace={docs.workspace} />; break;
     case "document-focus": content = <BasicDocumentPage document={docs.document} />; break;
-    case "workboard": content = <WorkboardPage data={operations} />; break;
+    case "workboard": content = <WorkOperatingPage source={resolved.value} />; break;
     case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
     case "agents-organization": content = <OrganizationPage data={operations} />; break;

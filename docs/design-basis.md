@@ -1,134 +1,122 @@
 # Design Basis
 
-This document records the design thinking behind Star Harness. It sits
-between the product requirements and the implementation architecture: PRD says
-why the product exists, architecture says what modules exist, and this document
-explains why the system is decomposed this way.
-
-## Core Thesis
-
-Raw agents can use project tools, but they often lack durable context,
-structured feedback, and a clear way to judge whether work is good. Multi-Agent
-Harness turns a project's tools into an agent-governed workflow:
-
 ```text
-project capability -> adapter -> goal -> agent task -> evidence -> decision
+status: canonical architecture rationale
+owner_role: product-architecture
+canonical_for: system decomposition, module core ideas, truth boundaries, and documentation structure
 ```
 
-The product is not a domain engine. It is the governance and coordination layer
-that lets agents use domain engines with less guessing and better accountability.
+The PRD explains why Star Harness exists. Architecture and schemas describe
+what is implemented. This document explains why the product is decomposed into
+Company OS truth systems plus a separate execution foundation.
 
-## Design Layers
+## Core thesis
+
+An AI-native company needs durable memory, accountable capability, explicit
+commitments and governed effects. Agents and workflows are tools used by that
+company; they are not the company information model.
+
+```text
+durable company context
+  -> explicit WorkItem and responsibility
+  -> required Approval and effect policy
+  -> selected human or execution capability
+  -> observable outcome, artifacts and evidence
+  -> accepted result and effects return to company records
+```
+
+## Design layers
 
 ```mermaid
 flowchart TD
-  Intent[Intent Layer: user goals and product scenarios]
-  Coordination[Coordination Layer: Goal, AgentMember, Task, Message]
-  Adapter[Adapter Layer: skills and tool descriptors]
-  Execution[Execution Layer: project CLI / API / dashboard / artifacts]
-  Evidence[Evidence Layer: Evidence, Report, Decision]
-  Learning[Learning Layer: outcome evaluation and reusable learning note]
-  Governance[Governance Layer: permissions, CI/CD, release gates]
-  Interface[Interface Layer: Agent Dashboard and human review]
+  Product["Company product layer<br/>Docs · Organization · Work · Finance"]
+  Governance["Governance layer<br/>policy · Approval · authority · audit"]
+  Execution["Execution foundation<br/>Mission/Wave · Agent Team · Workflow · Host"]
+  Runtime["Provider/runtime layer<br/>sessions · events · plugins · MCP · workspaces"]
+  Evidence["Outcome layer<br/>artifacts · checks · evidence · metrics"]
+  Interface["Operator interfaces<br/>Company OS · Agent Dashboard"]
 
-  Intent --> Coordination
-  Coordination --> Adapter
-  Adapter --> Execution
-  Execution --> Evidence
-  Evidence --> Learning
-  Learning --> Coordination
-  Evidence --> Governance
-  Evidence --> Interface
-  Governance --> Coordination
-  Interface --> Intent
+  Product --> Governance
+  Governance --> Execution
+  Execution --> Runtime
+  Runtime --> Evidence
+  Evidence --> Product
+  Product --> Interface
+  Execution --> Interface
 ```
 
-This diagram answers: how intent becomes work, how work touches project tools,
-how results become evidence, and how evidence feeds governance and future work.
-
-| Layer | Design basis | Must preserve |
+| Layer | Why it exists | Must preserve |
 | --- | --- | --- |
-| Intent | Start from user goals and project scenarios, not from generic automation. | Every workflow needs a visible goal and acceptance criteria. |
-| Coordination | Multi-agent work needs durable tasks and messages, not only provider chat. | A task must be assignable, reportable, reviewable, and auditable. |
-| Adapter | The generic harness should not know project internals. | Domain tools enter through skills, descriptors, APIs, and artifacts. |
-| Execution | Real value comes from using the project's actual capabilities. | Commands and dashboards must produce evidence, not just text. |
-| Evidence | Decisions should be based on references that can be inspected later. | Important claims need evidence refs. |
-| Learning | Completed goals should improve future Lead designs. | outcome evaluations produce reusable cases and follow-up infra tasks. |
-| Governance | Repeated mistakes should become checks, not memories. | CI/CD gates validate project promises and permission boundaries. |
-| Interface | Humans and agents need a shared operational view. | Agent Dashboard is separate from the project dashboard but links to it. |
+| Company product | the company needs one durable model for knowledge, actors, commitments and effects | each fact has one owning system and linked projections never become copies |
+| Governance | sensitive effects need named policy and authority | Approval is distinct from comments, execution completion and Wave gates |
+| Execution foundation | long or parallel work needs provider-neutral coordination | Mission has ordered lightweight Waves; each executor owns its internal plan and records |
+| Runtime | providers differ in process, session, tool and observation capability | provider state never becomes organization identity or business authority |
+| Outcome/evidence | accepted claims must be reconstructable | outcomes point to useful artifacts, checks and durable records without storing private thinking |
+| Interface | humans and Agents need comprehensible operating views | Company OS presents business truth; Agent Dashboard presents execution truth |
 
-## Module Core Ideas
+## Module core ideas
 
-Each core module has a core idea: why the module exists, what it owns, what it
-refuses to own, and which invariant should survive implementation changes.
+| Module | Owns | Refuses | Invariant |
+| --- | --- | --- | --- |
+| Docs | Documents, Blocks, TypedRecords, Relations, Views and BusinessModules | task lifecycle, actor authority or monetary state | company context and accepted results have a durable home |
+| Organization | humans, Standing Agents, external/services, OrgUnits, reporting, permission and authority | WorkItem state, document content or payment state | durable identity is distinct from runtime/session identity |
+| Work | WorkItems, Milestones, responsibility, Assignment, lifecycle, evidence and result routing | source knowledge, organization identity or finance ledger truth | every commitment says who owns it and where its result returns |
+| Finance | budgets, Commitments, invoices, Payments, refunds and financial evidence | general task or document truth | requested, authorized and actual monetary effects remain distinct |
+| Governance | module/organization evolution, policy, Approval and audit | hidden prompt authority or silent structural mutation | high-risk effects stop at the required Human boundary |
+| Mission/Wave | durable intent, ordered execution boundaries, attempts, outcomes and lightweight gates | business ownership, payment approval or a task graph | Wave stays small and executor-specific records remain honest |
+| Agent Team | run-scoped members, assignment messages, correlations, actions and handoffs | Standing Organization membership | ownership is proven by assignment/message lineage |
+| Dynamic Workflow | WorkflowRun, steps, outputs and artifacts | universal company coordination | workflow truth stays inside its executor contract |
+| Provider/runtime | sessions, processes, events, workspace and capability observation | WorkItem or Organization truth | optional hooks may observe only what the provider actually exposes |
+| Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |
 
-| Module | Core idea | Owns | Refuses | Invariant |
-| --- | --- | --- | --- | --- |
-| Goal System | Work needs a durable outcome before tasks can be judged. | Objective, owner, success criteria, priority | Vague intent that never becomes verifiable | Tasks serve a goal, not chat momentum. |
-| Agent Runtime | Agents must be manageable, accountable instances. | Agent members, capabilities, status | Domain-specific business logic | Agents are not anonymous chat sessions. |
-| Task System | Work needs a durable unit that can be assigned, executed, reviewed, and replanned. | Decomposition, ownership, assignment, dependencies, workspace refs, acceptance | Vague TODOs without owner, scope, or acceptance | Work can be tracked from goal to decision. |
-| Message System | Collaboration should be reconstructable. | Agent-to-agent communication and reports | Hidden side channels as the only source of truth | Task assignment and reports can be replayed. |
-| Evidence System | Claims need inspectable support. | References to proof | Treating unsupported summaries as facts | Decisions point to evidence. |
-| Decision System | Outcomes need explicit rationale. | Accept, reject, retry, block, escalate | Silent implicit conclusions | The leader's rationale is durable. |
-| operational learning System | Finished goals should improve the next goal. | legacy plan record, outcome evaluation, reusable learning note examples | Raw transcripts as reusable knowledge | Every important goal can become a reviewed case or follow-up task. |
-| Skill System | Repeated working knowledge should become reusable. | How agents should use a scenario or tool | Copying project business logic into generic core | Skills guide usage without owning domain execution. |
-| Tool Adapter System | Project capability needs a stable agent-facing contract. | CLI/API/dashboard/artifact access | Direct coupling to a specific project runtime | Domain tools enter through descriptors and adapters. |
-| Agent Dashboard | Coordination state needs a shared view. | Operational read model for tasks and evidence | Replacing the project dashboard | It links to domain evidence instead of duplicating it. |
-| CI/CD | Repeated mistakes should become checks. | Validation of promises and release readiness | Running checks that do not map to real commitments | Broken contracts fail early. |
+There is no active `Goal`, `GoalPhase`, Project-like task container or Task
+Graph for new work. Historical occurrences exist only in migration,
+compatibility, research or archive contexts governed by ADR 0028.
 
-## Documentation Mapping
+## Why Documents and Agents are connected
 
-The documentation structure should mirror the system thinking:
+Docs without accountable Actors becomes a passive wiki. Agents without durable
+Docs repeat context and leave chat as the only memory. WorkItem links the two:
+the source Document explains why work exists; Organization supplies who may act;
+Work owns the commitment; Finance owns any monetary effect; the selected
+executor proves how work ran; the result returns to Docs.
 
-| Doc | Design role |
+## Why modules are linked structures
+
+A business domain such as Trademark Management is not just a folder. Its
+BusinessModule relates documents, typed records, views, WorkItems, Actors,
+Approvals, Finance records, policies and evidence. Creating a new module
+therefore requires document and relation design, responsibility placement,
+financial impact analysis and governance—not merely a new navigation item.
+
+## Documentation mapping
+
+Documentation mirrors authority rather than implementation folders:
+
+| Location | Role |
 | --- | --- |
-| `README.md` | Entry point, product boundary, and fastest route to useful context. |
-| `docs/prd.md` | Motivation, scenarios, non-goals, and success criteria. |
-| `docs/design-basis.md` | Layering, module core ideas, and the reasoning that connects product to architecture. |
-| `docs/concept-model.md` | Canonical object relationships and anti-drift invariants. |
-| `docs/architecture.md` | Concrete modules, data flow, object contracts, package boundaries. |
-| `docs/data-model.md` | Source-of-truth rules, projections, and legacy dependency graph edges. |
-| `docs/agent-runtime.md` | Provider-neutral Agent Runtime Object Model and interfaces. |
-| `docs/dashboard.md` | Dashboard information architecture and backward data requirements. |
-| `docs/dashboard/` | Dashboard module internals such as frontend architecture, read model, and runbook. |
-| `docs/workflow-git-pr.md` | Task, worktree, branch, PR, proposal, review, and decision flow. |
-| `docs/integration/README.md` | Provider integration boundaries and provider-specific doc template. |
-| `docs/company-os/governance.md` | Company governance, Approval boundaries, and durable operating learning. |
-| `docs/operations.md` | How the system is run, checked, released, and recovered. |
-| `docs/schemas.md` | Machine-readable contracts that stabilize the workflow. |
-| `docs/decisions/` | Durable tradeoffs that future agents should not re-litigate casually. |
-| `.agents/skills/` | Operational knowledge that tells agents how to use the project and improve it. |
+| `docs/company-os/` | Company OS product contracts and system boundaries |
+| `docs/architecture*.md`, `docs/concept-model.md`, `docs/data-model.md` | executable architecture and object relationships |
+| `docs/decisions/` | durable decisions and supersession records |
+| `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | execution implementation and operations |
+| `docs/design/<workstream>/` | versioned visual intent and evidence |
+| `docs/research/` | non-authoritative inputs |
+| `docs/archive/` | historical provenance excluded from normal planning |
 
-If a document does not map to a design role, it should not exist yet.
+The creation, ownership, lifecycle, registry and archive rules live in
+[Documentation Governance](documentation-governance.md). Stable fields belong
+in schema; stable behavior belongs in code; stable operations belong in CLI or
+API; documentation owns rationale, boundaries, exceptions and upgrade rules.
 
-The documentation tree should grow with the project's real state. Keep it flat
-while ideas are unstable; split when readers, lifecycles, modules, or machine
-consumers become stable. Reorganize when the current tree no longer reflects
-the system's actual layers, module relationships, or evidence flow.
+## Review questions
 
-Canonical repository docs live under `docs/`. When a module needs deeper
-details, create `docs/<module>/` rather than putting canonical architecture or
-runbook documents beside implementation files. App and package directories can
-contain source, configuration, and generated artifacts, but should not become a
-parallel documentation tree.
+Before adding an object, module, page or document:
 
-## Design Review Questions
-
-Use these questions before adding large docs, new directories, or new modules:
-
-1. What important design idea is this documenting?
-2. Which layer or module core idea does it clarify?
-3. Does it explain why the decomposition exists, or only list what exists?
-4. Can a new agent use it to make a better decision with less context?
-5. Does it connect to evidence, CI/CD, schema, CLI, or dashboard surfaces?
-6. If the content is stable, should it become a machine contract instead of more prose?
-
-Good documentation should make the system feel smaller because the structure is
-clear. Bad documentation makes the system feel larger because it adds text
-without revealing the design.
-
-Stable fields belong in schema. Stable behavior belongs in code. Stable
-operations belong in CLI or API. Stable commitments belong in CI/CD. Stable
-coordination views belong in the Agent Dashboard. Documentation should keep the
-reason, boundary, exception, and upgrade rule rather than duplicating those
-sources of truth.
+1. Which system owns the truth?
+2. Is this a new durable object, a relation, a projection or execution evidence?
+3. Can an existing canonical contract own the change?
+4. Does the change require Human authority or a governed Action?
+5. What does not belong in this module?
+6. Which schema, store, API, UI and acceptance evidence make the claim real?
+7. Which older direction becomes superseded and how is it removed from default
+   context?

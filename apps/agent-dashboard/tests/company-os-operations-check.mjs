@@ -17,9 +17,11 @@ function check(condition, message) {
 }
 
 async function main() {
-  const [pages, fixture] = await Promise.all([
+  const [pages, fixture, workOperatingPage, router] = await Promise.all([
     readFile(resolve(operations, "pages.tsx"), "utf8"),
     readFile(fixturePath, "utf8").then(JSON.parse),
+    readFile(resolve(root, "src/company-os/work/WorkOperatingPage.tsx"), "utf8"),
+    readFile(resolve(root, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
   ]);
   const [components, fixtureAdapter, approvalAction, workItemAction] = await Promise.all([
     readFile(resolve(operations, "components.tsx"), "utf8"),
@@ -47,6 +49,10 @@ async function main() {
   const workItemActionModule = await import(pathToFileURL(workItemActionTarget).href);
   const required = ["OrganizationPage", "HumanMemberFocus", "StandingAgentFocus", "WorkboardPage", "WorkItemFocus", "ApprovalFocus", "FinancePage", "GovernanceProposalFocus", "BusinessModuleFocus"];
   check(required.every((name) => pages.includes(`function ${name}`)), "exports all nine Company OS operations pages");
+  check(router.includes('<WorkOperatingPage source={resolved.value} />') && workOperatingPage.includes('data-work-operating-system="v1"'), "routes Work to the native multi-view operating workspace");
+  check(["overview", "board", "all", "milestones", "timeline", "workload"].every((view) => workOperatingPage.includes(`id: "${view}"`)), "Work workspace exposes six projections over one WorkItem ledger");
+  check(workOperatingPage.includes("root.work") && workOperatingPage.includes("projection.work_items") && workOperatingPage.includes("projection.milestones"), "Work workspace consumes native Work and Milestone projections before raw fallback records");
+  check(workOperatingPage.includes('"No milestone"') && workOperatingPage.includes('"Unclassified"') && workOperatingPage.includes("Unassigned lane"), "Work views preserve missing Milestone, business-line, and assignment truth");
   check(types.includes('"human" | "standing_agent"') && types.includes("interface ActorSummary"), "keeps Human and Standing Agent as distinct actor kinds");
   check(pages.includes("Execution attempts and hidden reasoning do not define membership") && !pages.includes("MemberRun") && !pages.includes("provider session"), "Standing Agent activity does not collapse into execution lifecycle or provider state");
   check(pages.includes("Required human approver") && pages.includes("actorDescriptor(approval.requiredApprover)"), "renders the named Human approval boundary from the projection");
