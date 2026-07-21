@@ -148,7 +148,7 @@ or time is never sufficient. A provider session proves observed execution
 history, not responsibility or acceptance.
 
 An Assignment is an explicit routing/acceptance record between a WorkItem and
-an Actor. It can be projected from a WorkItem for a Standing Agent detail page,
+an Actor. It can be projected from a WorkItem for an Agent profile/configuration view,
 but neither assignment nor WorkItem is inferred from ordinary chat. If work
 must be split, create related WorkItems or an executor-native plan with explicit
 links while keeping executor-internal planning outside the Company OS record.
@@ -233,7 +233,7 @@ Docs are the principal entry and return surface for WorkItems:
 - Work provides Overview, Milestones, All WorkItems, My Work, Agent Work,
   Human Actions, Waiting for Approval, Blocked, and Workload projections over
   the same records;
-- agent and human detail pages show only explicitly linked WorkItems and their
+- agent profiles/configuration and human detail pages show only explicitly linked WorkItems and their
   documented role; the UI must never infer ownership from chat, sessions, or a
   familiar name;
 - Needs You highlights the precise required actor, authority, subject,

@@ -26,6 +26,13 @@ and custom-page process without invoking either skill. A future `SKILL.md`
 should be concise, refer to the canonical docs below, and avoid duplicating
 product contracts.
 
+Governance Agents may later receive narrower procedural skills such as
+`document-architecture`, `work-intake-and-routing`, `finance-governance`, and
+`organization-governance`. Their Agent definition still consists of explicit
+responsibility, prompt, tools/Skills, permissions, maintained Docs, and
+escalation. A Skill is never installed or invoked merely because an Agent has a
+governance title, and it never expands that Agent's permission policy.
+
 ## Shared operating rules
 
 Both skills must:

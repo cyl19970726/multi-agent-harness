@@ -7,6 +7,20 @@
   },
   "assets": [
     {
+      "id": "docs-governance-agent-focus-ui-reference",
+      "file": "expected/docs-governance-agent-focus-ui--1536x1024.png",
+      "prompt": "prompts/docs-governance-agent-focus-ui.md",
+      "implementation_priority": "deferred-reference-only",
+      "sha256": "22b050a9efb377f6fb5417adab65f09edaf89382cf5790e36646e550f0dcd566"
+    },
+    {
+      "id": "work-governance-agent-focus-ui-reference",
+      "file": "expected/work-governance-agent-focus-ui--1536x1024.png",
+      "prompt": "prompts/work-governance-agent-focus-ui.md",
+      "implementation_priority": "deferred-reference-only",
+      "sha256": "d224e8ae71d1b74b0e9236f83cafba1269518eafa6dfb50a8dc08c5599f1a0e6"
+    },
+    {
       "id": "organization-overview-ui",
       "file": "expected/organization-overview-ui--1536x1024.png",
       "prompt": "prompts/organization-overview-ui.md",

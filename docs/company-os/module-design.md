@@ -23,7 +23,7 @@ activity, or cross-functional process requires a design proposal.
 
 ```mermaid
 flowchart LR
-  N["New or changing business need"] --> A["Document Architecture Agent: discover and draft"]
+  N["New or changing business need"] --> A["Docs Governance Agent: discover and draft"]
   A --> I["Impact analysis: relations, actors, finance, controls"]
   I --> P["Module Design proposal"]
   P --> G["Required review and Approval"]
@@ -32,11 +32,11 @@ flowchart LR
   C --> O["Operate, measure, and periodically reorganize"]
 ```
 
-The Document Architecture Agent is responsible for proposing a coherent
+The Docs Governance Agent is responsible for proposing a coherent
 structure, discovering collision with existing modules, and maintaining the
 document architecture. It is not authorized to unilaterally make high-risk
 governance decisions. The business owner, Finance, legal/security owners,
-Organization Governance Agent, and required human approvers participate when
+Org/HR Governance Agent, and required human approvers participate when
 the proposed change affects their authority.
 
 ## Required Module Design

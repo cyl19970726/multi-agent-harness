@@ -19,8 +19,10 @@ registration fee is **¥3,000**.
 | Brand Owner Human | human | Accountable business owner and human approver. |
 | Trademark Agent | agent | Prepares application, manages WorkItems, updates linked records. |
 | External Lawyer | external | Provides constrained legal review and filing support. |
-| Document Architecture Agent | agent | Proposes document and record architecture. |
-| Organization Governance Agent | agent | Checks roles, capacity, and permissions. |
+| Docs Governance Agent | agent | Proposes document and record architecture. |
+| Work Governance Agent | agent | Creates and routes the durable filing WorkItem. |
+| Finance Governance Agent | agent | Validates the commitment, controls, and evidence. |
+| Org / HR Governance Agent | agent | Checks roles, capacity, permissions, and durable capability. |
 | Finance reviewer | human or authorized agent | Verifies financial controls and evidence. |
 | Legal reviewer | human or authorized legal role | Verifies filing and jurisdictional requirements. |
 
@@ -30,7 +32,7 @@ The Brand Owner Human creates a source document explaining brand, territory,
 classes, intended filing date, and reason. That document creates a WorkItem
 submitted by the Brand Owner Human and assigned to the Trademark Agent.
 
-Because this is a new domain, the Document Architecture Agent proposes an
+Because this is a new domain, the Docs Governance Agent proposes an
 R2/R3 module design:
 
 ```text
@@ -47,7 +49,7 @@ Legal & IP
 
 It defines `TrademarkApplication` as a typed record related to the brand,
 source document, Milestone, WorkItems, legal evidence, approvals, and
-FinancialRecords. The Organization Governance Agent confirms the Trademark
+FinancialRecords. The Org/HR Governance Agent confirms the Trademark
 Agent can own operational WorkItems, the External Lawyer is limited to this
 matter, and the Brand Owner Human remains accountable.
 

@@ -87,6 +87,9 @@ model.
 - [Four-system collaboration](four-system-collaboration.md): what Docs,
   Organization, Work, and Finance each own and how linked operations move
   through them without duplicating truth.
+- [Governance Agent workspaces](governance-agent-workspaces.md): Lead-managed
+  Docs, Work, Finance, and Org/HR governance roles, decision surfaces, Skills,
+  Actions, and authority boundaries.
 - [Financial relations](financial-relations.md): budget, commitment, invoice,
   payment, refund, metrics, and cross-module linkage.
 - [Governance](governance.md): document architecture, organization evolution,

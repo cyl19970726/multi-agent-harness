@@ -20,8 +20,10 @@ authority.
 
 | Role | Primary responsibility | Cannot replace |
 | --- | --- | --- |
-| Document Architecture Agent | Designs modules, document trees, typed records, templates, views, relations, retention, and migration proposals. | Business accountability or required human approval. |
-| Organization Governance Agent | Designs organizational units, roles, mixed membership, authority, capacity, escalation, and access-policy proposals. | HR/legal authority or approval of its own privileges. |
+| Docs Governance Agent | Designs modules, document trees, typed records, templates, views, relations, retention, and migration proposals. | Business accountability or required human approval. |
+| Work Governance Agent | Classifies durable commitments, routes responsibility, checks required fields, and surfaces Approval/Finance/execution impact. | Business ownership, human approval, or executor-native planning. |
+| Finance Governance Agent | Validates monetary requests, evidence, budgets, controls, and authorized record transitions. | Human payment authority or permission to infer settlement. |
+| Org / HR Governance Agent | Evaluates capability gaps and governs Business Agent proposal, provisioning, reporting, permissions, evaluation, and retirement. | Approval of its own privileges or mandatory Human gates. |
 | Lead | Owns business outcome; sponsors proposals, resolves trade-offs, and accepts completed change. | Mandatory independent review or human gate. |
 | Finance reviewer | Reviews financial design, budget/payment impact, controls, and separation of duties. | Accountable human payment approver. |
 | Legal reviewer | Reviews legal obligations, jurisdiction, evidence, retention, and external counsel boundaries. | Human or authorized-counsel sign-off required by policy. |
@@ -47,8 +49,10 @@ and rollback plan, and success criteria.
 
 ```text
 New business need or governance gap
-  -> Document Architecture Agent maps documents, records, and relations
-  -> Organization Governance Agent maps actors, authority, and capacity
+  -> Docs Governance Agent maps documents, records, and relations
+  -> Work Governance Agent maps durable commitments and delivery
+  -> Finance Governance Agent maps monetary effects and controls
+  -> Org/HR Governance Agent maps actors, authority, and capacity
   -> Lead sponsors the selected design
   -> Finance / Legal reviewers assess domain impact as required
   -> Human gate approves when policy or risk requires it
@@ -56,7 +60,7 @@ New business need or governance gap
   -> audit outcome and review it after use
 ```
 
-The two governance Agents can prepare one coordinated proposal, but neither can
+The Governance Agents can prepare one coordinated proposal, but none can
 unilaterally approve its own additional access, authority, or reporting line.
 Accepted changes retain links to their request, reviews, approval, created
 objects, and later evidence of effectiveness.

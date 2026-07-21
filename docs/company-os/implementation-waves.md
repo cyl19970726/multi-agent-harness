@@ -10,6 +10,23 @@ This plan turns the Company OS product direction into seven ordered Waves.
 Parallel work is allowed when owned paths and contracts are independent, but a
 later Wave cannot be accepted before the gates it depends on have passed.
 
+## Current prioritization after V2.2
+
+The historical seven-Wave acceptance remains valid for what it proved. The
+next product slice does not extend every Agent focus page. It prioritizes:
+
+1. canonical Docs/Organization/Work/Finance responsibility and governance-led
+   organization contracts;
+2. Organization Overview with compact Actor configuration for responsibility,
+   prompt, tools/Skills, permissions, maintained Docs, and linked WorkItems;
+3. native Milestone, WorkType, business-line relations, and the multi-view Work
+   Operating System; and
+4. Current → Expected → Actual evidence for those surfaces.
+
+Dedicated Governance or Business Agent workspaces are deferred visual
+references. Existing Agent Focus implementation remains valid evidence but is
+not the immediate expansion target.
+
 ## Completion status
 
 All seven engineering Waves passed their automated and independent critical
@@ -121,8 +138,9 @@ Gate:
 
 Deliver:
 
-- organization map and separate Human and Standing Agent focus pages;
-- Workboard and WorkItem focus with requester, submitter, assignee, owner,
+- organization map and compact Human/Agent configuration surfaces;
+- Work Overview, Board, All Work, Milestones, Timeline, Workload, and WorkItem
+  focus with requester, submitter, assignee, owner,
   reviewer, evidence, and result provenance;
 - Approval, Finance, Governance Proposal, and Business Module focus pages;
 - reusable compact controls for documents, actors, work, approvals, finance,
@@ -133,7 +151,7 @@ Gate:
 - unknown actor state stays unknown and is never rendered as online or
   available;
 - Human pages contain no provider or runtime telemetry;
-- Standing Agent pages do not inherit run-scoped Member semantics;
+- Agent configuration does not inherit run-scoped Member semantics;
 - the pending ¥3,000 commitment and its human gate remain consistent on every
   page.
 

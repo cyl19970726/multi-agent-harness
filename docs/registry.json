@@ -1961,6 +1961,79 @@
    "reorgTrigger": "Governance roles, policy gates, human authority, module evolution, or audit requirements change."
   },
   {
+   "path": "docs/company-os/four-system-collaboration.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Docs, Organization, Work, and Finance responsibility boundaries",
+    "governance-led organization and cross-system operating loop"
+   ],
+   "dependsOn": [
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/financial-relations.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-21",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "A primary system changes ownership, a Governance Agent hierarchy changes, or a cross-system Action boundary changes."
+  },
+  {
+   "path": "docs/company-os/governance-agent-workspaces.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Governance Agent responsibility and configuration contract",
+    "prompt, tools, Skills, permissions, and deferred workspace boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/governance.md",
+    "docs/company-os/skill-contracts.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-21",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Governance role responsibilities, Agent configuration, Skill authority, or Agent workspace implementation priority changes."
+  },
+  {
+   "path": "docs/company-os/work-operating-system.md",
+   "ownerRole": "product",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "company-wide Work information architecture",
+    "Work views, filters, responsibility, and Milestone boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/four-system-collaboration.md",
+    "docs/company-os/frontend-information-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-21",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Work hierarchy, primary views, saved queries, responsibility dimensions, or Milestone boundary changes."
+  },
+  {
    "path": "docs/company-os/execution-foundation.md",
    "ownerRole": "architecture",
    "status": "stable",
