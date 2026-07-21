@@ -1,8 +1,8 @@
 # MemberRun Focus Page Spec
 
 ```text
-status: planned
-owner_role: product-design
+status: implemented_candidate
+owner_role: dashboard
 canonical_for: one MemberRun working within one AgentTeamRun attempt
 route_or_surface: Missions -> Wave -> Agent Team -> MemberRun
 ```
@@ -52,9 +52,11 @@ historical event.
 
 ## Layout Contract
 
-The visual reference is the approved
-`member-run-focus/running-needs-you--desktop` expected design in
-[`../../design/workbench-layout-v2/`](../../design/workbench-layout-v2/README.md).
+The active visual candidate is the desktop/tablet/mobile MemberRun Focus V3
+set in
+[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
+The older Workbench V2 image remains baseline evidence, not the target visual
+contract.
 
 ### Desktop — `1440x1000`
 
@@ -155,7 +157,7 @@ outcome. Completion of the MemberRun is an attempt fact, not Wave acceptance.
 
 For `member-run-focus--running-needs-you--desktop` in the visual contract:
 
-- baseline, approved expected, implementation capture, and labeled comparison
+- baseline, approval-pending expected candidate, implementation capture, and labeled comparison
   all use the registered fixture, route, and `1440x1000` viewport;
 - first viewport visibly contains the Member header, a continuous mixed
   activity/chat stream, assignment context, a Wave module, Team module, and
@@ -169,6 +171,10 @@ For `member-run-focus--running-needs-you--desktop` in the visual contract:
 - deviations from the approved image are recorded in
   `visual-contract.json`, not silently normalized by changing the expected
   image.
+
+The implementation and exact-viewport desktop/tablet/mobile evidence are
+complete. Product-truth and internal visual checks pass; the expected candidate
+must remain immutable while awaiting explicit user approval.
 
 ## Explicit Boundaries
 

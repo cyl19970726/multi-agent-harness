@@ -308,6 +308,36 @@
     }
   }
 
+  .responsive-context-sheet[open] {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 50;
+    max-height: min(72vh, 46rem);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: 1rem 1rem 0 0;
+    box-shadow: 0 -24px 60px -36px rgb(15 23 42 / 0.42);
+  }
+  .responsive-context-sheet[open] > div {
+    max-height: calc(min(72vh, 46rem) - 2.75rem);
+    overflow-y: auto;
+  }
+  @media (min-width: 640px) and (max-width: 1279px) {
+    .responsive-context-sheet[open] {
+      inset: 3.6rem 0 0 auto;
+      width: min(23rem, 44vw);
+      max-height: none;
+      border-block: 0;
+      border-right: 0;
+      border-radius: 0;
+      box-shadow: -24px 0 60px -42px rgb(15 23 42 / 0.45);
+    }
+    .responsive-context-sheet[open] > div {
+      max-height: calc(100vh - 6.35rem);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .pulse-dot::after,
     .execution-live-trace::after {

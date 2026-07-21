@@ -63,6 +63,7 @@ export function MemberRunFocus({
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState("");
   const [messageKind, setMessageKind] = useState("question");
+  const [showFullActivity, setShowFullActivity] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -81,6 +82,9 @@ export function MemberRunFocus({
     : undefined;
   const assignment = context.assignments[0];
   const activityItems = toActivityItems(context, livePreview?.preview);
+  const shownActivity = showFullActivity
+    ? activityItems
+    : projectKeyActivity(activityItems);
   const evidence = collectEvidence(context, model);
   const session = (model.snapshot.provider_sessions ?? []).find(
     (candidate) => candidate.id === context.member.provider_session_id,
@@ -111,6 +115,9 @@ export function MemberRunFocus({
   return (
     <FocusShell
       className="min-h-0"
+      headerClassName="min-h-[118px] bg-background py-3 sm:py-3"
+      composerClassName="bg-background shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
+      responsiveContextVariant="sheet"
       header={
         <FocusHeader
           eyebrow="Member run"
@@ -164,9 +171,9 @@ export function MemberRunFocus({
         />
       }
     >
-      <div className="mx-auto w-full max-w-4xl">
+      <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-2 sm:px-5">
         {assignment && (
-          <div className="border-b border-border bg-status-info/5 px-4 py-2.5 sm:px-5">
+          <div className="mb-2 rounded-lg border border-border/80 bg-background px-3 py-2.5 shadow-[0_8px_24px_-24px_rgba(15,23,42,0.55)]">
             <div className="flex min-w-0 items-center gap-2">
               <ShieldCheck className="size-3.5 shrink-0 text-status-info" />
               <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-foreground">
@@ -176,17 +183,33 @@ export function MemberRunFocus({
             </div>
           </div>
         )}
-        <ActivityStream
-          items={activityItems}
-          className="min-h-[18rem]"
-          empty={
-            <EmptyState
-              icon={Clock3}
-              title="No durable activity yet"
-              description="Messages, explicit actions, and observable team events will appear here."
-            />
-          }
-        />
+        <section className="min-h-[18rem] overflow-hidden bg-background">
+          <header className="flex items-center justify-between gap-3 border-b border-border/70 py-2.5">
+            <div>
+              <h2 className="text-[12px] font-semibold text-foreground">Member activity</h2>
+              <p className="text-[10px] text-muted-foreground">Assignment, work, evidence, and pressure in one record.</p>
+            </div>
+            <button
+              type="button"
+              aria-pressed={showFullActivity}
+              onClick={() => setShowFullActivity((value) => !value)}
+              className="rounded-md border border-border/70 px-2 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
+            >
+              {showFullActivity ? "Key activity" : `Full record · ${activityItems.length}`}
+            </button>
+          </header>
+          <ActivityStream
+            items={shownActivity}
+            variant="timeline"
+            empty={
+              <EmptyState
+                icon={Clock3}
+                title="No durable activity yet"
+                description="Messages, explicit actions, and observable team events will appear here."
+              />
+            }
+          />
+        </section>
       </div>
     </FocusShell>
   );
@@ -281,7 +304,7 @@ function MemberContextRail({
   const gateTone = waveGateTone(context.wave?.gate_status);
 
   return (
-    <ContextRail label="Member context">
+    <ContextRail quiet label="Member context">
       <ContextModule
         title={context.wave ? `Wave ${context.wave.index} · ${context.wave.title}` : "Wave context unavailable"}
         icon={<GitBranch className="size-3.5" />}
@@ -436,7 +459,7 @@ function MemberComposer({
           disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
           placeholder={disabled ? disabledReason : "Message this member…"}
-          className="min-h-[4.25rem] resize-none"
+          className="min-h-12 resize-none"
           onKeyDown={(event) => {
             if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
               event.preventDefault();
@@ -488,10 +511,42 @@ function toActivityItems(context: MemberRunContext, transientPreview?: string): 
       actor: context.member.name ?? context.member.id,
       timestamp: "now",
       transient: true,
-      tone: "running",
+      tone: "decision",
+      glyph: "runtime",
+      prominence: "primary",
     },
     ...durable,
   ];
+}
+
+/** Keep the default member narrative inside one viewport without rewriting the
+ * durable record. Pressure, live state, assignment, latest evidence, and
+ * handoff are selected first; Full record exposes every remaining item. */
+function projectKeyActivity(items: WorkbenchActivityItem[]): WorkbenchActivityItem[] {
+  const visible = items.filter((item) => item.prominence !== "detail");
+  if (visible.length <= 6) return visible;
+
+  const selected = new Set<string>();
+  const select = (item: WorkbenchActivityItem | undefined) => item && selected.add(item.id);
+  visible.filter((item) => item.transient || item.prominence === "pressure").forEach(select);
+  select(visible.find((item) => item.glyph === "assignment"));
+  select(findLastItem(visible, (item) => item.kind === "evidence"));
+  select(findLastItem(visible, (item) => item.glyph === "handoff"));
+  for (let index = visible.length - 1; index >= 0; index -= 1) {
+    if (selected.size >= 6) break;
+    select(visible[index]);
+  }
+  return visible.filter((item) => selected.has(item.id));
+}
+
+function findLastItem(
+  items: WorkbenchActivityItem[],
+  predicate: (item: WorkbenchActivityItem) => boolean,
+): WorkbenchActivityItem | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) return items[index];
+  }
+  return undefined;
 }
 
 function toActivityItem(item: StableTeamActivity, context: MemberRunContext): WorkbenchActivityItem {
@@ -503,13 +558,15 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
     return {
       id: item.id,
       kind: needsAttention ? "blocker" : assignment ? "decision" : "message",
-      title: message.kind === "assignment" ? "Assignment contract" : message.body ?? `${message.kind ?? "message"} message`,
+      glyph: assignment ? "assignment" : message.kind === "handoff" ? "handoff" : message.kind === "review_request" ? "review" : "message",
+      title: message.kind === "assignment" ? "Host assignment" : message.body ?? `${message.kind ?? "message"} message`,
       body: message.kind === "assignment" ? message.body : undefined,
       actor: <><span>{label}</span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge></>,
       timestamp: formatTime(item.at),
       tone: messageTone(message.kind),
       evidenceRefs: message.evidence_refs,
       action: message.correlation_id ? <Badge tone="muted">{message.correlation_id}</Badge> : undefined,
+      prominence: assignment || needsAttention || ["handoff", "progress"].includes(message.kind ?? "") ? (needsAttention ? "pressure" : "primary") : "detail",
     };
   }
   if (item.kind === "action") {
@@ -517,12 +574,14 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
     return {
       id: item.id,
       kind: (action.evidence_refs?.length ?? 0) > 0 ? "evidence" : "action",
+      glyph: (action.evidence_refs?.length ?? 0) > 0 ? "artifact" : "runtime",
       title: action.title ?? action.action_type ?? "Member action",
       body: action.summary,
       actor: context.member.name ?? context.member.id,
       timestamp: formatTime(item.at),
       tone: actionTone(action.status),
       evidenceRefs: action.evidence_refs,
+      prominence: (action.evidence_refs?.length ?? 0) > 0 || action.status === "failed" ? "primary" : "detail",
     };
   }
   const event = item.event;
@@ -530,10 +589,12 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
   return {
     id: item.id,
     kind: isBlocker ? "blocker" : "action",
+    glyph: "runtime",
     title: event.summary ?? `${event.entity_type ?? "Team record"} ${event.operation ?? "updated"}`,
     actor: event.source_kind ?? "team",
     timestamp: formatTime(item.at),
     tone: isBlocker ? "bad" : event.operation === "completed" ? "good" : "info",
+    prominence: isBlocker ? "pressure" : "detail",
   };
 }
 

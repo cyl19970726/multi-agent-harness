@@ -814,7 +814,7 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
     const mission = run?.mission_id
       ? (model.snapshot.missions ?? []).find((candidate) => candidate.id === run.mission_id)
       : undefined;
-    return memberRun?.name ?? mission?.title ?? (run ? "Compatibility Team Run" : "Agent Team attempts");
+    return memberRun?.name ?? mission?.title ?? (run ? "Team attempt" : "Agent Team attempts");
   }
 
   switch (selection.surface) {

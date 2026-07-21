@@ -121,6 +121,76 @@
         "defects": [],
         "follow_ups": ["Validate the sticky composer with a software keyboard and long drafted message on a real mobile browser."]
       }
+    },
+    {
+      "id": "member-run-focus--running-needs-you--desktop",
+      "priority": "P1",
+      "page": "member-run-focus",
+      "state": "running-needs-you",
+      "route": "/?surface=team&team=<team-run-id>&memberRun=<member-run-id>",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+      "baseline": "../../../.visual-evidence/workbench-layout-v2/implemented/member-run-focus--running-needs-you--desktop-1440x1000.png",
+      "expected": "expected/member-run-focus/running-needs-you--desktop-1440x1000.png",
+      "implemented": "implemented/member-run-focus/running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/member-run-focus/running-needs-you--desktop-1440x1000.png",
+      "overlay": "overlays/member-run-focus/running-needs-you--desktop-1440x1000.png",
+      "prompt": "prompts/member-run-focus/running-needs-you--v3.md",
+      "asset_inventory": "assets/member-run-focus--asset-inventory.md",
+      "expected_approval": { "status": "pending" },
+      "implementation_iterations": [
+        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-iteration-1/member-run-focus--running-needs-you--desktop-1440x1000.png",
+        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-iteration-2/member-run-focus--running-needs-you--desktop-1440x1000.png",
+        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-final/member-run-focus--running-needs-you--desktop-1440x1000.png"
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "Native MemberRun selectors, assignment correlation, evidence, review pressure, composer action, and transient-only thinking remain intact." },
+        "visual_fidelity": { "status": "pass_internal", "note": "Exact-viewport browser evidence matches the V3 information hierarchy; expected-image user approval remains pending." }
+      },
+      "review": {
+        "status": "candidate_ready",
+        "intentional_deviations": [
+          "The browser implementation keeps the shared live connection and search chrome, which the concept image simplified.",
+          "Key activity is a six-node projection so the latest review pressure stays in the first viewport; Full record exposes all ten durable/transient entries.",
+          "Fixture-native timestamps, provider identity, correlations, artifacts, and Team state replace generated placeholder content."
+        ],
+        "defects": [],
+        "follow_ups": ["Validate the sticky composer with a software keyboard and long drafted message on a real mobile browser."]
+      }
+    },
+    {
+      "id": "member-run-focus--running-needs-you--tablet-context-open",
+      "priority": "P1",
+      "page": "member-run-focus",
+      "state": "running-needs-you-context-open",
+      "route": "/?surface=team&team=<team-run-id>&memberRun=<member-run-id>&context=open",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 900, "height": 1180, "device_scale_factor": 1 },
+      "baseline": "../../../.visual-evidence/workbench-layout-v2/implemented/responsive/member-run-focus--context-open--tablet-900x1180.png",
+      "expected": "expected/member-run-focus/running-needs-you--tablet-context-open-900x1180.png",
+      "implemented": "implemented/member-run-focus/running-needs-you--tablet-context-open-900x1180.png",
+      "comparison": "comparisons/member-run-focus/running-needs-you--tablet-context-open-900x1180.png",
+      "overlay": "overlays/member-run-focus/running-needs-you--tablet-context-open-900x1180.png",
+      "prompt": "prompts/member-run-focus/running-needs-you--v3.md",
+      "expected_approval": { "status": "pending" },
+      "review": { "status": "candidate_ready", "intentional_deviations": ["Context opens as a non-destructive right sheet over the continuous activity stream."], "defects": [] }
+    },
+    {
+      "id": "member-run-focus--running-needs-you--mobile-context-open",
+      "priority": "P1",
+      "page": "member-run-focus",
+      "state": "running-needs-you-context-open",
+      "route": "/?surface=team&team=<team-run-id>&memberRun=<member-run-id>&context=open",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 390, "height": 844, "device_scale_factor": 1 },
+      "baseline": "../../../.visual-evidence/workbench-layout-v2/implemented/responsive/member-run-focus--context-open--mobile-390x844.png",
+      "expected": "expected/member-run-focus/running-needs-you--mobile-context-open-390x844.png",
+      "implemented": "implemented/member-run-focus/running-needs-you--mobile-context-open-390x844.png",
+      "comparison": "comparisons/member-run-focus/running-needs-you--mobile-context-open-390x844.png",
+      "overlay": "overlays/member-run-focus/running-needs-you--mobile-context-open-390x844.png",
+      "prompt": "prompts/member-run-focus/running-needs-you--v3.md",
+      "expected_approval": { "status": "pending" },
+      "review": { "status": "candidate_ready", "intentional_deviations": ["Context opens as a bottom sheet while retaining visible page identity and activity context behind it."], "defects": [] }
     }
   ]
 }
