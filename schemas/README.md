@@ -8,6 +8,7 @@
 | Agent member | [agent-member.schema.json](agent-member.schema.json) |
 | Agent team run | [agent-team-run.schema.json](agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](member-run.schema.json) |
+| Provider-native session locator | [native-session-ref.schema.json](native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](team-message.schema.json) |
 | Member action | [member-action.schema.json](member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](pending-interaction.schema.json) |

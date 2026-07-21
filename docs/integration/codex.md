@@ -54,7 +54,9 @@ There are now two deliberately separate Codex Team Member modes:
 - `codex_app_server`: implemented interactive mode; one persistent app-server
   process/thread per live MemberRun, `turn/steer`, `turn/interrupt`, reverse
   question/approval routing, and streamed item events. Restart-time
-  `thread/resume` is not wired, so `supports_resume=false` remains honest.
+  `thread/resume` and `codex exec resume` are wired for an explicitly supplied
+  `resume_native_session_id`; successful attachment refreshes the MemberRun's
+  `NativeSessionRef` availability without copying the rollout into Harness.
 
 This selection follows ADR [0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
 

@@ -18,6 +18,8 @@ import {
   Wrench,
 } from "lucide-react";
 
+import { fetchNativeMemberActivity } from "@/api";
+
 import {
   interruptTeamMember,
   resolvePendingInteraction,
@@ -38,6 +40,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
+import type { NativeActivityItem, NativeActivityProjection } from "@/types";
 import type { SelectionState } from "@/app/selection";
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to message this member";
@@ -50,6 +53,8 @@ export interface MemberRunFocusProps {
   actionsEnabled?: boolean;
   /** Posts a harness action and refreshes the dashboard snapshot. */
   onAction?: (path: string, body?: unknown) => void;
+  /** Live Harness API used for on-demand provider-native activity reads. */
+  apiUrl?: string;
 }
 
 /**
@@ -66,11 +71,13 @@ export function MemberRunFocus({
   onSelectionChange,
   actionsEnabled = false,
   onAction,
+  apiUrl,
 }: MemberRunFocusProps) {
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState("");
   const [messageKind, setMessageKind] = useState("question");
   const [showFullActivity, setShowFullActivity] = useState(false);
+  const [nativeActivity, setNativeActivity] = useState<NativeActivityProjection>();
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -78,6 +85,17 @@ export function MemberRunFocus({
   }, []);
 
   const context = selectMemberRunContext(model.snapshot, memberRunId);
+
+  useEffect(() => {
+    setNativeActivity(undefined);
+    if (!apiUrl || !memberRunId) return;
+    const project = new URLSearchParams(window.location.search).get("project");
+    let cancelled = false;
+    fetchNativeMemberActivity(apiUrl, memberRunId, project)
+      .then((projection) => { if (!cancelled) setNativeActivity(projection); })
+      .catch(() => { /* unbound/missing native sessions remain an honest empty state */ });
+    return () => { cancelled = true; };
+  }, [apiUrl, memberRunId, context?.member.native_session?.native_session_id]);
 
   if (!context) {
     return <MemberRunNotFound memberRunId={memberRunId} onSelectionChange={onSelectionChange} />;
@@ -91,7 +109,7 @@ export function MemberRunFocus({
   const pendingInteraction = context.interactions.find(
     (interaction) => interaction.member_run_id === context.member.id && interaction.status === "pending",
   );
-  const activityItems = toActivityItems(context, livePreview?.preview);
+  const activityItems = toActivityItems(context, livePreview?.preview, nativeActivity?.items);
   const shownActivity = showFullActivity
     ? activityItems
     : projectKeyActivity(activityItems);
@@ -181,7 +199,7 @@ export function MemberRunFocus({
         <MemberContextRail
           context={context}
           evidence={evidence}
-          sessionStatus={session?.status}
+          sessionStatus={context.member.native_session?.availability ?? session?.status}
           onSelectionChange={onSelectionChange}
         />
       }
@@ -251,7 +269,7 @@ export function MemberRunFocus({
           <header className="flex items-center justify-between gap-3 border-b border-border/70 py-2.5">
             <div>
               <h2 className="text-[12px] font-semibold text-foreground">Member activity</h2>
-              <p className="text-[10px] text-muted-foreground">Assignment, work, evidence, and pressure in one record.</p>
+              <p className="text-[10px] text-muted-foreground">Harness coordination joined with the provider-native session on read.</p>
             </div>
             <button
               type="button"
@@ -472,7 +490,9 @@ function MemberContextRail({
           <RailKeyValue label="Interaction" value={context.member.provider_profile?.interaction_mode ?? "Unsupported or unknown"} />
           <RailKeyValue label="Tool events" value={context.member.provider_profile?.tool_event_fidelity ?? "Not reported"} />
           <RailKeyValue label="Model" value={context.member.model ?? "Not recorded"} />
-          <RailKeyValue label="Session" value={context.member.provider_session_id ?? context.member.acp_session_id ?? "Unavailable"} mono />
+          <RailKeyValue label="Native session" value={context.member.native_session?.native_session_id ?? "Unavailable"} mono />
+          <RailKeyValue label="Native locator" value={context.member.native_session?.native_locator_kind ?? "Not bound"} />
+          <RailKeyValue label="Resume" value={context.member.native_session?.supports_resume ? "Supported" : "Not verified"} />
           <RailKeyValue label="Session status" value={sessionStatus ?? "Not reported"} />
           <RailKeyValue label="Worktree" value={context.member.worktree_ref ?? "Not recorded"} mono />
           <RailKeyValue label="Budget" value="Not reported at member scope" />
@@ -572,9 +592,25 @@ function RailKeyValue({ label, value, mono = false }: { label: string; value: st
   return <div className="flex min-w-0 items-start justify-between gap-3"><span className="shrink-0 text-muted-foreground">{label}</span><span className={cn("min-w-0 text-right text-foreground", mono && "truncate font-mono text-[11px]")}>{value}</span></div>;
 }
 
-function toActivityItems(context: MemberRunContext, transientPreview?: string): WorkbenchActivityItem[] {
+function toActivityItems(
+  context: MemberRunContext,
+  transientPreview?: string,
+  nativeItems: NativeActivityItem[] = [],
+): WorkbenchActivityItem[] {
   const durable = context.activityForMember.map((item) => toActivityItem(item, context));
-  if (!transientPreview) return durable;
+  const native = nativeItems.map((item, index): WorkbenchActivityItem => ({
+    id: `native:${context.member.id}:${index}:${item.occurred_at ?? ""}`,
+    kind: item.kind === "message" ? "message" : "action",
+    glyph: item.kind === "tool" ? "runtime" : "message",
+    title: item.title,
+    body: item.summary,
+    actor: context.member.name ?? context.member.id,
+    timestamp: formatTime(item.occurred_at),
+    tone: item.status === "failed" ? "bad" : item.status === "started" ? "running" : "good",
+    prominence: "detail",
+  }));
+  const joined = [...native, ...durable];
+  if (!transientPreview) return joined;
   return [
     {
       id: `live:${context.member.id}`,
@@ -588,7 +624,7 @@ function toActivityItems(context: MemberRunContext, transientPreview?: string): 
       glyph: "runtime",
       prominence: "primary",
     },
-    ...durable,
+    ...joined,
   ];
 }
 

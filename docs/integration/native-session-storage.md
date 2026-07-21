@@ -139,9 +139,9 @@ new binding records the parent native session id.
 
 | Mode | Native identity today | Native read truth | Restart resume | Current migration gap |
 | --- | --- | --- | --- | --- |
-| Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | provider supports resume; Agent Team path requires dedicated acceptance | stop MemberAction/event mirroring; add native reader and TeamRun resume |
-| Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | separately gate `thread/resume` after restart | replace process-local-only activity history with native read/reconcile |
-| Kimi `kimi_acp` | real ACP session id captured | Kimi-owned session must be discovered and verified per installed version | `session/load/resume` not yet wired | remove Harness NDJSON/stderr copy; implement probe/read/resume |
+| Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
+| Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
+| Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | live provider activity is transient; native history is read on demand |
 | Claude CLI | real session id captured | Claude-owned session is target truth | `--resume` exists in current delivery path | remove Harness NDJSON/stderr copy; add native reader/availability |
 
 “Provider supports” never means “adapter supports.” Each row needs deterministic
@@ -157,6 +157,23 @@ and live acceptance against reviewed provider versions.
 
 Harness retains assignment, responsibility, outcome, refs, and gates in all
 states. UI must not invent native activity or resume from a Harness replay.
+
+### Implemented Agent Team surfaces
+
+- `MemberRun.native_session` carries the mode-aware locator and verified
+  capability snapshot. New provider activity is not written to
+  `member_actions.jsonl` or `team_run_events.jsonl`.
+- `GET /v1/member-runs/{id}/native-activity` resolves the provider-owned file
+  server-side and returns a bounded, thinking-free display projection. Native
+  paths never leave the backend and the response is never cached into a
+  Harness ledger.
+- A retry can bind a member to an earlier provider session with HTTP/MCP member
+  field `resume_native_session_id` or CLI
+  `--resume-member <member-name>:<native-session-id>`. Resume is never inferred
+  from the newest local session.
+- Codex `codex_exec` uses `codex exec resume`; Codex app-server uses
+  `thread/resume`; Kimi ACP uses `session/load`. A provider rejection fails the
+  member honestly instead of falling back to a fresh session.
 
 ## Implementation Waves
 

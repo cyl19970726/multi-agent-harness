@@ -8,6 +8,7 @@ import type {
   MemberRun,
   Message,
   Mission,
+  NativeActivityProjection,
   PendingInteraction,
   Project,
   ProviderSession,
@@ -73,6 +74,20 @@ export async function fetchSnapshot(
     throw new Error(`HTTP ${response.status}`);
   }
   return (await response.json()) as DashboardSnapshot;
+}
+
+/** Read a display-only projection directly from the provider's native session.
+ * The backend does not copy these items into Harness storage. */
+export async function fetchNativeMemberActivity(
+  baseUrl: string,
+  memberRunId: string,
+  project?: string | null,
+): Promise<NativeActivityProjection> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}${withProject(`/v1/member-runs/${encodeURIComponent(memberRunId)}/native-activity`, project)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as NativeActivityProjection;
 }
 
 /**

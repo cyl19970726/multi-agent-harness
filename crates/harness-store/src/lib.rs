@@ -1529,6 +1529,7 @@ mod tests {
             model: Some("kimi-k2".into()),
             provider_profile: None,
             status: MemberRunStatus::Running,
+            native_session: None,
             provider_session_id: Some("ps-1".into()),
             acp_session_id: Some("acp-1".into()),
             worktree_ref: Some("wt-1".into()),

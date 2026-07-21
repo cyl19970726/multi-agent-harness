@@ -1726,10 +1726,42 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// A provider-owned conversation/runtime that contains the execution truth for
+/// one member. Harness persists this locator and capability snapshot, but does
+/// not copy the provider's transcript, tool stream, command output, or turns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeSessionRef {
+    pub provider: String,
+    pub execution_mode: String,
+    pub native_session_id: String,
+    pub native_locator_kind: String,
+    #[serde(default)]
+    pub provider_version: Option<String>,
+    pub adapter_contract_version: String,
+    #[serde(default)]
+    pub availability: NativeSessionAvailability,
+    pub supports_resume: bool,
+    #[serde(default)]
+    pub last_verified_at: Option<String>,
+    #[serde(default)]
+    pub parent_native_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSessionAvailability {
+    Available,
+    Stale,
+    Missing,
+    Incompatible,
+    #[default]
+    Unknown,
+}
+
 /// One member's session inside an [`AgentTeamRun`]. `provider` is the neutral
-/// provider spelling (codex|claude|kimi). `provider_session_id` links the
-/// harness [`ProviderSession`] while `acp_session_id` is the provider-side
-/// session handle (e.g. a kimi ACP sessionId).
+/// provider spelling (codex|claude|kimi). `native_session` points to the
+/// provider-owned execution record; Harness owns only the surrounding
+/// coordination state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberRun {
     pub id: String,
@@ -1748,7 +1780,13 @@ pub struct MemberRun {
     pub provider_profile: Option<ProviderIntegrationProfile>,
     pub status: MemberRunStatus,
     #[serde(default)]
+    pub native_session: Option<NativeSessionRef>,
+    /// Transitional legacy link. New Agent Team execution must use
+    /// `native_session` and must not create a mirrored ProviderSession row.
+    #[serde(default)]
     pub provider_session_id: Option<String>,
+    /// Transitional legacy provider handle. Removed after all provider modes
+    /// write `native_session` directly.
     #[serde(default)]
     pub acp_session_id: Option<String>,
     #[serde(default)]

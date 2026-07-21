@@ -7,6 +7,15 @@
   "provider": "kimi",
   "model": "kimi-k2",
   "status": "running",
+  "native_session": {
+    "provider": "kimi",
+    "execution_mode": "kimi_acp",
+    "native_session_id": "acp-session-1",
+    "native_locator_kind": "kimi_code_session",
+    "adapter_contract_version": "1",
+    "availability": "available",
+    "supports_resume": true
+  },
   "provider_session_id": "ps-1",
   "acp_session_id": "acp-session-1",
   "worktree_ref": "wt://mrun-1",

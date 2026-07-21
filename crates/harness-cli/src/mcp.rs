@@ -25,13 +25,13 @@ use serde_json::{json, Value};
 
 use crate::{
     acknowledge_team_message, close_mission, create_mission, create_team_run, create_wave,
-    drive_prepared_team_run, gate_wave, latest_member_runs_in_append_order,
-    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
-    latest_team_run, latest_team_runs_in_append_order, parse_team_message_kind,
-    parse_wave_executor_kind, prepare_team_run_start, resolve_pending_interaction_value,
-    send_team_message, steer_team_member_value, interrupt_team_member_value,
-    team_run_wave_index, transition_team_run,
-    visible_member_actions_in_append_order, ResolvedStore, TeamMemberSpec,
+    drive_prepared_team_run, gate_wave, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
+    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start,
+    resolve_pending_interaction_value, send_team_message, steer_team_member_value,
+    team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
+    ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -419,6 +419,7 @@ fn tool_team_run_create(
             execution_mode: optional_str(member, "execution_mode")?,
             model: optional_str(member, "model")?,
             owned_paths,
+            resume_native_session_id: optional_str(member, "resume_native_session_id")?,
         });
     }
     let created = create_team_run(
@@ -683,7 +684,8 @@ fn tool_definitions() -> Value {
                                 "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
                                 "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp"], "description": "Optional provider-specific execution mode. Codex defaults to codex_exec for compatibility."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
-                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."}
+                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
+                                "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
                             "required": ["name", "role", "provider"]
                         }

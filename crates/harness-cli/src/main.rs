@@ -17,9 +17,10 @@ use harness_core::{
     HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
     LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionStatus, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
-    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind, Proposal,
-    ProposalStatus, ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, PendingInteraction,
+    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    PendingInteractionStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus,
+    ProviderCapabilities, ProviderChildThread, ProviderChildThreadStatus,
     ProviderCompatibilityStatus, ProviderEventFidelity, ProviderIntegrationProfile,
     ProviderInteractionMode, ProviderSession, ProviderSessionStatus, SenderKind,
     TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
@@ -31,11 +32,12 @@ use harness_core::{
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
 
-mod company_os_api;
 mod codex_app_server;
+mod company_os_api;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
+mod native_session;
 mod project;
 mod resident;
 #[cfg(unix)]
@@ -1838,6 +1840,7 @@ struct TeamMemberSpec {
     execution_mode: Option<String>,
     model: Option<String>,
     owned_paths: Vec<String>,
+    resume_native_session_id: Option<String>,
 }
 
 fn team_member_provider_profile(provider: &str) -> ProviderIntegrationProfile {
@@ -1857,12 +1860,14 @@ fn team_member_provider_profile_for_mode(
             reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
             adapter_reviewed_at: Some("2026-07-22".to_string()),
-            compatibility_note: Some("Interactive contract reviewed against generated app-server schemas.".to_string()),
+            compatibility_note: Some(
+                "Interactive contract reviewed against generated app-server schemas.".to_string(),
+            ),
             interaction_mode: ProviderInteractionMode::PauseAndResume,
             tool_event_fidelity: ProviderEventFidelity::Structured,
             artifact_event_fidelity: ProviderEventFidelity::Structured,
             supports_cancel: true,
-            supports_resume: false,
+            supports_resume: true,
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
@@ -1882,7 +1887,7 @@ fn team_member_provider_profile_for_mode(
             tool_event_fidelity: ProviderEventFidelity::Structured,
             artifact_event_fidelity: ProviderEventFidelity::Summary,
             supports_cancel: true,
-            supports_resume: false,
+            supports_resume: true,
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
@@ -1903,7 +1908,7 @@ fn team_member_provider_profile_for_mode(
             tool_event_fidelity: ProviderEventFidelity::Structured,
             artifact_event_fidelity: ProviderEventFidelity::Structured,
             supports_cancel: false,
-            supports_resume: false,
+            supports_resume: true,
             observes_native_subagents: false,
             observes_background_tasks: false,
             thinking_transient_only: true,
@@ -1956,6 +1961,33 @@ fn apply_provider_version(
         ProviderCompatibilityStatus::Incompatible => "Provider version is known to be incompatible with this adapter contract.".to_string(),
         ProviderCompatibilityStatus::Unknown => "No reviewed provider version is registered for this execution mode.".to_string(),
     });
+}
+
+fn native_session_ref(
+    member: &MemberRun,
+    native_session_id: impl Into<String>,
+    native_locator_kind: &str,
+) -> NativeSessionRef {
+    let profile = member.provider_profile.as_ref();
+    NativeSessionRef {
+        provider: member.provider.clone(),
+        execution_mode: profile
+            .map(|value| value.execution_mode.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        native_session_id: native_session_id.into(),
+        native_locator_kind: native_locator_kind.to_string(),
+        provider_version: profile.and_then(|value| value.provider_version.clone()),
+        adapter_contract_version: profile
+            .and_then(|value| value.adapter_contract_version.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: profile.is_some_and(|value| value.supports_resume),
+        last_verified_at: Some(now_string()),
+        parent_native_session_id: member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.clone()),
+    }
 }
 
 fn provider_version_output(provider: &str) -> Result<String, String> {
@@ -2029,6 +2061,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             .map(|model| model.to_string())
             .filter(|model| !model.is_empty()),
         owned_paths,
+        resume_native_session_id: None,
     })
 }
 
@@ -2126,9 +2159,7 @@ fn create_team_run(
         if let Some(mode) = member.execution_mode.as_deref() {
             let allowed = matches!(
                 (member.provider.as_str(), mode),
-                ("codex", "codex_exec")
-                    | ("codex", "codex_app_server")
-                    | ("kimi", "kimi_acp")
+                ("codex", "codex_exec") | ("codex", "codex_app_server") | ("kimi", "kimi_acp")
             );
             if !allowed {
                 return Err(CliError::Usage(format!(
@@ -2158,6 +2189,35 @@ fn create_team_run(
     let mut member_runs = Vec::new();
     let mut member_run_ids = Vec::new();
     for member in members {
+        let profile = team_member_provider_profile_for_mode(
+            &member.provider,
+            member.execution_mode.as_deref(),
+        );
+        let native_session =
+            member
+                .resume_native_session_id
+                .as_ref()
+                .map(|session_id| NativeSessionRef {
+                    provider: member.provider.clone(),
+                    execution_mode: profile.execution_mode.clone(),
+                    native_session_id: session_id.clone(),
+                    native_locator_kind: match member.provider.as_str() {
+                        "codex" => "codex_rollout",
+                        "kimi" => "kimi_code_session",
+                        "claude" => "claude_project_session",
+                        _ => "provider_native",
+                    }
+                    .to_string(),
+                    provider_version: profile.provider_version.clone(),
+                    adapter_contract_version: profile
+                        .adapter_contract_version
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    availability: NativeSessionAvailability::Unknown,
+                    supports_resume: profile.supports_resume,
+                    last_verified_at: None,
+                    parent_native_session_id: Some(session_id.clone()),
+                });
         let member_run = MemberRun {
             id: generated_id("member-run"),
             team_run_id: run_id.clone(),
@@ -2166,11 +2226,9 @@ fn create_team_run(
             role: member.role.clone(),
             provider: member.provider.clone(),
             model: member.model.clone(),
-            provider_profile: Some(team_member_provider_profile_for_mode(
-                &member.provider,
-                member.execution_mode.as_deref(),
-            )),
+            provider_profile: Some(profile),
             status: MemberRunStatus::Idle,
+            native_session,
             provider_session_id: None,
             acp_session_id: None,
             worktree_ref: None,
@@ -2797,10 +2855,22 @@ fn team_run_command(
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
-            let members: Vec<TeamMemberSpec> = many(args, "--member")
+            let mut members: Vec<TeamMemberSpec> = many(args, "--member")
                 .iter()
                 .map(|raw| parse_team_member_spec(raw))
                 .collect::<CliResult<_>>()?;
+            for resume in many(args, "--resume-member") {
+                let (name, session_id) = resume.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--resume-member expects name:native-session-id".to_string())
+                })?;
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--resume-member names unknown member {name}"))
+                    })?;
+                member.resume_native_session_id = Some(session_id.to_string());
+            }
             let budget_limit_usd = value(args, "--budget-usd")
                 .map(|raw| {
                     raw.parse::<f64>()
@@ -3078,10 +3148,6 @@ const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
 /// message ping-pong from looping the orchestrator forever.
 const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
 
-/// Throttle for `progress` MemberActions while assistant text streams: at
-/// most one per member per window, no matter how chatty the chunks are.
-const TEAM_RUN_PROGRESS_THROTTLE: Duration = Duration::from_secs(5);
-
 /// Live member thinking is an ephemeral operator hint, never a ledger row.
 /// Each preview expires in the browser shortly after publication and is not
 /// available to reconnecting clients.
@@ -3136,7 +3202,10 @@ impl Drop for LiveMemberControlRegistration {
 fn register_live_member_control(
     member: &MemberRun,
     capacity: usize,
-) -> (ControlReceiver<MemberControlCommand>, LiveMemberControlRegistration) {
+) -> (
+    ControlReceiver<MemberControlCommand>,
+    LiveMemberControlRegistration,
+) {
     let (sender, receiver) = sync_channel(capacity.max(1));
     let profile = member.provider_profile.as_ref();
     LIVE_MEMBER_CONTROLS
@@ -3150,9 +3219,8 @@ fn register_live_member_control(
                 execution_mode: profile
                     .map(|profile| profile.execution_mode.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
-                supports_steer: profile.is_some_and(|profile| {
-                    profile.execution_mode == "codex_app_server"
-                }),
+                supports_steer: profile
+                    .is_some_and(|profile| profile.execution_mode == "codex_app_server"),
                 supports_interrupt: profile.is_some_and(|profile| profile.supports_cancel),
                 sender,
             },
@@ -3201,7 +3269,9 @@ fn dispatch_live_member_control(
     }
     let (reply_tx, reply_rx) = sync_channel(1);
     control.sender.send(command(reply_tx)).map_err(|_| {
-        CliError::Usage(format!("member {member_run_id} provider session already ended"))
+        CliError::Usage(format!(
+            "member {member_run_id} provider session already ended"
+        ))
     })?;
     reply_rx
         .recv_timeout(Duration::from_secs(15))
@@ -3344,54 +3414,6 @@ impl TeamRunLedger {
             status,
             provider_status: None,
             semantic_status: None,
-            title: title.to_string(),
-            summary: summary.to_string(),
-            evidence_refs: Vec::new(),
-            started_at: now_string(),
-            completed_at,
-        };
-        self.store.append_member_action(&action)?;
-        Ok(action)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn append_provider_action(
-        &self,
-        member_run_id: &str,
-        provider_call_id: Option<String>,
-        action_type: &str,
-        status: MemberActionStatus,
-        provider_status: Option<String>,
-        semantic_status: Option<String>,
-        title: &str,
-        summary: &str,
-    ) -> CliResult<MemberAction> {
-        let _guard = self.write_lock();
-        let seq = self
-            .store
-            .member_actions()?
-            .into_iter()
-            .filter(|action| action.team_run_id == self.run_id)
-            .map(|action| action.seq)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let completed_at = (!matches!(
-            status,
-            MemberActionStatus::Started | MemberActionStatus::Progress
-        ))
-        .then(now_string);
-        let action = MemberAction {
-            id: generated_id("mact"),
-            seq,
-            team_run_id: self.run_id.clone(),
-            member_run_id: member_run_id.to_string(),
-            task_id: None,
-            provider_call_id,
-            action_type: action_type.to_string(),
-            status,
-            provider_status,
-            semantic_status,
             title: title.to_string(),
             summary: summary.to_string(),
             evidence_refs: Vec::new(),
@@ -3740,6 +3762,10 @@ fn run_codex_member(
             cwd,
             member.model.as_deref(),
             !member.owned_paths.is_empty(),
+            member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str()),
         )?)
     } else {
         None
@@ -3748,6 +3774,11 @@ fn run_codex_member(
     let mut live_control_registration = None;
     if let Some(client) = app_server.as_ref() {
         member_row.acp_session_id = Some(client.thread_id().to_string());
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            client.thread_id(),
+            "codex_rollout",
+        ));
         let (receiver, registration) = register_live_member_control(&member_row, 16);
         live_control = Some(receiver);
         live_control_registration = Some(registration);
@@ -3793,7 +3824,18 @@ fn run_codex_member(
             )?
         };
         if member_row.acp_session_id.is_none() {
-            member_row.acp_session_id = turn.thread_id;
+            member_row.acp_session_id = turn.thread_id.clone();
+        }
+        let verified_thread_id = turn.thread_id.clone().or_else(|| {
+            member_row
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone())
+        });
+        if let Some(thread_id) = verified_thread_id {
+            member_row.native_session =
+                Some(native_session_ref(&member_row, thread_id, "codex_rollout"));
+            ledger.save_member_run(&member_row)?;
         }
         if turn.interrupted {
             member_row.status = MemberRunStatus::Stopped;
@@ -3821,14 +3863,6 @@ fn run_codex_member(
                 member.name
             )));
         }
-        ledger.append_action(
-            &member.id,
-            "progress",
-            MemberActionStatus::Progress,
-            "assistant response received",
-            &format!("{} chars received", final_text.len()),
-        )?;
-
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
@@ -3953,7 +3987,12 @@ struct CodexTeamTurn {
     interrupted: bool,
 }
 
-fn journal_codex_team_event(ledger: &TeamRunLedger, member: &MemberRun, raw: &serde_json::Value) {
+fn project_codex_team_event_live(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    raw: &serde_json::Value,
+    live_sink: Option<&LiveMemberActivitySink>,
+) {
     let Some(event_type) = raw.get("type").and_then(|value| value.as_str()) else {
         return;
     };
@@ -3968,10 +4007,6 @@ fn journal_codex_team_event(ledger: &TeamRunLedger, member: &MemberRun, raw: &se
     if matches!(item_type, "agent_message" | "reasoning" | "plan") || item_type.is_empty() {
         return;
     }
-    let provider_call_id = item
-        .get("id")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
     let title = match item_type {
         "command_execution" => "Bash".to_string(),
         "file_change" => "File change".to_string(),
@@ -3992,11 +4027,6 @@ fn journal_codex_team_event(ledger: &TeamRunLedger, member: &MemberRun, raw: &se
         } else {
             "completed"
         });
-    let failed = provider_status == "failed"
-        || item
-            .get("exit_code")
-            .and_then(|value| value.as_i64())
-            .is_some_and(|code| code != 0);
     let summary = match item_type {
         "command_execution" => item
             .get("command")
@@ -4012,34 +4042,14 @@ fn journal_codex_team_event(ledger: &TeamRunLedger, member: &MemberRun, raw: &se
         ),
         _ => format!("{title} {provider_status}"),
     };
-    let _ = ledger.append_provider_action(
-        &member.id,
-        provider_call_id,
-        if event_type == "item.started" {
-            "tool_started"
-        } else if item_type == "file_change" {
-            "file_changed"
-        } else {
-            "tool_completed"
-        },
-        if event_type == "item.started" {
-            MemberActionStatus::Started
-        } else if failed {
-            MemberActionStatus::Failed
-        } else {
-            MemberActionStatus::Succeeded
-        },
-        Some(provider_status.to_string()),
-        Some(if event_type == "item.started" {
-            "in_progress".to_string()
-        } else if failed {
-            "failed".to_string()
-        } else {
-            "succeeded".to_string()
-        }),
-        &title,
-        &summary,
-    );
+    if let Some(sink) = live_sink {
+        sink(LiveMemberActivityPreview {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+            provider: member.provider.clone(),
+            preview: summary,
+        });
+    }
 }
 
 /// Run one read-only Codex turn and consume its event stream in memory. Raw
@@ -4058,12 +4068,15 @@ fn run_codex_team_turn(
         .arg(cwd)
         .arg("--sandbox")
         .arg("read-only")
-        .arg("--skip-git-repo-check")
-        .arg("--json");
+        .arg("--skip-git-repo-check");
     if let Some(model) = member.model.as_deref() {
         cmd.arg("-m").arg(model);
     }
-    cmd.arg(prompt)
+    if let Some(session) = member.native_session.as_ref() {
+        cmd.arg("resume").arg(&session.native_session_id);
+    }
+    cmd.arg("--json")
+        .arg(prompt)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4107,7 +4120,12 @@ fn run_codex_team_turn(
             Ok(line) => {
                 last_activity = Instant::now();
                 if let Some(event) = CodexExecEvent::parse_line(&line) {
-                    journal_codex_team_event(ledger, member, &event.payload);
+                    project_codex_team_event_live(
+                        ledger,
+                        member,
+                        &event.payload,
+                        live_sink.as_ref(),
+                    );
                     let reasoning = event
                         .payload
                         .get("item")
@@ -4250,8 +4268,7 @@ fn run_codex_app_server_turn(
                             final_text.push_str(delta);
                         }
                     }
-                    Some("item/reasoning/summaryTextDelta")
-                    | Some("item/reasoning/textDelta") => {
+                    Some("item/reasoning/summaryTextDelta") | Some("item/reasoning/textDelta") => {
                         let preview = params
                             .get("delta")
                             .and_then(|value| value.as_str())
@@ -4274,13 +4291,14 @@ fn run_codex_app_server_turn(
                         } else {
                             "item.completed"
                         };
-                        journal_codex_team_event(
+                        project_codex_team_event_live(
                             ledger,
                             member,
                             &serde_json::json!({
                                 "type": event_type,
                                 "item": params.get("item").cloned().unwrap_or_default(),
                             }),
+                            live_sink.as_ref(),
                         );
                     }
                     Some("turn/completed") => {
@@ -4298,7 +4316,9 @@ fn run_codex_app_server_turn(
                                     item.get("type").and_then(|value| value.as_str())
                                         == Some("agentMessage")
                                 })
-                                .filter_map(|item| item.get("text").and_then(|value| value.as_str()))
+                                .filter_map(|item| {
+                                    item.get("text").and_then(|value| value.as_str())
+                                })
                                 .collect::<Vec<_>>()
                                 .join("\n");
                         }
@@ -4366,16 +4386,26 @@ fn run_kimi_member(
         ),
     )?;
 
-    let mut client = kimi_acp::KimiAcpClient::spawn(cwd, member.model.as_deref())?;
+    let mut client = kimi_acp::KimiAcpClient::spawn(
+        cwd,
+        member.model.as_deref(),
+        member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+    )?;
     member_row.status = MemberRunStatus::Running;
     member_row.acp_session_id = client.session_id().map(str::to_string);
     if let Some(profile) = member_row.provider_profile.as_mut() {
         apply_provider_version(profile, client.provider_version().map(str::to_string));
     }
+    member_row.native_session = member_row
+        .acp_session_id
+        .as_deref()
+        .map(|session_id| native_session_ref(&member_row, session_id, "kimi_code_session"));
     // Publish the live control handle before the durable Running projection so
     // an operator cannot observe Running and race into a false "no session".
-    let (live_control, _live_control_registration) =
-        register_live_member_control(&member_row, 8);
+    let (live_control, _live_control_registration) = register_live_member_control(&member_row, 8);
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
     ledger.fold_event(
@@ -4777,7 +4807,12 @@ fn handle_codex_provider_request(
     let params = frame.get("params").unwrap_or(frame);
     let provider_request_id = frame
         .get("id")
-        .map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()))
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string())
+        })
         .unwrap_or_else(|| generated_id("provider-request"));
 
     let (kind, route, title, prompt, options) = if method == "item/tool/requestUserInput" {
@@ -4920,7 +4955,10 @@ fn handle_codex_provider_request(
     ledger.append_action(
         &member.id,
         "interaction_resolved",
-        if matches!(resolved.status, PendingInteractionStatus::Answered | PendingInteractionStatus::Approved) {
+        if matches!(
+            resolved.status,
+            PendingInteractionStatus::Answered | PendingInteractionStatus::Approved
+        ) {
             MemberActionStatus::Succeeded
         } else {
             MemberActionStatus::Cancelled
@@ -5145,9 +5183,8 @@ struct MemberUpdateMapper<'a> {
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
-    last_progress_at: std::time::Instant,
-    /// toolCallId → title of tools we journaled `tool_started` for, so the
-    /// completion action can carry a name even when the update frame omits it.
+    /// toolCallId → title retained only in memory so a completion projection
+    /// stays readable. Provider tool activity is never written to Harness.
     open_tools: std::collections::HashMap<String, String>,
 }
 
@@ -5163,10 +5200,6 @@ impl<'a> MemberUpdateMapper<'a> {
             live_sink,
             last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
             text: String::new(),
-            // Arm the throttle already expired so the FIRST chunk journals one
-            // progress action immediately (the console shows life), then at
-            // most one per TEAM_RUN_PROGRESS_THROTTLE window.
-            last_progress_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
             open_tools: std::collections::HashMap::new(),
         }
     }
@@ -5203,21 +5236,18 @@ impl<'a> MemberUpdateMapper<'a> {
             {
                 self.text.push_str(text);
             }
-            if self.last_progress_at.elapsed() >= TEAM_RUN_PROGRESS_THROTTLE {
-                self.last_progress_at = std::time::Instant::now();
-                let summary = format!("{} chars streamed", self.text.len());
-                if self
-                    .ledger
-                    .append_action(
-                        &self.member.id,
-                        "progress",
-                        MemberActionStatus::Progress,
-                        "assistant streaming",
-                        &summary,
-                    )
-                    .is_ok()
-                {
-                    self.touch_member();
+            if self.last_live_activity_at.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                if let Some(sink) = &self.live_sink {
+                    self.last_live_activity_at = Instant::now();
+                    sink(LiveMemberActivityPreview {
+                        team_run_id: self.ledger.run_id.clone(),
+                        member_run_id: self.member.id.clone(),
+                        provider: self.member.provider.clone(),
+                        preview: format!(
+                            "assistant response streaming · {} chars",
+                            self.text.len()
+                        ),
+                    });
                 }
             }
             return;
@@ -5236,82 +5266,25 @@ impl<'a> MemberUpdateMapper<'a> {
                 .to_string();
             let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
             let terminal = matches!(status, "completed" | "failed" | "error" | "cancelled");
-            // Loose ACP mapping: `tool_call` starts; `tool_call_update` only
-            // completes when its status is terminal (a mid-flight "running"
-            // update journals nothing new); any other *tool* frame starts.
-            let journaled = if kind == "tool_call" || !kind.contains("update") {
+            let preview = if kind == "tool_call" || !kind.contains("update") {
                 self.open_tools.insert(tool_id.clone(), title.clone());
-                self.ledger.append_provider_action(
-                    &self.member.id,
-                    (!tool_id.is_empty()).then_some(tool_id),
-                    "tool_started",
-                    MemberActionStatus::Started,
-                    Some(
-                        if status.is_empty() {
-                            "in_progress"
-                        } else {
-                            status
-                        }
-                        .to_string(),
-                    ),
-                    Some("in_progress".to_string()),
-                    &title,
-                    &format!("tool started: {title}"),
-                )
+                Some(format!("tool started · {title}"))
             } else if terminal {
                 let title = self.open_tools.remove(&tool_id).unwrap_or(title);
-                let interaction_status =
-                    latest_pending_interactions_in_append_order(&self.ledger.store)
-                        .ok()
-                        .and_then(|interactions| {
-                            interactions.into_iter().rev().find(|interaction| {
-                                interaction.member_run_id == self.member.id
-                                    && interaction.tool_call_id.as_deref() == Some(tool_id.as_str())
-                            })
-                        })
-                        .map(|interaction| serde_snake_label(&interaction.status));
-                let semantic_status = interaction_status.unwrap_or_else(|| {
-                    if status == "completed" {
-                        "succeeded".to_string()
-                    } else {
-                        status.to_string()
-                    }
-                });
-                let action_status = if matches!(
-                    semantic_status.as_str(),
-                    "denied" | "dismissed" | "cancelled"
-                ) {
-                    MemberActionStatus::Cancelled
-                } else if status == "completed" {
-                    MemberActionStatus::Succeeded
-                } else {
-                    MemberActionStatus::Failed
-                };
-                self.ledger.append_provider_action(
-                    &self.member.id,
-                    (!tool_id.is_empty()).then_some(tool_id),
-                    "tool_completed",
-                    action_status,
-                    Some(status.to_string()),
-                    Some(semantic_status),
-                    &title,
-                    &format!("tool {status}: {title}"),
-                )
+                Some(format!("tool {status} · {title}"))
             } else {
-                return;
+                None
             };
-            if journaled.is_ok() {
-                self.touch_member();
+            if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
+                sink(LiveMemberActivityPreview {
+                    team_run_id: self.ledger.run_id.clone(),
+                    member_run_id: self.member.id.clone(),
+                    provider: self.member.provider.clone(),
+                    preview,
+                });
             }
         }
         // Anything else (available_commands_update, plan, ...): not journaled.
-    }
-
-    /// Refresh `last_event_at` whenever something was journaled for the member
-    /// (throttled to the journaling cadence, not per chunk).
-    fn touch_member(&mut self) {
-        self.member.last_event_at = Some(now_string());
-        let _ = self.ledger.save_member_run(&self.member);
     }
 
     /// The accumulated assistant text of this round (all message chunks).
@@ -6190,6 +6163,43 @@ fn handle_http_connection(
                     &serde_json::json!({"error": "doc_not_found", "detail": detail}),
                 )?,
             },
+            member_path
+                if member_path.starts_with("/v1/member-runs/")
+                    && member_path.ends_with("/native-activity") =>
+            {
+                let member_run_id = member_path
+                    .strip_prefix("/v1/member-runs/")
+                    .and_then(|rest| rest.strip_suffix("/native-activity"))
+                    .unwrap_or_default();
+                let member = latest_member_runs_in_append_order(store)?
+                    .into_iter()
+                    .find(|member| member.id == member_run_id);
+                match member {
+                    Some(member) => match member.native_session.as_ref() {
+                        Some(session) => write_http_json(
+                            &mut stream,
+                            "200 OK",
+                            &native_session::read_activity(session)?,
+                        )?,
+                        None => write_http_json(
+                            &mut stream,
+                            "409 Conflict",
+                            &serde_json::json!({
+                                "error": "native_session_unbound",
+                                "member_run_id": member_run_id,
+                            }),
+                        )?,
+                    },
+                    None => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({
+                            "error": "member_run_not_found",
+                            "member_run_id": member_run_id,
+                        }),
+                    )?,
+                }
+            }
             // GET /v1/provider-sessions/{id}/normalized-events — normalized
             // HarnessTurnEvent[] computed on read from the retained RAW
             // per-session provider NDJSON. This does not write new storage and
@@ -6796,8 +6806,8 @@ fn steer_team_member_value(
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     let content = required_json_string(body, "content")?;
-    let requested_by = optional_json_string(body, "requested_by")?
-        .unwrap_or_else(|| "operator".to_string());
+    let requested_by =
+        optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
     let result = dispatch_live_member_control(
         team_run_id,
         member_run_id,
@@ -6833,8 +6843,8 @@ fn interrupt_team_member_value(
     member_run_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let requested_by = optional_json_string(body, "requested_by")?
-        .unwrap_or_else(|| "operator".to_string());
+    let requested_by =
+        optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
     let reason = optional_json_string(body, "reason")?
         .unwrap_or_else(|| "operator requested interruption".to_string());
     // Unblock any reverse provider request before waiting for the live adapter
@@ -7225,6 +7235,7 @@ fn create_team_run_value(
             execution_mode: optional_json_string(member, "execution_mode")?,
             model: optional_json_string(member, "model")?,
             owned_paths,
+            resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
         });
     }
     let budget_limit_usd = match body.get("budget_limit_usd") {

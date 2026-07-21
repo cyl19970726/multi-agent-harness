@@ -409,6 +409,7 @@ export interface MemberRun {
   model?: string | null;
   provider_profile?: ProviderIntegrationProfile | null;
   status?: MemberRunStatus | string;
+  native_session?: NativeSessionRef | null;
   provider_session_id?: string | null;
   acp_session_id?: string | null;
   worktree_ref?: string | null;
@@ -416,6 +417,36 @@ export interface MemberRun {
   started_at?: string;
   last_event_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface NativeSessionRef {
+  provider: string;
+  execution_mode: string;
+  native_session_id: string;
+  native_locator_kind: string;
+  provider_version?: string | null;
+  adapter_contract_version: string;
+  availability: "available" | "stale" | "missing" | "incompatible" | "unknown" | string;
+  supports_resume: boolean;
+  last_verified_at?: string | null;
+  parent_native_session_id?: string | null;
+}
+
+export interface NativeActivityItem {
+  kind: "message" | "tool" | string;
+  status: "started" | "completed" | "failed" | string;
+  title: string;
+  summary?: string;
+  occurred_at?: string | null;
+}
+
+export interface NativeActivityProjection {
+  native_session_id: string;
+  provider: string;
+  execution_mode: string;
+  availability: NativeSessionRef["availability"];
+  items: NativeActivityItem[];
+  truncated: boolean;
 }
 
 export interface ProviderIntegrationProfile {

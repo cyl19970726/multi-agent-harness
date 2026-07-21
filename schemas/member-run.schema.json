@@ -40,6 +40,23 @@
       "type": "string",
       "enum": ["starting", "idle", "queued", "running", "waiting", "reviewing", "blocked", "completed", "failed", "stopped"]
     },
+    "native_session": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["provider", "execution_mode", "native_session_id", "native_locator_kind", "adapter_contract_version", "availability", "supports_resume"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "execution_mode": { "type": "string", "minLength": 1 },
+        "native_session_id": { "type": "string", "minLength": 1 },
+        "native_locator_kind": { "type": "string", "minLength": 1 },
+        "provider_version": { "type": ["string", "null"], "minLength": 1 },
+        "adapter_contract_version": { "type": "string", "minLength": 1 },
+        "availability": { "type": "string", "enum": ["available", "stale", "missing", "incompatible", "unknown"] },
+        "supports_resume": { "type": "boolean" },
+        "last_verified_at": { "type": ["string", "null"], "minLength": 1 },
+        "parent_native_session_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
     "provider_session_id": { "type": ["string", "null"], "minLength": 1 },
     "acp_session_id": { "type": ["string", "null"], "minLength": 1 },
     "worktree_ref": { "type": ["string", "null"], "minLength": 1 },

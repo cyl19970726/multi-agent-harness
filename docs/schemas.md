@@ -61,6 +61,7 @@ schema contracts are checked with valid and invalid fixtures.
 | Wave | [wave.schema.json](../schemas/wave.schema.json) |
 | Agent Team run | [agent-team-run.schema.json](../schemas/agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
+| Provider-native session locator | [native-session-ref.schema.json](../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
 | Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](../schemas/pending-interaction.schema.json) |

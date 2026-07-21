@@ -29,7 +29,12 @@ pub(crate) struct CodexAppServerClient {
 }
 
 impl CodexAppServerClient {
-    pub(crate) fn spawn(cwd: &Path, model: Option<&str>, workspace_write: bool) -> CliResult<Self> {
+    pub(crate) fn spawn(
+        cwd: &Path,
+        model: Option<&str>,
+        workspace_write: bool,
+        resume_thread_id: Option<&str>,
+    ) -> CliResult<Self> {
         let mut command = Command::new("codex");
         command
             .arg("app-server")
@@ -39,18 +44,21 @@ impl CodexAppServerClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|error| CliError::Usage(format!("failed to spawn codex app-server: {error}")))?;
-        let stdin = BufWriter::new(child.stdin.take().ok_or_else(|| {
-            CliError::Usage("codex app-server stdin unavailable".to_string())
-        })?);
-        let stdout = child.stdout.take().ok_or_else(|| {
-            CliError::Usage("codex app-server stdout unavailable".to_string())
+        let mut child = command.spawn().map_err(|error| {
+            CliError::Usage(format!("failed to spawn codex app-server: {error}"))
         })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            CliError::Usage("codex app-server stderr unavailable".to_string())
-        })?;
+        let stdin =
+            BufWriter::new(child.stdin.take().ok_or_else(|| {
+                CliError::Usage("codex app-server stdin unavailable".to_string())
+            })?);
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CliError::Usage("codex app-server stdout unavailable".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| CliError::Usage("codex app-server stderr unavailable".to_string()))?;
         let pending: Arc<Mutex<HashMap<u64, Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_reader = Arc::clone(&pending);
@@ -112,21 +120,35 @@ impl CodexAppServerClient {
             HANDSHAKE_TIMEOUT,
         )?;
         client.notify("initialized", serde_json::json!({}))?;
-        let response = client.request_blocking(
-            "thread/start",
-            serde_json::json!({
-                "cwd": cwd,
-                "model": model,
-                "sandbox": if workspace_write { "workspace-write" } else { "read-only" },
-                "approvalPolicy": "on-request",
-                "ephemeral": false
-            }),
-            HANDSHAKE_TIMEOUT,
-        )?;
+        let (method, params) = match resume_thread_id {
+            Some(thread_id) => (
+                "thread/resume",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "cwd": cwd,
+                    "model": model,
+                    "sandbox": if workspace_write { "workspace-write" } else { "read-only" },
+                    "approvalPolicy": "on-request"
+                }),
+            ),
+            None => (
+                "thread/start",
+                serde_json::json!({
+                    "cwd": cwd,
+                    "model": model,
+                    "sandbox": if workspace_write { "workspace-write" } else { "read-only" },
+                    "approvalPolicy": "on-request",
+                    "ephemeral": false
+                }),
+            ),
+        };
+        let response = client.request_blocking(method, params, HANDSHAKE_TIMEOUT)?;
         client.thread_id = response
             .pointer("/result/thread/id")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| CliError::Usage(format!("codex thread/start omitted thread id: {response}")))?
+            .ok_or_else(|| {
+                CliError::Usage(format!("codex {method} omitted thread id: {response}"))
+            })?
             .to_string();
         Ok(client)
     }
@@ -181,7 +203,11 @@ impl CodexAppServerClient {
         self.incoming.recv_timeout(timeout)
     }
 
-    pub(crate) fn respond(&mut self, id: &serde_json::Value, result: serde_json::Value) -> CliResult<()> {
+    pub(crate) fn respond(
+        &mut self,
+        id: &serde_json::Value,
+        result: serde_json::Value,
+    ) -> CliResult<()> {
         self.write(&serde_json::json!({"id": id, "result": result}))
     }
 
@@ -208,7 +234,10 @@ impl CodexAppServerClient {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .remove(&id);
-            CliError::Usage(format!("codex app-server {method} timed out{}", self.stderr_suffix()))
+            CliError::Usage(format!(
+                "codex app-server {method} timed out{}",
+                self.stderr_suffix()
+            ))
         })?;
         if let Some(error) = frame.get("error") {
             return Err(CliError::Usage(format!(
@@ -235,7 +264,17 @@ impl CodexAppServerClient {
         if trimmed.is_empty() {
             String::new()
         } else {
-            format!("; stderr: {}", trimmed.chars().rev().take(1200).collect::<String>().chars().rev().collect::<String>())
+            format!(
+                "; stderr: {}",
+                trimmed
+                    .chars()
+                    .rev()
+                    .take(1200)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+            )
         }
     }
 }

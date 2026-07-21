@@ -1141,12 +1141,7 @@ fn codex_app_server_member_can_be_steered_in_place() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let serve = ServeHandle::spawn_with_env(
-        &home,
-        home.base(),
-        &[],
-        &[("PATH", path.as_str())],
-    );
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -1184,8 +1179,7 @@ fn codex_app_server_member_can_be_steered_in_place() {
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("running")
-                    && member["acp_session_id"].as_str()
-                        == Some("thread_fake_codex_app_server")
+                    && member["acp_session_id"].as_str() == Some("thread_fake_codex_app_server")
             });
         if live {
             break;
@@ -1231,8 +1225,13 @@ fn codex_app_server_member_can_be_steered_in_place() {
 fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     let home = TempHome::new("team-run-codex-interrupt");
     let _project_id = init_project(&home, "alpha");
-    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-interrupt"));
-    let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default());
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-interrupt"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
     let (_, created) = serve.post_json(
         "/v1/team-runs",
@@ -1241,17 +1240,33 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
             "members": [{"name": "codex-stop", "role": "observer", "provider": "codex", "execution_mode": "codex_app_server"}]
         }),
     );
-    let run_id = created["result"]["team_run"]["id"].as_str().unwrap().to_string();
-    let member_id = created["result"]["member_runs"][0]["id"].as_str().unwrap().to_string();
-    let (status, _) = serve.post_json(&format!("/v1/team-runs/{run_id}/start"), &serde_json::json!({}));
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
     assert_eq!(status, 202);
     let mut running = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        running = snapshot["member_runs"].as_array().into_iter().flatten().any(|member| {
-            member["id"].as_str() == Some(member_id.as_str()) && member["status"].as_str() == Some("running")
-        });
-        if running { break; }
+        running = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if running {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(running, "Codex app-server member never became live");
@@ -1260,17 +1275,30 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
         &serde_json::json!({"requested_by": "operator", "reason": "stop deterministic turn"}),
     );
     assert_eq!(status, 200, "body: {result}");
-    assert_eq!(result["result"]["status"].as_str(), Some("interrupt_requested"));
+    assert_eq!(
+        result["result"]["status"].as_str(),
+        Some("interrupt_requested")
+    );
     let mut stopped = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        stopped = snapshot["member_runs"].as_array().into_iter().flatten().any(|member| {
-            member["id"].as_str() == Some(member_id.as_str()) && member["status"].as_str() == Some("stopped")
-        });
-        if stopped { break; }
+        stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        if stopped {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(stopped, "Codex member was marked terminal before/without provider interruption acknowledgement");
+    assert!(
+        stopped,
+        "Codex member was marked terminal before/without provider interruption acknowledgement"
+    );
 }
 
 #[test]
@@ -1283,7 +1311,10 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
         &home,
         home.base(),
         &[],
-        &[("KIMI_CODE_BIN", fake_kimi.as_str()), ("FAKE_KIMI_WAIT", "1")],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_WAIT", "1"),
+        ],
     );
     let (status, created) = serve.post_json(
         "/v1/team-runs",
@@ -1293,8 +1324,14 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
         }),
     );
     assert_eq!(status, 200, "body: {created}");
-    let run_id = created["result"]["team_run"]["id"].as_str().unwrap().to_string();
-    let member_id = created["result"]["member_runs"][0]["id"].as_str().unwrap().to_string();
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
@@ -1311,7 +1348,9 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("running")
             });
-        if live { break; }
+        if live {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(live, "Kimi ACP member never became live");
@@ -1320,7 +1359,10 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
         &serde_json::json!({"requested_by": "operator", "reason": "stop this observation"}),
     );
     assert_eq!(status, 200, "body: {interrupted}");
-    assert_eq!(interrupted["result"]["status"].as_str(), Some("cancel_requested"));
+    assert_eq!(
+        interrupted["result"]["status"].as_str(),
+        Some("cancel_requested")
+    );
     let mut stopped = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
@@ -1332,7 +1374,9 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("stopped")
             });
-        if stopped { break; }
+        if stopped {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(stopped, "Kimi ACP member did not acknowledge cancellation");
@@ -1342,8 +1386,13 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
 fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     let home = TempHome::new("team-run-codex-question");
     let _project_id = init_project(&home, "alpha");
-    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-question"));
-    let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default());
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-question"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let serve = ServeHandle::spawn_with_env(
         &home,
         home.base(),
@@ -1357,9 +1406,18 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             "members": [{"name": "codex-question", "role": "implementer", "provider": "codex", "execution_mode": "codex_app_server"}]
         }),
     );
-    let run_id = created["result"]["team_run"]["id"].as_str().unwrap().to_string();
-    let member_id = created["result"]["member_runs"][0]["id"].as_str().unwrap().to_string();
-    let (status, _) = serve.post_json(&format!("/v1/team-runs/{run_id}/start"), &serde_json::json!({}));
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
     assert_eq!(status, 202);
     let mut interaction_id = None;
     for _ in 0..100 {
@@ -1373,7 +1431,9 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
                     && interaction["status"].as_str() == Some("pending")
             })
             .and_then(|interaction| interaction["id"].as_str().map(str::to_string));
-        if interaction_id.is_some() { break; }
+        if interaction_id.is_some() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     let interaction_id = interaction_id.expect("Codex PendingInteraction");
@@ -1390,8 +1450,13 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .as_array()
             .into_iter()
             .flatten()
-            .any(|member| member["id"].as_str() == Some(member_id.as_str()) && member["status"].as_str() == Some("completed"));
-        if completed { break; }
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("completed")
+            });
+        if completed {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(completed, "Codex did not resume after Lead answer");
@@ -1407,7 +1472,10 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         &home,
         home.base(),
         &[],
-        &[("KIMI_CODE_BIN", fake_kimi.as_str()), ("FAKE_KIMI_ASK", "1")],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_ASK", "1"),
+        ],
     );
     let (_, created) = serve.post_json(
         "/v1/team-runs",
@@ -1416,21 +1484,39 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
             "members": [{"name": "kimi-waiting", "role": "observer", "provider": "kimi", "model": "k2.5"}]
         }),
     );
-    let run_id = created["result"]["team_run"]["id"].as_str().unwrap().to_string();
-    let member_id = created["result"]["member_runs"][0]["id"].as_str().unwrap().to_string();
-    let (status, _) = serve.post_json(&format!("/v1/team-runs/{run_id}/start"), &serde_json::json!({}));
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
     assert_eq!(status, 202);
     let mut waiting = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        waiting = snapshot["member_runs"].as_array().into_iter().flatten().any(|member| {
-            member["id"].as_str() == Some(member_id.as_str())
-                && member["status"].as_str() == Some("waiting")
-        });
-        if waiting { break; }
+        waiting = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("waiting")
+            });
+        if waiting {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(waiting, "Kimi never entered provider-interaction waiting state");
+    assert!(
+        waiting,
+        "Kimi never entered provider-interaction waiting state"
+    );
     let (status, interrupted) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
         &serde_json::json!({"reason": "cancel while waiting", "requested_by": "operator"}),
@@ -1439,19 +1525,32 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
     let mut stopped_with_cancelled_interaction = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let stopped = snapshot["member_runs"].as_array().into_iter().flatten().any(|member| {
-            member["id"].as_str() == Some(member_id.as_str())
-                && member["status"].as_str() == Some("stopped")
-        });
-        let cancelled = snapshot["pending_interactions"].as_array().into_iter().flatten().any(|interaction| {
-            interaction["member_run_id"].as_str() == Some(member_id.as_str())
-                && interaction["status"].as_str() == Some("cancelled")
-        });
+        let stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        let cancelled = snapshot["pending_interactions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|interaction| {
+                interaction["member_run_id"].as_str() == Some(member_id.as_str())
+                    && interaction["status"].as_str() == Some("cancelled")
+            });
         stopped_with_cancelled_interaction = stopped && cancelled;
-        if stopped_with_cancelled_interaction { break; }
+        if stopped_with_cancelled_interaction {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(stopped_with_cancelled_interaction, "interrupt did not close both waiting interaction and prompt");
+    assert!(
+        stopped_with_cancelled_interaction,
+        "interrupt did not close both waiting interaction and prompt"
+    );
 }
 
 #[test]

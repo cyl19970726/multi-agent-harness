@@ -84,7 +84,11 @@ impl KimiAcpClient {
     /// path ([`resolve_kimi_bin`]: KIMI_CODE_BIN → PATH → ~/.kimi-code/bin), so
     /// a test PATH shim intercepts the spawn. The child is its own process
     /// group leader so a wedged session can be killed tree-wide.
-    pub(crate) fn spawn(cwd: &Path, model: Option<&str>) -> CliResult<Self> {
+    pub(crate) fn spawn(
+        cwd: &Path,
+        model: Option<&str>,
+        resume_session_id: Option<&str>,
+    ) -> CliResult<Self> {
         let mut cmd = Command::new(resolve_kimi_bin());
         cmd.arg("acp")
             .current_dir(cwd)
@@ -174,7 +178,7 @@ impl KimiAcpClient {
             model: model.map(str::to_string),
             provider_version: None,
         };
-        client.handshake(cwd)?;
+        client.handshake(cwd, resume_session_id)?;
         Ok(client)
     }
 
@@ -188,7 +192,7 @@ impl KimiAcpClient {
     }
 
     /// `initialize` + `session/new`, each with a 10s response timeout.
-    fn handshake(&mut self, cwd: &Path) -> CliResult<()> {
+    fn handshake(&mut self, cwd: &Path, resume_session_id: Option<&str>) -> CliResult<()> {
         let initialize = self.request(
             "initialize",
             serde_json::json!({
@@ -210,20 +214,38 @@ impl KimiAcpClient {
             .and_then(|version| version.as_str())
             .map(str::to_string);
 
-        let session_new = self.request(
-            "session/new",
-            serde_json::json!({
-                "cwd": cwd.to_string_lossy(),
-                "mcpServers": [],
-            }),
-        )?;
-        let frame = await_response(session_new, HANDSHAKE_TIMEOUT, "session/new")
+        let (method, params) = match resume_session_id {
+            Some(session_id) => (
+                "session/load",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "cwd": cwd.to_string_lossy(),
+                    "mcpServers": [],
+                }),
+            ),
+            None => (
+                "session/new",
+                serde_json::json!({
+                    "cwd": cwd.to_string_lossy(),
+                    "mcpServers": [],
+                }),
+            ),
+        };
+        let response = self.request(method, params)?;
+        let frame = await_response(response, HANDSHAKE_TIMEOUT, method)
             .inspect_err(|_| self.kill_quiet())?;
+        if let Some(error) = frame.get("error") {
+            self.kill_quiet();
+            return Err(CliError::Usage(format!(
+                "kimi acp {method} rejected: {error}"
+            )));
+        }
         let session_id = frame
             .get("result")
             .and_then(|result| result.get("sessionId"))
             .and_then(|id| id.as_str())
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| resume_session_id.map(str::to_string));
         match session_id {
             Some(session_id) => {
                 self.session_id = Some(session_id);
@@ -232,7 +254,7 @@ impl KimiAcpClient {
             None => {
                 self.kill_quiet();
                 Err(CliError::Usage(format!(
-                    "kimi acp session/new returned no sessionId: {frame}"
+                    "kimi acp {method} returned no sessionId: {frame}"
                 )))
             }
         }

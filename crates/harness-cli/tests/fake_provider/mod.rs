@@ -120,6 +120,10 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[]}}\n' "$id" "$session_id"
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
       ;;
+    *'"method":"session/load"'*)
+      session_id=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id"
+      ;;
     *'"method":"session/set_config_option"'*)
       case "$line" in
         *'"configId":"model"'*'"value":"k2.5"'*)
@@ -202,6 +206,10 @@ if [ "$1" = "app-server" ]; then
         ;;
       *'"method":"thread/start"'*)
         printf '{"id":%s,"result":{"thread":{"id":"%s"}}}\n' "$id" "$thread_id"
+        ;;
+      *'"method":"thread/resume"'*)
+        thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
+        printf '{"id":%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id" "$thread_id"
         ;;
       *'"method":"turn/start"'*)
         printf '{"id":%s,"result":{"turn":{"id":"%s","status":"inProgress","items":[]}}}\n' "$id" "$turn_id"

@@ -209,8 +209,8 @@ fn team_run_start_completes_kimi_members() {
         assert!(body.contains("## RESULT"), "handoff carries report: {body}");
     }
 
-    // Actions: per member a tool_started + tool_completed + completed, plus
-    // throttled progress. Provider reasoning is deliberately not durable.
+    // Harness keeps only the explicit round outcome. Provider progress, tool
+    // activity, command details, and reasoning remain in Kimi's native session.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     for member_id in &member_ids {
         let of_member: Vec<&str> = actions
@@ -218,15 +218,10 @@ fn team_run_start_completes_kimi_members() {
             .filter(|a| a["member_run_id"].as_str() == Some(member_id))
             .filter_map(|a| a["action_type"].as_str())
             .collect();
-        for expected in ["progress", "tool_started", "tool_completed", "completed"] {
-            assert!(
-                of_member.contains(&expected),
-                "member {member_id} missing action {expected}: {of_member:?}"
-            );
-        }
-        assert!(
-            !of_member.contains(&"thinking"),
-            "member {member_id} persisted thinking: {of_member:?}"
+        assert_eq!(
+            of_member,
+            vec!["completed"],
+            "coordination-only actions: {of_member:?}"
         );
     }
     assert!(
@@ -257,6 +252,62 @@ fn team_run_start_completes_kimi_members() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["status"].as_str(), Some("completed"));
     assert!(runs[0]["completed_at"].is_string(), "run: {:?}", runs[0]);
+}
+
+#[test]
+fn kimi_member_explicitly_resumes_provider_native_session() {
+    let home = TempHome::new("team-run-kimi-native-resume");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Continue provider-owned work",
+            "--member",
+            "worker:implementer:kimi/acp:k2.5",
+            "--resume-member",
+            "worker:session_prior_native",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(out.status.success(), "resume start failed: {out:?}");
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    let member = members
+        .iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .unwrap();
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        "session_prior_native"
+    );
+    assert_eq!(
+        member["native_session"]["parent_native_session_id"],
+        "session_prior_native"
+    );
+    assert_eq!(member["native_session"]["availability"], "available");
+    assert_eq!(member["native_session"]["supports_resume"], true);
 }
 
 #[test]
@@ -411,14 +462,21 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     }
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
-        actions.iter().any(|action| {
-            action["member_run_id"] == codex["id"]
-                && action["provider_call_id"].as_str() == Some("command-1")
-                && action["provider_status"].as_str() == Some("completed")
-                && action["semantic_status"].as_str() == Some("succeeded")
+        actions.iter().all(|action| {
+            action["provider_call_id"].is_null()
+                && action["provider_status"].is_null()
+                && action["semantic_status"].is_null()
+                && matches!(
+                    action["action_type"].as_str(),
+                    Some("completed" | "blocked" | "error")
+                )
         }),
-        "codex command activity must be durable and semantic: {actions:?}"
+        "provider activity must remain native while explicit outcomes stay durable: {actions:?}"
     );
+    for member in [codex, kimi] {
+        assert!(member["native_session"]["native_session_id"].is_string());
+        assert_eq!(member["native_session"]["availability"], "available");
+    }
 }
 
 #[test]
@@ -560,11 +618,11 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
         actions.iter().any(|action| {
-            action["provider_call_id"].as_str() == Some("12:ask-user")
-                && action["provider_status"].as_str() == Some("completed")
-                && action["semantic_status"].as_str() == Some("answered")
+            action["action_type"].as_str() == Some("interaction_resolved")
+                && action["summary"].as_str().is_some_and(|value| value.contains("answered"))
+                && action["provider_call_id"].is_null()
         }),
-        "AskUserQuestion must distinguish transport completion from answered: {actions:?}"
+        "PendingInteraction is authoritative; MemberAction records only the coordination resolution: {actions:?}"
     );
 }
 
@@ -687,9 +745,11 @@ fn kimi_tool_approval_requires_policy_authority_and_resumes_same_turn() {
     assert_eq!(interactions[0]["resolved_by"].as_str(), Some("policy"));
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(actions.iter().any(|action| {
-        action["provider_call_id"].as_str() == Some("13:bash")
-            && action["provider_status"].as_str() == Some("completed")
-            && action["semantic_status"].as_str() == Some("approved")
+        action["action_type"].as_str() == Some("interaction_resolved")
+            && action["summary"]
+                .as_str()
+                .is_some_and(|value| value.contains("approved"))
+            && action["provider_call_id"].is_null()
     }));
 }
 
