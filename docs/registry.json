@@ -2017,11 +2017,11 @@
      "ref": "schemas/company-os/actors.schema.json"
     },
     {
-     "kind": "implementation",
+     "kind": "ui",
      "ref": "apps/agent-dashboard/src/company-os/operations/pages.tsx"
     },
     {
-     "kind": "acceptance",
+     "kind": "test",
      "ref": "crates/harness-cli/tests/company_os_api.rs"
     }
    ]
