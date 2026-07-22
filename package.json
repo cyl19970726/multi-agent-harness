@@ -11,7 +11,7 @@
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
     "check:native-session-boundary": "node scripts/check-native-session-boundary.mjs",
     "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/team-selectors-check.mjs && node apps/agent-dashboard/tests/workflow-diagnosis-check.mjs && node apps/agent-dashboard/tests/workbench-visual-fixture-check.mjs && node apps/agent-dashboard/tests/operator-controls-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
-    "check:company-os": "node apps/agent-dashboard/tests/company-os-docs-check.mjs && node apps/agent-dashboard/tests/company-os-operations-check.mjs && node apps/agent-dashboard/tests/company-os-runtime-check.mjs && node apps/agent-dashboard/tests/company-os-navigation-check.mjs && node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs",
+    "check:company-os": "node apps/agent-dashboard/tests/company-os-docs-check.mjs && node apps/agent-dashboard/tests/company-os-operations-check.mjs && node apps/agent-dashboard/tests/company-os-runtime-check.mjs && node apps/agent-dashboard/tests/company-os-navigation-check.mjs && node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs && node scripts/check-company-os-review-consistency.mjs && node scripts/check-company-os-live-prd.mjs",
     "visual:fixture": "node scripts/materialize-workbench-layout-fixture.mjs",
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",
     "visual:capture:company-os-v2": "node scripts/capture-company-os-v2.mjs",

@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "page": "live-prd-os-architecture",
+  "expected": "../expected/live-prd--os-architecture--desktop-1536x1024.png",
+  "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
+  "geometry": {
+    "regions": [
+      { "name": "architecture plate", "width": 1234, "position": "primary" },
+      { "name": "governance and invariant rail", "width": 302, "position": "right" }
+    ],
+    "grid": { "layers": 5, "truth_systems": "four semantic columns around central relation seal" },
+    "gutters": { "outer": 16, "layer": 12 },
+    "max_content_width": 1536,
+    "scroll_owner": "document body; full-resolution figure supports local horizontal pan on narrow screens",
+    "sticky_regions": []
+  },
+  "vertical_landmarks": [
+    { "name": "title", "y": 18 },
+    { "name": "product experience", "y": 100 },
+    { "name": "business lines", "y": 334 },
+    { "name": "governed services", "y": 505 },
+    { "name": "four truth systems", "y": 640 },
+    { "name": "durable substrate", "y": 868 }
+  ],
+  "typography": [
+    { "role": "display", "family": "Georgia, serif", "size": 50, "line_height": 1.05 },
+    { "role": "layer", "family": "Inter, system-ui, sans-serif", "size": 13, "line_height": 1.25 },
+    { "role": "body", "family": "Inter, system-ui, sans-serif", "size": 11, "line_height": 1.4 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 24, 32],
+  "surfaces": ["single editorial architecture plate", "hairline layer separators", "semantic system outlines"],
+  "colors": [
+    { "token": "docs", "value": "#205b86" },
+    { "token": "organization", "value": "#637858" },
+    { "token": "work", "value": "#d95336" },
+    { "token": "finance", "value": "#b57b1d" }
+  ],
+  "icons_and_assets": ["approved generated OS architecture plate", "accessible code-native architecture summary", "existing four-system and governance explainers"],
+  "component_strategy": {
+    "reuse": ["source-labelled figure", "truth system token", "status row"],
+    "page_specific": ["immersive architecture plate", "layer-by-layer accessible transcript"],
+    "replace_or_split": ["desktop image becomes scrollable figure plus stacked text transcript on mobile"]
+  },
+  "responsive_transformations": [
+    "tablet/mobile: preserve full diagram in a horizontally pannable labelled figure",
+    "mobile: provide a complete five-layer text transcript immediately after the image",
+    "execution boundary remains one line and never becomes an expanded section"
+  ],
+  "design_risks": ["raster architecture text cannot be the only accessible representation", "business lines must not read as databases", "expected governance target must not be labelled Actual"],
+  "unresolved_decisions": []
+}

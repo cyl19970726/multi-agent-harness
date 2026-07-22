@@ -54,6 +54,10 @@ These captures prove product truth and responsive rendering.
 
 The strict `frontend-visual-contract` closure is complete in
 [`../company-os-v3/trademark-native-closure-v1/`](../company-os-v3/trademark-native-closure-v1/).
+Its [`review.html`](../company-os-v3/trademark-native-closure-v1/review.html) is
+the canonical current Review entry for the native trademark P0 pages. Review
+status is sourced from the adjacent `visual-contract.json`, not from any older
+V2.2 page label.
 It binds the native trademark Action loop to three P0 pages: Docs Workspace,
 Trademark Business Module, and Work Board. The package includes versioned
 design specs, asset inventories, two retained implementation iterations,
@@ -89,7 +93,9 @@ still reflect the earlier Lead-first shape.
 ## Company OS V2.2 mother-page history
 
 The six V2.2 mother pages remain useful visual-language and implementation
-history. Their entry points are:
+history. Every `pending` label in these artifacts describes that historical
+review round; it is not the status of the V3 native closure. Their entry points
+are:
 
 - [`review-v2.2.html`](review-v2.2.html): V2.2 generated direction;
 - [`expected-vs-actual-v2.2.html`](expected-vs-actual-v2.2.html): generated

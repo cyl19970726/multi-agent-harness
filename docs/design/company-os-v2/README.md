@@ -4,6 +4,11 @@ Start with [`visual-index.md`](visual-index.md). It is the canonical inventory
 for active Expected images, Actual browser evidence, historical baselines, and
 superseded visual directions.
 
+> **Historical review family.** V2/V2.2 review pages preserve the decision
+> state of their own design round, including `pending` labels. For the current
+> native trademark implementation review, use
+> [`../company-os-v3/trademark-native-closure-v1/review.html`](../company-os-v3/trademark-native-closure-v1/review.html).
+
 V2 is a visual and interaction redesign built on the accepted Company OS
 product model. V1 remains the historical functional baseline; its generated
 Expected images were not promoted into V2 and did not constrain V2 composition.
