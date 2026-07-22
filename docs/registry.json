@@ -2669,14 +2669,14 @@
   {
    "path": "docs/integration/native-session-storage.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
-    "NativeSessionAdapter target interface",
+    "NativeSessionAdapter V1 behavior and extension contract",
     "NativeSessionRef field contract",
     "provider-native activity read and Dashboard join",
     "provider-specific resume and availability",
-    "provider mirror removal implementation Waves"
+    "completed provider mirror removal sequence"
    ],
    "dependsOn": [
     "docs/decisions/0032-provider-native-session-is-execution-truth.md",
@@ -2698,7 +2698,100 @@
    "reorgTrigger": "Native session binding fields, provider reader/resume interfaces, activity projection, or migration order changes.",
    "authorityClass": "implementation_reference",
    "implementationState": "partial",
-   "truthRefs": []
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/native-session-ref.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/native_session.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-native-session-boundary.mjs"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0030-provider-interaction-contract.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "execution-mode ProviderIntegrationProfile contract",
+    "PendingInteraction routing and semantic resolution",
+    "provider lifecycle versus semantic outcome boundary"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/agent-integration-model.md",
+    "docs/integration/kimi.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Provider interaction routing, semantic outcome, authorization, or execution-mode profile semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/pending-interaction.schema.json"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "mode-specific chat steer interrupt and stop semantics",
+    "provider version drift review contract",
+    "Codex and Kimi interactive mode selection"
+   ],
+   "dependsOn": [
+    "docs/decisions/0030-provider-interaction-contract.md",
+    "docs/agent-integration-model.md",
+    "docs/integration/codex.md",
+    "docs/integration/kimi.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Provider control protocol, execution modes, reviewed versions, or adapter compatibility policy changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
   },
   {
    "path": "docs/decisions/0032-provider-native-session-is-execution-truth.md",
@@ -2731,8 +2824,25 @@
    ],
    "reorgTrigger": "Per-agent native storage, Harness coordination persistence, native activity projection, provider resume, export, or migration policy changes.",
    "authorityClass": "canonical_contract",
-   "implementationState": "partial",
-   "truthRefs": []
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/native-session-ref.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/native_session.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-native-session-boundary.mjs"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+    }
+   ]
   },
   {
    "path": "docs/integration/live-agent-team-acceptance-2026-07-21.md",

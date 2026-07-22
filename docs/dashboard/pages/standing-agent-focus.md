@@ -132,7 +132,7 @@ fixed composer; context remains a disclosure rather than disappearing.
 - one healthy durable AgentMember with explicit `available` state;
 - multiple non-exclusive assignments from at least two source kinds;
 - capacity remains available;
-- persistent provider-session history;
+- provider-native session history reached through explicit native-session refs;
 - a delivered artifact and durable message history;
 - no single Wave owns the page and no thinking is persisted.
 

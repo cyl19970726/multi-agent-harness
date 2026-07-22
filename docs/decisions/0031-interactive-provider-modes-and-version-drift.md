@@ -1,7 +1,7 @@
 # ADR 0031 — Interactive provider modes and adapter version drift
 
 ```text
-status: accepted
+status: accepted_and_implemented
 date: 2026-07-21
 scope: Agent Team Member chat, steering, interruption, and provider upgrades
 ```
@@ -47,8 +47,8 @@ or an explicit recovery attestation.
 - `codex_exec` remains the batch/read-only mode for bounded one-shot work.
 - `codex_app_server` is the interactive Agent Team Member mode for chat,
   same-turn steer, approvals, and interrupt. Its provider thread id is the
-  native-session binding. Restart-time `thread/resume` remains a separate
-  acceptance item; capability state must match the current implementation.
+  native-session binding. Restart-time `thread/resume` is implemented through
+  an explicit resume binding; capability state remains mode/version specific.
 - The two modes have separate ProviderIntegrationProfiles and acceptance gates.
 - `codex_exec` honestly reports `interaction_mode=unsupported` and
   `supports_cancel=false`; `codex_app_server` reports only the controls its
@@ -95,6 +95,7 @@ so provider releases do not unexpectedly make local development unusable.
 - deterministic acceptance proves `turn/steer`, `turn/interrupt`, Kimi
   `session/cancel`, and streamed activity against generated schemas from the
   installed Codex version;
-- provider request routing is durable through PendingInteraction. Restart-time
-  resume remains a separate acceptance item and must not be inferred from the
-  recorded provider thread id.
+- provider request routing is durable through PendingInteraction;
+- restart-time Codex `thread/resume`/`exec resume` and Kimi `session/load` use
+  explicit `NativeSessionRef` bindings and fail rather than silently opening a
+  fresh session.

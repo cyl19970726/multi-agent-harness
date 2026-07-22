@@ -128,7 +128,7 @@ Claude 产生的事件通过以下源进来：
      schema-validated `structured_output`
    - native subagents（Task tool）出现在转录帧里，不是独立事件类型
 
-2. **NativeSessionRef（target）** — Harness 记录的 mode-aware 引用
+2. **NativeSessionRef（implemented）** — Harness 记录的 mode-aware 引用
    - provider = "claude"
    - provider_thread_id：从 `system(init)` 帧解析的真实 session id
      （下一次 delivery 用 `--resume` 延续）

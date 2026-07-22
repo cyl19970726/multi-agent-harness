@@ -58,12 +58,22 @@ The interactive adapter was subsequently verified against installed
 - provider thread `019f8584-f91d-7b61-9945-26b6780bfa95`.
 
 The member ran a real app-server turn, received an operator message through
-`turn/steer`, emitted structured command actions and a correlated final
-handoff, and reached `completed`. The accepted Wave and closed Mission name the
-attempt. Reasoning was eligible only for transient live SSE and no thinking row
-was written. This addendum proves live steer for the reviewed installed
-version; deterministic tests separately cover `AskUserQuestion` resume and
-Codex/Kimi cooperative interruption.
+`turn/steer`, emitted native structured command activity and a correlated final
+Harness handoff, and reached `completed`. The accepted Wave and closed Mission
+name the attempt. Reasoning was eligible only for transient live SSE and no
+thinking row was written. This addendum proves live steer for the reviewed
+installed version; deterministic tests separately cover `AskUserQuestion`
+resume and Codex/Kimi cooperative interruption.
+
+## Post-acceptance provider-version audit
+
+On 2026-07-22 the installed Codex CLI had advanced to
+`0.145.0-alpha.27`, while the reviewed live acceptance above remains pinned to
+`0.145.0-alpha.18`. `harness member providers --fail-on-review` therefore
+reported Codex as `review_required`, exactly as ADR 0031 requires. This does not
+invalidate the historical run, and it is not permission to add alpha.27 to the
+reviewed set without mode-specific protocol and live acceptance. Installed
+Claude `2.1.181` and Kimi `0.27.0` still probed as `current` in the same audit.
 
 ## Scope
 

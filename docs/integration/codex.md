@@ -93,9 +93,8 @@ not a false claim that the session was resumed.
 
 - `thread.started`, command execution, file change, MCP, web-search, and other
   non-thinking item frames remain in the native Codex session and can feed an
-  ephemeral Dashboard projection. The current Team Member reducer still
-  journals some structured command/file/tool activity; ADR 0032 classifies
-  those writes as migration debt to remove.
+  ephemeral Dashboard projection. The Team Member reducer does not journal
+  these provider-derived command/file/tool frames into Harness.
 - Reasoning items are eligible only for the sanitized transient live channel;
   they are not written to MemberAction, messages, artifacts, or evidence.
 - `codex exec` is non-interactive. Fresh `request_user_input`, command/file

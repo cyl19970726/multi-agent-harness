@@ -41,7 +41,8 @@ AgentMember(provider=kimi)
   `{"role":"meta","type":"session.resume_hint",...}`
   (`crates/harness-cli/src/main.rs:14349-14357`)；
 - schema、cost、resume 等能力在 core capability preset 中按 degraded/unknown 处理，
-  不是正向支持声明 (`crates/harness-core/src/lib.rs:4929-4950`)。
+  不是正向支持声明（`ProviderCapabilities::kimi_exec` in
+  `crates/harness-core/src/lib.rs`）。
 
 ## 为什么 Kimi CLI 是主方案
 
@@ -205,9 +206,9 @@ Kimi uses kimi-native parsing:
 
 Source: `crates/harness-cli/src/main.rs:14360-14430`.
 
-The durable ingest path is `ingest_kimi_stream_json`, which explicitly says it mirrors Claude ingest
-but operates on flat kimi-native frames and stamps rows with provider `kimi`
-(`crates/harness-cli/src/main.rs:15177-15245`).
+Kimi frames are reduced in memory to a delivery result and a mode-aware native
+session binding. There is no durable Kimi stream-ingest ledger; chat, tool,
+command, file, and turn detail remains in Kimi's native session store.
 
 Queue discipline（来自 harness，不由 provider 定义）：
 
@@ -287,8 +288,8 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
   stream.
 - `session/update` message, thought, and tool frames stream during the turn.
   Thought is sanitized into transient live display only. Tool calls remain in
-  Kimi's native session and feed only an ephemeral activity projection; current
-  provider-derived MemberAction writes are ADR 0032 migration debt.
+  Kimi's native session and feed only an ephemeral activity projection; they
+  are not converted into provider-derived MemberAction rows.
 - `session/request_permission` is implemented as a reverse-RPC bridge. Harness
   creates a durable `PendingInteraction`, marks the MemberRun waiting, and
   returns the exact selected ACP `optionId` after Lead/Policy/Human resolution.
@@ -346,8 +347,8 @@ For the current `kimi_acp` Team Member mode:
 
 ## Evidence and Report Extraction
 
-Kimi output contains flat assistant text plus optional meta frames. The target
-adapter reads these from Kimi native storage and projects them without copying:
+Kimi output contains flat assistant text plus optional meta frames. The adapter
+reads these from Kimi native storage and projects them without copying:
 
 ```text
 Kimi native session
@@ -406,7 +407,8 @@ schema            false (text-extract fallback)
 cost              false (token-estimate fallback)
 ```
 
-Source: `crates/harness-core/src/lib.rs:4929-4950`.
+Source: `ProviderCapabilities::kimi_exec` in
+`crates/harness-core/src/lib.rs`.
 
 The registry tests assert that Kimi is registered, reports `ProviderCapabilities::kimi_exec()`,
 uses `kimi.stream-json.ndjson`, and keeps schema/cost/resume false until proven
@@ -415,7 +417,7 @@ uses `kimi.stream-json.ndjson`, and keeps schema/cost/resume false until proven
 `provider_price_per_mtok("kimi")` currently returns placeholder estimate `(0.60, 2.50)`.
 The source warns this is only a workflow spend bound, not billing truth, and must be confirmed
 against Moonshot pricing or a future live usage frame before spend decisions are trusted
-(`crates/harness-core/src/lib.rs:1532-1548`).
+(`provider_price_per_mtok` in `crates/harness-core/src/lib.rs`).
 
 ## Fallback Modes
 
@@ -499,7 +501,8 @@ Kimi is the third registry-routed provider after Codex and Claude. The relevant 
    delivery status, explicit outcome, and promoted evidence under provider `kimi`.
 
 4. **Capability honesty** — core keeps Kimi degraded except streaming until live behavior proves
-   resume/schema/cost/MCP/hooks/subagents (`crates/harness-core/src/lib.rs:4929-4950`).
+   resume/schema/cost/MCP/hooks/subagents
+   (`ProviderCapabilities::kimi_exec` in `crates/harness-core/src/lib.rs`).
 
 5. **Future hardening** — once Kimi live usage, schema, resume, or tool control become stable,
    update `ProviderCapabilities::kimi_exec()`, parser tests, integration docs, and dashboard health

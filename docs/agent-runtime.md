@@ -59,6 +59,11 @@ select Mission/Wave executor or direct WorkItem action
 
 ## Provider Interfaces
 
+This is the provider-neutral interface model, not a claim that every operation
+is one public Rust trait today. Implemented V1 native reads return a bounded
+projection with `truncated`; cursor pagination remains an extension documented
+in [integration/native-session-storage.md](integration/native-session-storage.md).
+
 ```text
 AgentProvider
   create_runtime(actor_config, workspace, permissions)
@@ -67,7 +72,7 @@ AgentProvider
   deliver(request, context)
   interrupt(runtime, reason)
   bind_native_session(launch_receipt)
-  read_native_session(session_ref, cursor)
+  read_native_session(session_ref) -> bounded projection
   resume_native_session(session_ref, input)
 
 Delivery

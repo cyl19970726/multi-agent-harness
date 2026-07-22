@@ -69,15 +69,9 @@ TeamMessage     id, team_run_id, task_id?, from, to[], kind,
                 deliveries[{ member_id, policy, status, attempt, updated_at }]
 
 MemberAction    id, seq, team_run_id, member_run_id, task_id?,
-                type(plan_updated|message_sent|message_received|
-                     tool_started|tool_completed|file_changed|
-                     command_started|command_completed|test_started|
-                     test_completed|delegation_started|
-                     delegation_completed|review_started|
-                     review_completed|waiting_for_input|
-                     waiting_for_approval|blocked|error|completed),
+                action_type(free-form Harness coordination/control/outcome fact),
                 status(started|progress|succeeded|failed|cancelled),
-                title, summary, evidence_refs[],
+                provider_status?, semantic_status?, title, summary, evidence_refs[],
                 started_at / ended_at
 
 DelegationRun   id, team_run_id, parent_member_run_id, parent_task_id?,
@@ -99,9 +93,10 @@ Rules:
   gate identifies the accepted attempt.
 - `MemberRun` is an execution instance, not a standing durable employee record.
 - `TeamMessage` separates message semantics from per-recipient delivery state.
-- `MemberAction` and `TeamRunEvent` are transitional for provider-derived work
-  events. Their target scope is Harness-owned coordination, control requests /
-  acknowledgements, and lifecycle facts; they do not mirror provider activity.
+- `MemberAction` and `TeamRunEvent` are transitional ordered rows for
+  Harness-owned coordination, control requests/acknowledgements, explicit
+  outcomes, and lifecycle facts. They never mirror provider-native work
+  activity.
 - A native attempt links both `mission_id` and `wave_id`. Optional identifiers
   remain at the Store/API boundary only for reading imported records; unlinked
   runs are excluded from active Agent Team product navigation and authoring.

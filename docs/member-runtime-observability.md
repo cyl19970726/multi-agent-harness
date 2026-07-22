@@ -68,7 +68,7 @@ it claims:
 
 ```text
 discover_native_session(launch_receipt)
-read_native_activity(ref, cursor)
+read_native_activity(ref) -> bounded projection + truncated
 resume_native_session(ref, input)
 steer_or_send(ref, input)
 interrupt(ref, reason)
@@ -96,5 +96,7 @@ Team Activity interleaves two visually distinct sources:
 - provider-native activity, labelled with provider/mode and availability.
 
 Reconnect reloads Harness state and re-reads native activity. It does not replay
-a hidden Harness provider-event ledger. Provider read errors render a recovery
-state with retry/resume/fresh-start choices according to capability and policy.
+a hidden Harness provider-event ledger. Provider read errors currently render
+an honest unavailable/empty state. Retry/resume/fresh-start controls remain a
+planned Member Focus extension; today explicit resume is selected through the
+TeamRun retry/create CLI, MCP, or HTTP input.

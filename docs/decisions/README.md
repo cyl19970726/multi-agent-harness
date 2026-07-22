@@ -30,7 +30,7 @@ consequences, affected modules, and validation path.
 | [0029](0029-agent-programmable-document-runtime.md) | active, staged | Basic docs, structured views and governed custom pages |
 | [0030](0030-provider-interaction-contract.md) | active | Execution-mode profiles, durable PendingInteraction routing, and provider-versus-semantic truth |
 | [0031](0031-interactive-provider-modes-and-version-drift.md) | active | Chat/steer/interrupt semantics and adapter version review gates |
-| [0032](0032-provider-native-session-is-execution-truth.md) | active target | Provider-native session owns transcript/tool activity/resume; Harness owns coordination, outcomes, refs and gates |
+| [0032](0032-provider-native-session-is-execution-truth.md) | active, implemented | Provider-native session owns transcript/tool activity/resume; Harness owns coordination, outcomes, refs and gates |
 
 ## Split Rule
 

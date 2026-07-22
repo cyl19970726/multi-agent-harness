@@ -227,9 +227,9 @@ The target contract makes thinking transient live-only state.
 Persist only Harness-owned coordination, artifact/check references, blockers,
 handoffs, control acknowledgements, and explicit outcomes instead.
 
-No provider thinking may enter a Harness ledger. Obsolete provider-derived
-action rows are migration debt under ADR 0032 and do not define the target
-contract.
+No provider thinking may enter a Harness ledger. Provider-derived action rows
+are excluded by the implemented ADR 0032 boundary; historical rows do not
+define current product state and are not projected as active activity.
 
 ## Closeout Gates
 

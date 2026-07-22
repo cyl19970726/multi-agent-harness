@@ -1,7 +1,7 @@
 # Provider-native session adapter contract
 
 ```text
-status: target_contract
+status: implemented_v1_and_extension_contract
 owner_role: provider-integration
 canonical_for: native session binding, reading, resume, availability, and Dashboard projection
 decision: ADR 0032
@@ -20,10 +20,17 @@ This contract defines the adapter seam between:
 - provider-native execution truth (chat, tools, commands, file events, turns,
   native children, and resume data).
 
-## Target interfaces
+## Implemented V1 surface and extension seam
 
-Names below are architectural contracts, not claims that the Rust traits or
-schemas already exist.
+V1 implements mode-aware binding, availability probing, bounded on-demand
+native reads, and explicit provider-native resume through provider-specific
+Rust functions, schema, HTTP/MCP/CLI surfaces, and Dashboard projection. It
+does not expose one public Rust trait with the exact name below.
+
+The following pseudocode also shows the intended extension seam. Cursor-based
+reads and a unified adapter-level interrupt method are not implemented as one
+generic interface today; live interruption remains mode-specific under ADR
+0031.
 
 ```rust
 trait NativeSessionAdapter {
@@ -107,7 +114,7 @@ GET Harness Team/Member projection
 
 GET native activity for NativeSessionRef
   -> provider adapter probe
-  -> provider-native read(cursor)
+  -> provider-native bounded read (latest 300 displayable items)
   -> sanitized NativeActivityProjection
 
 UI merge
@@ -117,8 +124,8 @@ UI merge
 ```
 
 The backend performs native reads so provider paths and credentials do not leak
-to browser code. Cursor caches are bounded, deletable, and never acceptance
-evidence. Refresh/reconnect can rebuild them.
+to browser code. The current response exposes `truncated` rather than a cursor;
+refresh/reconnect rebuilds the projection directly from provider storage.
 
 ## Resume flow
 
@@ -137,12 +144,12 @@ new binding records the parent native session id.
 
 ## Provider matrix
 
-| Mode | Native identity today | Native read truth | Restart resume | Current migration gap |
+| Mode | Native identity today | Native read truth | Restart resume | Operational boundary |
 | --- | --- | --- | --- | --- |
 | Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | live provider activity is transient; native history is read on demand |
-| Claude `claude_cli` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | `--resume` wired through explicit member resume binding | Agent Team activity is native-read; legacy Standing Agent delivery mirrors remain queued for retirement |
+| Claude `claude_cli` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | `--resume` wired through explicit member resume binding | Native history is read on demand; live success still depends on valid operator OAuth |
 
 “Provider supports” never means “adapter supports.” Each row needs deterministic
 and live acceptance against reviewed provider versions.
@@ -175,27 +182,42 @@ states. UI must not invent native activity or resume from a Harness replay.
   `thread/resume`; Kimi ACP uses `session/load`. A provider rejection fails the
   member honestly instead of falling back to a fresh session.
 
-## Implementation Waves
+## Completed migration sequence
 
-1. **Contract and binding:** schema/Rust `NativeSessionRef`, capability snapshot,
+1. **Contract and binding (complete):** schema/Rust `NativeSessionRef`, capability snapshot,
    availability, migration checks.
-2. **Codex native reader/resume:** exec and app-server independently; stop new
+2. **Codex native reader/resume (complete):** exec and app-server independently; stop new
    Codex provider-derived action/event writes.
-3. **Kimi and Claude readers/resume:** verify installed provider storage and
+3. **Kimi and Claude readers/resume (complete):** verify installed provider storage and
    privacy first; stop NDJSON/stderr mirror writes.
-4. **Dashboard joined projection:** source labels, missing/stale/incompatible
-   states, cursor pagination, resume/fresh controls.
-5. **Removal:** delete obsolete provider-event ledgers, transcript/stdout/JSONL
+4. **Dashboard joined projection (complete for V1):** provider source,
+   availability, bounded activity, and an honest truncation signal. The UI
+   displays resume support; explicit resume selection remains on TeamRun
+   retry/create CLI, MCP, and HTTP inputs.
+5. **Removal (complete):** delete obsolete provider-event ledgers, transcript/stdout/JSONL
    fields, reducers, and old local mirrored data; no compatibility reader.
-6. **Acceptance:** mixed-provider TeamRun proves assignments, interactions,
-   outcomes and gate in Harness, native activity/resume at providers, and zero
-   duplicate provider history.
+6. **Acceptance (complete for the ADR 0032 boundary):** a real mixed-provider
+   TeamRun proves assignments, native activity reads, outcomes and gate, while
+   deterministic mode tests prove explicit resume and zero duplicate provider
+   history.
 
-## Acceptance checklist for every provider mode
+## Remaining projection extensions
+
+- Native activity items currently carry kind, status, title, summary, and time;
+  provider-native item/parent ids are not yet exposed in the generic projection.
+- The read endpoint returns the latest bounded window with `truncated`; cursor
+  pagination is not yet implemented.
+- Dashboard shows native availability and whether resume is supported, but the
+  operator-facing resume/fresh choice is not yet a Member Focus control.
+- These are projection/control-plane extensions, not permission to restore a
+  Harness transcript or provider-event mirror.
+
+## Completion checklist for every provider mode
 
 - Native session id comes from the provider, not a synthetic fallback.
 - Reader can reopen a completed session after Harness restart.
-- Tool/command/file/chat records shown in Dashboard resolve to native ids.
+- Tool/command/file/chat records shown in Dashboard resolve to native ids once
+  the generic projection adds native item identity.
 - Resume either continues the native session or fails explicitly.
 - Adapter version drift covers native storage and resume format.
 - Provider-native session loss produces an honest unavailable state.

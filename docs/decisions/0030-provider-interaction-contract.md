@@ -83,11 +83,11 @@ Thinking remains sanitized transient live state only. It is never a
   same-turn resume -> semantic `answered`.
 - Kimi deterministic ACP policy test: tool permission -> Policy route -> Lead
   rejection -> exact Policy option -> same-turn resume -> semantic `approved`.
-- Mixed Codex/Kimi target test: Codex command events and Kimi tool events are
+- Mixed Codex/Kimi boundary test: Codex command events and Kimi tool events are
   readable from their native sessions but absent from Harness ledgers;
   provider thinking is absent from all Harness persistence.
 - Dashboard checks: exact option id/actor is posted through the TeamRun-scoped
   resolve route and pending interactions appear in Team and Member activity.
 - Schema fixtures validate ProviderIntegrationProfile and PendingInteraction.
-  Current MemberAction semantic fields are migration debt until ADR 0032 is
-  fully implemented.
+  MemberAction semantic fields are restricted to Harness-owned coordination,
+  control acknowledgements, and explicit outcomes under implemented ADR 0032.
