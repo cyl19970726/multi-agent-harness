@@ -16,7 +16,18 @@
     "availability": "available",
     "supports_resume": true
   },
-  "worktree_ref": "wt://mrun-1",
+  "worktree_ref": "/projects/harness/worktrees/mrun-1",
+  "workspace_snapshot": {
+    "cwd": "/projects/harness/worktrees/mrun-1",
+    "git_head": "0123456789abcdef0123456789abcdef01234567",
+    "git_branch": "wave-2/worker-1",
+    "instruction_roots": [
+      "/projects/harness"
+    ],
+    "skill_roots": [
+      "/projects/harness/.agents/skills"
+    ]
+  },
   "owned_paths": ["crates/harness-core/"],
   "started_at": "2026-07-18T00:00:00Z",
   "last_event_at": "2026-07-18T00:01:00Z",

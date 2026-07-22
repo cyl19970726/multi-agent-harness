@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "page": "member-run-focus",
+  "state": "completed-history",
+  "expected": "../expected/member-run-focus/completed-history--desktop-concept-v4.png",
+  "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
+  "shell": {
+    "navigation_width_px": 80,
+    "workspace_left_px": 111,
+    "context_rail_left_px": 1159,
+    "context_rail_width_px": 377,
+    "header_bottom_px": 151,
+    "composer_top_px": 960,
+    "scroll_owner": "member-history-main"
+  },
+  "geometry": {
+    "main_content_width_px": 1012,
+    "main_to_context_gap_px": 36,
+    "activity_icon_px": 36,
+    "message_avatar_px": 32,
+    "tool_row_height_px": 30,
+    "phase_header_height_px": 28,
+    "context_module_gap_px": 18,
+    "context_module_padding_px": 18
+  },
+  "typography": {
+    "member_title": "28px/34px 650",
+    "section_title": "21px/28px 650",
+    "phase_label": "11px/16px 650 uppercase tracking 0.08em",
+    "body": "12px/18px 400",
+    "tool_row": "11px/16px 500",
+    "meta": "10px/14px 550"
+  },
+  "surfaces": {
+    "background": "warm ivory paper",
+    "main": "white continuous document surface",
+    "context": "white modules with one-pixel warm-gray borders",
+    "message": "subtle role tint, six-pixel radius, no drop shadow",
+    "tool_group": "one-pixel ink-blue/12 border, six-pixel radius",
+    "handoff": "coral/20 outer boundary with emerald result and check accents",
+    "shadow_policy": "none except floating menus and responsive context sheet"
+  },
+  "semantic_icons": {
+    "briefing": "message",
+    "exploration": "search",
+    "implementation": "file-edit",
+    "verification": "check-circle",
+    "handoff": "handshake",
+    "tool_spawn": "bot",
+    "tool_command": "terminal",
+    "tool_edit": "file-pen",
+    "tool_wait": "timer"
+  },
+  "component_strategy": {
+    "page_specific": [
+      "MemberHistoryNarrative",
+      "MemberHistoryPhase",
+      "NativeToolStep",
+      "MemberHandoffSummary",
+      "MemberRuntimeRail"
+    ],
+    "shared": ["Avatar", "Markdown", "Badge", "ContextRail", "MemberComposer"],
+    "do_not_reuse_for_primary_history": ["generic Card grid", "unprojected ActivityStream row dump"]
+  },
+  "truth_constraints": [
+    "Phase grouping is a read-time projection over provider-native and Harness records.",
+    "Tool invocation/result pairing preserves access to both native items.",
+    "Provider messages, tools, and lifecycle remain native-session reads and are not copied to Harness.",
+    "Harness assignment, handoff, correlation, artifacts, and controls remain separately attributable.",
+    "Generated runtime metrics absent from the selected MemberRun are omitted rather than invented."
+  ],
+  "responsive": {
+    "tablet": "context rail becomes a right sheet; main chronology remains the scroll owner",
+    "mobile": "single chronology; context becomes a bottom sheet; tool rows use two-line layout",
+    "composer": "sticky at all sizes and never covers the last history item"
+  }
+}

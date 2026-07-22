@@ -44,12 +44,12 @@ async function loadSourceTruth() {
 }
 
 function installLocation(search) {
-  let replacedUrl = "";
+  let pushedUrl = "";
   globalThis.window = {
     location: { pathname: "/", search, hash: "" },
-    history: { replaceState: (_state, _title, url) => { replacedUrl = String(url); } },
+    history: { pushState: (_state, _title, url) => { pushedUrl = String(url); } },
   };
-  return () => replacedUrl;
+  return () => pushedUrl;
 }
 
 async function main() {
@@ -132,9 +132,9 @@ async function main() {
       check(result.surface === surface && result[key] === value, `${key} is explicitly URL-addressable on ${surface}`);
     }
 
-    const replaced = installLocation("?api=http%3A%2F%2Flocalhost%3A8787");
+    const pushed = installLocation("?api=http%3A%2F%2Flocalhost%3A8787");
     selection.syncSelectionToLocation({ surface: "organization", standingAgentId: "actor-agent-document-architecture" });
-    check(replaced().includes("surface=organization") && replaced().includes("agent=actor-agent-document-architecture") && replaced().includes("api="), "selection sync preserves unrelated URL configuration and writes organization identity");
+    check(pushed().includes("surface=organization") && pushed().includes("agent=actor-agent-document-architecture") && pushed().includes("api="), "selection sync preserves unrelated URL configuration, writes organization identity, and creates a Back/Forward history entry");
   } finally {
     delete globalThis.window;
     await rm(directory, { recursive: true, force: true });

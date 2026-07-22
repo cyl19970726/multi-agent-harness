@@ -1573,6 +1573,11 @@ pub struct AgentTeamRun {
     #[serde(default)]
     pub host_thread_id: Option<String>,
     pub objective: String,
+    /// Concrete root selected for this attempt's execution. This is distinct
+    /// from both the registered project root and the centralized store root.
+    /// Older rows may omit it; callers then fall back to the project root.
+    #[serde(default)]
+    pub execution_root: Option<String>,
     pub status: TeamRunStatus,
     #[serde(default)]
     pub member_run_ids: Vec<String>,
@@ -1582,6 +1587,27 @@ pub struct AgentTeamRun {
     pub updated_at: String,
     #[serde(default)]
     pub completed_at: Option<String>,
+}
+
+/// Non-secret workspace facts observed when a member runtime starts.
+///
+/// These values make the execution location reconstructable without copying
+/// instruction/skill contents or any provider-native transcript or tool
+/// stream into Harness storage. `git_branch` is absent for detached HEADs and
+/// all Git fields are absent outside a Git worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberWorkspaceSnapshot {
+    pub cwd: String,
+    #[serde(default)]
+    pub git_head: Option<String>,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    /// Directories containing discovered instruction files used for context.
+    #[serde(default)]
+    pub instruction_roots: Vec<String>,
+    /// Directories containing discovered skills used for context.
+    #[serde(default)]
+    pub skill_roots: Vec<String>,
 }
 
 /// Lifecycle of a [`MemberRun`].
@@ -1657,6 +1683,10 @@ pub struct MemberRun {
     pub native_session: Option<NativeSessionRef>,
     #[serde(default)]
     pub worktree_ref: Option<String>,
+    /// Facts actually observed from the spawned member's working directory and
+    /// non-secret instruction/skill roots discovered from that environment.
+    #[serde(default)]
+    pub workspace_snapshot: Option<MemberWorkspaceSnapshot>,
     #[serde(default)]
     pub owned_paths: Vec<String>,
     pub started_at: String,
@@ -1664,6 +1694,57 @@ pub struct MemberRun {
     pub last_event_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+}
+
+impl Validate for AgentTeamRun {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "AgentTeamRun.id")?;
+        require_non_empty(&self.host_surface, "AgentTeamRun.host_surface")?;
+        require_non_empty(&self.objective, "AgentTeamRun.objective")?;
+        require_non_empty(&self.created_at, "AgentTeamRun.created_at")?;
+        require_non_empty(&self.updated_at, "AgentTeamRun.updated_at")?;
+        if let Some(execution_root) = &self.execution_root {
+            require_non_empty(execution_root, "AgentTeamRun.execution_root")?;
+        }
+        Ok(())
+    }
+}
+
+impl Validate for MemberWorkspaceSnapshot {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.cwd, "MemberWorkspaceSnapshot.cwd")?;
+        if let Some(git_head) = &self.git_head {
+            require_non_empty(git_head, "MemberWorkspaceSnapshot.git_head")?;
+        }
+        if let Some(git_branch) = &self.git_branch {
+            require_non_empty(git_branch, "MemberWorkspaceSnapshot.git_branch")?;
+        }
+        for root in &self.instruction_roots {
+            require_non_empty(root, "MemberWorkspaceSnapshot.instruction_roots")?;
+        }
+        for root in &self.skill_roots {
+            require_non_empty(root, "MemberWorkspaceSnapshot.skill_roots")?;
+        }
+        Ok(())
+    }
+}
+
+impl Validate for MemberRun {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "MemberRun.id")?;
+        require_non_empty(&self.team_run_id, "MemberRun.team_run_id")?;
+        require_non_empty(&self.name, "MemberRun.name")?;
+        require_non_empty(&self.role, "MemberRun.role")?;
+        require_non_empty(&self.provider, "MemberRun.provider")?;
+        require_non_empty(&self.started_at, "MemberRun.started_at")?;
+        if let Some(worktree_ref) = &self.worktree_ref {
+            require_non_empty(worktree_ref, "MemberRun.worktree_ref")?;
+        }
+        if let Some(snapshot) = &self.workspace_snapshot {
+            snapshot.validate()?;
+        }
+        Ok(())
+    }
 }
 
 /// How one provider member is executed by Harness. Capability claims are
@@ -2711,6 +2792,77 @@ mod tests {
             !cap.supports_streaming_exec(),
             "mid-turn approval blocks streaming exec"
         );
+    }
+
+    #[test]
+    fn workspace_observability_fields_round_trip_without_contents() {
+        let snapshot = MemberWorkspaceSnapshot {
+            cwd: "/projects/harness/worktrees/member-1".into(),
+            git_head: Some("0123456789abcdef".into()),
+            git_branch: Some("feature/member-1".into()),
+            instruction_roots: vec!["/projects/harness".into()],
+            skill_roots: vec!["/projects/harness/.agents/skills".into()],
+        };
+        assert!(snapshot.validate().is_ok());
+
+        let json = serde_json::to_value(&snapshot).expect("serialize workspace snapshot");
+        assert_eq!(json["cwd"], "/projects/harness/worktrees/member-1");
+        assert!(json.get("instruction_contents").is_none());
+        assert!(json.get("skill_contents").is_none());
+        assert!(json.get("credentials").is_none());
+        assert!(json.get("transcript").is_none());
+        assert!(json.get("thinking").is_none());
+        assert_eq!(
+            serde_json::from_value::<MemberWorkspaceSnapshot>(json).expect("deserialize snapshot"),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn workspace_observability_validation_rejects_empty_locators() {
+        let snapshot = MemberWorkspaceSnapshot {
+            cwd: " ".into(),
+            git_head: None,
+            git_branch: None,
+            instruction_roots: Vec::new(),
+            skill_roots: Vec::new(),
+        };
+        assert_eq!(
+            snapshot.validate(),
+            Err(ValidationError::Required {
+                field: "MemberWorkspaceSnapshot.cwd"
+            })
+        );
+
+        let snapshot = MemberWorkspaceSnapshot {
+            cwd: "/projects/harness".into(),
+            git_head: None,
+            git_branch: None,
+            instruction_roots: vec![String::new()],
+            skill_roots: Vec::new(),
+        };
+        assert_eq!(
+            snapshot.validate(),
+            Err(ValidationError::Required {
+                field: "MemberWorkspaceSnapshot.instruction_roots"
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_rows_deserialize_with_absent_new_fields() {
+        let team: AgentTeamRun = serde_json::from_str(
+            r#"{"id":"tr-legacy","host_surface":"codex-app","objective":"work","status":"planning","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#,
+        )
+        .expect("deserialize legacy team run");
+        assert!(team.execution_root.is_none());
+
+        let member: MemberRun = serde_json::from_str(
+            r#"{"id":"mr-legacy","team_run_id":"tr-legacy","name":"worker","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:1"}"#,
+        )
+        .expect("deserialize legacy member run");
+        assert!(member.worktree_ref.is_none());
+        assert!(member.workspace_snapshot.is_none());
     }
 }
 

@@ -312,7 +312,24 @@ function MissionDetail({
     latestSelectedRun?.status === "completed";
 
   return (
-    <DocumentSurface className="max-w-[1280px] space-y-0">
+    <DocumentSurface
+      className="h-full max-w-[1280px] space-y-0 overflow-y-auto overscroll-contain px-3 py-5 sm:px-5 xl:px-0"
+      data-mission-scroll-owner="true"
+      role="region"
+      aria-label="Mission detail"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const page = Math.max(event.currentTarget.clientHeight * 0.85, 240);
+        if (event.key === "PageDown" || event.key === "PageUp") {
+          event.preventDefault();
+          event.currentTarget.scrollBy({ top: event.key === "PageDown" ? page : -page, behavior: "auto" });
+        } else if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          event.currentTarget.scrollTo({ top: event.key === "Home" ? 0 : event.currentTarget.scrollHeight, behavior: "auto" });
+        }
+      }}
+    >
       <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_21rem] xl:gap-0">
         <section className="min-w-0 xl:pl-5 xl:pr-6">
           <button
@@ -755,13 +772,31 @@ function WaveCanvasCard({
               {activeMembers.length > 0 && (
                 <div className="flex flex-wrap gap-4">
                   {activeMembers.map((member) => (
-                    <span key={`${member.team_run_id}:${member.name}:${member.role}`} className="inline-flex min-w-0 items-center gap-2">
-                      <Avatar name={member.name || member.role || "Member"} tone={waveTone(member.status)} size="sm" />
+                    <button
+                      key={`${member.team_run_id}:${member.id}`}
+                      type="button"
+                      onClick={() => onSelectionChange({
+                        surface: "team",
+                        teamId: latest.id,
+                        memberRunId: member.id,
+                        missionId: wave.mission_id,
+                        waveId: wave.id,
+                      })}
+                      aria-label={`Open member ${member.name || member.role || member.id}`}
+                      className="group inline-flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Avatar
+                        name={member.name || member.role || "Member"}
+                        identity={`${member.role ?? "member"} ${member.id}`}
+                        tone={waveTone(member.status)}
+                        size="sm"
+                      />
                       <span className="min-w-0">
-                        <span className="block max-w-28 truncate text-[10px] font-medium text-foreground">{member.name || "Member"}</span>
+                        <span className="block max-w-28 truncate text-[10px] font-medium text-foreground group-hover:text-primary">{member.name || "Member"}</span>
                         <span className="block text-[9px] text-muted-foreground">{member.status || "unknown"}</span>
                       </span>
-                    </span>
+                      <ChevronRight className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                    </button>
                   ))}
                 </div>
               )}

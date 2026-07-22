@@ -949,10 +949,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
-        DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus, MessageKind,
-        Mission, MissionStatus, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus,
-        TeamMessageDelivery, TeamMessageKind, TeamRunEventSourceKind, TeamRunStatus, Wave,
-        WaveExecutorKind, WaveGateStatus, WaveStatus,
+        DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus,
+        MemberWorkspaceSnapshot, MessageKind, Mission, MissionStatus, SenderKind,
+        TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
+        TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
     };
 
     use super::*;
@@ -1143,6 +1143,7 @@ mod tests {
                         host_surface: "test".into(),
                         host_thread_id: None,
                         objective: "attempt".into(),
+                        execution_root: Some("/projects/concurrent".into()),
                         status: TeamRunStatus::Planning,
                         member_run_ids: vec![format!("member-{id}")],
                         budget_limit_usd: None,
@@ -1450,6 +1451,7 @@ mod tests {
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
             objective: "Ship the feature".into(),
+            execution_root: Some("/projects/example/worktrees/feature".into()),
             status: TeamRunStatus::Running,
             member_run_ids: vec!["mr-1".into()],
             budget_limit_usd: Some(12.5),
@@ -1476,6 +1478,7 @@ mod tests {
         assert!(sparse.mission_id.is_none());
         assert!(sparse.wave_id.is_none());
         assert!(sparse.host_thread_id.is_none());
+        assert!(sparse.execution_root.is_none());
         assert!(sparse.member_run_ids.is_empty());
         assert!(sparse.budget_limit_usd.is_none());
         assert!(sparse.completed_at.is_none());
@@ -1498,7 +1501,14 @@ mod tests {
             provider_profile: None,
             status: MemberRunStatus::Running,
             native_session: None,
-            worktree_ref: Some("wt-1".into()),
+            worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
+            workspace_snapshot: Some(MemberWorkspaceSnapshot {
+                cwd: "/projects/example/worktrees/worker-1".into(),
+                git_head: Some("0123456789abcdef".into()),
+                git_branch: Some("feature/worker-1".into()),
+                instruction_roots: vec!["/projects/example".into()],
+                skill_roots: vec!["/projects/example/.agents/skills".into()],
+            }),
             owned_paths: vec!["src/".into()],
             started_at: "unix-ms:1".into(),
             last_event_at: Some("unix-ms:2".into()),
@@ -1523,6 +1533,7 @@ mod tests {
         assert!(sparse.slot_id.is_none());
         assert!(sparse.model.is_none());
         assert!(sparse.worktree_ref.is_none());
+        assert!(sparse.workspace_snapshot.is_none());
         assert!(sparse.owned_paths.is_empty());
         assert!(sparse.last_event_at.is_none());
         assert!(sparse.finished_at.is_none());

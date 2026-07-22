@@ -205,18 +205,51 @@ async function main() {
         }
 
         if (width === 1440 && pageName === "mission-wave-canvas") {
-          await page.getByRole("button", { name: "Open QA Engineer", exact: true }).click();
-          await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
-          const selectedMemberRun = new URL(page.url()).searchParams.get("memberRun");
-          if (selectedMemberRun !== "member-wave2-qa") {
-            throw new Error(`Mission Needs You selected unexpected member: ${selectedMemberRun ?? "none"}`);
+          const missionRegion = page.getByRole("region", { name: "Mission detail", exact: true });
+          const beforeScroll = await missionRegion.evaluate((element) => ({
+            top: element.scrollTop,
+            max: element.scrollHeight - element.clientHeight,
+          }));
+          await missionRegion.focus();
+          await page.keyboard.press("PageDown");
+          const afterScroll = await missionRegion.evaluate((element) => ({
+            top: element.scrollTop,
+            max: element.scrollHeight - element.clientHeight,
+          }));
+          if (beforeScroll.max <= 0 || afterScroll.top <= beforeScroll.top) {
+            throw new Error(`Mission content is not keyboard-scrollable: ${JSON.stringify({ beforeScroll, afterScroll })}`);
           }
           interactionChecks.push({
             page: pageName,
-            action: "open-blocked-member",
-            expected_member_run_id: "member-wave2-qa",
+            action: "mission-content-reachability",
+            before: beforeScroll,
+            after: afterScroll,
             result: "passed",
           });
+
+          await page.getByRole("button", { name: "Open member QA Engineer", exact: true }).click();
+          await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
+          const selected = new URL(page.url()).searchParams;
+          if (
+            selected.get("memberRun") !== "member-wave2-qa"
+            || selected.get("team") !== manifest.team_run_id
+            || selected.get("mission") !== manifest.mission_id
+            || selected.get("wave") !== manifest.wave_id
+          ) {
+            throw new Error(`Mission member deep link lost execution context: ${page.url()}`);
+          }
+          interactionChecks.push({
+            page: pageName,
+            action: "mission-member-deep-link",
+            expected_member_run_id: "member-wave2-qa",
+            preserved_team_run_id: manifest.team_run_id,
+            preserved_mission_id: manifest.mission_id,
+            preserved_wave_id: manifest.wave_id,
+            result: "passed",
+          });
+          await page.goBack({ waitUntil: "domcontentloaded" });
+          await page.getByRole("region", { name: "Mission detail", exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+          interactionChecks.push({ page: pageName, action: "member-return-context", result: "passed" });
         }
       }
       await context.close();

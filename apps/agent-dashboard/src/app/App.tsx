@@ -99,7 +99,7 @@ function activityExpiryMs(value: string): number {
 
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiFromLocation);
-  // Selected project (goal-multi-project P6). Seeded from URL/localStorage; "" until
+  // Selected Workspace. Seeded from URL/localStorage; "" until
   // a project is chosen or the active project is adopted from the loaded list. All
   // snapshot/SSE fetches are scoped to it so the view shows exactly one project.
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projectFromLocation);

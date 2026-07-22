@@ -146,8 +146,14 @@ The Lead Agent should use this sequence for non-trivial new work:
 
 One `serve` / dashboard manages many projects. Each has a centralized
 `store_root` (`~/.harness/projects/<id>/`, the JSONL ledgers) and a `project_root`
-(the git repo where `CLAUDE.md` / `AGENTS.md` / worktrees live); a spawned
-worker's cwd derives from `project_root`, not the harness process cwd.
+(the registered git repo where project instructions and configuration live).
+Agent Team provider cwd resolves as member `worktree_ref` > TeamRun
+`execution_root` > `project_root`, never `store_root`. Overrides must be the
+project root or a Git worktree sharing its Git common directory; external Codex
+worktrees are valid. Because cwd changes which project/root instructions,
+skills, plugins, and MCP configuration a provider may discover, treat it as an
+explicit execution and permission boundary. See ADR 0033 and
+[docs/multi-project.md](docs/multi-project.md).
 
 - Select the project explicitly (`--project <id|path>`, `HARNESS_PROJECT`, or
   `harness project switch`) before spawning workers; do not rely on cwd.

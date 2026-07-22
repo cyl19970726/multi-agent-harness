@@ -58,6 +58,24 @@
       }
     },
     "worktree_ref": { "type": ["string", "null"], "minLength": 1 },
+    "workspace_snapshot": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["cwd"],
+      "properties": {
+        "cwd": { "type": "string", "minLength": 1 },
+        "git_head": { "type": ["string", "null"], "minLength": 1 },
+        "git_branch": { "type": ["string", "null"], "minLength": 1 },
+        "instruction_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "skill_roots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "owned_paths": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }

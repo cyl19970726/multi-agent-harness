@@ -216,10 +216,10 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
 }
 
 /**
- * Reflect the selection into the address bar (without reloading) so the current
- * agent/surface is shareable. The selected agent is written as `?agent=<id>`,
- * the same query-form approach the goal/task docs use, which keeps the static
- * `base: "./"` Vite build working from any path.
+ * Reflect a user selection into browser history without reloading so entity
+ * deep links are shareable and Back/Forward returns through the workbench
+ * journey. The selected agent is written as `?agent=<id>`; query-form routing
+ * keeps the static `base: "./"` Vite build working from any path.
  */
 export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
@@ -251,6 +251,6 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (url !== current) {
-    window.history.replaceState(null, "", url);
+    window.history.pushState(null, "", url);
   }
 }

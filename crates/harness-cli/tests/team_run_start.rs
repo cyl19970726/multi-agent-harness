@@ -144,6 +144,26 @@ fn team_run_start_completes_kimi_members() {
         "summary line: {stdout}"
     );
 
+    let expected_cwd = std::fs::canonicalize(home.base().join("alpha"))
+        .expect("canonical project cwd")
+        .display()
+        .to_string();
+    let runs = store_rows(&home, &project_id, "team_runs.jsonl");
+    assert_eq!(
+        runs[0]["execution_root"].as_str(),
+        Some(expected_cwd.as_str())
+    );
+    let store_root = home
+        .projects_dir()
+        .join(&project_id)
+        .to_string_lossy()
+        .to_string();
+    assert_ne!(
+        runs[0]["execution_root"].as_str(),
+        Some(store_root.as_str()),
+        "provider execution root must never be the centralized store root"
+    );
+
     // Member runs: terminal completed, ACP session id written back, finished.
     let members = store_rows(&home, &project_id, "member_runs.jsonl");
     assert_eq!(members.len(), 2, "members: {members:?}");
@@ -168,6 +188,25 @@ fn team_run_start_completes_kimi_members() {
             member["last_event_at"].is_string(),
             "last_event_at set: {member:?}"
         );
+        assert_eq!(
+            member["workspace_snapshot"]["cwd"].as_str(),
+            Some(expected_cwd.as_str()),
+            "actual spawn cwd is durably snapshotted"
+        );
+        assert!(member["workspace_snapshot"]["instruction_roots"].is_array());
+        assert!(member["workspace_snapshot"]["skill_roots"].is_array());
+        for prohibited in [
+            "config_contents",
+            "credentials",
+            "provider_transcript",
+            "tool_stream",
+            "thinking",
+        ] {
+            assert!(
+                member["workspace_snapshot"].get(prohibited).is_none(),
+                "snapshot must not persist {prohibited}: {member:?}"
+            );
+        }
     }
 
     // Messages: the two assignments are delivered, and each member handed off
@@ -784,7 +823,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
 }
 
 #[test]
-fn kimi_tool_approval_requires_policy_authority_and_resumes_same_turn() {
+fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
     let home = TempHome::new("team-run-kimi-policy-interaction");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -830,76 +869,30 @@ fn kimi_tool_approval_requires_policy_authority_and_resumes_same_turn() {
         .spawn()
         .expect("spawn team run");
 
-    let interaction_path = home
-        .projects_dir()
-        .join(&project_id)
-        .join("pending_interactions.jsonl");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !interaction_path.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    let pending = store_rows(&home, &project_id, "pending_interactions.jsonl")
-        .into_iter()
-        .next()
-        .expect("pending interaction");
-    assert_eq!(pending["kind"].as_str(), Some("tool_approval"));
-    assert_eq!(pending["route"].as_str(), Some("policy"));
-    let interaction_id = pending["id"].as_str().expect("interaction id");
-
-    let unauthorized = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "resolve-interaction",
-            "--id",
-            &run_id,
-            "--interaction-id",
-            interaction_id,
-            "--option-id",
-            "tool_allow_once",
-            "--resolved-by",
-            "lead",
-        ],
-    );
-    assert!(
-        !unauthorized.status.success(),
-        "Lead must not bypass policy"
-    );
-    assert!(String::from_utf8_lossy(&unauthorized.stderr).contains("requires policy authority"));
-
-    let resolve = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "resolve-interaction",
-            "--id",
-            &run_id,
-            "--interaction-id",
-            interaction_id,
-            "--option-id",
-            "tool_allow_once",
-            "--resolved-by",
-            "policy",
-        ],
-    );
-    assert!(
-        resolve.status.success(),
-        "policy resolve failed: {resolve:?}"
-    );
     let output = child.wait_with_output().expect("wait team run");
     assert!(output.status.success(), "start failed: {output:?}");
 
+    let interaction_log = std::fs::read_to_string(
+        home.projects_dir()
+            .join(&project_id)
+            .join("pending_interactions.jsonl"),
+    )
+    .expect("read interaction log");
+    assert_eq!(
+        interaction_log.lines().count(),
+        2,
+        "request and policy resolution are append-only evidence"
+    );
     let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert_eq!(interactions.len(), 1, "latest-wins interaction projection");
+    assert_eq!(interactions[0]["kind"].as_str(), Some("tool_approval"));
+    assert_eq!(interactions[0]["route"].as_str(), Some("policy"));
     assert_eq!(interactions[0]["status"].as_str(), Some("approved"));
     assert_eq!(interactions[0]["resolved_by"].as_str(), Some("policy"));
+    assert_eq!(
+        interactions[0]["response_option_id"].as_str(),
+        Some("tool_allow_once")
+    );
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(actions.iter().any(|action| {
         action["action_type"].as_str() == Some("interaction_resolved")
@@ -907,6 +900,14 @@ fn kimi_tool_approval_requires_policy_authority_and_resumes_same_turn() {
                 .as_str()
                 .is_some_and(|value| value.contains("approved"))
             && action["provider_call_id"].is_null()
+    }));
+    let events = store_rows(&home, &project_id, "team_run_events.jsonl");
+    assert!(events.iter().any(|event| {
+        event["entity_type"].as_str() == Some("pending_interaction")
+            && event["operation"].as_str() == Some("resolved")
+            && event["summary"]
+                .as_str()
+                .is_some_and(|value| value.contains("auto-approved"))
     }));
 }
 

@@ -53,6 +53,22 @@ async function main() {
     actions.startTeamRun("run/a").path === "/v1/team-runs/run%2Fa/start",
     "Start action targets the selected TeamRun",
   );
+  const create = actions.createTeamRun({
+    objective: "workspace contract",
+    executionRoot: "/workspace/project",
+    members: [{
+      name: "fixer",
+      role: "implementer",
+      provider: "codex",
+      executionMode: "codex_app_server",
+      worktreeRef: "/workspace/external-worktree",
+    }],
+  });
+  check(
+    create.body.execution_root === "/workspace/project"
+      && create.body.members[0].worktree_ref === "/workspace/external-worktree",
+    "TeamRun create action preserves run execution root and member worktree override",
+  );
   const resolve = actions.resolvePendingInteraction("run/a", "interaction/b", "q0_opt_0", "lead");
   check(
     resolve.path === "/v1/team-runs/run%2Fa/interactions/interaction%2Fb/resolve"

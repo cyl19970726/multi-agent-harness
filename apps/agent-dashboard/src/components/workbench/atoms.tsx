@@ -144,12 +144,12 @@ export function Section({
 export function DocumentSurface({
   children,
   className,
-}: {
+  ...props
+}: React.HTMLAttributes<HTMLDivElement> & {
   children: React.ReactNode;
-  className?: string;
 }) {
   return (
-    <div className={cn("mx-auto w-full max-w-[800px] space-y-7", className)}>
+    <div className={cn("mx-auto w-full max-w-[800px] space-y-7", className)} {...props}>
       {children}
     </div>
   );

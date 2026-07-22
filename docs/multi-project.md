@@ -1,43 +1,49 @@
 # Multi-Project Harness
 
-One operator (and one `serve` / dashboard) can manage **many** projects — each
-with its own goals/tasks/members/runs — plus a reserved **GLOBAL** project rooted
-at `~/`. This is the operator-facing reference for the layout, the project
-commands, the GLOBAL policy, migration, and the live acceptance command.
+One operator (and one `serve` / dashboard) can manage **many** Workspaces — each
+with its own Mission/Wave coordination and execution records — plus a reserved
+**GLOBAL** Workspace rooted at `~/`. This is the operator-facing reference for
+the layout, Workspace commands, GLOBAL policy, migration, and live acceptance.
+The architectural rationale for Agent Team execution paths is durable in
+[ADR 0033](decisions/0033-agent-team-workspace-contract.md), not in a retired
+Goal ledger.
 
-For the problems-first design rationale (P1–P7), see the `goal-multi-project`
-goal `design_md` in the harness store.
+## Workspace contract: four distinct paths
 
-## Two roots per project: `store_root` vs `project_root`
-
-The core conceptual change is that a project has **two decoupled roots**:
+Project selection and Agent Team execution use four deliberately distinct
+values (ADR 0033):
 
 - **`store_root`** = `~/.harness/projects/<id>/` — the centralized, repo-independent
-  JSONL ledgers, provider sessions, and locks. Sibling `harness` processes (a
+  JSONL coordination ledgers and locks. Sibling `harness` processes (a
   `serve` and a `run-script` from different cwds) converge here via the registry's
   `current_project_id`, preserving the issue #89 single-store invariant.
 - **`project_root`** = the git repo (or `~/` for GLOBAL) — where `CLAUDE.md`,
-  `AGENTS.md`, `.claude/`, and **worktrees** live. A spawned worker's cwd derives
-  from `project_root`, so Claude Code / Codex read the *selected* project's memory
-  even when the long-running `serve` never `cd`s after a switch.
+  `AGENTS.md`, and project configuration live. It is the registered Workspace
+  identity, not necessarily every member's cwd.
+- **`AgentTeamRun.execution_root`** = the run-level provider cwd, defaulting to
+  `project_root`. An explicit override must be `project_root` or a Git worktree
+  sharing its Git common directory.
+- **`MemberRun.worktree_ref`** = an optional member-specific override with the
+  same validation. Provider spawn precedence is `worktree_ref` >
+  `execution_root` > `project_root`; `store_root` is never a provider cwd.
 
 These are bundled into a `ProjectContext { id, project_root, store_root, kind,
 is_git_repo }` (in `harness-core`) that is threaded through every spawn site
 instead of reading the harness process `env::current_dir()`.
 
-### Worktrees stay repo-local
+### Worktrees share repository identity, not path containment
 
-Git requires a worktree to live inside the repo's tree, so worktrees are **not**
-centralized with the store. A writable / `isolation="worktree"` workflow leaf
-creates its throwaway checkout under the **project_root**, not the store:
+Harness-created Dynamic Workflow worktrees remain under `project_root` by
+convention:
 
 ```
 <project_root>/.harness/worktrees/<run_id>-<slug>-<unique>
 ```
 
-The worker is spawned with that worktree as its cwd; the step diff is collected
-from it. Read-only (`isolation="none"`) nodes need no worktree and run in the
-shared `project_root`.
+Git itself also permits linked worktrees elsewhere. Agent Team overrides may
+therefore point to external Codex worktrees; Harness validates the candidate is
+the worktree top level and shares the selected project's canonical Git common
+directory. A simple `starts_with(project_root)` check is incorrect.
 
 ### Layout
 

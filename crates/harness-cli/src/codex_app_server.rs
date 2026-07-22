@@ -16,6 +16,31 @@ use std::time::Duration;
 use crate::{kill_worker_tree, CliError, CliResult};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const DEVELOPMENT_SANDBOX: &str = "danger-full-access";
+const DEVELOPMENT_APPROVAL_POLICY: &str = "never";
+
+fn thread_open_params(
+    cwd: &Path,
+    model: Option<&str>,
+    resume_thread_id: Option<&str>,
+) -> serde_json::Value {
+    match resume_thread_id {
+        Some(thread_id) => serde_json::json!({
+            "threadId": thread_id,
+            "cwd": cwd,
+            "model": model,
+            "sandbox": DEVELOPMENT_SANDBOX,
+            "approvalPolicy": DEVELOPMENT_APPROVAL_POLICY
+        }),
+        None => serde_json::json!({
+            "cwd": cwd,
+            "model": model,
+            "sandbox": DEVELOPMENT_SANDBOX,
+            "approvalPolicy": DEVELOPMENT_APPROVAL_POLICY,
+            "ephemeral": false
+        }),
+    }
+}
 
 pub(crate) struct CodexAppServerClient {
     child: Child,
@@ -32,7 +57,7 @@ impl CodexAppServerClient {
     pub(crate) fn spawn(
         cwd: &Path,
         model: Option<&str>,
-        workspace_write: bool,
+        _workspace_write: bool,
         resume_thread_id: Option<&str>,
     ) -> CliResult<Self> {
         let mut command = Command::new("codex");
@@ -120,28 +145,15 @@ impl CodexAppServerClient {
             HANDSHAKE_TIMEOUT,
         )?;
         client.notify("initialized", serde_json::json!({}))?;
-        let (method, params) = match resume_thread_id {
-            Some(thread_id) => (
-                "thread/resume",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "cwd": cwd,
-                    "model": model,
-                    "sandbox": if workspace_write { "workspace-write" } else { "read-only" },
-                    "approvalPolicy": "on-request"
-                }),
-            ),
-            None => (
-                "thread/start",
-                serde_json::json!({
-                    "cwd": cwd,
-                    "model": model,
-                    "sandbox": if workspace_write { "workspace-write" } else { "read-only" },
-                    "approvalPolicy": "on-request",
-                    "ephemeral": false
-                }),
-            ),
+        // Temporary development policy: interactive Agent Team members receive
+        // the same full execution permission as batch Codex members. Owned paths
+        // remain a coordination/acceptance boundary, not a provider sandbox.
+        let method = if resume_thread_id.is_some() {
+            "thread/resume"
+        } else {
+            "thread/start"
         };
+        let params = thread_open_params(cwd, model, resume_thread_id);
         let response = client.request_blocking(method, params, HANDSHAKE_TIMEOUT)?;
         client.thread_id = response
             .pointer("/result/thread/id")
@@ -285,5 +297,34 @@ impl Drop for CodexAppServerClient {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_thread_uses_temporary_full_access_policy() {
+        let params = thread_open_params(Path::new("/tmp/project"), Some("gpt-test"), None);
+
+        assert_eq!(params["sandbox"], "danger-full-access");
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["ephemeral"], false);
+        assert!(params.get("threadId").is_none());
+    }
+
+    #[test]
+    fn resumed_thread_keeps_temporary_full_access_policy() {
+        let params = thread_open_params(
+            Path::new("/tmp/project"),
+            Some("gpt-test"),
+            Some("thread-123"),
+        );
+
+        assert_eq!(params["sandbox"], "danger-full-access");
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["threadId"], "thread-123");
+        assert!(params.get("ephemeral").is_none());
     }
 }

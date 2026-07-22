@@ -43,7 +43,7 @@ pub enum SseEventFrame {
     /// An Agent Team attempt was created or updated.
     AgentTeamRun(AgentTeamRun),
     /// An Agent Team member's durable run state changed.
-    MemberRun(MemberRun),
+    MemberRun(Box<MemberRun>),
     /// A routed Agent Team message was created or its delivery state changed.
     TeamMessage(TeamMessage),
     /// A durable member action was appended or updated. These rows are the
@@ -300,7 +300,7 @@ fn poll_project(
         |line| {
             serde_json::from_str::<MemberRun>(line)
                 .ok()
-                .map(SseEventFrame::MemberRun)
+                .map(|member| SseEventFrame::MemberRun(Box::new(member)))
                 .into_iter()
                 .collect()
         },

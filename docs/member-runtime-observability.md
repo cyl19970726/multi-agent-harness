@@ -45,6 +45,9 @@ and delivery probes; unknown or stale layers render amber.
 Durable Harness data:
 
 - runtime identity and health;
+- TeamRun `execution_root`, optional member `worktree_ref`, and the launch-time
+  `workspace_snapshot` containing actual cwd, Git HEAD/branch, and only the
+  instruction/skill directory paths Harness discovered relative to that cwd;
 - delivery claim, status, terminal source, and native session reference;
 - assignment, handoff, blocker, review, and Host/Lead/Policy interaction;
 - steer/interrupt/stop/resume request and acknowledgement;
@@ -58,8 +61,22 @@ Ephemeral provider projection:
 - native child activity;
 - sanitized live thinking preview.
 
+Member Focus joins this projection on read. Its compact activity view must show
+at least representative provider-native message and tool anchors alongside the
+Harness Assignment/Handoff; hiding every native row behind `Full record` makes
+a healthy bound Session look empty. Native rows are visibly labeled and remain
+read-through projections, never Harness copies.
+
 A missing, stale, or incompatible native session is shown honestly. The UI must
 not silently substitute a Harness copy.
+
+The workspace snapshot is path and revision metadata, not a configuration
+archive. Harness does not persist instruction or skill contents, credentials,
+environment dumps, provider transcript/tool streams, or thinking. Legacy rows
+without these optional fields remain valid and render as unavailable.
+Discovery is observational metadata: a listed root does not prove that a
+particular provider version read every file below it. Provider-specific loading
+behavior remains a version- and execution-mode-specific adapter claim.
 
 ## Provider adapter obligations
 
@@ -100,3 +117,7 @@ a hidden Harness provider-event ledger. Provider read errors currently render
 an honest unavailable/empty state. Retry/resume/fresh-start controls remain a
 planned Member Focus extension; today explicit resume is selected through the
 TeamRun retry/create CLI, MCP, or HTTP input.
+
+The Team and Member views also expose the registered project/store roots from
+Workspace selection, TeamRun execution root, member worktree override, and
+actual launch snapshot without conflating any of them.

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
@@ -14,10 +16,10 @@ use harness_core::{
     build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
     AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
     AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, LaunchMcp, LaunchPermission,
-    LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, PendingInteraction,
-    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus,
+    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
     ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
     ProviderIntegrationProfile, ProviderInteractionMode, SenderKind, TeamDeliveryPolicy,
@@ -1824,6 +1826,7 @@ struct TeamMemberSpec {
     provider: String,
     execution_mode: Option<String>,
     model: Option<String>,
+    worktree_ref: Option<String>,
     owned_paths: Vec<String>,
     resume_native_session_id: Option<String>,
 }
@@ -2094,9 +2097,104 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             .get(3)
             .map(|model| model.to_string())
             .filter(|model| !model.is_empty()),
+        worktree_ref: None,
         owned_paths,
         resume_native_session_id: None,
     })
+}
+
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    Some(project::canonicalize_best_effort(&resolved))
+}
+
+fn git_worktree_root(root: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let value = raw.trim();
+    (!value.is_empty()).then(|| project::canonicalize_best_effort(Path::new(value)))
+}
+
+/// Resolve and validate an explicit TeamRun/member workspace override. A
+/// registered project may execute at its own root or at any Git worktree that
+/// shares its git common directory, including Codex worktrees outside the
+/// project path. Raw-store compatibility mode has no registered project
+/// identity, so it can only require an existing directory.
+fn validate_workspace_override(
+    project_context: Option<&ProjectContext>,
+    raw: &str,
+    label: &str,
+) -> CliResult<String> {
+    if raw.trim().is_empty() {
+        return Err(CliError::Usage(format!("{label} must not be empty")));
+    }
+    let base = project_context
+        .map(|context| context.project_root.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let requested = PathBuf::from(raw);
+    let requested = if requested.is_absolute() {
+        requested
+    } else {
+        base.join(requested)
+    };
+    let resolved = project::canonicalize_best_effort(&requested);
+    if !resolved.is_dir() {
+        return Err(CliError::Usage(format!(
+            "{label} is not an existing directory: {}",
+            resolved.display()
+        )));
+    }
+    if let Some(context) = project_context {
+        let project_root = project::canonicalize_best_effort(&context.project_root);
+        let allowed = resolved == project_root
+            || (git_worktree_root(&resolved).as_ref() == Some(&resolved)
+                && git_common_dir(&resolved)
+                    .zip(git_common_dir(&project_root))
+                    .is_some_and(|(candidate, project)| candidate == project));
+        if !allowed {
+            return Err(CliError::Usage(format!(
+                "{label} must be the selected project root {} or a Git worktree sharing its git common directory",
+                project_root.display()
+            )));
+        }
+    }
+    Ok(resolved.display().to_string())
+}
+
+fn default_execution_root(project_context: Option<&ProjectContext>) -> String {
+    let root = project_context
+        .map(|context| context.project_root.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    project::canonicalize_best_effort(&root)
+        .display()
+        .to_string()
 }
 
 /// Everything `team-run create` journals, returned so the CLI/HTTP layers can
@@ -2124,6 +2222,8 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 #[allow(clippy::too_many_arguments)]
 fn create_team_run(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    requested_execution_root: Option<String>,
     objective: &str,
     budget_limit_usd: Option<f64>,
     host_surface: &str,
@@ -2164,6 +2264,10 @@ fn create_team_run(
             "agent_team runs require at least one member".to_string(),
         ));
     }
+    let execution_root = match requested_execution_root {
+        Some(root) => validate_workspace_override(project_context, &root, "execution_root")?,
+        None => default_execution_root(project_context),
+    };
     let mut member_names = std::collections::HashSet::new();
     for member in members {
         if member.name.trim().is_empty()
@@ -2189,6 +2293,9 @@ fn create_team_run(
                 "team member {} has an empty owned path",
                 member.name
             )));
+        }
+        if let Some(worktree_ref) = member.worktree_ref.as_deref() {
+            validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
         }
         if let Some(mode) = member.execution_mode.as_deref() {
             let allowed = matches!(
@@ -2266,7 +2373,14 @@ fn create_team_run(
             provider_profile: Some(profile),
             status: MemberRunStatus::Idle,
             native_session,
-            worktree_ref: None,
+            worktree_ref: member
+                .worktree_ref
+                .as_deref()
+                .map(|value| {
+                    validate_workspace_override(project_context, value, "member worktree_ref")
+                })
+                .transpose()?,
+            workspace_snapshot: None,
             owned_paths: member.owned_paths.clone(),
             started_at: now_string(),
             last_event_at: None,
@@ -2284,6 +2398,7 @@ fn create_team_run(
         host_surface: host_surface.to_string(),
         host_thread_id,
         objective: objective.to_string(),
+        execution_root: Some(execution_root),
         status: TeamRunStatus::Planning,
         member_run_ids,
         budget_limit_usd,
@@ -2906,6 +3021,18 @@ fn team_run_command(
                     })?;
                 member.resume_native_session_id = Some(session_id.to_string());
             }
+            for override_spec in many(args, "--member-worktree") {
+                let (name, worktree_ref) = override_spec.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--member-worktree expects name:path".to_string())
+                })?;
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--member-worktree names unknown member {name}"))
+                    })?;
+                member.worktree_ref = Some(worktree_ref.to_string());
+            }
             let budget_limit_usd = value(args, "--budget-usd")
                 .map(|raw| {
                     raw.parse::<f64>()
@@ -2914,6 +3041,8 @@ fn team_run_command(
                 .transpose()?;
             let created = create_team_run(
                 store,
+                resolved.context.as_ref(),
+                value(args, "--execution-root"),
                 &required(args, "--objective")?,
                 budget_limit_usd,
                 &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
@@ -3164,10 +3293,9 @@ fn team_run_command(
 // The orchestrator is a FOREGROUND CLI process and the single WRITER of member
 // state transitions; `harness serve` stays a pure read/broadcast surface (its
 // SSE watcher tails the same JSONL files, so a live console sees every row the
-// orchestrator journals). v0 implements exactly one member adapter — kimi over
-// ACP ([`kimi_acp::KimiAcpClient`]). Members of any other provider are
-// journaled as failed with an honest "adapter not implemented in v0" summary
-// instead of being silently skipped.
+// orchestrator journals). Registered modes are Codex exec/app-server, Kimi ACP,
+// and Claude CLI. Other providers or modes fail explicitly instead of being
+// silently skipped or substituted.
 //
 // Concurrency: one OS thread per member, bounded by a semaphore
 // (--max-concurrency, default 4). All seq-assigning ledger writes serialize
@@ -3617,11 +3745,21 @@ pub(crate) fn drive_prepared_team_run(
     } = prepared;
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
     let mut handles = Vec::new();
-    for member in members {
+    for mut member in members {
         let ledger = Arc::clone(&ledger);
         let semaphore = Arc::clone(&semaphore);
         let objective = objective.clone();
-        let cwd = member_spawn_cwd(project_context.as_ref(), &member);
+        let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
+        member.workspace_snapshot = Some(snapshot_member_workspace(&cwd));
+        ledger.save_member_run(&member)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Host,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            "workspace_snapshot",
+            &format!("member workspace resolved to {}", cwd.display()),
+        )?;
         let handle_member = member.clone();
         let live_sink = live_sink.clone();
         let handle = std::thread::spawn(move || {
@@ -4086,8 +4224,17 @@ fn project_codex_team_event_live(
     }
 }
 
-/// Run one read-only Codex turn and consume its event stream in memory. Raw
-/// events and reasoning are intentionally not returned to any durable writer.
+fn codex_team_sandbox() -> &'static str {
+    // Temporary development policy: Agent Team members receive full execution
+    // permission. Owned paths remain a coordination/acceptance boundary, not a
+    // provider sandbox claim.
+    "danger-full-access"
+}
+
+/// Run one Codex turn and consume its event stream in memory. Members without
+/// owned paths still receive the temporary full-access development policy;
+/// ownership remains a durable coordination contract. Raw events and reasoning
+/// are intentionally not returned to any durable writer.
 fn run_codex_team_turn(
     prompt: &str,
     cwd: &Path,
@@ -4101,7 +4248,7 @@ fn run_codex_team_turn(
         .arg("--cd")
         .arg(cwd)
         .arg("--sandbox")
-        .arg("read-only")
+        .arg(codex_team_sandbox())
         .arg("--skip-git-repo-check");
     if let Some(model) = member.model.as_deref() {
         cmd.arg("-m").arg(model);
@@ -4564,6 +4711,10 @@ struct ClaudeTeamTurn {
     final_text: String,
 }
 
+fn claude_team_permission_mode() -> &'static str {
+    "bypassPermissions"
+}
+
 fn run_claude_team_turn(
     prompt: &str,
     cwd: &Path,
@@ -4579,11 +4730,7 @@ fn run_claude_team_turn(
         .arg("stream-json")
         .arg("--verbose")
         .arg("--permission-mode")
-        .arg(if member.owned_paths.is_empty() {
-            "plan"
-        } else {
-            "acceptEdits"
-        });
+        .arg(claude_team_permission_mode());
     if let Some(model) = member.model.as_deref() {
         cmd.arg("--model").arg(model);
     }
@@ -5126,16 +5273,82 @@ pub(crate) fn acknowledge_team_message(
 
 /// Where a member's ACP session runs: its pinned worktree when set, else the
 /// selected project's root, else (unrouted raw-store invocation) the CLI cwd.
-fn member_spawn_cwd(project_context: Option<&ProjectContext>, member: &MemberRun) -> PathBuf {
+fn member_spawn_cwd(
+    project_context: Option<&ProjectContext>,
+    run: &AgentTeamRun,
+    member: &MemberRun,
+) -> PathBuf {
     if let Some(worktree) = &member.worktree_ref {
         if !worktree.is_empty() {
             return PathBuf::from(worktree);
+        }
+    }
+    if let Some(execution_root) = &run.execution_root {
+        if !execution_root.is_empty() {
+            return PathBuf::from(execution_root);
         }
     }
     if let Some(context) = project_context {
         return context.project_root.clone();
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn git_value(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn snapshot_member_workspace(cwd: &Path) -> MemberWorkspaceSnapshot {
+    let cwd = project::canonicalize_best_effort(cwd);
+    let mut instruction_roots = BTreeSet::new();
+    let mut skill_roots = BTreeSet::new();
+    for ancestor in cwd.ancestors() {
+        if ["AGENTS.md", "CLAUDE.md"]
+            .iter()
+            .any(|name| ancestor.join(name).is_file())
+        {
+            instruction_roots.insert(ancestor.display().to_string());
+        }
+        for relative in [".agents/skills", ".codex/skills", "skills"] {
+            let candidate = ancestor.join(relative);
+            if candidate.is_dir() {
+                skill_roots.insert(
+                    project::canonicalize_best_effort(&candidate)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for relative in [".agents/skills", ".codex/skills"] {
+            let candidate = home.join(relative);
+            if candidate.is_dir() {
+                skill_roots.insert(
+                    project::canonicalize_best_effort(&candidate)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    MemberWorkspaceSnapshot {
+        cwd: cwd.display().to_string(),
+        git_head: git_value(&cwd, &["rev-parse", "HEAD"]),
+        git_branch: git_value(&cwd, &["symbolic-ref", "--short", "HEAD"]),
+        instruction_roots: instruction_roots.into_iter().collect(),
+        skill_roots: skill_roots.into_iter().collect(),
+    }
 }
 
 /// Reduce a provider-approved thought chunk to a short, single-preview string.
@@ -5492,6 +5705,64 @@ fn handle_kimi_provider_request(
         &interaction.title,
         &interaction.prompt,
     )?;
+
+    // Temporary development policy: ordinary Kimi tool permission requests are
+    // approved immediately by policy. Persist both the request and its policy
+    // resolution/control acknowledgement, but never the provider transcript or
+    // thinking. AskUserQuestion and PlanReview deliberately continue below into
+    // the Lead-routed wait loop.
+    if kind == PendingInteractionKind::ToolApproval {
+        let option_id = interaction
+            .options
+            .iter()
+            .find(|option| {
+                option.intent.as_deref() == Some("allow_always")
+                    || option.id.contains("approve_always")
+                    || option.id.contains("allow_always")
+            })
+            .or_else(|| {
+                interaction.options.iter().find(|option| {
+                    option
+                        .intent
+                        .as_deref()
+                        .is_some_and(|intent| intent.starts_with("allow"))
+                        || option.id.contains("approve")
+                        || option.id.contains("allow")
+                })
+            })
+            .map(|option| option.id.clone())
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "Kimi tool approval {} exposed no policy-approvable option",
+                    interaction.id
+                ))
+            })?;
+        let mut approved = interaction.clone();
+        approved.status = PendingInteractionStatus::Approved;
+        approved.response_option_id = Some(option_id.clone());
+        approved.resolved_at = Some(now_string());
+        approved.resolved_by = Some("policy".to_string());
+        ledger.save_pending_interaction(&approved)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Host,
+            Some(member.id.clone()),
+            "pending_interaction",
+            &approved.id,
+            "resolved",
+            "Kimi tool approval auto-approved by temporary development policy",
+        )?;
+        ledger.append_action(
+            &member.id,
+            "interaction_resolved",
+            MemberActionStatus::Succeeded,
+            &approved.title,
+            "interaction approved by policy (temporary full-access development policy)",
+        )?;
+        return Ok(serde_json::json!({
+            "outcome": {"outcome": "selected", "optionId": option_id}
+        }));
+    }
+
     let mut waiting = member.clone();
     waiting.status = MemberRunStatus::Waiting;
     waiting.last_event_at = Some(now_string());
@@ -6777,7 +7048,13 @@ fn handle_http_connection(
         return Ok(());
     }
 
-    match handle_http_action(store, &path_only, &body_json) {
+    // Raw --store compatibility mode has no registered project_root. Do not
+    // mislabel its centralized store_root as an execution workspace.
+    let project_context = projects
+        .harness_home
+        .as_ref()
+        .map(|_| projects.context_for(&project_id, store));
+    match handle_http_action(store, project_context.as_ref(), &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
             "200 OK",
@@ -6852,6 +7129,7 @@ fn query_param(target: &str, key: &str) -> Option<String> {
 
 fn handle_http_action(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
@@ -6874,7 +7152,7 @@ fn handle_http_action(
         return gate_wave_value(store, wave_id, body);
     }
     if path == "/v1/team-runs" {
-        return create_team_run_value(store, body);
+        return create_team_run_value(store, project_context, body);
     }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
@@ -7381,6 +7659,7 @@ fn create_team_value(
 /// as `team-run create`; the host surface defaults to "http").
 fn create_team_run_value(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     if body.get("wave_index").is_some() {
@@ -7420,6 +7699,7 @@ fn create_team_run_value(
             provider: required_json_string(member, "provider")?,
             execution_mode: optional_json_string(member, "execution_mode")?,
             model: optional_json_string(member, "model")?,
+            worktree_ref: optional_json_string(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
         });
@@ -7434,6 +7714,8 @@ fn create_team_run_value(
         optional_json_string(body, "host_surface")?.unwrap_or_else(|| "http".to_string());
     let created = create_team_run(
         store,
+        project_context,
+        optional_json_string(body, "execution_root")?,
         &required_json_string(body, "objective")?,
         budget_limit_usd,
         &host_surface,
@@ -21418,6 +21700,158 @@ mod sse_tests {
             }
             Err(_) => panic!("Did not receive event in time"),
         }
+    }
+
+    #[test]
+    fn codex_team_sandbox_uses_temporary_full_access_policy() {
+        assert_eq!(codex_team_sandbox(), "danger-full-access");
+        assert_eq!(claude_team_permission_mode(), "bypassPermissions");
+    }
+
+    #[test]
+    fn member_spawn_cwd_keeps_execution_root_separate_from_store_root() {
+        let project_root = std::env::temp_dir().join(generated_id("team-project"));
+        let store_root = std::env::temp_dir().join(generated_id("team-store"));
+        let execution_root = std::env::temp_dir().join(generated_id("team-execution"));
+        let worktree_root = std::env::temp_dir().join(generated_id("team-worktree"));
+        let context = ProjectContext {
+            id: "team-project".into(),
+            project_root: project_root.clone(),
+            store_root: store_root.clone(),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        let mut member = MemberRun {
+            id: "member-cwd".into(),
+            team_run_id: "team-cwd".into(),
+            slot_id: None,
+            name: "RuntimeFixer".into(),
+            role: "implementer".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_profile: None,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: now_string(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        let run = AgentTeamRun {
+            id: "team-cwd".into(),
+            definition_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            host_surface: "test".into(),
+            host_thread_id: None,
+            objective: "test cwd precedence".into(),
+            execution_root: Some(execution_root.display().to_string()),
+            status: TeamRunStatus::Planning,
+            member_run_ids: vec![member.id.clone()],
+            budget_limit_usd: None,
+            created_at: now_string(),
+            updated_at: now_string(),
+            completed_at: None,
+        };
+
+        assert_eq!(
+            member_spawn_cwd(Some(&context), &run, &member),
+            execution_root
+        );
+        assert_ne!(member_spawn_cwd(Some(&context), &run, &member), store_root);
+        member.worktree_ref = Some(worktree_root.display().to_string());
+        assert_eq!(
+            member_spawn_cwd(Some(&context), &run, &member),
+            worktree_root
+        );
+    }
+
+    #[test]
+    fn workspace_override_accepts_external_same_repo_worktree_and_rejects_unrelated_dir() {
+        let base = std::env::temp_dir().join(generated_id("workspace-contract"));
+        let project_root = base.join("project");
+        let external_worktree = base.join("external-codex-worktree");
+        let unrelated = base.join("unrelated");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        std::fs::create_dir_all(&unrelated).expect("unrelated root");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .output()
+                .expect("run git fixture command");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", project_root.to_str().expect("project path")]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "config",
+            "user.email",
+            "workspace-test@example.invalid",
+        ]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "config",
+            "user.name",
+            "Workspace Test",
+        ]);
+        std::fs::write(project_root.join("README.md"), "workspace fixture\n").expect("seed");
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "add",
+            ".",
+        ]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "commit",
+            "-m",
+            "seed",
+        ]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "worktree",
+            "add",
+            "-b",
+            "workspace-contract-test",
+            external_worktree.to_str().expect("worktree path"),
+        ]);
+        let context = ProjectContext {
+            id: "workspace-contract".into(),
+            project_root: project_root.clone(),
+            store_root: base.join("central-store"),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        assert_eq!(
+            validate_workspace_override(
+                Some(&context),
+                external_worktree.to_str().expect("worktree path"),
+                "execution_root",
+            )
+            .expect("external same-repository worktree"),
+            project::canonicalize_best_effort(&external_worktree)
+                .display()
+                .to_string()
+        );
+        assert!(validate_workspace_override(
+            Some(&context),
+            unrelated.to_str().expect("unrelated path"),
+            "execution_root",
+        )
+        .is_err());
+        std::fs::remove_dir_all(&base).expect("cleanup workspace fixture");
     }
 
     #[test]

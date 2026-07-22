@@ -127,6 +127,29 @@ The backend performs native reads so provider paths and credentials do not leak
 to browser code. The current response exposes `truncated` rather than a cursor;
 refresh/reconnect rebuilds the projection directly from provider storage.
 
+## Execution-root boundary
+
+`store_root` is only the centralized Harness coordination store. A provider's
+cwd is independently resolved as member `worktree_ref`, TeamRun
+`execution_root`, then selected Workspace `project_root`. For new raw-store
+compatibility rows the process cwd is snapshotted as `execution_root` at create
+time. The provider-native session locator records what is needed to find
+the provider session; it does not turn `store_root` into a working directory.
+
+This distinction is observable behavior, not naming trivia. Codex discovers
+project `AGENTS.md` plus project/root skills and configuration from its launch
+cwd; Claude and Kimi discover their project instruction/configuration context
+from the corresponding project/worktree execution root. Tests must keep the
+central store outside the project and assert that the provider is spawned in
+the project/worktree. Otherwise a multi-project Host can execute with the wrong
+instructions while writing apparently valid coordination rows to the right
+store.
+
+Immediately before spawn, `MemberRun.workspace_snapshot` records actual cwd,
+Git HEAD/branch when available, and discovered instruction/skill directory
+paths. It never contains the files' contents, config values, credentials,
+environment dumps, transcript/tool streams, or thinking.
+
 ## Resume flow
 
 ```text
@@ -150,6 +173,11 @@ new binding records the parent native session id.
 | Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | live provider activity is transient; native history is read on demand |
 | Claude `claude_cli` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | `--resume` wired through explicit member resume binding | Native history is read on demand; live success still depends on valid operator OAuth |
+
+Unknown providers and unregistered execution modes have no executable Team
+Member adapter and fail explicitly. A provider brand, installed binary, native
+history reader, or Host integration alone is not evidence that a Team Member
+execution mode is supported.
 
 “Provider supports” never means “adapter supports.” Each row needs deterministic
 and live acceptance against reviewed provider versions.

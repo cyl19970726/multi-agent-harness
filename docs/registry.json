@@ -1095,12 +1095,13 @@
     "SSE event stream contract",
     "runtime health signal model"
    ],
-   "dependsOn": [
-    "docs/agent-runtime.md",
-    "docs/concept-model.md",
-    "docs/data-model.md",
-    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-    "docs/integration/codex.md",
+    "dependsOn": [
+      "docs/agent-runtime.md",
+      "docs/concept-model.md",
+      "docs/data-model.md",
+      "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+      "docs/decisions/0033-agent-team-workspace-contract.md",
+      "docs/integration/codex.md",
     "docs/integration/claude.md",
     "docs/decisions/0008-persistent-codex-agent-runtime.md",
     "docs/decisions/0011-provider-neutral-runtime.md",
@@ -1370,16 +1371,18 @@
    "ownerRole": "operations",
    "status": "stable",
    "lifecycle": "volatile",
-   "canonicalFor": [
-    "multi-project store_root vs project_root model",
-    "central store layout and project identity",
-    "project resolution precedence + project commands",
-    "GLOBAL _global policy + migration path",
+    "canonicalFor": [
+      "multi-project store_root vs project_root model",
+      "central store layout and project identity",
+      "project resolution precedence + project commands",
+      "Agent Team execution root and member worktree relationship",
+      "GLOBAL _global policy + migration path",
     "multi-project live acceptance"
    ],
-   "dependsOn": [
-    "README.md",
-    "crates/harness-core/src/lib.rs",
+    "dependsOn": [
+      "README.md",
+      "docs/decisions/0033-agent-team-workspace-contract.md",
+      "crates/harness-core/src/lib.rs",
     "crates/harness-cli/src/main.rs"
    ],
    "machineConsumers": [
@@ -1393,9 +1396,13 @@
    "reorgTrigger": "The store_root/project_root split, project identity rules, resolution precedence, project commands, GLOBAL policy, or migration flow change.",
    "authorityClass": "implementation_reference",
    "implementationState": "implemented",
-   "truthRefs": [
-    {
-     "kind": "api",
+    "truthRefs": [
+      {
+        "kind": "decision",
+        "ref": "docs/decisions/0033-agent-team-workspace-contract.md"
+      },
+      {
+        "kind": "api",
      "ref": "crates/harness-cli/src/main.rs"
     }
    ]
@@ -2678,9 +2685,10 @@
     "provider-specific resume and availability",
     "completed provider mirror removal sequence"
    ],
-   "dependsOn": [
-    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-    "docs/agent-integration-model.md",
+    "dependsOn": [
+      "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+      "docs/decisions/0033-agent-team-workspace-contract.md",
+      "docs/agent-integration-model.md",
     "docs/integration/codex.md",
     "docs/integration/kimi.md",
     "docs/integration/claude.md",
@@ -2842,6 +2850,53 @@
     {
      "kind": "runtime_evidence",
      "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0033-agent-team-workspace-contract.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Agent Team store, project, run execution, and member worktree root separation",
+    "Agent Team provider cwd precedence and same-repository worktree validation",
+    "non-secret MemberRun workspace snapshot contract"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/multi-project.md",
+    "docs/member-runtime-observability.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check",
+    "cargo test -p harness-cli --test team_run_api --test team_run_start --test mcp_stdio"
+   ],
+   "reorgTrigger": "Agent Team execution-root precedence, worktree identity validation, provider cwd selection, or workspace snapshot privacy fields change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/agent-team-run.schema.json"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/member-run.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_start.rs"
     }
    ]
   },

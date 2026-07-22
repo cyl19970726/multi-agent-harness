@@ -38,17 +38,21 @@ use crate::{
 /// (the simple end of "reply with the client's version or the lower one").
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Where the default `harness serve` surface renders the Agent Team console;
-/// the tools return it so the host can point a human at the live view.
-const DASHBOARD_URL: &str = "http://127.0.0.1:8787";
+/// The Vite Dashboard is the human UI. Its development proxy exposes the
+/// Harness API at the same origin, so deep links must not point at the
+/// API-only `harness serve` root on port 8787.
+const DASHBOARD_UI_ORIGIN: &str = "http://127.0.0.1:5173";
+const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(resolved: &ResolvedStore, team_run_id: &str) -> String {
     match resolved.context.as_ref() {
         Some(context) => format!(
-            "{DASHBOARD_URL}/?surface=team&team={team_run_id}&project={}",
+            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}&project={}",
             context.id
         ),
-        None => format!("{DASHBOARD_URL}/?surface=team&team={team_run_id}"),
+        None => format!(
+            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}"
+        ),
     }
 }
 
@@ -418,12 +422,15 @@ fn tool_team_run_create(
             provider: member_str("provider")?.to_string(),
             execution_mode: optional_str(member, "execution_mode")?,
             model: optional_str(member, "model")?,
+            worktree_ref: optional_str(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_str(member, "resume_native_session_id")?,
         });
     }
     let created = create_team_run(
         store,
+        resolved.context.as_ref(),
+        optional_str(arguments, "execution_root")?,
         objective,
         budget_limit_usd,
         "mcp",
@@ -439,6 +446,8 @@ fn tool_team_run_create(
         "member_run_ids": created.team_run.member_run_ids,
         "mission_id": created.team_run.mission_id,
         "wave_id": created.team_run.wave_id,
+        "execution_root": created.team_run.execution_root,
+        "member_runs": created.member_runs,
         "assignment_messages": created.assignment_messages,
         "dashboard_url": team_dashboard_url(resolved, &created.team_run.id),
     }))
@@ -663,7 +672,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_create",
-            "description": "Create an Agent Team run with at least one member: journals the planning run, member rows, canonical queued Assignment messages, and events. Returns run/member ids, assignment correlations, and a run-specific Dashboard URL. Call team_run_start to execute it.",
+            "description": "Create an Agent Team run with at least one member and an explicit workspace contract: execution_root defaults to the selected project_root; each member may override it with a same-repository Git worktree. Journals planning rows and canonical Assignment messages, then returns ids, correlations, and a Dashboard URL. Call team_run_start to execute it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -672,6 +681,7 @@ fn tool_definitions() -> Value {
                     "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
                     "mission_id": {"type": "string", "description": "Optional durable Mission id. New native linkage requires a concrete wave_id; omit both ids only for an unlinked compatibility run."},
                     "wave_id": {"type": "string", "description": "Optional durable Wave id for this run. The run inherits that Wave's Mission when mission_id is omitted; a supplied mission_id must match."},
+                    "execution_root": {"type": "string", "minLength": 1, "description": "Optional TeamRun execution root. Must be the selected project_root or a Git worktree sharing its git common directory; defaults to project_root."},
                     "members": {
                         "type": "array",
                         "description": "One entry per team member.",
@@ -681,9 +691,10 @@ fn tool_definitions() -> Value {
                             "properties": {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
-                                "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
+                                "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
                                 "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"], "description": "Optional provider-specific execution mode."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
+                                "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
@@ -696,7 +707,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped Dashboard URL immediately. The current executable member adapter is Kimi ACP; unsupported providers fail honestly.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Executable modes are Codex batch (codex_exec), Codex interactive (codex_app_server), Kimi ACP (kimi_acp), and Claude CLI (claude_cli); unregistered providers or modes fail honestly. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -266,6 +266,8 @@ export interface TeamRun {
   host_surface?: string | null;
   host_thread_id?: string | null;
   objective?: string | null;
+  /** Concrete workspace selected for this attempt; distinct from the centralized store root. */
+  execution_root?: string | null;
   status?: TeamRunStatus | string;
   member_run_ids?: string[];
   budget_limit_usd?: number | null;
@@ -287,6 +289,18 @@ export type MemberRunStatus =
   | "failed"
   | "stopped";
 
+/** Non-secret, immutable-at-start facts about the member's provider workspace. */
+export interface MemberWorkspaceSnapshot {
+  /** Actual process cwd used to spawn the provider member. */
+  cwd: string;
+  git_head?: string | null;
+  git_branch?: string | null;
+  /** Discovered path roots only; instruction file contents are never part of this snapshot. */
+  instruction_roots: string[];
+  /** Discovered path roots only; skill contents are never part of this snapshot. */
+  skill_roots: string[];
+}
+
 /** One member's participation in a {@link TeamRun}. */
 export interface MemberRun {
   id: string;
@@ -299,7 +313,9 @@ export interface MemberRun {
   provider_profile?: ProviderIntegrationProfile | null;
   status?: MemberRunStatus | string;
   native_session?: NativeSessionRef | null;
+  /** Optional member-specific Git worktree override of the TeamRun execution root. */
   worktree_ref?: string | null;
+  workspace_snapshot?: MemberWorkspaceSnapshot | null;
   owned_paths?: string[];
   started_at?: string;
   last_event_at?: string | null;

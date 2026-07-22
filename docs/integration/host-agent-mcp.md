@@ -26,13 +26,21 @@ parts; they do not fork the core model.
 
 - Host: Codex can call the stdio MCP server after local registration below.
 - Coordination: Mission, ordered Wave, and AgentTeamRun are native.
-- Member execution: Kimi ACP, Codex batch (`codex_exec`), and Codex interactive
-  (`codex_app_server`) are executable Team Member modes. Claude Team Member
-  execution remains unsupported and fails honestly.
+- Member execution: Kimi ACP, Codex batch (`codex_exec`), Codex interactive
+  (`codex_app_server`), and Claude CLI (`claude_cli`) are registered executable
+  Team Member modes. Any other provider or mode is rejected explicitly; Harness
+  never silently substitutes Codex or invents a native session.
 - `team_run_start` reserves the run and returns immediately while members run
   in the background.
-- Every create/start/status/cancel/ACK result includes an exact TeamRun URL.
-  When project identity is available it includes `project=<workspace-id>`.
+- Every create/start/status/cancel/ACK result includes an exact TeamRun URL on
+  the UI origin (`127.0.0.1:5173`), with `api=.` so API and SSE requests use the
+  UI's same-origin `/v1` proxy. When project identity is available it includes
+  `project=<workspace-id>`.
+- Temporary development policy gives every Agent Team member full execution
+  permission. Codex batch turns launch with `danger-full-access`; Kimi ACP tool
+  approvals are resolved immediately by `policy`. `AskUserQuestion` and
+  `PlanReview` still pause and route to Lead. Requests and resolutions remain
+  durable coordination evidence; provider transcripts and thinking do not.
 - Thinking is allowed only as sanitized transient live state. It is never
   persisted, replayed, forwarded to peers, or accepted as evidence.
 
@@ -51,24 +59,47 @@ codex mcp get harness
 ```
 
 An existing Codex conversation may require a new session before the newly
-registered MCP tools appear. The Dashboard is a separate long-running process:
+registered MCP tools appear. The API and Dashboard UI are separate long-running
+processes. Start the Vite UI with its same-origin proxy pointed at the API:
 
 ```bash
 target/debug/harness --project <workspace-id> serve --addr 127.0.0.1:8787
+HARNESS_CAPTURE_API_PROXY=http://127.0.0.1:8787 npm run dashboard:dev
 ```
+
+The MCP URL opens `http://127.0.0.1:5173` and sets `api=.`. Port 8787 is an API
+origin, not a human Dashboard URL.
 
 `project_id` is the technical Harness Workspace identity. It routes the
 central store and repository execution root; it is not a Company OS Project
 business object. Product copy should say **Workspace**.
+
+## Store root is not execution root
+
+`store_root` contains Harness JSONL coordination ledgers. Provider processes do
+not run there. Their cwd is selected in this order: member `worktree_ref`,
+TeamRun `execution_root`, then selected Workspace `project_root`; the Host cwd
+is only the creation default for an unrouted legacy raw-store invocation.
+`team_run_create` exposes `execution_root` and `members[].worktree_ref` through
+CLI (`--execution-root`, `--member-worktree name:path`), HTTP, and MCP. An
+override must be the selected project root or a Git worktree sharing its Git
+common directory, including external Codex worktrees.
+
+That provider cwd controls project instruction and configuration discovery:
+Codex walks `AGENTS.md` and its project/root skill/config locations from that
+execution root; Claude and Kimi likewise load project-level instruction and
+configuration files from the spawned project/worktree context. Moving the
+central store must therefore never change provider cwd, and passing a store
+path as an execution root is a routing defect.
 
 ## Host Journey
 
 1. Call `mission_create` for durable intent.
 2. Call `wave_create` with `executor_kind=agent_team` for the next lightweight
    outcome boundary.
-3. Call `team_run_create` with role-specific supported provider members and
-   disjoint owned paths. Keep the returned Assignment message ids and
-   correlations.
+3. Call `team_run_create` with role-specific supported provider members,
+   disjoint owned paths, and workspace overrides only when needed. Keep the
+   returned execution/member roots, Assignment message ids, and correlations.
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
    receives durable Harness coordination plus transient/on-demand activity
@@ -107,4 +138,4 @@ npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
 This gate is not proof of a real provider call. Live claims require the native
-records from a separately executed real Kimi run.
+records from a separately executed run in the claimed provider mode.

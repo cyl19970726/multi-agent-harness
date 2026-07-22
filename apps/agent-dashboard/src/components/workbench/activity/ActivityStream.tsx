@@ -3,13 +3,20 @@ import {
   ArrowRightLeft,
   Bot,
   CheckCircle2,
+  CircleEllipsis,
+  FilePenLine,
   FileCheck2,
   MessageSquare,
+  Play,
+  Search,
   SendHorizontal,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  SquareTerminal,
   TerminalSquare,
+  Timer,
+  UserPlus,
   Wrench,
 } from "lucide-react";
 
@@ -33,7 +40,16 @@ export type WorkbenchActivityGlyph =
   | "artifact"
   | "review"
   | "decision"
-  | "message";
+  | "message"
+  | "spawn"
+  | "wait"
+  | "command"
+  | "edit"
+  | "search"
+  | "join"
+  | "queued"
+  | "start"
+  | "complete";
 
 export interface WorkbenchActivityItem {
   id: string;
@@ -42,6 +58,9 @@ export interface WorkbenchActivityItem {
   body?: ReactNode;
   actor?: ReactNode;
   timestamp?: ReactNode;
+  /** Raw sortable timestamp used only to join multiple activity sources into
+   * one honest chronology. The rendered timestamp remains provider-neutral. */
+  occurredAt?: string | null;
   tone?: StatusTone;
   evidenceRefs?: string[];
   /** Volatile UI state only. Never pass persisted provider thinking here. */
@@ -51,6 +70,13 @@ export interface WorkbenchActivityItem {
   glyph?: WorkbenchActivityGlyph;
   /** Controls only the default visual projection; every record remains available. */
   prominence?: "primary" | "detail" | "pressure";
+  /** Display provenance only; provider-native rows are read on demand and are
+   * never copied into the Harness coordination store. */
+  source?: "harness" | "provider-native" | "live";
+  /** Plain values retained for read-time narrative grouping and search. */
+  rawText?: string | null;
+  actorLabel?: string;
+  statusLabel?: string;
 }
 
 /**
@@ -109,7 +135,7 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
           {item.timestamp}
         </div>
         <span className={cn(
-          "relative z-[1] col-start-1 row-start-1 mt-0.5 grid size-8 shrink-0 place-items-center rounded-full border shadow-[0_5px_16px_-13px_currentColor]",
+          "relative z-[1] col-start-1 row-start-1 mt-0.5 grid size-8 shrink-0 place-items-center rounded-[10px] border ring-4 ring-background",
           activityIconSurface(tone),
         )}>
           <Icon className="size-3.5" strokeWidth={2.15} aria-hidden />
@@ -127,8 +153,9 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
             {item.actor && <span className="text-muted-foreground">{item.actor}</span>}
             {item.timestamp && <span className="text-muted-foreground/80 sm:hidden">{item.timestamp}</span>}
             {item.transient && <Badge tone="info">live only</Badge>}
+            {item.source === "provider-native" && <Badge tone="muted">native session</Badge>}
           </div>
-          <div className="text-[12px] font-medium leading-snug text-foreground">{item.title}</div>
+          <div className="text-[13px] font-semibold leading-snug tracking-[-0.01em] text-foreground">{item.title}</div>
           {item.body && <div className="whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground">{item.body}</div>}
           {(item.evidenceRefs?.length ?? 0) > 0 && (
             <div className="flex flex-wrap gap-1 pt-0.5">
@@ -173,6 +200,7 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
           {item.actor && <span className="text-muted-foreground">{item.actor}</span>}
           {item.timestamp && <span className="text-muted-foreground/80">{item.timestamp}</span>}
           {item.transient && <Badge tone="info">live only</Badge>}
+          {item.source === "provider-native" && <Badge tone="muted">native session</Badge>}
           {item.action && <span className="ml-auto shrink-0">{item.action}</span>}
         </div>
         <div className="text-[12px] font-medium leading-snug text-foreground">{item.title}</div>
@@ -198,6 +226,15 @@ function activityIcon(kind: WorkbenchActivityKind, glyph?: WorkbenchActivityGlyp
     case "review": return ShieldCheck;
     case "decision": return CheckCircle2;
     case "message": return MessageSquare;
+    case "spawn": return Bot;
+    case "wait": return Timer;
+    case "command": return SquareTerminal;
+    case "edit": return FilePenLine;
+    case "search": return Search;
+    case "join": return UserPlus;
+    case "queued": return CircleEllipsis;
+    case "start": return Play;
+    case "complete": return CheckCircle2;
   }
   switch (kind) {
     case "message": return MessageSquare;

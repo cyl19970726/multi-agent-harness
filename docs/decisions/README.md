@@ -31,6 +31,7 @@ consequences, affected modules, and validation path.
 | [0030](0030-provider-interaction-contract.md) | active | Execution-mode profiles, durable PendingInteraction routing, and provider-versus-semantic truth |
 | [0031](0031-interactive-provider-modes-and-version-drift.md) | active | Chat/steer/interrupt semantics and adapter version review gates |
 | [0032](0032-provider-native-session-is-execution-truth.md) | active, implemented | Provider-native session owns transcript/tool activity/resume; Harness owns coordination, outcomes, refs and gates |
+| [0033](0033-agent-team-workspace-contract.md) | active, implemented | Agent Team store, project, run execution, and member worktree roots are distinct and observable |
 
 ## Split Rule
 

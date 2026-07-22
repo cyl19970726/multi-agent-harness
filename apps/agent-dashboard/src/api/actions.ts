@@ -228,7 +228,9 @@ export interface TeamRunMemberSpec {
   role: string;
   provider: string;
   model?: string;
-  executionMode?: "codex_exec" | "codex_app_server" | "kimi_acp";
+  executionMode?: "codex_exec" | "codex_app_server" | "kimi_acp" | "claude_cli";
+  /** Optional member-specific workspace override validated against project_root. */
+  worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */
   ownedPaths?: string[];
 }
@@ -246,6 +248,8 @@ export function createTeamRun(params: {
   /** Native executor context. Both ids are required together. */
   missionId?: string;
   waveId?: string;
+  /** Optional TeamRun workspace; defaults to the selected registered project_root. */
+  executionRoot?: string;
   members: TeamRunMemberSpec[];
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
@@ -261,6 +265,9 @@ export function createTeamRun(params: {
       }
       if (member.executionMode) {
         spec.execution_mode = member.executionMode;
+      }
+      if (member.worktreeRef) {
+        spec.worktree_ref = member.worktreeRef;
       }
       if (member.ownedPaths && member.ownedPaths.length) {
         spec.owned_paths = member.ownedPaths;
@@ -279,6 +286,9 @@ export function createTeamRun(params: {
   }
   if (params.waveId) {
     body.wave_id = params.waveId;
+  }
+  if (params.executionRoot) {
+    body.execution_root = params.executionRoot;
   }
   return { method: "POST", path: "/v1/team-runs", body };
 }

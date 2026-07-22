@@ -108,6 +108,10 @@ fn team_run_cli_create_list_status_send_events() {
     let home = TempHome::new("team-run-cli");
     let project_id = init_project(&home, "alpha");
     seed_native_mission_wave(&home, &project_id);
+    let project_root = std::fs::canonicalize(home.base().join("alpha"))
+        .expect("canonical project root")
+        .display()
+        .to_string();
 
     // create (plain output): bare run id on stdout.
     let out = run_harness(
@@ -126,10 +130,14 @@ fn team_run_cli_create_list_status_send_events() {
             "wave-test",
             "--budget-usd",
             "5.5",
+            "--execution-root",
+            &project_root,
             "--member",
             "lead:coordinator:kimi",
             "--member",
             "worker-1:implementer:codex:gpt-5@crates/a,docs",
+            "--member-worktree",
+            &format!("worker-1:{project_root}"),
         ],
     );
     assert!(
@@ -148,6 +156,10 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(runs[0]["status"].as_str(), Some("planning"));
     assert_eq!(runs[0]["wave_index"].as_u64(), Some(2));
     assert_eq!(runs[0]["mission_id"].as_str(), Some("mission-test"));
+    assert_eq!(
+        runs[0]["execution_root"].as_str(),
+        Some(project_root.as_str())
+    );
     assert_eq!(runs[0]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(runs[0]["budget_limit_usd"].as_f64(), Some(5.5));
     let member_ids: Vec<&str> = runs[0]["member_run_ids"]
@@ -169,6 +181,10 @@ fn team_run_cli_create_list_status_send_events() {
         "member order follows --member order"
     );
     assert_eq!(members[1]["member_run"]["model"].as_str(), Some("gpt-5"));
+    assert_eq!(
+        members[1]["member_run"]["worktree_ref"].as_str(),
+        Some(project_root.as_str())
+    );
     assert_eq!(
         members[1]["member_run"]["owned_paths"],
         serde_json::json!(["crates/a", "docs"]),
@@ -825,6 +841,8 @@ fn linked_team_run_rejects_previous_attempt_from_another_wave() {
 fn post_team_run_creates_entities_and_snapshot() {
     let home = TempHome::new("team-run-api");
     let project_id = init_project(&home, "alpha");
+    let project_root =
+        std::fs::canonicalize(home.base().join("alpha")).expect("canonical project root");
     seed_native_mission_wave(&home, &project_id);
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
@@ -834,11 +852,12 @@ fn post_team_run_creates_entities_and_snapshot() {
             "objective": "Ship v0",
             "mission_id": "mission-test",
             "wave_id": "wave-test",
+            "execution_root": project_root,
             "budget_limit_usd": 5.0,
             "members": [
                 {"name": "lead", "role": "coordinator", "provider": "kimi"},
                 {"name": "worker-1", "role": "implementer", "provider": "codex",
-                 "model": "gpt-5", "owned_paths": ["crates/a"]},
+                 "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a"]},
             ],
         }),
     );
@@ -855,11 +874,19 @@ fn post_team_run_creates_entities_and_snapshot() {
     );
     assert_eq!(result["team_run"]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(
+        result["team_run"]["execution_root"].as_str(),
+        Some(project_root.to_str().expect("project root"))
+    );
+    assert_eq!(
         result["team_run"]["host_surface"].as_str(),
         Some("http"),
         "HTTP-created runs default host_surface to http"
     );
     assert_eq!(result["member_runs"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        result["member_runs"][1]["worktree_ref"].as_str(),
+        Some(project_root.to_str().expect("project root"))
+    );
     assert_eq!(
         result["assignment_messages"].as_array().map(Vec::len),
         Some(2)

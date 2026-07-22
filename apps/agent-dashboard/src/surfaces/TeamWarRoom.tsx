@@ -311,7 +311,7 @@ export function TeamWarRoom({
         <ContextRail quiet label="Team context">
           <WaveModule wave={wave} onOpen={() => wave && onSelectionChange({ surface: "missions", missionId: wave.mission_id, waveId: wave.id, teamId: undefined })} />
           <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />
-          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} createdAt={run.created_at} completedAt={run.completed_at} />
+          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
           <SelectedMemberModule
             member={selectedMember}
             assignment={selectedAssignment?.body}
@@ -588,8 +588,8 @@ function teamGateReadiness(wave: Wave | undefined, total: number): number | unde
   return spelled ? Math.min(total, words[spelled[1]]) : undefined;
 }
 
-function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; createdAt?: string; completedAt?: string | null }) {
-  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
+function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, executionRoot, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; executionRoot?: string | null; createdAt?: string; completedAt?: string | null }) {
+  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Execution root" value={executionRoot ?? "Not recorded (legacy run)"} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
 }
 
 function SelectedMemberModule({ member, assignment, currentAction, onMessage, onOpen }: { member?: MemberRun; assignment?: string; currentAction?: string; onMessage: () => void; onOpen: () => void }) {
@@ -597,7 +597,7 @@ function SelectedMemberModule({ member, assignment, currentAction, onMessage, on
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
       <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
