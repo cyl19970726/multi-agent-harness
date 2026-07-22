@@ -2763,6 +2763,7 @@
    "canonicalFor": [
     "mode-specific chat steer interrupt and stop semantics",
     "provider version drift review contract",
+    "daily provider release-check cadence and Human upgrade authorization",
     "Codex and Kimi interactive mode selection"
    ],
    "dependsOn": [
@@ -2779,7 +2780,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Provider control protocol, execution modes, reviewed versions, or adapter compatibility policy changes.",
+   "reorgTrigger": "Provider control protocol, execution modes, update cadence, upgrade authorization, reviewed versions, or adapter compatibility policy changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "verified",
    "truthRefs": [

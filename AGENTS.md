@@ -40,6 +40,14 @@ unreviewed version is `review_required`, not silently compatible. Interactive
 chat/steer/interrupt controls must be backed by the selected mode's real
 protocol and terminal acknowledgements.
 
+Provider release discovery is read-only and should run at most once per day by
+default. Never install, upgrade, downgrade, or switch Codex, Claude Code, Kimi,
+or another provider version without explicit Human confirmation naming that
+provider and candidate version. One approval does not authorize other
+providers or future upgrades. After an approved change, keep the adapter
+`review_required` until mode-specific deterministic checks and a proportional
+live canary justify updating the reviewed-version set.
+
 Standing Agents + Docs are the current product direction. Their Company OS
 contracts are additive and still being implemented; do not claim planned
 objects or fields exist until schemas, stores, APIs, and acceptance checks prove

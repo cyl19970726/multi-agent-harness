@@ -74,6 +74,31 @@ Dashboard exposes the same compatibility state on MemberRun. A later strict
 production policy may block `review_required`; default development mode warns
 so provider releases do not unexpectedly make local development unusable.
 
+### Update cadence and authorization
+
+Provider discovery and provider installation are separate operations:
+
+- Harness may check Codex, Claude Code, and Kimi version drift at most once per
+  calendar day by default. A manual diagnostic check is still allowed when a
+  provider fails unexpectedly.
+- Discovery never installs, upgrades, downgrades, or changes the reviewed
+  version set. It only reports `current | review_required | incompatible |
+  unavailable`.
+- When several releases appear during one day, propose one selected candidate
+  per provider rather than chasing every intermediate release.
+- Installing or changing the selected Codex, Claude Code, or Kimi version
+  requires explicit Human confirmation. The proposal must name current and
+  candidate versions, relevant adapter/mode risk, required acceptance, and a
+  rollback path.
+- Confirmation to upgrade one provider does not authorize upgrades to the
+  others, nor does it authorize future automatic upgrades.
+- After an approved installation, keep the adapter `review_required` until its
+  mode-specific deterministic checks and a proportional live canary pass. Only
+  then may documentation and `reviewed_provider_versions` be updated.
+
+The normal operating target is therefore one reviewable provider update window
+per day, not continuous automatic upgrades.
+
 ## Consequences
 
 - Provider name no longer determines chat or interruption capability; execution
@@ -82,6 +107,7 @@ so provider releases do not unexpectedly make local development unusable.
 - Codex app-server is an explicit selectable execution mode, not a hidden
   fallback from `codex_exec`.
 - Release monitoring becomes reproducible and suitable for scheduled checks.
+- Daily monitoring is read-only; provider binary changes remain Human-approved.
 - Provider protocol vocabulary alone never proves Harness lifecycle control.
 - Version review also covers native-store discovery/read/resume compatibility;
   a stream parser passing is not enough.
