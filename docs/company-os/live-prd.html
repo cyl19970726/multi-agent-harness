@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <meta name="description" content="Company OS Live PRD: product pages, system architecture, business-line journeys, and implementation truth." />
+  <title>Company OS · Live PRD</title>
+  <link rel="stylesheet" href="live-prd.css" />
+</head>
+<body data-view="overview">
+  <a class="skip-link" href="#main">跳到正文</a>
+  <div class="reading-progress" aria-hidden="true"><span id="readingProgress"></span></div>
+
+  <header class="mobile-header">
+    <a class="mobile-brand" href="?view=overview" data-view-link="overview">Company OS <span>Live PRD</span></a>
+    <nav aria-label="报告视图">
+      <a href="?view=overview" data-view-link="overview">PRD</a>
+      <a href="?view=journey" data-view-link="journey">旅程</a>
+      <a href="?view=architecture" data-view-link="architecture">架构</a>
+    </nav>
+  </header>
+
+  <div class="app-shell">
+    <aside class="site-rail" aria-label="Live PRD 导航">
+      <div class="brand-block">
+        <div class="brand-seal" aria-hidden="true">⌂</div>
+        <div><strong>COMPANY OS</strong><span>Truth · Work · Outcomes</span></div>
+      </div>
+
+      <div class="report-mark"><i aria-hidden="true"></i><span>LIVE PRD</span><small>Product requirements & architecture</small></div>
+
+      <nav class="view-nav" aria-label="主要视图">
+        <a href="?view=overview" data-view-link="overview"><span>01</span><b>产品 PRD</b></a>
+        <a href="?view=journey" data-view-link="journey"><span>02</span><b>页面旅程</b></a>
+        <a href="?view=architecture" data-view-link="architecture"><span>03</span><b>OS 架构</b></a>
+      </nav>
+
+      <div class="rail-context rail-overview">
+        <p class="rail-label">报告章节</p>
+        <nav class="section-nav" aria-label="PRD 章节">
+          <a href="#mission">产品使命</a>
+          <a href="#page-map">核心页面</a>
+          <a href="#systems">四系统</a>
+          <a href="#organization">组织治理</a>
+          <a href="#example">商标示例</a>
+          <a href="#truth">实现真相</a>
+        </nav>
+      </div>
+
+      <div class="rail-context rail-journey">
+        <p class="rail-label">业务线</p>
+        <div id="businessLineNav" class="business-line-nav" role="list" aria-label="选择业务线"></div>
+      </div>
+
+      <div class="rail-context rail-architecture">
+        <p class="rail-label">架构层</p>
+        <ol class="layer-nav">
+          <li>Product experience</li>
+          <li>Business modules</li>
+          <li>Governed services</li>
+          <li>Systems of truth</li>
+          <li>Durable substrate</li>
+        </ol>
+      </div>
+
+      <div class="rail-principle">
+        <span aria-hidden="true">◇</span>
+        <strong>治理原则</strong>
+        <p>每条记录只通过其拥有系统的 Governed Action 改变。</p>
+      </div>
+
+      <footer class="rail-footer"><span>v1.0</span><span>22 Jul 2026</span></footer>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <section class="view-panel overview-view" data-view-panel="overview" aria-labelledby="overviewTitle">
+        <div class="overview-layout">
+          <div class="overview-content">
+            <div class="meta-bar">
+              <span class="live-chip"><i></i> Live PRD</span>
+              <span>Version 1.0</span>
+              <span>Updated 22 Jul 2026</span>
+            </div>
+
+            <section id="mission" class="hero-section">
+              <p class="eyebrow">AI COMPANY OPERATING SYSTEM</p>
+              <h1 id="overviewTitle">Company OS</h1>
+              <p class="hero-thesis">公司把持久上下文转化为受治理的工作，并把结果重新写回公司记忆。</p>
+              <p class="hero-copy">Docs 与 Organization 是两个产品核心；Work 与 Finance 是与之连接的一级运营系统。页面负责组合和导航，四个系统负责各自的真相。</p>
+            </section>
+
+            <section class="canonical-loop" aria-labelledby="loopTitle">
+              <h2 id="loopTitle" class="sr-only">Canonical loop</h2>
+              <ol>
+                <li class="tone-docs"><span>▤</span><b>Docs</b></li>
+                <li class="loop-arrow" aria-hidden="true">→</li>
+                <li class="tone-work"><span>✓</span><b>Work</b></li>
+                <li class="loop-arrow" aria-hidden="true">→</li>
+                <li class="tone-org"><span>◎</span><b>Organization</b></li>
+                <li class="loop-arrow" aria-hidden="true">→</li>
+                <li class="tone-finance"><span>¥</span><b>Finance</b></li>
+                <li class="loop-arrow" aria-hidden="true">→</li>
+                <li class="tone-neutral"><span>↗</span><b>Outcome</b></li>
+                <li class="loop-arrow" aria-hidden="true">→</li>
+                <li class="tone-docs"><span>▤</span><b>Docs</b></li>
+              </ol>
+              <p>One canonical loop · one linked truth · no duplicated records.</p>
+            </section>
+
+            <section id="systems" class="report-section systems-section" aria-labelledby="systemsTitle">
+              <div class="section-heading"><span>01</span><div><p>APPROVED PRODUCT MAP</p><h2 id="systemsTitle">产品形态直接采用批准设计图</h2></div></div>
+              <p class="section-intro">这张图是产品方向与信息层级的 Expected，不是浏览器实现证据；报告直接引用它，不再用 HTML 重画同一张图。</p>
+              <figure class="source-figure full-figure expected-figure approved-explainer">
+                <button data-image-src="../design/company-os-v3/live-prd-v1/expected/live-prd--product-map--desktop-1536x1024.png" data-image-title="Company OS · approved product map" data-image-truth="Approved Expected">
+                  <img src="../design/company-os-v3/live-prd-v1/expected/live-prd--product-map--desktop-1536x1024.png" alt="Approved Company OS product map showing the mission, four systems, core page chain and implementation truth rail" />
+                </button>
+                <figcaption><span class="truth-tag expected">Approved Expected</span><span>产品使命、四系统、核心页面与实现真相的统一视觉入口。</span></figcaption>
+              </figure>
+              <ul class="explainer-transcript" aria-label="产品图文字说明">
+                <li><b>Docs</b><span>公司记忆、业务结构与持久结果。</span></li>
+                <li><b>Organization</b><span>身份、组织关系、权限与责任。</span></li>
+                <li><b>Work</b><span>WorkItem、Milestone、分配、生命周期与交付证据。</span></li>
+                <li><b>Finance</b><span>预算、Commitment、Invoice、Payment 与货币影响。</span></li>
+              </ul>
+              <div class="execution-boundary"><b>ExecutionRef</b><span>关联“工作如何运行”的证据；V1 暂不展开执行内部结构。</span></div>
+            </section>
+
+            <section id="page-map" class="report-section page-map-section" aria-labelledby="pageMapTitle">
+              <div class="section-heading"><span>02</span><div><p>PRODUCT EXPERIENCE</p><h2 id="pageMapTitle">核心页面如何配合</h2></div></div>
+              <p class="section-intro">用户在页面之间移动，但 canonical record 不随页面复制。每次跳转都保留来源、对象、责任和返回路径。</p>
+              <ol class="page-chain">
+                <li><span>⌂</span><b>Home</b><small>注意力入口</small></li>
+                <li aria-hidden="true">→</li>
+                <li class="tone-docs"><span>▤</span><b>Docs</b><small>上下文与结构</small></li>
+                <li aria-hidden="true">→</li>
+                <li class="tone-org"><span>◎</span><b>Organization</b><small>责任与权限</small></li>
+                <li aria-hidden="true">→</li>
+                <li class="tone-work"><span>✓</span><b>Work</b><small>承诺与交付</small></li>
+                <li aria-hidden="true">→</li>
+                <li><span>◇</span><b>Approvals</b><small>Human decision</small></li>
+                <li aria-hidden="true">→</li>
+                <li class="tone-finance"><span>¥</span><b>Finance</b><small>货币状态</small></li>
+              </ol>
+              <div class="journey-cta">
+                <div><strong>查看页面级业务旅程</strong><p>按业务线选择场景，检查每个页面跳转、对象引用和权限边界。</p></div>
+                <a class="primary-link" href="?view=journey" data-view-link="journey">打开 Product Journey Explorer <span>→</span></a>
+              </div>
+            </section>
+
+            <section class="report-section evidence-pages" aria-labelledby="evidencePagesTitle">
+              <div class="section-heading"><span>03</span><div><p>REAL PAGE EVIDENCE</p><h2 id="evidencePagesTitle">Expected 定方向，Actual 证明实现</h2></div></div>
+              <div class="evidence-grid">
+                <figure class="evidence-card">
+                  <button data-image-src="../design/company-os-v3/trademark-native-closure-v1/comparisons/docs-workspace--native-trademark--desktop-1536x1024.png" data-image-title="Docs Workspace · Before / Expected / Store-live Actual" data-image-truth="Actual comparison">
+                    <img src="../design/company-os-v3/trademark-native-closure-v1/comparisons/docs-workspace--native-trademark--desktop-1536x1024.png" alt="Docs Workspace Before, Expected and Store-live Actual comparison" />
+                  </button>
+                  <figcaption><span class="truth-tag actual">Actual comparison</span><h3>Docs Workspace</h3><p>来源文档、业务结构、维护者和返回记录。</p></figcaption>
+                </figure>
+                <figure class="evidence-card">
+                  <button data-image-src="../design/company-os-v3/trademark-native-closure-v1/comparisons/business-module--native-trademark--desktop-1536x1024.png" data-image-title="Trademark Business Module · Before / Expected / Store-live Actual" data-image-truth="Actual comparison">
+                    <img src="../design/company-os-v3/trademark-native-closure-v1/comparisons/business-module--native-trademark--desktop-1536x1024.png" alt="Trademark Business Module Before, Expected and Store-live Actual comparison" />
+                  </button>
+                  <figcaption><span class="truth-tag actual">Actual comparison</span><h3>Business Module</h3><p>一个业务域组合 Docs、Work、Organization 与 Finance。</p></figcaption>
+                </figure>
+                <figure class="evidence-card">
+                  <button data-image-src="../design/company-os-v3/trademark-native-closure-v1/comparisons/work-board--native-trademark--desktop-1536x1024.png" data-image-title="Work Board · Before / Expected / Store-live Actual" data-image-truth="Actual comparison">
+                    <img src="../design/company-os-v3/trademark-native-closure-v1/comparisons/work-board--native-trademark--desktop-1536x1024.png" alt="Work Board Before, Expected and Store-live Actual comparison" />
+                  </button>
+                  <figcaption><span class="truth-tag actual">Actual comparison</span><h3>Work Board</h3><p>六条原生 WorkItem，而不是为密度复制 24 条示意数据。</p></figcaption>
+                </figure>
+              </div>
+            </section>
+
+            <section id="organization" class="report-section organization-section" aria-labelledby="organizationTitle">
+              <div class="section-heading"><span>04</span><div><p>ACCOUNTABILITY</p><h2 id="organizationTitle">治理型组织，而不是临时 TeamRun</h2></div></div>
+              <div class="two-column-feature">
+                <figure class="source-figure expected-figure">
+                  <button data-image-src="../design/company-os-v2/company-os-four-systems-v1/expected/governance-led-organization--1536x1024.png" data-image-title="Governance-led Organization" data-image-truth="Expected architecture">
+                    <img src="../design/company-os-v2/company-os-four-systems-v1/expected/governance-led-organization--1536x1024.png" alt="Expected governance-led organization with Human Owner, Lead Agent, Governance Agents and Business Agents" />
+                  </button>
+                  <figcaption><span class="truth-tag expected">Expected</span><span>Governance-led Organization target</span></figcaption>
+                </figure>
+                <div class="feature-copy">
+                  <h3>初始组织保持浅层，但责任不能模糊</h3>
+                  <ol class="org-rules">
+                    <li><b>Human Owner</b><span>公司方向和 Human gates。</span></li>
+                    <li><b>Lead Agent</b><span>管理四个 Governance Agents。</span></li>
+                    <li><b>Docs / Work / Finance / Org-HR Governance</b><span>维护四系统质量与内部治理。</span></li>
+                    <li><b>Business Agents</b><span>归属 Org/HR，处理持续业务能力。</span></li>
+                  </ol>
+                  <p class="boundary-note">AgentTeamRun 和 MemberRun 是一次性执行对象，不因名称相似而成为组织成员。</p>
+                </div>
+              </div>
+            </section>
+
+            <section id="example" class="report-section example-section" aria-labelledby="exampleTitle">
+              <div class="section-heading"><span>05</span><div><p>USAGE EXAMPLE</p><h2 id="exampleTitle">商标申请如何使用整个产品</h2></div></div>
+              <figure class="source-figure full-figure expected-figure">
+                <button data-image-src="../design/company-os-v2/company-os-four-systems-v1/expected/trademark-operating-loop--1536x1024.png" data-image-title="Trademark filing · four-system operating loop" data-image-truth="Expected example">
+                  <img src="../design/company-os-v2/company-os-four-systems-v1/expected/trademark-operating-loop--1536x1024.png" alt="Six-step trademark filing operating loop across Docs, Work, Organization and Finance" />
+                </button>
+                <figcaption><span class="truth-tag expected">Expected explainer</span><span>Document → WorkItem → Actors → Commitment → Human Approval → durable result</span></figcaption>
+              </figure>
+              <ol class="example-steps">
+                <li><span>1</span><div><b>Docs 建立来源</b><p>商标策略和申请记录解释为什么要做。</p></div></li>
+                <li><span>2</span><div><b>Work 建立承诺</b><p>WorkItem 明确 requester、owner、assignee 和 result。</p></div></li>
+                <li><span>3</span><div><b>Organization 提供责任</b><p>Standing Agent、Human 和 External 各有明确边界。</p></div></li>
+                <li><span>4</span><div><b>Finance 建立 Commitment</b><p>¥3,000 是待批准承诺，不是 Payment。</p></div></li>
+                <li><span>5</span><div><b>Human Approval</b><p>敏感业务决定与执行 gate 永远分开。</p></div></li>
+                <li><span>6</span><div><b>结果返回 Docs</b><p>证据、状态和 TypedRecord 通过 Action 更新。</p></div></li>
+              </ol>
+            </section>
+
+            <section id="truth" class="report-section truth-section" aria-labelledby="truthTitle">
+              <div class="section-heading"><span>06</span><div><p>IMPLEMENTATION TRUTH</p><h2 id="truthTitle">当前能证明什么</h2></div></div>
+              <div class="truth-table-wrap" tabindex="0" aria-label="四系统实现真相表，可横向滚动">
+                <table class="truth-table">
+                  <thead><tr><th>系统</th><th>拥有</th><th>当前状态</th><th>已验证切片</th><th>下一缺口</th></tr></thead>
+                  <tbody>
+                    <tr><th><span class="system-dot docs"></span>Docs</th><td>Document / Block / TypedRecord / View / Module</td><td><span class="state partial">Partial</span></td><td>商标结果回写</td><td>深度创作与模块演化</td></tr>
+                    <tr><th><span class="system-dot org"></span>Organization</th><td>Actor / OrgUnit / Role / Permission / Authority</td><td><span class="state partial">Partial</span></td><td>身份与成员投影</td><td>治理型组织变更 Action</td></tr>
+                    <tr><th><span class="system-dot work"></span>Work</th><td>WorkItem / Milestone / Assignment / Lifecycle</td><td><span class="state partial">Partial</span></td><td>商标创建、分配、审批、完成</td><td>Intake、reassignment、saved views</td></tr>
+                    <tr><th><span class="system-dot finance"></span>Finance</th><td>Commitment / Invoice / Payment / Refund</td><td><span class="state partial">Partial</span></td><td>¥3,000 Commitment 与 Human Approval</td><td>更广的 operator controls</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="truth-callout"><b>设计图不是实现证据。</b><span>Expected 定义方向；只有具备 Store、Action、UI 和 acceptance 链的浏览器证据才是 Actual。</span></div>
+            </section>
+
+            <section class="report-section source-section" aria-labelledby="sourceTitle">
+              <div class="section-heading"><span>07</span><div><p>CANONICAL SOURCES</p><h2 id="sourceTitle">继续阅读与验证</h2></div></div>
+              <div class="source-links">
+                <a href="product-system-map.md"><b>Product system map</b><span>产品全局结构与边界</span></a>
+                <a href="frontend-information-architecture.md"><b>Frontend IA</b><span>页面、导航与交互职责</span></a>
+                <a href="four-system-collaboration.md"><b>Four-system collaboration</b><span>Docs / Org / Work / Finance</span></a>
+                <a href="implementation-truth-matrix.md"><b>Implementation truth</b><span>Contract → acceptance</span></a>
+                <a href="../design/company-os-v3/trademark-native-closure-v1/review.html"><b>Native closure review</b><span>Store-live visual evidence</span></a>
+                <a href="examples/trademark-registration.md"><b>Trademark example</b><span>端到端业务示例</span></a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="overview-truth-rail" aria-label="当前报告上下文">
+            <section><h2>Read this in 10 min</h2><dl><div><dt>产品与页面</dt><dd>3 min</dd></div><div><dt>四系统与组织</dt><dd>3 min</dd></div><div><dt>商标示例</dt><dd>2 min</dd></div><div><dt>实现真相</dt><dd>2 min</dd></div></dl></section>
+            <section><h2>Truth legend</h2><ul class="truth-legend"><li><span class="actual">✓</span><b>Actual</b><small>Store-live verified</small></li><li><span class="expected">◇</span><b>Expected</b><small>Approved intent</small></li><li><span class="planned">○</span><b>Planned</b><small>Contract only</small></li></ul></section>
+            <section><h2>Current verified slice</h2><p class="verified-title">Native trademark loop</p><ul class="check-list"><li>Native Store records</li><li>Human Approval</li><li>Evidence returned to Docs</li><li>3 P0 visual gates</li></ul></section>
+            <section><h2>Implementation snapshot</h2><ul class="snapshot-list"><li><span>Company OS</span><b>Partial</b></li><li><span>Docs</span><b>Partial · verified slice</b></li><li><span>Organization</span><b>Partial · target Expected</b></li><li><span>Work</span><b>Partial · verified slice</b></li><li><span>Finance</span><b>Partial · Commitment</b></li></ul></section>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view-panel journey-view" data-view-panel="journey" aria-labelledby="journeyTitle" hidden>
+        <div class="journey-header">
+          <div><p class="eyebrow">PRODUCT JOURNEY EXPLORER</p><h1 id="journeyTitle">Brand & IP · CN trademark filing</h1><p id="journeySummary">One operation, one linked truth across product pages.</p></div>
+          <div class="journey-header-meta"><span class="truth-tag expected">Expected journey</span><span id="journeyStatus">Verified slice</span><div class="view-toggle" aria-label="旅程视角"><button class="is-active" type="button" aria-pressed="true">User view</button><button type="button" aria-pressed="false">Object view</button></div></div>
+        </div>
+
+        <figure class="source-figure expected-figure journey-expected-map">
+          <button data-image-src="../design/company-os-v3/live-prd-v1/expected/live-prd--product-journey--desktop-1536x1024.png" data-image-title="Company OS · approved product journey" data-image-truth="Approved Expected">
+            <img src="../design/company-os-v3/live-prd-v1/expected/live-prd--product-journey--desktop-1536x1024.png" alt="Approved product journey showing business lines, six core pages, canonical handoffs and jump contract" />
+          </button>
+          <figcaption><span class="truth-tag expected">Approved Expected</span><span>整体页面关系；下方交互区使用带真相标签的真实页面截图解释每一步。</span></figcaption>
+        </figure>
+
+        <div class="mobile-business-lines" id="mobileBusinessLines" aria-label="业务线"></div>
+
+        <div class="journey-layout">
+          <div class="journey-main">
+            <div class="journey-step-strip" id="journeySteps" aria-label="页面旅程步骤"></div>
+            <section class="handoff-graph" aria-labelledby="handoffGraphTitle">
+              <div class="handoff-heading"><div><p>CANONICAL HANDOFFS</p><h2 id="handoffGraphTitle">Page & object handoff graph</h2></div><div class="graph-legend"><span class="nav-line">Navigation</span><span class="relation-line">Canonical relation</span><span class="authority-line">Authority</span></div></div>
+              <div id="handoffGraphContent"></div>
+            </section>
+          </div>
+
+          <aside class="jump-inspector" aria-labelledby="inspectorTitle">
+            <div class="inspector-tabs" role="tablist" aria-label="跳转详情">
+              <button type="button" role="tab" aria-selected="true" data-inspector-tab="jump">Jump contract</button>
+              <button type="button" role="tab" aria-selected="false" data-inspector-tab="objects">Objects</button>
+              <button type="button" role="tab" aria-selected="false" data-inspector-tab="authority">Authority</button>
+              <button type="button" role="tab" aria-selected="false" data-inspector-tab="evidence">Evidence</button>
+            </div>
+            <div id="inspectorContent" class="inspector-content" tabindex="-1"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view-panel architecture-view" data-view-panel="architecture" aria-labelledby="architectureTitle" hidden>
+        <header class="architecture-header">
+          <div><p class="eyebrow">PRODUCT ARCHITECTURE</p><h1 id="architectureTitle">Company OS product architecture</h1><p>Pages compose the company. Systems own the truth.</p></div>
+          <span class="truth-tag expected">Approved Expected</span>
+        </header>
+
+        <figure class="architecture-primary source-figure expected-figure">
+          <button data-image-src="../design/company-os-v3/live-prd-v1/expected/live-prd--os-architecture--desktop-1536x1024.png" data-image-title="Company OS product architecture" data-image-truth="Approved Expected">
+            <img src="../design/company-os-v3/live-prd-v1/expected/live-prd--os-architecture--desktop-1536x1024.png" alt="Company OS architecture from product experience through business modules, governed services, four truth systems and durable substrate" />
+          </button>
+          <figcaption><span class="truth-tag expected">Expected architecture</span><span>Execution internals intentionally remain outside this V1 report.</span></figcaption>
+        </figure>
+
+        <section class="architecture-transcript" aria-labelledby="transcriptTitle">
+          <div class="section-heading"><span>01—05</span><div><p>ACCESSIBLE TRANSCRIPT</p><h2 id="transcriptTitle">五层架构说明</h2></div></div>
+          <ol>
+            <li><span>1</span><div><h3>Product experience</h3><p>Home、Docs、Organization、Work、Approvals 与 Finance 是可导航的 owned-truth projections。Focus pages 深链到具体对象。</p></div></li>
+            <li><span>2</span><div><h3>Business lines & modules</h3><p>业务线是跨系统的组合视角。BusinessModule 组合 Documents、Views、Relations、Work 与 Finance links，不创建第二份真相。</p></div></li>
+            <li><span>3</span><div><h3>Governed product services</h3><p>Query、View、Relation resolution、Governed Action、Human Approval bridge 与 Audit 保证页面只通过受治理接口读写。</p></div></li>
+            <li><span>4</span><div><h3>Four systems of truth</h3><p>Docs 拥有上下文，Organization 拥有身份与权限，Work 拥有承诺与生命周期，Finance 拥有货币状态。</p></div></li>
+            <li><span>5</span><div><h3>Durable substrate</h3><p>Append-only Stores、latest projections、schemas、Action audit、canonical IDs 与 provenance 让每个声明可重建。</p></div></li>
+          </ol>
+        </section>
+
+        <section class="architecture-support" aria-labelledby="supportTitle">
+          <div class="section-heading"><span>A</span><div><p>SUPPORTING EXPLAINERS</p><h2 id="supportTitle">系统责任与治理组织</h2></div></div>
+          <div class="support-grid">
+            <figure class="source-figure expected-figure"><button data-image-src="../design/company-os-v2/company-os-four-systems-v1/expected/four-system-responsibility-map--1536x1024.png" data-image-title="One company, four systems of truth" data-image-truth="Expected architecture"><img src="../design/company-os-v2/company-os-four-systems-v1/expected/four-system-responsibility-map--1536x1024.png" alt="Four system responsibility map" /></button><figcaption><span class="truth-tag expected">Expected</span><span>四系统责任边界</span></figcaption></figure>
+            <figure class="source-figure expected-figure"><button data-image-src="../design/company-os-v2/company-os-four-systems-v1/expected/governance-led-organization--1536x1024.png" data-image-title="Governance-led Organization" data-image-truth="Expected architecture"><img src="../design/company-os-v2/company-os-four-systems-v1/expected/governance-led-organization--1536x1024.png" alt="Governance-led organization architecture" /></button><figcaption><span class="truth-tag expected">Expected</span><span>治理型组织目标</span></figcaption></figure>
+          </div>
+        </section>
+
+        <section class="architecture-invariants" aria-labelledby="invariantTitle">
+          <div class="section-heading"><span>!</span><div><p>NON-NEGOTIABLE</p><h2 id="invariantTitle">架构不变量</h2></div></div>
+          <ul><li>一个 truth class 只有一个 owning system。</li><li>页面展示 relation，不复制 canonical record。</li><li>BusinessModule 是组合，不是新 Store。</li><li>Human gates 保持 Human-only。</li><li>Commitment 不等于 Payment。</li><li>Chat 与 thinking 不是公司真相。</li></ul>
+          <div class="execution-boundary"><b>ExecutionRef</b><span>只作为工作运行证据的链接；执行内部结构在本报告中不展开。</span></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="imageDialog" class="image-dialog" aria-labelledby="imageDialogTitle">
+    <div class="dialog-header"><div><span id="imageDialogTruth" class="truth-tag"></span><h2 id="imageDialogTitle"></h2></div><button type="button" id="closeImageDialog" aria-label="关闭图片">×</button></div>
+    <div class="dialog-image-wrap"><img id="dialogImage" alt="" /></div>
+    <div class="dialog-footer"><a id="dialogSourceLink" href="#">打开原图</a><span>Esc 关闭 · 图片可横向滚动</span></div>
+  </dialog>
+
+  <noscript><div class="noscript">此报告需要 JavaScript 来切换业务线与跳转详情；所有产品与架构正文仍可在 Overview 中阅读。</div></noscript>
+  <script src="live-prd.js"></script>
+</body>
+</html>
