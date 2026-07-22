@@ -29,6 +29,36 @@ fn agent() -> ActorRef {
 }
 
 #[test]
+fn historical_standing_agent_rows_default_new_configuration_references() {
+    let legacy = json!({
+        "id": "agent-legacy",
+        "display_name": "Legacy Agent",
+        "role": "operations",
+        "status": "active",
+        "availability": "unknown",
+        "assignment_capacity": null,
+        "exclusive_assignment_ref": null,
+        "membership_refs": [],
+        "responsibility_summary": "Historical row written before configuration references existed.",
+        "capability_refs": [],
+        "permission_policy_refs": [],
+        "runtime_refs": [],
+        "native_session_refs": [],
+        "created_at": NOW,
+        "updated_at": NOW
+    });
+
+    let agent: StandingAgent = serde_json::from_value(legacy).unwrap();
+    agent.validate().unwrap();
+    assert_eq!(agent.system_prompt_ref, None);
+    assert!(agent.tool_refs.is_empty());
+    assert!(agent.skill_refs.is_empty());
+    assert!(agent.maintained_document_refs.is_empty());
+    assert!(agent.accepted_work_type_refs.is_empty());
+    assert_eq!(agent.escalation_policy_ref, None);
+}
+
+#[test]
 fn actor_types_remain_distinct_on_the_wire() {
     let human_member = HumanMember {
         id: "human-brand-owner".into(),
@@ -54,6 +84,12 @@ fn actor_types_remain_distinct_on_the_wire() {
         membership_refs: vec!["membership-brand-ip-agent".into()],
         responsibility_summary: "Prepares governed trademark work.".into(),
         capability_refs: vec!["capability-trademark-search".into()],
+        system_prompt_ref: Some("document-agent-prompt-trademark".into()),
+        tool_refs: vec!["tool-trademark-search".into()],
+        skill_refs: vec!["skill-trademark-filing".into()],
+        maintained_document_refs: vec!["document-trademark-register".into()],
+        accepted_work_type_refs: vec!["work-type-legal-filing".into()],
+        escalation_policy_ref: Some("policy-trademark-escalation".into()),
         permission_policy_refs: vec!["policy-agent-preparation".into()],
         runtime_refs: vec![],
         native_session_refs: vec![],

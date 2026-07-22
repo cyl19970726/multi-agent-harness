@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "page": "standing-agent-focus",
+  "expected": "/Users/hhh0x/multi-agent-harness-standing-agent-v1/docs/design/company-os-v4/standing-agent-workspace-v1/expected/standing-agent-focus/document-architecture-agent--available--desktop-1536x1024.png",
+  "viewport": {
+    "width": 1536,
+    "height": 1024,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": ["product rail", "global top bar", "agent identity header", "work and activity center", "organization context rail", "composer"],
+    "grid": {"desktop": "232px product rail + minmax center + 378px context rail"},
+    "gutters": {"center": 24, "context": 16},
+    "max_content_width": 1080,
+    "scroll_owner": "central activity column; context rail scrolls independently",
+    "sticky_regions": ["global top bar", "composer", "responsive context trigger"]
+  },
+  "vertical_landmarks": ["58px global bar", "145px identity header", "current work first", "activity immediately below", "composer pinned to viewport bottom"],
+  "typography": ["system sans for operator text", "18px agent title", "18px section title", "10px uppercase semantic kickers", "9px monospace trace refs"],
+  "spacing_scale": [4, 8, 12, 16, 20, 24, 32],
+  "surfaces": ["warm paper canvas", "white translucent cards", "low-contrast dividers", "pink-red primary tint", "green availability accent"],
+  "colors": ["#fdfcf9 canvas", "neutral ink", "coral primary", "green good", "blue assignment", "violet decision"],
+  "icons_and_assets": ["identity portrait", "Lucide navigation icons", "semantic activity glyphs", "status dot plus text"],
+  "component_strategy": {
+    "reuse": ["FocusShell", "FocusHeader", "ActivityStream", "ContextRail", "ContextModule", "ActorAvatar", "LinkedRecord"],
+    "page_specific": ["Current Work native WorkItem summary", "Standing Agent configuration reference groups", "authority boundary"],
+    "replace_or_split": ["Do not reuse MemberRun phase, provider, Wave, attempt or thinking modules"]
+  },
+  "responsive_transformations": ["Below 1280px hide product rail and convert context rail into a sheet", "On mobile use a bottom sheet while identity and part of current work remain visible", "Preserve one central scroll and avoid horizontal overflow"],
+  "design_risks": ["Visual reuse may falsely imply Agent Team semantics", "raw references can dominate the rail", "context sheet can obscure content if opened by default", "composer must not imply a write transport that does not exist"],
+  "unresolved_decisions": ["Future governed composer transport", "native explicit capacity model", "role-specific governance queues"]
+}

@@ -2010,8 +2010,21 @@
    ],
    "reorgTrigger": "Governance role responsibilities, Agent configuration, Skill authority, or Agent workspace implementation priority changes.",
    "authorityClass": "design_intent",
-   "implementationState": "design_only",
-   "truthRefs": []
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/company-os/actors.schema.json"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/company-os/operations/pages.tsx"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_os_api.rs"
+    }
+   ]
   },
   {
    "path": "docs/company-os/work-operating-system.md",

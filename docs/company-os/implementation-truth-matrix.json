@@ -26,8 +26,9 @@
         "store": ["crates/harness-store/src/company_os.rs"],
         "api": ["crates/harness-cli/src/company_os_api.rs"],
         "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
-        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs"]
+        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "pnpm check:dashboard"]
       },
+      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace"],
       "blockingGaps": ["governed organization-change lifecycle", "governance-led Organization Actual"]
     },
     {
@@ -41,7 +42,7 @@
         "ui": ["apps/agent-dashboard/src/company-os/work/WorkOperatingPage.tsx"],
         "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-operations-check.mjs"]
       },
-      "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions"],
+      "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions", "Lead request to Work Governance submission to Business Agent completion and Docs return", "non-financial work creates no Commitment or Approval"],
       "blockingGaps": ["additional business-specific lifecycle policies"]
     },
     {
@@ -72,5 +73,15 @@
       "viewportsVerified": ["1536x1024", "1024x900", "390x844"],
       "gates": {"product_truth": "pass", "visual_fidelity": "pass"}
     }
+  },
+  "standingAgentWorkLoop": {
+    "implementationState": "verified",
+    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/src/company-os/operations/pages.tsx"],
+    "route": ["Lead Agent", "Work Governance Agent", "Business Agent", "accountable Human", "Docs result return"],
+    "conditionalFinance": {
+      "nonFinancial": "zero Commitment and zero Approval",
+      "monetary": "Finance-owned Commitment plus named Human Approval"
+    },
+    "blockingGaps": ["governed OrgChangeProposal and Standing Agent provisioning lifecycle", "live Standing Agent message transport"]
   }
 }

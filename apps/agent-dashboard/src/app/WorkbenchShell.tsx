@@ -520,6 +520,8 @@ function AppRail({
   const contextMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id === contextRun?.id,
   );
+  const companyContext = isCompanyOsSurface(selection.surface);
+  const selectedCompanySurface = navItems.find((item) => item.id === selection.surface);
 
   function navigate(id: SurfaceId) {
     onSelectionChange({
@@ -584,9 +586,18 @@ function AppRail({
 
             <section className="space-y-1.5">
               <p className="px-2.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Active context
+                {companyContext ? "Company context" : "Active context"}
               </p>
-              {mission ? (
+              {companyContext ? (
+                <div className="rounded-lg border border-border/70 bg-background/55 px-3 py-3">
+                  <p className="text-[11px] font-semibold text-foreground">
+                    {selectedCompanySurface?.label ?? "Company OS"}
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                    Docs holds context, Organization holds authority, Work holds commitments, and Finance records monetary effects.
+                  </p>
+                </div>
+              ) : mission ? (
                 <div className="space-y-0.5">
                   <ContextTreeButton
                     depth={0}
@@ -770,7 +781,7 @@ function SurfaceSwitch({
 }) {
   const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
   if (isCompanyOsSurface(selection.surface)) {
-    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} />;
+    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} onSelectionChange={onSelectionChange} />;
   }
   switch (selection.surface) {
     case "missions":
