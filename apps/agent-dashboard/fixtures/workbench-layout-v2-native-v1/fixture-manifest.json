@@ -21,13 +21,14 @@
     "member_actions.jsonl",
     "team_run_events.jsonl",
     "delegation_runs.jsonl",
-    "provider_sessions.jsonl",
     "evidence.jsonl"
   ],
   "invariants": [
     "Wave 1 is completed and accepted with an accepted attempt.",
     "Wave 2 is running on retry Attempt 2 with a pending Wave gate.",
     "Four MemberRuns include running, reviewing, and blocked pressure states.",
+    "The current TeamRun records its execution root; member snapshots record actual cwd, Git identity, and discovered path roots only.",
+    "A member worktree override may live outside the project path while older TeamRuns remain readable without workspace fields.",
     "Assignments use stable correlation ids and evidence refs without a dependency graph.",
     "No durable thinking row exists; live preview must be injected after SSE connects."
   ]

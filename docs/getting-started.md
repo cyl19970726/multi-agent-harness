@@ -127,10 +127,10 @@ reply, not the capped per-step summary):
 ./target/debug/harness workflow get-output <run_id> --step synthesis --text > plan.md
 ```
 
-`get-output` reads the full reply persisted per step at `provider-sessions/<session_id>/reply.txt`
-(durable runs). `--text` prints just the text (pipe it to a file); `--step <label>`
-selects one leaf. Each step reports `source: "reply"` (full) or `"summary"` (the
-capped fallback, e.g. for a `--trace live` run whose trace was pruned).
+`get-output` reads the durable explicit `WorkflowStep` outcome and joins optional
+provider-native activity through `NativeSessionRef`. `--text` prints just the
+text; `--step <label>` selects one leaf. Each step reports
+`source: "workflow_step"`; native detail is an on-demand, non-authoritative join.
 
 ## What the skill teaches
 

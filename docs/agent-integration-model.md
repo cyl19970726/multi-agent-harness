@@ -23,10 +23,14 @@ Launch spec                     one normalized per-turn request, mapped onto
                                 codex exec / claude -p / future platforms
 ```
 
-The substrate that binds the three pillars is **headless exec-stream**:
+The execution transport that binds the three pillars is **headless exec-stream**
+or an explicitly selected interactive mode:
 `codex exec --json`, `claude -p --output-format stream-json`, and
 `kimi -p --output-format stream-json`, normalized into
-the neutral `AgentEvent` / `ProviderSession` stream. That decision is recorded
+an in-memory neutral projection. The provider-native session store remains the
+sole durable transcript/tool/turn history and resume source; Harness retains a
+mode-aware native session binding, not a second event store. The transport
+decision is recorded
 in [decisions/0018-exec-stream-primary-substrate.md](decisions/0018-exec-stream-primary-substrate.md).
 
 ## Why Three Pillars
@@ -40,7 +44,7 @@ hands a single turn to whatever platform sits behind the member:
 | --- | --- | --- |
 | 1 Base configuration | What does this agent *know and is allowed to be*? | `prompt_ref`, `skill_refs`, `capabilities`, `model`, `profile` on `AgentMember` |
 | 2 Environment | What can it *touch*? | `worktree_ref`, `runtime_workspace_roots`, `workspace_policy`; MCP via `AgentProviderConfig.mcp` |
-| 3 Platform adaptation | How does the harness *drive* the platform and read it back? | `AgentProvider` (CLI `ProviderAdapter` registry), `EventReducer`, `ProviderCapabilities` |
+| 3 Platform adaptation | How does the harness *drive* the platform, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
 
 The pillars are deliberately separable: changing the platform (Pillar 3) must
 not require rewriting the prompt stack (Pillar 1) or the workspace contract
@@ -226,27 +230,28 @@ probe / ingest** as the canonical names; they map onto the runtime interface):
 | **start** | `create_runtime(member, workspace, permissions)` | Launch the platform for this member (process or session handle). |
 | **deliver** | `deliver(message, context)` + `MessageDelivery` | Build the launch spec from the claimed `Message` and run one turn. |
 | **probe** | `health(runtime)` | Report runtime health signals (below). |
-| **ingest** | `read_events(runtime, cursor)` + `EventReducer` | Normalize platform output into `AgentEvent` / `ProviderSession`. |
+| **read/resume** | native-session adapter | Resolve, project, and resume provider-owned session state without copying it. |
 
 Delivery must respect the harness claim/lease: no platform side effect before
 the latest queued `Message` is atomically claimed (see
 [agent-runtime.md](agent-runtime.md) "Delivery claims happen before provider
 side effects").
 
-### 2. The `EventReducer`
+### 2. The native session projector
 
-The reducer maps platform-native events to neutral objects:
+The adapter maps platform-native records to an ephemeral neutral projection
+and promotes only explicit coordination boundaries:
 
 ```text
 provider event
-  -> AgentEvent                 (normalized event with provider_thread_id, turn_id)
-  -> ProviderSession            (one platform interaction, request/output refs)
-  -> ProviderChildThread        (provider-native subagent, NOT a member by default)
-  -> Message.delivery update / Evidence / report candidate
+  -> NativeActivityProjection   (not persisted)
+  -> PendingInteraction         (only when authority/routing crosses systems)
+  -> explicit TeamMessage / outcome / artifact ref (only on promotion)
 ```
 
-Rule: raw provider semantics never leak past the reducer. The Dashboard reads
-neutral state only (invariant 5, [agent-runtime.md](agent-runtime.md)).
+Rule: browser code never reads private native files directly. The provider
+adapter owns format/version differences and returns a sanitized projection;
+Harness does not turn it into a second ledger.
 
 ### 3. Health-signal contract
 
@@ -329,6 +334,27 @@ capability gap must not silently turn a read-only scan/review into a
 git-worktree requirement. The default-trait and unknown-provider values are
 `false` (assume-unenforceable), surfaced as honest Dashboard capability state.
 
+### Execution-mode profile and interaction truth
+
+The legacy `ProviderCapabilities` booleans describe a broad technical preset;
+they are not sufficient to claim an Agent Team integration. Every MemberRun now
+snapshots `ProviderIntegrationProfile`, which names the concrete mode
+(`codex_exec`, `kimi_acp`), interaction contract, tool/artifact event fidelity,
+cancel/resume support, native-child observation, and transient-thinking policy.
+
+Provider requests that require an answer are `PendingInteraction` rows rather
+than hidden adapter callbacks. Questions, tool approvals, and plan reviews keep
+the exact provider option ids and route to Lead, Policy, or Human. The
+PendingInteraction/control acknowledgement records provider and semantic
+resolution; ordinary provider tool lifecycle remains in the native session.
+
+See [ADR 0030](decisions/0030-provider-interaction-contract.md) and
+[ADR 0032](decisions/0032-provider-native-session-is-execution-truth.md). New provider
+integrations must audit execution modes, reverse RPC, lifecycle, errors,
+permissions, subagents, background work, context/compaction, native-store
+discovery/read/resume, artifacts, auth/quota, and privacy in addition to
+enumerating tools.
+
 ### The adapter boundary (generalized from earning-engine)
 
 The earning-engine example
@@ -339,7 +365,7 @@ coordination. Generalized:
 
 | Generic harness owns | Adapter / platform owns |
 | --- | --- |
-| legacy dependency graph, agent messages, role assignment | domain tool descriptors |
+| Mission/Wave joins, agent messages, role assignment | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
 | member identity, prompt/skill refs, permissions | domain logic, live execution, secrets |
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |
@@ -378,7 +404,7 @@ composer and Dashboard uniform across Codex, Claude, and future platforms.
 | `mcp` | neutral MCP block (WP-6, implemented) | `--config mcp_servers.*` | `--mcp-config` / SDK `mcp_servers` | adapter-provided |
 | `skill_refs` | skills to inject (Pillar 1 contract) | explicit skill input item | system-prompt injection / SDK | adapter-provided |
 | `session` / `resume` | resume an existing session | `--session <id>` | `--resume <id>` / SDK `resume` | adapter-provided |
-| `output` | event stream contract → `AgentEvent` | `--json` NDJSON | `--output-format stream-json --verbose` | adapter-provided |
+| `output` | provider-native session + ephemeral projection | `--json` / native rollout | stream-json / native session | adapter-provided |
 
 ### The Codex-vocabulary leak this spec abstracts
 

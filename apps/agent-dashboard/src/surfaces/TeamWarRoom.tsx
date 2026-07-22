@@ -31,8 +31,8 @@ import {
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { acknowledgeTeamMessage, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
-import type { MemberRun, TeamMessage, Wave } from "../types";
+import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
+import type { MemberRun, PendingInteraction, TeamMessage, Wave } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -107,6 +107,9 @@ export function TeamWarRoom({
     needsYou.blockedMembers[0] ??
     needsYou.waitingMembers[0] ??
     orderedMembers[0];
+  const pendingInteractions = context.interactions
+    .filter((interaction) => interaction.status === "pending")
+    .sort((left, right) => timestamp(left.created_at) - timestamp(right.created_at));
   const activityItems = toActivityItems(context.activity, memberById).map((item) => {
     if (!item.id.startsWith("message:")) return item;
     const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
@@ -128,6 +131,19 @@ export function TeamWarRoom({
         </Button>
       ),
     };
+  });
+  [...pendingInteractions].reverse().forEach((interaction) => {
+    activityItems.unshift(toInteractionActivity(
+      interaction,
+      memberById,
+      actionsEnabled,
+      (optionId) => dispatch(onAction, resolvePendingInteraction(
+        run.id,
+        interaction.id,
+        optionId,
+        interaction.route === "human" ? "operator" : "host",
+      )),
+    ));
   });
   const pressureActivityIndex = selectedMember?.status === "blocked"
     ? activityItems.map((item) => item.kind).lastIndexOf("decision")
@@ -295,7 +311,7 @@ export function TeamWarRoom({
         <ContextRail quiet label="Team context">
           <WaveModule wave={wave} onOpen={() => wave && onSelectionChange({ surface: "missions", missionId: wave.mission_id, waveId: wave.id, teamId: undefined })} />
           <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />
-          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} createdAt={run.created_at} completedAt={run.completed_at} />
+          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
           <SelectedMemberModule
             member={selectedMember}
             assignment={selectedAssignment?.body}
@@ -402,6 +418,51 @@ export function TeamWarRoom({
       </div>
     </FocusShell>
   );
+}
+
+function toInteractionActivity(
+  interaction: PendingInteraction,
+  members: Map<string, MemberRun>,
+  actionsEnabled: boolean,
+  onResolve: (optionId: string) => void,
+): WorkbenchActivityItem {
+  return {
+    id: `interaction:${interaction.id}`,
+    kind: "decision",
+    glyph: interaction.kind === "question" ? "message" : "decision",
+    title: (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <span>{interaction.title}</span>
+        <Badge tone="warn">{interaction.route} decision</Badge>
+      </span>
+    ),
+    body: interaction.prompt,
+    actor: memberLabel(members, interaction.member_run_id),
+    timestamp: formatTime(interaction.created_at),
+    tone: "warn",
+    prominence: "pressure",
+    action: (
+      <div className="flex max-w-72 flex-wrap justify-end gap-1.5 rounded-lg border border-status-warn/25 bg-status-warn/[0.055] p-2">
+        {interaction.options.map((option) => (
+          <Button
+            key={option.id}
+            size="sm"
+            variant={option.intent?.startsWith("reject") ? "secondary" : "default"}
+            disabled={!actionsEnabled || interaction.route === "policy"}
+            onClick={() => onResolve(option.id)}
+          >
+            {option.label}
+          </Button>
+        ))}
+        {interaction.route === "policy" && (
+          <span className="self-center text-[10px] text-muted-foreground">Awaiting governed policy decision</span>
+        )}
+        {interaction.options.length === 0 && (
+          <span className="text-[10px] text-muted-foreground">No compatible response option</span>
+        )}
+      </div>
+    ),
+  };
 }
 
 function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, onComplete }: {
@@ -527,8 +588,8 @@ function teamGateReadiness(wave: Wave | undefined, total: number): number | unde
   return spelled ? Math.min(total, words[spelled[1]]) : undefined;
 }
 
-function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; createdAt?: string; completedAt?: string | null }) {
-  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
+function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, executionRoot, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; executionRoot?: string | null; createdAt?: string; completedAt?: string | null }) {
+  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Execution root" value={executionRoot ?? "Not recorded (legacy run)"} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
 }
 
 function SelectedMemberModule({ member, assignment, currentAction, onMessage, onOpen }: { member?: MemberRun; assignment?: string; currentAction?: string; onMessage: () => void; onOpen: () => void }) {
@@ -536,14 +597,14 @@ function SelectedMemberModule({ member, assignment, currentAction, onMessage, on
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
       <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Session" value={member.provider_session_id ?? member.acp_session_id ?? "Not recorded"} mono /></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
 }
 
 function ResourcesModule({ members, delegationCount, liveCount }: { members: MemberRun[]; delegationCount: number; liveCount: number }) {
-  const sessions = members.filter((member) => member.provider_session_id || member.acp_session_id).length;
+  const sessions = members.filter((member) => member.native_session).length;
   const worktrees = members.filter((member) => member.worktree_ref).length;
   return <ContextModule title="Resources" kicker="Observed runtime"><div className="space-y-1.5 text-[11px]"><Fact label="Sessions" value={`${sessions} / ${members.length}`} /><Fact label="Worktrees" value={String(worktrees)} /><Fact label="Delegations" value={String(delegationCount)} /><Fact label="Live previews" value={String(liveCount)} /></div><p className="mt-2 text-[10px] text-muted-foreground">Observed resources only; no termination control is implied.</p></ContextModule>;
 }
@@ -575,7 +636,8 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
     if (item.kind === "action") {
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
+      const status = [action.provider_status, action.semantic_status].filter(Boolean).join(" · ");
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: status ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">provider {action.provider_status ?? "unknown"} · semantic {action.semantic_status ?? "not classified"}</span></> : action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");

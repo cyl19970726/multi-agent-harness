@@ -206,26 +206,6 @@ impl ResidentConfig {
     }
 }
 
-/// The recorded argv (for `ProviderSession.args`) of a resident invocation,
-/// the resident-mode sibling of `ClaudeAdapter::recorded_args` in `main.rs`. This is
-/// recording-only and honestly reflects `--input-format stream-json` instead of
-/// `-p <prompt>`.
-pub fn resident_recorded_args(resume_id: Option<&str>) -> Vec<String> {
-    let mut args = vec![
-        "-p".into(),
-        "--input-format".into(),
-        "stream-json".into(),
-        "--output-format".into(),
-        "stream-json".into(),
-        "--verbose".into(),
-    ];
-    if let Some(id) = resume_id {
-        args.push("--resume".into());
-        args.push(id.into());
-    }
-    args
-}
-
 /// Build the per-turn user-message stdin frame for `--input-format stream-json`.
 pub fn user_turn_frame(text: &str) -> String {
     let frame = serde_json::json!({
@@ -798,15 +778,6 @@ mod tests {
         // Third read hits EOF -> empty.
         let third = read_one_turn(&mut reader).unwrap();
         assert!(third.is_empty());
-    }
-
-    #[test]
-    fn resident_recorded_args_uses_input_format_not_dash_p_prompt() {
-        let args = resident_recorded_args(Some("sess-9"));
-        assert!(args.contains(&"--input-format".to_string()));
-        assert!(args.contains(&"stream-json".to_string()));
-        assert!(args.contains(&"--resume".to_string()));
-        assert!(args.contains(&"sess-9".to_string()));
     }
 
     #[test]

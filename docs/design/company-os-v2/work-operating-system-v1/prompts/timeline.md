@@ -17,4 +17,3 @@ Right rail: "Schedule pressure" listing overdue, due this week, approval delays,
 Constraints: readable operating timeline, not a complex task graph or dependency Gantt;
              no invented dependency arrows; durations and dates are secondary WorkItem fields
 ```
-

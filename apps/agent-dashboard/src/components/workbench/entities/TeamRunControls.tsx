@@ -85,6 +85,7 @@ export function TeamRunPanel({
         {needsYouCount > 0 && <Badge tone="warn">{needsYouCount} needs you</Badge>}
         {run.previous_run_id && <Badge tone="muted">retry attempt</Badge>}
       </div>
+      <dl className="mt-3 text-[11px]"><div className="grid grid-cols-[6rem_1fr] gap-2"><dt className="text-muted-foreground">Execution root</dt><dd className="min-w-0 break-words font-mono text-[10px] text-foreground">{run.execution_root ?? "Not recorded (legacy run)"}</dd></div></dl>
       <ul className="mt-3 space-y-1.5">
         {members.slice(0, 5).map((member) => <li key={member.id} className="flex min-w-0 items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{member.name ?? member.id}</span><span className="shrink-0 text-[11px] text-muted-foreground">{member.role ?? "member"}</span></li>)}
       </ul>

@@ -59,8 +59,14 @@ define the new information architecture.
 | --- | --- | --- |
 | [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | ordered execution and gate contract |
 | [Agent Team War Room](team-run-war-room.md) | implemented | one linked AgentTeamRun attempt |
-| [MemberRun Focus](member-run-focus.md) | planned | run-scoped member detail |
-| [Debug](debug.md) | planned | page-local contract |
+| [MemberRun Focus](member-run-focus.md) | implemented candidate | run-scoped member detail |
+| [Standing Agent Focus](standing-agent-focus.md) | proposed | durable organization identity and collaboration |
+| [Debug](debug.md) | planned secondary surface | current raw objects and source diagnosis |
+
+The deleted Team workspace, AgentMember workbench, Evidence/Review/Decision,
+and Warnings/repair specs described the retired Goal/Task/Proposal/Gap stack.
+Git history is sufficient provenance; those files must not be used as active
+product input or recreated as compatibility pages.
 
 ## Boundary
 

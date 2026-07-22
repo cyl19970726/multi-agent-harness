@@ -14,7 +14,8 @@ those truths.
 
 The product needs provider turns that can be launched, correlated, observed,
 resumed and closed. A provider turn is useful only after the Harness can relate
-it to the executor or Host that requested it and preserve its observable output
+it to the executor or Host that requested it. Harness references the
+provider-native session without copying its transcript or activity stream and
 without inventing lifecycle control.
 
 Final acceptance for this mechanism:
@@ -23,9 +24,9 @@ Final acceptance for this mechanism:
 select Mission/Wave executor or direct WorkItem action
   -> start or resume AgentRuntime
   -> deliver bounded request / executor-native assignment
-  -> record delivery and provider session
-  -> reduce provider events into harness state
-  -> return outcome, artifacts, checks and optional attribution
+  -> bind provider-native session
+  -> project native activity on demand
+  -> promote explicit outcome, artifacts, checks and optional attribution
   -> close or recover runtime
 ```
 
@@ -36,7 +37,8 @@ select Mission/Wave executor or direct WorkItem action
 | What requested execution? | Mission/Wave executor, Host action or linked WorkItem execution reference. |
 | Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
-| What did the provider do? | `ProviderSession` plus `AgentEvent` stream. |
+| What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
+| How does a member receive work? | `MessageDelivery` maps harness messages to provider turns or native inputs. |
 | How does it receive work? | Delivery maps the requesting executor's assignment or Host request to provider input. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
@@ -46,16 +48,21 @@ select Mission/Wave executor or direct WorkItem action
 
 | Object | Owns | Refuses |
 | --- | --- | --- |
-| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity or organization authority |
-| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment or acceptance ownership |
+| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
+| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
-| `ProviderSession` | one provider interaction and reproducible request/output refs | canonical WorkItem or Wave state |
-| `AgentEvent` | normalized provider/runtime/hook events | raw provider-specific semantics |
+| `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
+| `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
 | `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
 
 ## Provider Interfaces
+
+This is the provider-neutral interface model, not a claim that every operation
+is one public Rust trait today. Implemented V1 native reads return a bounded
+projection with `truncated`; cursor pagination remains an extension documented
+in [integration/native-session-storage.md](integration/native-session-storage.md).
 
 ```text
 AgentProvider
@@ -64,17 +71,20 @@ AgentProvider
   health(runtime)
   deliver(request, context)
   interrupt(runtime, reason)
-  read_events(runtime, cursor)
+  bind_native_session(launch_receipt)
+  read_native_session(session_ref) -> bounded projection
+  resume_native_session(session_ref, input)
 
 Delivery
   package_context(request, execution_refs, artifact_refs, skill_refs, permissions)
   send(provider_request)
   correlate_response(response_or_event)
-  record_delivery(status, provider_session)
+  record_delivery(status, native_session_ref)
 
-EventReducer
-  provider_event -> AgentEvent
-  AgentEvent -> runtime health and executor-specific projections
+NativeActivityProjector
+  provider-native record -> ephemeral sanitized projection
+  provider interaction boundary -> PendingInteraction / control acknowledgement
+  explicit promotion -> handoff / outcome / artifact or check ref
 
 WorkspaceProvider
   prepare_workspace(execution)
@@ -85,7 +95,8 @@ WorkspaceProvider
 
 Codex, Claude Code, Kimi, OpenClaw, a Permission Agent, or a future cloud
 provider should implement these boundaries without changing Mission/Wave,
-executor-native records, WorkItem, Approval or organization semantics.
+executor-native records, TeamMessage, PendingInteraction, outcome, artifact,
+WorkItem, Approval, gate, or organization semantics.
 
 ## Queue And Context Policy
 
@@ -148,13 +159,15 @@ generic runtime or product authority.
 
 ## Invariants
 
-1. Executor-native and Company OS stores are canonical; provider transcript is
-   an execution reference, never product authority.
+1. Harness store is canonical for coordination; the provider-native session is
+   canonical for per-agent transcript, activity, turn lifecycle, and resume.
 2. Hooks and provider notifications are event inputs, not assignment ownership.
 3. A runtime can fail while the member identity remains recoverable.
 4. Provider-native subagents are visible child threads, not harness members
    unless explicitly promoted.
-5. Dashboard reads normalized harness state, not raw provider state directly.
+5. Dashboard joins normalized Harness coordination with provider-adapter native
+   session projections; browser code does not read private provider files
+   directly and Harness does not mirror them.
 6. Delivery claims happen before provider side effects.
 7. Closed, closing, and retired members fail normal delivery.
 
@@ -164,7 +177,9 @@ The harness serves real-time events via Server-Sent Events (SSE) at the `/v1/eve
 
 ### Endpoint: `GET /v1/events`
 
-**Purpose**: Stream provider-neutral harness events (agent events, messages, provider sessions, workflow runs/steps, live provider turn events) to connected clients as they are recorded. The stream is project-scoped: `?project=<id>` selects the project; frames from other projects never leak into a client's stream.
+**Purpose**: Stream Harness coordination/lifecycle changes plus transient native
+activity projections to connected clients. The stream is project-scoped:
+`?project=<id>` selects the project; frames from other projects never leak.
 
 **Response Headers**:
 ```
@@ -181,9 +196,9 @@ The endpoint emits the following event types:
 - **`snapshot`**: Initial state sent on connection (contains `generated_at` timestamp). Clients use this to initialize their state during reconnect.
 - **`agent_event`**: A new `AgentEvent` was recorded (provider/runtime/hook event).
 - **`message`**: A new `Message` was created or its `delivery_status` changed.
-- **`provider_session`**: A new `ProviderSession` was recorded or its `status` changed.
 - **`workflow_run`** / **`workflow_step`**: A `WorkflowRun` / `WorkflowStep` record was appended or updated (dynamic workflow runtime).
-- **`provider_turn_event`** / **`provider_turn_event_normalized`**: A raw provider turn-event line teed live to `provider_turn_events.jsonl` during delivery, and its normalized `HarnessTurnEvent` expansion.
+- **`native_activity`**: Ephemeral provider-native projection when the selected
+  adapter/mode supports live publication; reconnect re-reads native state.
 
 ### Event Frame Format
 
@@ -219,12 +234,14 @@ The connection sends a keepalive comment every ~15 seconds (when no events are b
 
 ### Implementation
 
-The watcher thread monitors each project's jsonl store files (`agent_events.jsonl`, `messages.jsonl`, `provider_sessions.jsonl`, `workflow_runs.jsonl`, `workflow_steps.jsonl`, `provider_turn_events.jsonl`) for appends. On detection (~150ms poll), new records are parsed and broadcast via a crossbeam channel fan-out to the clients subscribed to that project. The project registry is re-scanned on every poll, so a project registered after `serve` starts gets a live event channel without a restart. Each client connection receives events independently.
+The watcher monitors Harness-owned project JSONL files. Provider adapters
+publish ephemeral native projections and support on-demand reconstruction from
+`NativeSessionRef`.
 
 ### How A Member Looks Live
 
 The end-to-end model of how these events, the four-layer `runtime_health`
-probe, and the `ProviderSession` lifecycle compose into an `AgentMember`'s
+probe, `MessageDelivery`, and the native session binding compose into an `AgentMember`'s
 real-time state — and how that state reaches the Agent Dashboard — is the
 canonical contract in
 [member-runtime-observability.md](member-runtime-observability.md).

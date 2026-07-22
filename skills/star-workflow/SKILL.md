@@ -217,7 +217,7 @@ Rules every call obeys:
   `artifact_manifest([...], artifact_root="out", write_roots=["out"])` when a
   workflow produces files that should be visible and validated after completion.
 - `return_status=True` changes the script-visible return into a dict with `ok`,
-  `reason`, `detail`, `text`, `structured`, `provider_session_id`, `label`,
+  `reason`, `detail`, `text`, `structured`, `label`,
   `phase`, `provider`, `isolation`, and `ordinal`. Use it when the workflow needs
   to branch on timeout/failure categories or retry/abort deliberately instead of
   guessing from prose.
@@ -906,7 +906,6 @@ Useful flags:
 | `--resume <prior_run_id>` | Re-run the SAME program reusing the prior run's SUCCEEDED leaves (no re-spend); fails if the script changed. |
 
 Use `timeout_s=` for a per-leaf wall-clock cap; `--timeout-ms` remains the global idle-since-last-output timer and resets whenever the worker streams output.
-| `--trace durable\|live` | Retain the heavy per-step turn-event trace (`durable`, default) or stream-only (`live`). |
 | `--model <m>` | Run-wide default model; a per-call `model=` on an `agent()` overrides it. |
 | `--effort <e>` | Run-wide default reasoning effort; a per-call `effort=` on an `agent()` overrides it. |
 | `--progress` | Stream a compact NDJSON line per step (phase, label, `running`/`ok`/`failed`) to STDERR as the run executes — the phase-by-phase timeline — while STDOUT stays the single final JSON. |
@@ -986,9 +985,9 @@ Pick by how live you need it:
   `workflow_steps` advance per step).
 - **Visual / SSE.** Point a live server at the SAME store
   (`harness serve --store <path>`) and open the dashboard **Workflows** surface:
-  every run, a per-step timeline (status, provider, `output_summary`), and "drill in"
-  to a step's turn events, updating live over SSE. `--trace durable` (default)
-  retains the per-node trace; `--trace live` is stream-only.
+  every run, a per-step timeline (status, provider, `output_summary`), and an
+  on-demand provider-native activity view through `NativeSessionRef`. Harness
+  does not retain a second provider turn trace.
 - **Completion hook (push — for a backgrounded run).** Set
   `HARNESS_WORKFLOW_ON_COMPLETE` to a shell command and the harness fires it the
   moment a run reaches a terminal status, passing `HARNESS_RUN_ID` /

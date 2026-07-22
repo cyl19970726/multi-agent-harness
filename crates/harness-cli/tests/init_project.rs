@@ -110,7 +110,7 @@ fn init_store_override_uses_raw_path_for_backcompat() {
         explicit.is_dir(),
         "explicit store not created: {explicit:?}"
     );
-    assert!(explicit.join("provider-sessions").is_dir());
+    assert!(!explicit.join("provider-sessions").exists());
     // No central registry entry is created for a raw `--store` override.
     assert!(
         !home.registry_path().exists(),

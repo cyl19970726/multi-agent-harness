@@ -25,9 +25,11 @@ use serde_json::{json, Value};
 
 use crate::{
     acknowledge_team_message, close_mission, create_mission, create_team_run, create_wave,
-    drive_prepared_team_run, gate_wave, latest_member_runs_in_append_order,
+    drive_prepared_team_run, gate_wave, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start, send_team_message,
+    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start,
+    resolve_pending_interaction_value, send_team_message, steer_team_member_value,
     team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
     ResolvedStore, TeamMemberSpec,
 };
@@ -36,17 +38,21 @@ use crate::{
 /// (the simple end of "reply with the client's version or the lower one").
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Where the default `harness serve` surface renders the Agent Team console;
-/// the tools return it so the host can point a human at the live view.
-const DASHBOARD_URL: &str = "http://127.0.0.1:8787";
+/// The Vite Dashboard is the human UI. Its development proxy exposes the
+/// Harness API at the same origin, so deep links must not point at the
+/// API-only `harness serve` root on port 8787.
+const DASHBOARD_UI_ORIGIN: &str = "http://127.0.0.1:5173";
+const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(resolved: &ResolvedStore, team_run_id: &str) -> String {
     match resolved.context.as_ref() {
         Some(context) => format!(
-            "{DASHBOARD_URL}/?surface=team&team={team_run_id}&project={}",
+            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}&project={}",
             context.id
         ),
-        None => format!("{DASHBOARD_URL}/?surface=team&team={team_run_id}"),
+        None => format!(
+            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}"
+        ),
     }
 }
 
@@ -138,6 +144,9 @@ fn call_tool(
         "team_run_list" => tool_team_run_list(store),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
+        "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
+        "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
+        "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
     };
@@ -149,6 +158,33 @@ fn call_tool(
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
     }))
+}
+
+fn tool_team_run_steer_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    steer_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_interrupt_member(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    interrupt_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_resolve_interaction(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let interaction_id = required_str(arguments, "interaction_id")?;
+    resolve_pending_interaction_value(store, team_run_id, interaction_id, arguments)
+        .map_err(|error| error.to_string())
 }
 
 fn tool_team_run_start(
@@ -384,12 +420,17 @@ fn tool_team_run_create(
             name: member_str("name")?.to_string(),
             role: member_str("role")?.to_string(),
             provider: member_str("provider")?.to_string(),
+            execution_mode: optional_str(member, "execution_mode")?,
             model: optional_str(member, "model")?,
+            worktree_ref: optional_str(member, "worktree_ref")?,
             owned_paths,
+            resume_native_session_id: optional_str(member, "resume_native_session_id")?,
         });
     }
     let created = create_team_run(
         store,
+        resolved.context.as_ref(),
+        optional_str(arguments, "execution_root")?,
         objective,
         budget_limit_usd,
         "mcp",
@@ -405,6 +446,8 @@ fn tool_team_run_create(
         "member_run_ids": created.team_run.member_run_ids,
         "mission_id": created.team_run.mission_id,
         "wave_id": created.team_run.wave_id,
+        "execution_root": created.team_run.execution_root,
+        "member_runs": created.member_runs,
         "assignment_messages": created.assignment_messages,
         "dashboard_url": team_dashboard_url(resolved, &created.team_run.id),
     }))
@@ -451,6 +494,11 @@ fn tool_team_run_status(
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
     let messages =
         latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
+    let pending_interactions: Vec<_> = latest_pending_interactions_in_append_order(store)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|interaction| interaction.team_run_id == id)
+        .collect();
     let members: Vec<Value> = member_runs
         .iter()
         .map(|member| {
@@ -478,6 +526,7 @@ fn tool_team_run_status(
         "team_run": run,
         "wave_index": wave_index,
         "members": members,
+        "pending_interactions": pending_interactions,
         "unacked_messages": unacked_messages,
         "dashboard_url": team_dashboard_url(resolved, id),
     }))
@@ -623,7 +672,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_create",
-            "description": "Create an Agent Team run with at least one member: journals the planning run, member rows, canonical queued Assignment messages, and events. Returns run/member ids, assignment correlations, and a run-specific Dashboard URL. Call team_run_start to execute it.",
+            "description": "Create an Agent Team run with at least one member and an explicit workspace contract: execution_root defaults to the selected project_root; each member may override it with a same-repository Git worktree. Journals planning rows and canonical Assignment messages, then returns ids, correlations, and a Dashboard URL. Call team_run_start to execute it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -632,6 +681,7 @@ fn tool_definitions() -> Value {
                     "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
                     "mission_id": {"type": "string", "description": "Optional durable Mission id. New native linkage requires a concrete wave_id; omit both ids only for an unlinked compatibility run."},
                     "wave_id": {"type": "string", "description": "Optional durable Wave id for this run. The run inherits that Wave's Mission when mission_id is omitted; a supplied mission_id must match."},
+                    "execution_root": {"type": "string", "minLength": 1, "description": "Optional TeamRun execution root. Must be the selected project_root or a Git worktree sharing its git common directory; defaults to project_root."},
                     "members": {
                         "type": "array",
                         "description": "One entry per team member.",
@@ -641,9 +691,12 @@ fn tool_definitions() -> Value {
                             "properties": {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
-                                "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
+                                "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
+                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"], "description": "Optional provider-specific execution mode."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
-                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."}
+                                "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
+                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
+                                "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
                             "required": ["name", "role", "provider"]
                         }
@@ -654,7 +707,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped Dashboard URL immediately. The current executable member adapter is Kimi ACP; unsupported providers fail honestly.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Executable modes are Codex batch (codex_exec), Codex interactive (codex_app_server), Kimi ACP (kimi_acp), and Claude CLI (claude_cli); unregistered providers or modes fail honestly. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -693,7 +746,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction (null when the member has not acted yet), the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions including exact option ids, the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -717,6 +770,49 @@ fn tool_definitions() -> Value {
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
+            }
+        },
+        {
+            "name": "team_run_resolve_interaction",
+            "description": "Resolve one provider-originated pending interaction using its exact provider option id. Lead-routed interactions require resolved_by=host|lead; human-routed interactions require operator|human; policy-routed interactions require policy. Kimi ACP can resume the same provider request after resolution.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "interaction_id": {"type": "string"},
+                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider interaction."},
+                    "response_text": {"type": "string", "description": "Free-form response when the provider contract supports it."},
+                    "resolved_by": {"type": "string", "enum": ["host", "lead", "operator", "human", "policy"]}
+                },
+                "required": ["team_run_id", "interaction_id", "resolved_by"]
+            }
+        },
+        {
+            "name": "team_run_steer_member",
+            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; batch modes must use team_run_send_message for the next round.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "content": {"type": "string", "minLength": 1},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id", "content"]
+            }
+        },
+        {
+            "name": "team_run_interrupt_member",
+            "description": "Cooperatively interrupt one active provider turn when its execution mode advertises supports_cancel. Codex app-server uses turn/interrupt; Kimi ACP uses session/cancel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id"]
             }
         },
         {

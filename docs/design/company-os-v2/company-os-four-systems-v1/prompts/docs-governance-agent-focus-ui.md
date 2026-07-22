@@ -13,4 +13,3 @@ Right rail: reports to Lead, authority, governed Skills, maintained Docs, linked
 Constraints: Agent proposes structural changes but does not treat chat as company truth;
              skills are tools not authority; no raw thinking; no watermark
 ```
-

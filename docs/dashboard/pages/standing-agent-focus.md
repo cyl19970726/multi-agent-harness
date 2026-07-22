@@ -22,7 +22,7 @@ provider restarts and may participate in multiple Missions or Workflows. A
 ```mermaid
 flowchart LR
   A["AgentMember\ndurable identity"] --> R["AgentRuntime"]
-  A --> S["ProviderSession"]
+  A --> S["NativeSessionRef"]
   A --> X["StandingAssignment\nread-only projection"]
   X --> M["Mission / Wave"]
   X --> W["WorkflowRun / Step"]
@@ -76,9 +76,8 @@ Projection rules:
 
 - Mission/Wave participation requires an explicit `MemberRun.agent_member_id`
   or equivalent stable source link.
-- Workflow participation may use an explicit step owner or the existing
-  `ProviderSession.agent_member_id` link when that session is the step's
-  recorded execution session.
+- Workflow participation uses an explicit step owner and the step's
+  `NativeSessionRef` when provider-native activity is available.
 - A direct assignment must be an explicit assignment/task message addressed to
   the durable AgentMember; ordinary conversation is activity, not assignment.
 - Missing links remain missing. The UI must not fall back to legacy
@@ -98,8 +97,8 @@ Center reading order:
    model;
 2. availability banner, including exclusive-assignment truth;
 3. chronological cross-context activity: direct messages, explicit assignment
-   entries, workflow participation, delivered artifacts, provider-session
-   summaries, and agent replies;
+   entries, workflow participation, delivered artifacts, provider-native
+   activity projections, and agent replies;
 4. composer addressed to the AgentMember, with queue/busy behavior stated
    honestly.
 
@@ -133,7 +132,7 @@ fixed composer; context remains a disclosure rather than disappearing.
 - one healthy durable AgentMember with explicit `available` state;
 - multiple non-exclusive assignments from at least two source kinds;
 - capacity remains available;
-- persistent provider-session history;
+- provider-native session history reached through explicit native-session refs;
 - a delivered artifact and durable message history;
 - no single Wave owns the page and no thinking is persisted.
 

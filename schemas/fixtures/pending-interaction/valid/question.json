@@ -1,0 +1,19 @@
+{
+  "id": "interaction-1",
+  "team_run_id": "team-run-1",
+  "member_run_id": "member-run-1",
+  "provider": "kimi",
+  "provider_request_id": "7",
+  "method": "session/request_permission",
+  "kind": "question",
+  "route": "lead",
+  "status": "pending",
+  "title": "AskUserQuestion",
+  "prompt": "Which implementation should be used?",
+  "options": [
+    { "id": "q0_opt_0", "label": "Use the native contract", "intent": "allow_once" },
+    { "id": "q0_skip", "label": "Skip", "intent": "reject_once" }
+  ],
+  "tool_call_id": "12:ask-user",
+  "created_at": "2026-07-21T12:00:00Z"
+}

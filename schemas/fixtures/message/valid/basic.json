@@ -10,7 +10,10 @@
   "evidence_ids": [],
   "created_at": "2026-05-26T00:00:00Z",
   "delivery": {
-    "provider_session_id": null,
+    "delivery_id": null,
+    "execution_status": null,
+    "native_session": null,
+    "started_at": null,
     "provider_request_id": null,
     "provider_thread_id": null,
     "provider_turn_id": null,

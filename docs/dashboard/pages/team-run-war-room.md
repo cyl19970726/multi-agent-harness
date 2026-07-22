@@ -29,10 +29,19 @@ Required data:
 - `MemberRun` state, role, provider/model, current explicit action, pressure,
   availability, and last update;
 - `TeamMessage` delivery state and correlation lineage;
-- `MemberAction`, `TeamRunEvent`, observed `DelegationRun`, artifacts,
+- Harness control/lifecycle records, observed `DelegationRun`, artifacts,
   evidence/check references, and attempt outcome;
-- resource/worktree/session summaries; and
-- transient member activity previews when available.
+- `PendingInteraction` questions, approvals, and plan reviews, including route,
+  exact provider options, semantic resolution, and resolving actor;
+- resource/worktree/native-session binding summaries; and
+- ephemeral native member activity projections when the provider session is
+  available, plus transient thinking previews when eligible.
+
+The War Room is a joined read model, not a transcript database. Durable nodes
+come from Harness coordination; provider chat, tools, commands, file events,
+and turns are read on demand from each member's native session and labelled by
+source/availability. Their absence does not erase assignments, outcomes, or
+Wave gates.
 
 Ownership belongs to assignment messages plus `correlation_id`. The page may
 summarize owned paths/constraints but must not manufacture per-member Tasks.
@@ -85,6 +94,12 @@ attempt outcome from parent Wave-gate decision. Operator actions such as ACK,
 review, or start-pending attach to the relevant activity record instead of
 forming a separate alert band.
 
+A pending provider interaction is a pressure-bearing decision row with the
+provider's exact options. Selecting an option posts to the TeamRun-scoped
+resolve route. `tool completed` remains provider lifecycle, while
+answered/approved/denied/dismissed is the semantic outcome. The UI must never
+label an unanswered question successful.
+
 ### Tablet — `900x1180`
 
 - Collapse the product sidebar; retain mission/wave/attempt breadcrumb.
@@ -130,6 +145,8 @@ forming a separate alert band.
 - Open MemberRun Focus, Wave Canvas, an artifact, or a provider session
   summary.
 - Review blockers, waiting-for-approval, handoffs, and evidence.
+- Answer a Lead-routed provider question or plan review; display policy/Human
+  routing honestly and do not let a Lead bypass company authority rules.
 - Complete or stop the attempt only when the backend supports that transition;
   running-provider cancellation is hidden until cooperative interruption is
   real.

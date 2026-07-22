@@ -1,0 +1,12 @@
+{
+  "provider": "codex",
+  "execution_mode": "codex_app_server",
+  "native_session_id": "019f8584-f91d-7b61-9945-26b6780bfa95",
+  "native_locator_kind": "codex_rollout",
+  "provider_version": "0.1.0",
+  "adapter_contract_version": "1",
+  "availability": "available",
+  "supports_resume": true,
+  "last_verified_at": "2026-07-22T00:00:00Z",
+  "parent_native_session_id": null
+}

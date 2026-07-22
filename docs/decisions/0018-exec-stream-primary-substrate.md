@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Superseded in its storage/projection claims by ADR 0032. The headless execution
+mode remains supported, but its stream is transport—not a Harness ledger.
 
 Amended by [0021 (resident-daemon warm-child host)](0021-resident-daemon.md):
 clarifies that keeping documented exec-stream children warm behind an internal
@@ -67,10 +68,9 @@ providers — one mental model, one parser family.
   `codex exec --json` and `claude -p --output-format stream-json` (or the
   Claude Agent SDK as a thin typed sidecar), one run per claimed delivery
   (optionally a small warm pool if latency matters).
-- Normalize the NDJSON/event stream into the **same** neutral `AgentEvent` /
-  `ProviderSession` rows the existing path writes, served to the Dashboard over
-  SSE. The neutral object model, the harness-owned mailbox, and the atomic
-  claim/lease are substrate-independent and are **kept verbatim**.
+- Reduce the NDJSON/event stream in memory, bind `NativeSessionRef`, and promote
+  only Harness-owned delivery/control/outcome facts. The mailbox and atomic
+  claim/lease remain substrate-independent.
 - Generalize the `control_endpoint` from `unix://socket` to a provider-neutral
   delivery handle (process/session descriptor); neither provider needs a
   long-lived socket in the target design.
@@ -85,7 +85,7 @@ risk below). It is no longer the default or the acceptance target.
 ## Consequences
 
 - **Keep:** the neutral object model (`AgentMember`, `AgentProviderConfig`,
-  `AgentEvent`, `ProviderSession`), the neutral seam, harness-owns-mailbox +
+  `NativeSessionRef` plus explicit outcomes), the neutral seam, harness-owns-mailbox +
   atomic claim/lease, JSONL-as-canonical, and SSE-as-delivery.
 - **Retire (later WP):** the Codex app-server WebSocket-over-UDS path — WS
   framing, socket lifecycle, the `--listen` spawn + socket-poll, and the dead

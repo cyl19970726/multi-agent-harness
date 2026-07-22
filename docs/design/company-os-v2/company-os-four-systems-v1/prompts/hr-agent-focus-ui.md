@@ -15,4 +15,3 @@ Right rail: reports to Lead, permissions, governed Skills, capacity signals, app
 Constraints: HR proposes and provisions but cannot bypass Lead/Human gates; skills are tools,
              not authority; no raw thinking; no provider telemetry as business truth; no watermark
 ```
-

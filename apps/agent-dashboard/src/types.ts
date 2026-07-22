@@ -16,7 +16,7 @@ export interface Project {
 
 export type MessageKind = "message" | "task" | "report";
 export type SenderKind = "agent" | "operator" | "system";
-export type ProviderSessionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
+export type ProviderExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
 
 /**
  * The backend's four-layer runtime health snapshot (serialized
@@ -45,6 +45,7 @@ export interface AgentMember {
   runtime_alive?: boolean;
   runtime_health?: RuntimeHealth | null;
   control_endpoint?: string | null;
+  native_session?: NativeSessionRef | null;
   provider_thread_id?: string | null;
   provider_agent_path?: string | null;
   provider_agent_nickname?: string | null;
@@ -85,22 +86,6 @@ export interface AgentMcpServer {
   allowed_tools?: string[];
 }
 
-/** Per-agent activity stats derived client-side from provider_sessions
- * (computeAgentStats). No backend aggregate; powers the list sparkline/run
- * count and the detail Tasks-tab performance summary. */
-export interface AgentStats {
-  runCount30d: number;
-  runsTotal: number;
-  succeeded: number;
-  failed: number;
-  successRate: number | null;
-  avgDurationMs: number | null;
-  activity7d: number[];
-  lastActiveMs: number | null;
-  runningCount: number;
-  liveSessionId: string | null;
-}
-
 export interface AgentTeam {
   id: string;
   name?: string;
@@ -127,38 +112,16 @@ export interface Message {
 }
 
 export interface MessageDelivery {
-  provider_session_id?: string | null;
+  delivery_id?: string | null;
+  execution_status?: ProviderExecutionStatus | string | null;
+  native_session?: NativeSessionRef | null;
+  started_at?: string | null;
   provider_request_id?: string | null;
   provider_thread_id?: string | null;
   provider_turn_id?: string | null;
   terminal_source?: string | null;
   delivered_at?: string | null;
   last_error?: string | null;
-}
-
-export interface ProviderSession {
-  id: string;
-  provider?: string;
-  agent_member_id?: string;
-  workspace_ref?: string | null;
-  provider_thread_id?: string | null;
-  provider_turn_id?: string | null;
-  terminal_source?: string | null;
-  status?: ProviderSessionStatus | string;
-  command?: string;
-  args?: string[];
-  prompt_ref?: string | null;
-  prompt_summary?: string | null;
-  provider_session_ref?: string | null;
-  exit_code?: number | null;
-  stdout_ref?: string | null;
-  stderr_ref?: string | null;
-  jsonl_ref?: string | null;
-  transcript_ref?: string | null;
-  last_message_ref?: string | null;
-  started_at?: string;
-  ended_at?: string | null;
-  evidence_ids?: string[];
 }
 
 export interface AgentEvent {
@@ -208,80 +171,6 @@ export interface DocRegistryEntry {
   lifecycle?: "volatile" | "stable" | "archival";
   canonicalFor?: string[];
   dependsOn?: string[];
-}
-
-/**
- * Canonical, provider-agnostic turn-event vocabulary (mirrors harness-core
- * `HarnessTurnEventKind`, snake_case wire spelling). The dashboard renders off
- * `kind` so a new provider needs no new frontend branch — the backend
- * `ProviderAdapter::normalize_turn_event` maps its raw events onto these.
- */
-export type HarnessTurnEventKind =
-  | "turn_started"
-  | "turn_completed"
-  | "message_delta"
-  | "message"
-  | "tool_call"
-  | "tool_result"
-  | "reasoning"
-  | "usage"
-  | "error"
-  | "provider_meta"
-  | "unknown";
-
-/** A normalized tool invocation (`tool_call` kind). */
-export interface HarnessToolCall {
-  id?: string;
-  name: string;
-  args: unknown;
-}
-
-/** A normalized tool result (`tool_result` kind). */
-export interface HarnessToolResult {
-  tool_call_id?: string;
-  name?: string;
-  content: string;
-  is_error: boolean;
-}
-
-/** Normalized token usage (`usage`/`turn_completed` kinds). */
-export interface HarnessTokenUsage {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  cached_input_tokens?: number;
-  reasoning_output_tokens?: number;
-}
-
-/**
- * One normalized turn event, from `GET /v1/provider-sessions/{id}/normalized-events`
- * (and the historical `/v1/sessions/{id}/normalized-events`) or the live
- * `provider_turn_event_normalized` SSE frame. `raw_provider_event` always
- * retains the original provider JSON so a "show raw" view loses nothing; `seq`
- * is a harness-assigned monotonic per-session counter used to merge/dedupe the
- * live stream against a fetched snapshot.
- */
-export interface HarnessTurnEvent {
-  session_id: string;
-  provider: string;
-  seq: number;
-  ts: string;
-  provider_thread_id?: string;
-  provider_turn_id?: string;
-  provider_item_id?: string;
-  kind: HarnessTurnEventKind;
-  role?: string;
-  text?: string;
-  delta?: string;
-  tool_call?: HarnessToolCall;
-  tool_result?: HarnessToolResult;
-  usage?: HarnessTokenUsage;
-  model?: string;
-  duration_ms?: number;
-  cost_usd?: number;
-  status?: string;
-  error?: string;
-  raw_provider_event: unknown;
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,6 +266,8 @@ export interface TeamRun {
   host_surface?: string | null;
   host_thread_id?: string | null;
   objective?: string | null;
+  /** Concrete workspace selected for this attempt; distinct from the centralized store root. */
+  execution_root?: string | null;
   status?: TeamRunStatus | string;
   member_run_ids?: string[];
   budget_limit_usd?: number | null;
@@ -398,6 +289,18 @@ export type MemberRunStatus =
   | "failed"
   | "stopped";
 
+/** Non-secret, immutable-at-start facts about the member's provider workspace. */
+export interface MemberWorkspaceSnapshot {
+  /** Actual process cwd used to spawn the provider member. */
+  cwd: string;
+  git_head?: string | null;
+  git_branch?: string | null;
+  /** Discovered path roots only; instruction file contents are never part of this snapshot. */
+  instruction_roots: string[];
+  /** Discovered path roots only; skill contents are never part of this snapshot. */
+  skill_roots: string[];
+}
+
 /** One member's participation in a {@link TeamRun}. */
 export interface MemberRun {
   id: string;
@@ -407,14 +310,65 @@ export interface MemberRun {
   role?: string | null;
   provider?: "codex" | "claude" | "kimi" | string;
   model?: string | null;
+  provider_profile?: ProviderIntegrationProfile | null;
   status?: MemberRunStatus | string;
-  provider_session_id?: string | null;
-  acp_session_id?: string | null;
+  native_session?: NativeSessionRef | null;
+  /** Optional member-specific Git worktree override of the TeamRun execution root. */
   worktree_ref?: string | null;
+  workspace_snapshot?: MemberWorkspaceSnapshot | null;
   owned_paths?: string[];
   started_at?: string;
   last_event_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface NativeSessionRef {
+  provider: string;
+  execution_mode: string;
+  native_session_id: string;
+  native_locator_kind: string;
+  provider_version?: string | null;
+  adapter_contract_version: string;
+  availability: "available" | "stale" | "missing" | "incompatible" | "unknown" | string;
+  supports_resume: boolean;
+  last_verified_at?: string | null;
+  parent_native_session_id?: string | null;
+}
+
+export interface NativeActivityItem {
+  kind: "message" | "tool" | string;
+  status: "started" | "completed" | "failed" | string;
+  title: string;
+  summary?: string;
+  occurred_at?: string | null;
+}
+
+export interface NativeActivityProjection {
+  native_session_id: string;
+  provider: string;
+  execution_mode: string;
+  availability: NativeSessionRef["availability"];
+  items: NativeActivityItem[];
+  truncated: boolean;
+}
+
+export interface ProviderIntegrationProfile {
+  provider: string;
+  execution_mode: string;
+  provider_version?: string | null;
+  adapter_contract_version?: string | null;
+  reviewed_provider_versions?: string[];
+  compatibility_status?: "current" | "review_required" | "incompatible" | "unavailable" | "unknown" | string;
+  adapter_reviewed_at?: string | null;
+  compatibility_note?: string | null;
+  interaction_mode: "pause_and_resume" | "end_round_and_follow_up" | "unsupported" | string;
+  tool_event_fidelity: "none" | "summary" | "structured" | string;
+  artifact_event_fidelity: "none" | "summary" | "structured" | string;
+  supports_cancel: boolean;
+  supports_resume: boolean;
+  observes_native_subagents: boolean;
+  observes_background_tasks: boolean;
+  thinking_transient_only: boolean;
 }
 
 /**
@@ -480,12 +434,42 @@ export interface MemberAction {
   team_run_id?: string;
   member_run_id?: string;
   action_type?: string;
+  provider_call_id?: string | null;
   status?: "started" | "progress" | "succeeded" | "failed" | "cancelled" | string;
+  provider_status?: string | null;
+  semantic_status?: string | null;
   title?: string;
   summary?: string;
   evidence_refs?: string[];
   started_at?: string;
   completed_at?: string | null;
+}
+
+export interface PendingInteractionOption {
+  id: string;
+  label: string;
+  intent?: string | null;
+}
+
+export interface PendingInteraction {
+  id: string;
+  team_run_id: string;
+  member_run_id: string;
+  provider: string;
+  provider_request_id: string;
+  method: string;
+  kind: "question" | "tool_approval" | "plan_review" | "unknown" | string;
+  route: "lead" | "human" | "policy" | string;
+  status: "pending" | "answered" | "approved" | "denied" | "dismissed" | "unsupported" | "cancelled" | string;
+  title: string;
+  prompt: string;
+  options: PendingInteractionOption[];
+  tool_call_id?: string | null;
+  response_option_id?: string | null;
+  response_text?: string | null;
+  created_at: string;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
 }
 
 /**
@@ -530,21 +514,7 @@ export interface DashboardSnapshot {
   messages?: Message[];
   events?: AgentEvent[];
   evidence?: Evidence[];
-  provider_sessions?: ProviderSession[];
   provider_child_threads?: ProviderChildThread[];
-  /**
-   * Transient, client-only: raw provider turn events pushed live via SSE
-   * (provider_turn_event), keyed by session id. Never sent by the backend
-   * snapshot; accumulated by applyFrame so the agent TUI streams sub-second.
-   */
-  live_turn_events?: Record<string, Record<string, unknown>[]>;
-  /**
-   * Transient, client-only: NORMALIZED turn events pushed live via SSE
-   * (provider_turn_event_normalized, Stage B), keyed by session id and merged
-   * by `seq` (latest-wins) so the canonical TUI streams sub-second and aligns
-   * with the /normalized-events read endpoint. Never sent by the backend snapshot.
-   */
-  live_normalized_events?: Record<string, HarnessTurnEvent[]>;
   /**
    * Transient, client-only member previews keyed by member_run_id. New SSE
    * frames replace the prior preview; refresh/reconnect starts empty.
@@ -561,6 +531,7 @@ export interface DashboardSnapshot {
   member_runs?: MemberRun[];
   team_messages?: TeamMessage[];
   member_actions?: MemberAction[];
+  pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];
   team_run_events?: TeamRunEvent[];
 }
@@ -639,13 +610,6 @@ export interface WorkflowRun {
    */
   spec?: unknown;
   /**
-   * Retention policy for the heavy per-node provider turn-event trace:
-   * "durable" (default) persists the trace so a completed run can be drilled
-   * into; "live" streams it over SSE during execution but does not retain it.
-   * Live streaming is independent of this and always happens.
-   */
-  trace_retention?: "durable" | "live" | string;
-  /**
    * True when this run was a `--dry-run` validation (mock driver, no provider
    * spawned, no tokens). Surfaced as a "dry-run" badge so a validation run is
    * never mistaken for a real one. `undefined`/false for live and legacy rows.
@@ -694,7 +658,7 @@ export interface WorkflowStepResult {
   /** Per-node isolation mode this step ran under, if any ("worktree"). */
   isolation?: string | null;
   ok?: boolean;
-  provider_session_id?: string | null;
+  native_session?: NativeSessionRef | null;
   output_summary?: string;
   /** The model the worker actually ran (the requested override), if any. */
   model?: string | null;
@@ -728,14 +692,14 @@ export interface WorkflowStepResult {
  * One agent step inside a {@link WorkflowRun}. Mirrors harness-core
  * `WorkflowStep` (lib.rs:1279-1292) verbatim, snake_case. There is NO
  * `member_id`; the step actor is a PROVIDER carried in `result.provider`, and
- * the live turn drill-in resolves via `provider_session_id`.
+ * provider-native activity resolves via `native_session`.
  */
 export interface WorkflowStep {
   id: string;
   run_id: string;
   phase: string;
   label: string;
-  provider_session_id?: string | null;
+  native_session?: NativeSessionRef | null;
   status: WorkflowStepStatus | string;
   output_summary?: string | null;
   /** Structured result for this step, beyond the human-facing summary. */

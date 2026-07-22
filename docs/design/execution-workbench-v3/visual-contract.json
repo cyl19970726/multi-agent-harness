@@ -27,6 +27,7 @@
       "overlay": "overlays/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
       "prompt": "prompts/mission-wave-canvas/running-gate-pending--fidelity-v2.md",
       "design_spec": "specs/mission-wave-canvas--running-gate-pending--desktop-1440x1000.json",
+      "ux_contract": "ux/execution-workbench-interaction-contract.md",
       "asset_inventory": "assets/mission-wave-canvas--running-gate-pending--asset-inventory.md",
       "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
       "implementation_iterations": [
@@ -73,6 +74,7 @@
       "overlay": "overlays/team-war-room/running-needs-you--team-activity-correction.png",
       "prompt": "prompts/team-war-room/running-needs-you--fidelity-v2.md",
       "design_spec": "specs/team-war-room--running-needs-you--desktop-1440x1000.json",
+      "ux_contract": "ux/execution-workbench-interaction-contract.md",
       "asset_inventory": "assets/team-war-room--running-needs-you--asset-inventory.md",
       "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
       "implementation_iterations": [
@@ -123,39 +125,56 @@
       }
     },
     {
-      "id": "member-run-focus--running-needs-you--desktop",
+      "id": "member-run-focus--completed-history--desktop",
       "priority": "P1",
       "page": "member-run-focus",
-      "state": "running-needs-you",
+      "state": "completed-history",
       "route": "/?surface=team&team=<team-run-id>&memberRun=<member-run-id>",
       "fixture": "workbench-layout-v2-native-v1",
-      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+      "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/workbench-layout-v2/implemented/member-run-focus--running-needs-you--desktop-1440x1000.png",
-      "expected": "expected/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "implemented": "implemented/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "overlay": "overlays/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "prompt": "prompts/member-run-focus/running-needs-you--v3.md",
+      "expected": "expected/member-run-focus/completed-history--desktop-concept-v4.png",
+      "implemented": "implemented/member-run-focus/member-run-focus--completed-history--desktop-1536x1024.png",
+      "comparison": "comparisons/member-run-focus/completed-history--desktop-1536x1024.png",
+      "overlay": "overlays/member-run-focus/completed-history--desktop-1536x1024.png",
+      "prompt": "prompts/member-run-focus/completed-history--v4.md",
+      "design_spec": "specs/member-run-focus--completed-history--desktop-1536x1024.json",
       "asset_inventory": "assets/member-run-focus--asset-inventory.md",
-      "expected_approval": { "status": "pending" },
+      "ux_contract": "ux/execution-workbench-interaction-contract.md",
+      "expected_approval": { "status": "approved", "approved_by": "human", "approved_at": "2026-07-22" },
       "implementation_iterations": [
-        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-iteration-1/member-run-focus--running-needs-you--desktop-1440x1000.png",
-        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-iteration-2/member-run-focus--running-needs-you--desktop-1440x1000.png",
-        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-final/member-run-focus--running-needs-you--desktop-1440x1000.png"
+        {
+          "revision": "b763530-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v4/baseline/member-run-focus--completed-history--desktop-1536x1024.png",
+          "stage": "baseline",
+          "verdict": "revise: wide product rail, global top bar, and log-shaped history did not match the approved focus composition"
+        },
+        {
+          "revision": "b763530-dirty",
+          "implemented": "implemented/member-run-focus/member-run-focus--completed-history--desktop-1536x1024.png",
+          "stage": "warm-editorial-candidate",
+          "verdict": "candidate: focus geometry, warm visual theme, phase rail, compact native tool families, and static context cards are implemented; human visual approval remains pending"
+        }
       ],
       "gates": {
         "product_truth": { "status": "pass", "note": "Native MemberRun selectors, assignment correlation, evidence, review pressure, composer action, and transient-only thinking remain intact." },
-        "visual_fidelity": { "status": "pass_internal", "note": "Exact-viewport browser evidence matches the V3 information hierarchy; expected-image user approval remains pending." }
+        "visual_fidelity": { "status": "pass", "note": "The user approved the exact 1536×1024 warm-editorial implementation on 2026-07-22; actual, comparison, and overlay are durable." }
       },
       "review": {
-        "status": "candidate_ready",
+        "status": "pass_with_deviations",
+        "approved_by": "user",
+        "approved_at": "2026-07-22",
         "intentional_deviations": [
-          "The browser implementation keeps the shared live connection and search chrome, which the concept image simplified.",
-          "Key activity is a six-node projection so the latest review pressure stays in the first viewport; Full record exposes all ten durable/transient entries.",
-          "Fixture-native timestamps, provider identity, correlations, artifacts, and Team state replace generated placeholder content."
+          "Generated placeholder content must be replaced with fixture-native timestamps, provider identity, correlations, artifacts, and Team state.",
+          "Phase grouping is a read-time projection and must never become duplicated persisted truth.",
+          "The completed real MemberRun keeps a read-only composer instead of depicting an active send control.",
+          "The actual rail reports zero linked artifacts and the real two-member Team instead of inventing the generated design's three artifacts and placeholder collaborator.",
+          "Tool rows use provider-native tool families and source-record counts because the native session does not expose the generated design's fabricated filenames, durations, or token totals."
         ],
-        "defects": [],
-        "follow_ups": ["Validate the sticky composer with a software keyboard and long drafted message on a real mobile browser."]
+        "defects": [
+          "The generated expected image remains more illustrative in its handoff artifact/check grid than the current truthful zero-artifact run can support."
+        ],
+        "follow_ups": ["Carry the approved warm-editorial language into new tablet and mobile V4 expected designs before changing those responsive implementations."]
       }
     },
     {

@@ -139,7 +139,7 @@ fn agent_record(id: &str, name: &str, role: &str) -> Value {
             "capability_refs": ["company.records.write", "company.work.execute"],
             "permission_policy_refs": ["company.records.write", "company.work.execute"],
             "runtime_refs": [],
-            "provider_session_refs": [],
+            "native_session_refs": [],
             "created_at": NOW,
             "updated_at": NOW
         }

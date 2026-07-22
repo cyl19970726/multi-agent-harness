@@ -103,7 +103,6 @@ pub struct ServeHandle {
 
 impl ServeHandle {
     /// Spawn `harness serve` from `cwd` against `home`, on a free ephemeral port.
-    /// `--no-truncate` preserves any pre-seeded `provider_turn_events.jsonl` rows.
     /// Extra env can pin `--project`/`HARNESS_PROJECT` via the args/env.
     pub fn spawn(home: &TempHome, cwd: &Path, extra_args: &[&str]) -> Self {
         Self::spawn_with_env(home, cwd, extra_args, &[])
@@ -121,10 +120,7 @@ impl ServeHandle {
         let port = free_port();
         let addr = format!("127.0.0.1:{port}");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
-        cmd.arg("serve")
-            .arg("--addr")
-            .arg(&addr)
-            .arg("--no-truncate");
+        cmd.arg("serve").arg("--addr").arg(&addr);
         for a in extra_args {
             cmd.arg(a);
         }

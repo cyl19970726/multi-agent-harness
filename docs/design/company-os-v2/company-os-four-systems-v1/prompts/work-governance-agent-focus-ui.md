@@ -12,4 +12,3 @@ Right rail: reports to Lead, authority, governed Skills, work health, maintained
 Constraints: WorkItem is durable company commitment; no Project; no task graph; Mission/Wave only
              an execution option; skills are tools not authority; no raw thinking; no watermark
 ```
-

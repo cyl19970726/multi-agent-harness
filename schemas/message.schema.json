@@ -64,7 +64,10 @@
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": [
-        "provider_session_id",
+        "delivery_id",
+        "execution_status",
+        "native_session",
+        "started_at",
         "provider_request_id",
         "provider_thread_id",
         "provider_turn_id",
@@ -73,7 +76,29 @@
         "last_error"
       ],
       "properties": {
-        "provider_session_id": { "type": ["string", "null"] },
+        "delivery_id": { "type": ["string", "null"] },
+        "execution_status": {
+          "type": ["string", "null"],
+          "enum": ["queued", "running", "succeeded", "failed", "canceled", "stale", null]
+        },
+        "native_session": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["provider", "execution_mode", "native_session_id", "native_locator_kind", "adapter_contract_version", "availability", "supports_resume"],
+          "properties": {
+            "provider": { "type": "string", "minLength": 1 },
+            "execution_mode": { "type": "string", "minLength": 1 },
+            "native_session_id": { "type": "string", "minLength": 1 },
+            "native_locator_kind": { "type": "string", "minLength": 1 },
+            "provider_version": { "type": ["string", "null"], "minLength": 1 },
+            "adapter_contract_version": { "type": "string", "minLength": 1 },
+            "availability": { "type": "string", "enum": ["available", "stale", "missing", "incompatible", "unknown"] },
+            "supports_resume": { "type": "boolean" },
+            "last_verified_at": { "type": ["string", "null"], "minLength": 1 },
+            "parent_native_session_id": { "type": ["string", "null"], "minLength": 1 }
+          }
+        },
+        "started_at": { "type": ["string", "null"], "minLength": 1 },
         "provider_request_id": { "type": ["string", "null"] },
         "provider_thread_id": { "type": ["string", "null"] },
         "provider_turn_id": { "type": ["string", "null"] },

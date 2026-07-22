@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use harness_core::{
     AgentEvent, AgentMember, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun,
     Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageTerminalSource, Mission, MissionStatus, Proposal, ProviderChildThread, ProviderSession,
-    ProviderSessionStatus, Review, TeamMessage, TeamRunEvent, TeamRunStatus, Vision, Wave,
-    WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    MessageTerminalSource, Mission, MissionStatus, PendingInteraction, Proposal,
+    ProviderChildThread, ProviderExecutionStatus, Review, TeamMessage, TeamRunEvent, TeamRunStatus,
+    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -51,7 +51,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub enum MessageDeliveryClaimResult {
     Claimed(Box<Message>),
     NotQueued,
-    BlockedBySession(String),
+    BlockedByDelivery(String),
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +70,6 @@ impl HarnessStore {
 
     pub fn init(&self) -> StoreResult<()> {
         fs::create_dir_all(&self.root)?;
-        fs::create_dir_all(self.root.join("provider-sessions"))?;
         fs::create_dir_all(self.root.join("prompts"))?;
         fs::create_dir_all(self.root.join("runtimes"))?;
         Ok(())
@@ -301,10 +300,6 @@ impl HarnessStore {
         self.append_jsonl("visions.jsonl", value)
     }
 
-    pub fn append_provider_session(&self, value: &ProviderSession) -> StoreResult<()> {
-        self.append_jsonl("provider_sessions.jsonl", value)
-    }
-
     pub fn append_provider_child_thread(&self, value: &ProviderChildThread) -> StoreResult<()> {
         self.append_jsonl("provider_child_threads.jsonl", value)
     }
@@ -533,6 +528,10 @@ impl HarnessStore {
         self.append_jsonl("member_actions.jsonl", value)
     }
 
+    pub fn append_pending_interaction(&self, value: &PendingInteraction) -> StoreResult<()> {
+        self.append_jsonl("pending_interactions.jsonl", value)
+    }
+
     pub fn append_delegation_run(&self, value: &DelegationRun) -> StoreResult<()> {
         self.append_jsonl("delegation_runs.jsonl", value)
     }
@@ -663,25 +662,28 @@ impl HarnessStore {
         agent_member_id: &str,
         message_id: &str,
         delivery: MessageDelivery,
-        mut provider_session: ProviderSession,
     ) -> StoreResult<MessageDeliveryClaimResult> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-
-        let latest_sessions = latest_by_id(
-            self.read_jsonl::<ProviderSession>("provider_sessions.jsonl")?,
-            |session| session.id.clone(),
-        );
-        if let Some(session) = latest_sessions.into_values().find(|session| {
-            session.agent_member_id == agent_member_id && session_blocks_delivery(session)
-        }) {
-            return Ok(MessageDeliveryClaimResult::BlockedBySession(session.id));
-        }
 
         let latest_messages =
             latest_by_id(self.read_jsonl::<Message>("messages.jsonl")?, |message| {
                 message.id.clone()
             });
+        if let Some(active) = latest_messages.values().find(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message
+                    .delivery
+                    .as_ref()
+                    .is_some_and(delivery_blocks_another_claim)
+        }) {
+            let delivery_id = active
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.delivery_id.clone())
+                .unwrap_or_else(|| active.id.clone());
+            return Ok(MessageDeliveryClaimResult::BlockedByDelivery(delivery_id));
+        }
         let Some(mut message) = latest_messages.get(message_id).cloned() else {
             return Ok(MessageDeliveryClaimResult::NotQueued);
         };
@@ -690,11 +692,6 @@ impl HarnessStore {
         {
             return Ok(MessageDeliveryClaimResult::NotQueued);
         }
-
-        provider_session.agent_member_id = agent_member_id.to_string();
-        provider_session.task_id = message.task_id.clone();
-        provider_session.status = ProviderSessionStatus::Running;
-        self.append_jsonl_unlocked("provider_sessions.jsonl", &provider_session)?;
 
         message.delivery_status = MessageDeliveryStatus::Acknowledged;
         message.delivery = Some(delivery);
@@ -781,10 +778,6 @@ impl HarnessStore {
         self.read_jsonl("visions.jsonl")
     }
 
-    pub fn provider_sessions(&self) -> StoreResult<Vec<ProviderSession>> {
-        self.read_jsonl("provider_sessions.jsonl")
-    }
-
     pub fn provider_child_threads(&self) -> StoreResult<Vec<ProviderChildThread>> {
         self.read_jsonl("provider_child_threads.jsonl")
     }
@@ -819,6 +812,10 @@ impl HarnessStore {
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
         self.read_jsonl("member_actions.jsonl")
+    }
+
+    pub fn pending_interactions(&self) -> StoreResult<Vec<PendingInteraction>> {
+        self.read_jsonl("pending_interactions.jsonl")
     }
 
     pub fn delegation_runs(&self) -> StoreResult<Vec<DelegationRun>> {
@@ -909,11 +906,12 @@ fn latest_by_id<T>(
     latest
 }
 
-fn session_blocks_delivery(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Queued
-        || session.status == ProviderSessionStatus::Running
-        || (session.status == ProviderSessionStatus::Stale
-            && session.terminal_source != Some(MessageTerminalSource::Failed))
+fn delivery_blocks_another_claim(delivery: &MessageDelivery) -> bool {
+    matches!(
+        delivery.execution_status,
+        Some(ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running)
+    ) || (delivery.execution_status == Some(ProviderExecutionStatus::Stale)
+        && delivery.terminal_source != Some(MessageTerminalSource::Failed))
 }
 
 fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
@@ -951,10 +949,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
-        DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus, MessageKind,
-        Mission, MissionStatus, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus,
-        TeamMessageDelivery, TeamMessageKind, TeamRunEventSourceKind, TeamRunStatus, Wave,
-        WaveExecutorKind, WaveGateStatus, WaveStatus,
+        DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus,
+        MemberWorkspaceSnapshot, MessageKind, Mission, MissionStatus, SenderKind,
+        TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
+        TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
     };
 
     use super::*;
@@ -1145,6 +1143,7 @@ mod tests {
                         host_surface: "test".into(),
                         host_thread_id: None,
                         objective: "attempt".into(),
+                        execution_root: Some("/projects/concurrent".into()),
                         status: TeamRunStatus::Planning,
                         member_run_ids: vec![format!("member-{id}")],
                         budget_limit_usd: None,
@@ -1323,12 +1322,7 @@ mod tests {
             .expect("append message 2");
 
         let claim = store
-            .claim_queued_message_delivery(
-                "agent-1",
-                "message-1",
-                test_delivery("delivery-1"),
-                test_provider_session("delivery-1", "agent-1"),
-            )
+            .claim_queued_message_delivery("agent-1", "message-1", test_delivery("delivery-1"))
             .expect("claim message");
         assert!(matches!(claim, MessageDeliveryClaimResult::Claimed(_)));
 
@@ -1346,28 +1340,23 @@ mod tests {
         assert_eq!(
             latest_message
                 .delivery
-                .and_then(|delivery| delivery.provider_session_id),
+                .and_then(|delivery| delivery.delivery_id),
             Some("delivery-1".into())
         );
 
         let second_claim = store
-            .claim_queued_message_delivery(
-                "agent-1",
-                "message-2",
-                test_delivery("delivery-2"),
-                test_provider_session("delivery-2", "agent-1"),
-            )
+            .claim_queued_message_delivery("agent-1", "message-2", test_delivery("delivery-2"))
             .expect("second claim");
         assert_eq!(
             second_claim,
-            MessageDeliveryClaimResult::BlockedBySession("delivery-1".into())
+            MessageDeliveryClaimResult::BlockedByDelivery("delivery-1".into())
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// Durability: a claim writes the Acknowledged message row and the Running
-    /// provider-session row, fsyncs them, and a *separate* store handle opened
+    /// Durability: a claim writes and fsyncs the Acknowledged message row with
+    /// its Running delivery attempt, and a *separate* store handle opened
     /// against the same root (no shared in-memory state, mirroring a process
     /// restart after a crash) reads them back. This guards the double-delivery
     /// regression: if the Acknowledged row were lost, latest-wins would revert
@@ -1387,12 +1376,7 @@ mod tests {
             .expect("append message");
 
         let claim = store
-            .claim_queued_message_delivery(
-                "agent-d",
-                "message-d",
-                test_delivery("delivery-d"),
-                test_provider_session("delivery-d", "agent-d"),
-            )
+            .claim_queued_message_delivery("agent-d", "message-d", test_delivery("delivery-d"))
             .expect("claim message");
         assert!(matches!(claim, MessageDeliveryClaimResult::Claimed(_)));
 
@@ -1412,27 +1396,20 @@ mod tests {
             "acknowledged status must survive a restart so the message is not re-delivered"
         );
 
-        let session = reopened
-            .provider_sessions()
-            .expect("read provider sessions")
-            .into_iter()
-            .rev()
-            .find(|session| session.id == "delivery-d")
-            .expect("running provider-session row survives reopen");
-        assert_eq!(session.status, ProviderSessionStatus::Running);
+        let delivery = message.delivery.expect("delivery attempt survives reopen");
+        assert_eq!(delivery.delivery_id.as_deref(), Some("delivery-d"));
+        assert_eq!(
+            delivery.execution_status,
+            Some(ProviderExecutionStatus::Running)
+        );
 
         // The reopened store must refuse to re-claim: because both the
-        // Acknowledged message row and the Running provider-session row survived
-        // the fsync, the re-claim is rejected (the Running session for this
-        // agent blocks delivery; were both rows lost it would return Claimed and
+        // Acknowledged message row and its Running delivery attempt survived
+        // the fsync, the re-claim is rejected (the active attempt for this
+        // agent blocks delivery; were the row lost it would return Claimed and
         // double-deliver). Either rejection variant proves no double-delivery.
         let reclaim = reopened
-            .claim_queued_message_delivery(
-                "agent-d",
-                "message-d",
-                test_delivery("delivery-d2"),
-                test_provider_session("delivery-d2", "agent-d"),
-            )
+            .claim_queued_message_delivery("agent-d", "message-d", test_delivery("delivery-d2"))
             .expect("reclaim attempt");
         assert!(
             !matches!(reclaim, MessageDeliveryClaimResult::Claimed(_)),
@@ -1474,6 +1451,7 @@ mod tests {
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
             objective: "Ship the feature".into(),
+            execution_root: Some("/projects/example/worktrees/feature".into()),
             status: TeamRunStatus::Running,
             member_run_ids: vec!["mr-1".into()],
             budget_limit_usd: Some(12.5),
@@ -1500,6 +1478,7 @@ mod tests {
         assert!(sparse.mission_id.is_none());
         assert!(sparse.wave_id.is_none());
         assert!(sparse.host_thread_id.is_none());
+        assert!(sparse.execution_root.is_none());
         assert!(sparse.member_run_ids.is_empty());
         assert!(sparse.budget_limit_usd.is_none());
         assert!(sparse.completed_at.is_none());
@@ -1519,10 +1498,17 @@ mod tests {
             role: "worker".into(),
             provider: "kimi".into(),
             model: Some("kimi-k2".into()),
+            provider_profile: None,
             status: MemberRunStatus::Running,
-            provider_session_id: Some("ps-1".into()),
-            acp_session_id: Some("acp-1".into()),
-            worktree_ref: Some("wt-1".into()),
+            native_session: None,
+            worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
+            workspace_snapshot: Some(MemberWorkspaceSnapshot {
+                cwd: "/projects/example/worktrees/worker-1".into(),
+                git_head: Some("0123456789abcdef".into()),
+                git_branch: Some("feature/worker-1".into()),
+                instruction_roots: vec!["/projects/example".into()],
+                skill_roots: vec!["/projects/example/.agents/skills".into()],
+            }),
             owned_paths: vec!["src/".into()],
             started_at: "unix-ms:1".into(),
             last_event_at: Some("unix-ms:2".into()),
@@ -1546,9 +1532,8 @@ mod tests {
         assert_eq!(sparse.status, MemberRunStatus::Idle);
         assert!(sparse.slot_id.is_none());
         assert!(sparse.model.is_none());
-        assert!(sparse.provider_session_id.is_none());
-        assert!(sparse.acp_session_id.is_none());
         assert!(sparse.worktree_ref.is_none());
+        assert!(sparse.workspace_snapshot.is_none());
         assert!(sparse.owned_paths.is_empty());
         assert!(sparse.last_event_at.is_none());
         assert!(sparse.finished_at.is_none());
@@ -1613,8 +1598,11 @@ mod tests {
             team_run_id: "tr-1".into(),
             member_run_id: "mr-1".into(),
             task_id: Some("task-1".into()),
+            provider_call_id: Some("tool-1".into()),
             action_type: "tool_completed".into(),
             status: MemberActionStatus::Succeeded,
+            provider_status: Some("completed".into()),
+            semantic_status: Some("succeeded".into()),
             title: "cargo test".into(),
             summary: "all green".into(),
             evidence_refs: vec!["ev-1".into()],
@@ -1744,42 +1732,18 @@ mod tests {
         }
     }
 
-    fn test_delivery(provider_session_id: &str) -> MessageDelivery {
+    fn test_delivery(delivery_id: &str) -> MessageDelivery {
         MessageDelivery {
-            provider_session_id: Some(provider_session_id.into()),
+            delivery_id: Some(delivery_id.into()),
+            execution_status: Some(ProviderExecutionStatus::Running),
+            native_session: None,
+            started_at: Some("unix-ms:1".into()),
             provider_request_id: None,
             provider_thread_id: None,
             provider_turn_id: None,
             terminal_source: None,
             delivered_at: None,
             last_error: None,
-        }
-    }
-
-    fn test_provider_session(id: &str, agent_id: &str) -> ProviderSession {
-        ProviderSession {
-            id: id.into(),
-            provider: "codex".into(),
-            agent_member_id: agent_id.into(),
-            task_id: Some("task-1".into()),
-            workspace_ref: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: None,
-            status: ProviderSessionStatus::Running,
-            command: "harness".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref: None,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            evidence_ids: Vec::new(),
         }
     }
 }

@@ -23,4 +23,3 @@ Constraints: Business Agents never report directly to Lead; Docs/Work/Finance Ag
              their organizational manager; skills are tools, not authority; no Project;
              no task graph; no universal Agent object; no logo; no watermark.
 ```
-

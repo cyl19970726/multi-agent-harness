@@ -6,7 +6,7 @@
 //   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
-//   POST /v1/agents/{id}/reconcile-session     { session_id, status, ... }
+//   POST /v1/agents/{id}/reconcile-delivery    { delivery_id, status, ... }
 //   POST /v1/agents/{id}/close                 {}
 //
 // The agent id / task id belong in the URL PATH, never the body. The earlier
@@ -188,13 +188,13 @@ export function retryDelivery(
 }
 
 /**
- * Reconcile a stuck provider session for a member to a terminal state.
+ * Reconcile a stuck Harness delivery attempt to a terminal state.
  */
-export function reconcileSession(
+export function reconcileDelivery(
   agentId: string,
-  params: { sessionId: string; status?: string; terminalSource?: string; reason?: string },
+  params: { deliveryId: string; status?: string; terminalSource?: string; reason?: string },
 ): ActionDescriptor {
-  const body: Record<string, unknown> = { session_id: params.sessionId };
+  const body: Record<string, unknown> = { delivery_id: params.deliveryId };
   if (params.status) {
     body.status = params.status;
   }
@@ -206,7 +206,7 @@ export function reconcileSession(
   }
   return {
     method: "POST",
-    path: `/v1/agents/${encodeId(agentId)}/reconcile-session`,
+    path: `/v1/agents/${encodeId(agentId)}/reconcile-delivery`,
     body,
   };
 }
@@ -228,6 +228,9 @@ export interface TeamRunMemberSpec {
   role: string;
   provider: string;
   model?: string;
+  executionMode?: "codex_exec" | "codex_app_server" | "kimi_acp" | "claude_cli";
+  /** Optional member-specific workspace override validated against project_root. */
+  worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */
   ownedPaths?: string[];
 }
@@ -245,6 +248,8 @@ export function createTeamRun(params: {
   /** Native executor context. Both ids are required together. */
   missionId?: string;
   waveId?: string;
+  /** Optional TeamRun workspace; defaults to the selected registered project_root. */
+  executionRoot?: string;
   members: TeamRunMemberSpec[];
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
@@ -257,6 +262,12 @@ export function createTeamRun(params: {
       };
       if (member.model) {
         spec.model = member.model;
+      }
+      if (member.executionMode) {
+        spec.execution_mode = member.executionMode;
+      }
+      if (member.worktreeRef) {
+        spec.worktree_ref = member.worktreeRef;
       }
       if (member.ownedPaths && member.ownedPaths.length) {
         spec.owned_paths = member.ownedPaths;
@@ -275,6 +286,9 @@ export function createTeamRun(params: {
   }
   if (params.waveId) {
     body.wave_id = params.waveId;
+  }
+  if (params.executionRoot) {
+    body.execution_root = params.executionRoot;
   }
   return { method: "POST", path: "/v1/team-runs", body };
 }
@@ -396,6 +410,48 @@ export function acknowledgeTeamMessage(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/messages/${encodeId(messageId)}/ack`,
     body: { member_id: memberId },
+  };
+}
+
+/** Resolve a provider-originated question, approval, or plan review and resume
+ * the same provider turn when its execution mode supports that contract. */
+export function resolvePendingInteraction(
+  teamRunId: string,
+  interactionId: string,
+  optionId: string,
+  resolvedBy: "host" | "lead" | "operator" | "human" | "policy" = "host",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/interactions/${encodeId(interactionId)}/resolve`,
+    body: { option_id: optionId, resolved_by: resolvedBy },
+  };
+}
+
+/** Inject input into the currently active provider turn. This is only valid
+ * when the MemberRun's mode advertises live steer (currently codex_app_server). */
+export function steerTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  content: string,
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/steer`,
+    body: { content, requested_by: "operator" },
+  };
+}
+
+/** Cooperatively interrupt the active provider turn. */
+export function interruptTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  reason = "Operator requested interruption",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/interrupt`,
+    body: { reason, requested_by: "operator" },
   };
 }
 

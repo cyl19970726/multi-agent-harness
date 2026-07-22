@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import { cn } from "@/lib/utils";
 
 /**
  * Minimal, dependency-free markdown renderer for project docs (ADR 0019, Vision
@@ -7,11 +8,18 @@ import { Fragment, type ReactNode } from "react";
  * escapes all text, so no HTML injection. Tables/mermaid render as plain text;
  * this is intentionally a first-cut renderer, not a full CommonMark engine.
  */
-export function Markdown({ source }: { source: string }) {
-  return <div className="space-y-3 text-[13px] leading-relaxed text-foreground/90">{render(source)}</div>;
+export function Markdown({ source, compact = false }: { source: string; compact?: boolean }) {
+  return (
+    <div className={cn(
+      "text-foreground/90",
+      compact ? "space-y-2 text-[12px] leading-relaxed" : "space-y-3 text-[13px] leading-relaxed",
+    )}>
+      {render(source, compact)}
+    </div>
+  );
 }
 
-function render(source: string): ReactNode[] {
+function render(source: string, compact: boolean): ReactNode[] {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let i = 0;
@@ -32,7 +40,10 @@ function render(source: string): ReactNode[] {
       blocks.push(
         <pre
           key={key++}
-          className="overflow-x-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-[12px] text-foreground/90"
+          className={cn(
+            "overflow-x-auto rounded-md border border-border bg-muted/50 font-mono text-foreground/90",
+            compact ? "p-2.5 text-[10px]" : "p-3 text-[12px]",
+          )}
         >
           {code.join("\n")}
         </pre>,
@@ -47,10 +58,10 @@ function render(source: string): ReactNode[] {
       const text = heading[2];
       const cls =
         level === 1
-          ? "text-lg font-semibold"
+          ? compact ? "text-[14px] font-semibold tracking-tight" : "text-lg font-semibold"
           : level === 2
-            ? "mt-1 text-base font-semibold"
-            : "text-[13px] font-semibold uppercase tracking-wide text-muted-foreground";
+            ? compact ? "mt-1 text-[13px] font-semibold text-foreground" : "mt-1 text-base font-semibold"
+            : compact ? "text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground" : "text-[13px] font-semibold uppercase tracking-wide text-muted-foreground";
       blocks.push(
         <p key={key++} className={cls}>
           {inline(text)}
@@ -162,15 +173,26 @@ function inline(text: string): ReactNode {
     } else {
       const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       if (linkMatch) {
-        nodes.push(
-          <a key={key++} href={linkMatch[2]} className="text-primary underline-offset-2 hover:underline">
+        const href = safeMarkdownHref(linkMatch[2]);
+        nodes.push(href ? (
+          <a
+            key={key++}
+            href={href}
+            rel="noreferrer"
+            className="font-medium text-primary underline decoration-primary/25 underline-offset-2 hover:decoration-primary"
+          >
             {linkMatch[1]}
-          </a>,
-        );
+          </a>
+        ) : <Fragment key={key++}>{linkMatch[1]}</Fragment>);
       }
     }
     last = match.index + token.length;
   }
   if (last < text.length) nodes.push(<Fragment key={key++}>{text.slice(last)}</Fragment>);
   return nodes;
+}
+
+function safeMarkdownHref(value: string): string | undefined {
+  const href = value.trim();
+  return /^(https?:\/\/|\/|#)/i.test(href) ? href : undefined;
 }

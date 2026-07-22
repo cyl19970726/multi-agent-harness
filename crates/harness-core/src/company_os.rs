@@ -151,7 +151,7 @@ pub struct StandingAgent {
     pub capability_refs: Vec<String>,
     pub permission_policy_refs: Vec<String>,
     pub runtime_refs: Vec<String>,
-    pub provider_session_refs: Vec<String>,
+    pub native_session_refs: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -173,8 +173,8 @@ impl ValidateCompanyOs for StandingAgent {
         )?;
         required_strings(&self.runtime_refs, "StandingAgent.runtime_refs")?;
         required_strings(
-            &self.provider_session_refs,
-            "StandingAgent.provider_session_refs",
+            &self.native_session_refs,
+            "StandingAgent.native_session_refs",
         )?;
         if matches!(self.assignment_capacity, Some(0)) {
             return Err(CompanyOsValidationError::Invalid {

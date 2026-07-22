@@ -19,4 +19,3 @@ Required WorkItem labels: "Submit CN trademark filing", "Approve ¥3,000 commitm
                           "Publish launch video", "Implement Work query API"
 Constraints: no dashboard chart wall; business lines are operational rows, not large cards
 ```
-

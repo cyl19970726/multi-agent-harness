@@ -2,14 +2,14 @@ import type {
   AgentEvent,
   DashboardSnapshot,
   DocRegistryEntry,
-  HarnessTurnEvent,
   LiveMemberActivity,
   MemberAction,
   MemberRun,
   Message,
   Mission,
+  NativeActivityProjection,
+  PendingInteraction,
   Project,
-  ProviderSession,
   TeamMessage,
   TeamRun,
   TeamRunEvent,
@@ -72,6 +72,32 @@ export async function fetchSnapshot(
     throw new Error(`HTTP ${response.status}`);
   }
   return (await response.json()) as DashboardSnapshot;
+}
+
+/** Read a display-only projection directly from the provider's native session.
+ * The backend does not copy these items into Harness storage. */
+export async function fetchNativeMemberActivity(
+  baseUrl: string,
+  memberRunId: string,
+  project?: string | null,
+): Promise<NativeActivityProjection> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}${withProject(`/v1/member-runs/${encodeURIComponent(memberRunId)}/native-activity`, project)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as NativeActivityProjection;
+}
+
+export async function fetchNativeWorkflowStepActivity(
+  baseUrl: string,
+  workflowStepId: string,
+  project?: string | null,
+): Promise<NativeActivityProjection> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}${withProject(`/v1/workflow-steps/${encodeURIComponent(workflowStepId)}/native-activity`, project)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as NativeActivityProjection;
 }
 
 /**
@@ -183,22 +209,13 @@ export async function fetchWorkflowDefs(baseUrl: string): Promise<WorkflowDef[]>
 
 /**
  * A single frame off the backend `/v1/events` SSE stream. The backend emits
- * provider-neutral objects (ADR 0011): an `AgentEvent`, `Message`, or
- * `ProviderSession` payload identical for Codex and Claude, plus a `snapshot`
- * frame on connect (timestamp only — clients resync via /v1/snapshot).
+ * Harness-owned coordination deltas plus a timestamp-only `snapshot` frame.
+ * Provider-native activity is read through NativeSessionRef endpoints.
  */
 export type SseFrame =
   | { kind: "snapshot"; generatedAt?: string }
   | { kind: "agent_event"; event: AgentEvent }
   | { kind: "message"; message: Message }
-  | { kind: "provider_session"; session: ProviderSession }
-  // A single raw provider turn event teed live during a delivery (Stage B): the
-  // agent TUI consumes these for sub-second streaming, falling back to polling.
-  | { kind: "provider_turn_event"; sessionId: string; event: Record<string, unknown> }
-  // The NORMALIZED companion (Stage B): canonical HarnessTurnEvent[] expanded
-  // from one raw event, so the provider-agnostic TUI streams live without
-  // re-normalizing at the render layer. Merged by `seq` against the snapshot.
-  | { kind: "provider_turn_event_normalized"; sessionId: string; events: HarnessTurnEvent[] }
   | { kind: "workflow_run"; run: WorkflowRun }
   | { kind: "workflow_step"; step: WorkflowStep }
   // A single team-run log entry (team-console): appended to team_run_events,
@@ -210,6 +227,7 @@ export type SseFrame =
   | { kind: "member_run"; member: MemberRun }
   | { kind: "team_message"; message: TeamMessage }
   | { kind: "member_action"; action: MemberAction }
+  | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
 
 export interface EventStreamHandlers {
@@ -262,26 +280,6 @@ export function openEventStream(
     const data = parse<Message>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "message", message: data });
   });
-  source.addEventListener("provider_session", (event) => {
-    const data = parse<ProviderSession>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "provider_session", session: data });
-  });
-  source.addEventListener("provider_turn_event", (event) => {
-    const data = parse<{ session_id?: string; event?: Record<string, unknown> }>(event as MessageEvent);
-    if (data?.session_id && data.event) {
-      handlers.onFrame({ kind: "provider_turn_event", sessionId: data.session_id, event: data.event });
-    }
-  });
-  source.addEventListener("provider_turn_event_normalized", (event) => {
-    const data = parse<{ session_id?: string; events?: HarnessTurnEvent[] }>(event as MessageEvent);
-    if (data?.session_id && Array.isArray(data.events)) {
-      handlers.onFrame({
-        kind: "provider_turn_event_normalized",
-        sessionId: data.session_id,
-        events: data.events,
-      });
-    }
-  });
   source.addEventListener("workflow_run", (event) => {
     const data = parse<WorkflowRun>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "workflow_run", run: data });
@@ -318,6 +316,10 @@ export function openEventStream(
     const data = parse<MemberAction>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "member_action", action: data });
   });
+  source.addEventListener("pending_interaction", (event) => {
+    const data = parse<PendingInteraction>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "pending_interaction", interaction: data });
+  });
   source.addEventListener("member_activity", (event) => {
     const data = parse<LiveMemberActivity>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "member_activity", activity: data });
@@ -353,47 +355,6 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
         messages: upsertById(snapshot.messages, frame.message),
         generated_at: new Date().toISOString(),
       };
-    case "provider_session":
-      return {
-        ...snapshot,
-        provider_sessions: upsertById(snapshot.provider_sessions, frame.session),
-        generated_at: new Date().toISOString(),
-      };
-    case "provider_turn_event": {
-      // Append the raw event to this session's live buffer (transient; capped so
-      // a long turn cannot grow memory unbounded). The agent TUI prefers this
-      // sub-second stream over its 1s poll; the per-session NDJSON stays the
-      // durable catch-up source.
-      const LIVE_CAP = 2000;
-      const current = snapshot.live_turn_events ?? {};
-      const existing = current[frame.sessionId] ?? [];
-      const next = existing.length >= LIVE_CAP ? existing : [...existing, frame.event];
-      return {
-        ...snapshot,
-        live_turn_events: { ...current, [frame.sessionId]: next },
-        generated_at: new Date().toISOString(),
-      };
-    }
-    case "provider_turn_event_normalized": {
-      // Merge this session's normalized events by `seq` (latest-wins), so a
-      // duplicate replay or out-of-order frame self-heals and the buffer stays
-      // sorted/aligned with the /normalized-events read endpoint. Capped like
-      // the raw buffer so a long turn cannot grow memory unbounded.
-      const LIVE_CAP = 2000;
-      const current = snapshot.live_normalized_events ?? {};
-      const existing = current[frame.sessionId] ?? [];
-      const bySeq = new Map<number, HarnessTurnEvent>();
-      for (const event of existing) bySeq.set(event.seq, event);
-      for (const event of frame.events) bySeq.set(event.seq, event);
-      const merged = Array.from(bySeq.values())
-        .sort((a, b) => a.seq - b.seq)
-        .slice(0, LIVE_CAP);
-      return {
-        ...snapshot,
-        live_normalized_events: { ...current, [frame.sessionId]: merged },
-        generated_at: new Date().toISOString(),
-      };
-    }
     case "workflow_run":
       return {
         ...snapshot,
@@ -446,6 +407,12 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       return {
         ...snapshot,
         member_actions: upsertById(snapshot.member_actions, frame.action),
+        generated_at: new Date().toISOString(),
+      };
+    case "pending_interaction":
+      return {
+        ...snapshot,
+        pending_interactions: upsertById(snapshot.pending_interactions, frame.interaction),
         generated_at: new Date().toISOString(),
       };
     case "member_activity": {

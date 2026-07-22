@@ -18,4 +18,3 @@ Constraints: realistic code-buildable desktop UI; practical spacing; crisp legib
              no Project object; no task graph; no glassmorphism; no gradient-heavy SaaS art;
              no chart wall; no decorative card grid; no logos; no watermark
 ```
-

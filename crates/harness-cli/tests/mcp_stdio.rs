@@ -178,6 +178,9 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_list",
             "team_run_status",
             "team_run_send_message",
+            "team_run_resolve_interaction",
+            "team_run_steer_member",
+            "team_run_interrupt_member",
             "team_run_events"
         ]
     );
@@ -201,9 +204,37 @@ fn mcp_stdio_agent_team_tools() {
             .is_some(),
         "MCP create accepts wave_id: {create_schema}"
     );
+    assert!(
+        create_schema["inputSchema"]["properties"]
+            .get("execution_root")
+            .is_some(),
+        "MCP create accepts execution_root: {create_schema}"
+    );
+    assert!(
+        create_schema["inputSchema"]["properties"]["members"]["items"]["properties"]
+            .get("worktree_ref")
+            .is_some(),
+        "MCP create accepts member worktree_ref: {create_schema}"
+    );
+    let start_descriptor = tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("team_run_start"))
+        .expect("team_run_start definition")["description"]
+        .as_str()
+        .expect("team_run_start description");
+    for current_mode in ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"] {
+        assert!(
+            start_descriptor.contains(current_mode),
+            "descriptor omits executable mode {current_mode}: {start_descriptor}"
+        );
+    }
+    assert!(start_descriptor.contains("never store_root"));
+    assert!(start_descriptor.contains("provider-native sessions"));
 
     // 3. Native Mission + Wave creation through MCP (the same helpers as CLI
     // and HTTP) supplies the outer identity for the TeamRun.
+    let project_root =
+        std::fs::canonicalize(home.base().join("mcp-proj")).expect("canonical project root");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -240,10 +271,11 @@ fn mcp_stdio_agent_team_tools() {
                 "objective": "Ship v0",
                 "mission_id": "mission-mcp",
                 "wave_id": "wave-mcp",
+                "execution_root": project_root,
                 "budget_limit_usd": 5.5,
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi"},
-                    {"name": "worker-1", "role": "implementer", "provider": "codex", "model": "gpt-5", "owned_paths": ["crates/a", "docs"]}
+                    {"name": "worker-1", "role": "implementer", "provider": "codex", "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a", "docs"]}
                 ]
             }
         }),
@@ -253,11 +285,20 @@ fn mcp_stdio_agent_team_tools() {
         .as_str()
         .expect("team_run_id")
         .to_string();
-    let expected_dashboard =
-        format!("http://127.0.0.1:8787/?surface=team&team={team_run_id}&project={project_id}");
+    let expected_dashboard = format!(
+        "http://127.0.0.1:5173/?api=.&surface=team&team={team_run_id}&project={project_id}"
+    );
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
     assert_eq!(payload["wave_id"].as_str(), Some("wave-mcp"));
+    assert_eq!(
+        payload["execution_root"].as_str(),
+        Some(project_root.to_str().expect("project root"))
+    );
+    assert_eq!(
+        payload["member_runs"][1]["worktree_ref"].as_str(),
+        Some(project_root.to_str().expect("project root"))
+    );
     let member_ids: Vec<String> = payload["member_run_ids"]
         .as_array()
         .expect("member_run_ids")
@@ -302,6 +343,10 @@ fn mcp_stdio_agent_team_tools() {
         );
         assert!(member.get("latest_action").is_some(), "latest_action key");
     }
+    assert_eq!(
+        payload["pending_interactions"].as_array().map(Vec::len),
+        Some(0)
+    );
     assert_eq!(payload["unacked_messages"].as_u64(), Some(2));
     assert_eq!(
         payload["dashboard_url"].as_str(),
@@ -506,7 +551,7 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         started["dashboard_url"].as_str(),
         Some(
-            format!("http://127.0.0.1:8787/?surface=team&team={startable_id}&project={project_id}")
+            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&project={project_id}")
                 .as_str()
         )
     );

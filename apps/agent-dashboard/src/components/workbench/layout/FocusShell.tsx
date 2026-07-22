@@ -20,6 +20,7 @@ export function FocusShell({
   headerClassName,
   composerClassName,
   responsiveContextVariant = "inline",
+  mainLabel,
 }: {
   header?: ReactNode;
   children: ReactNode;
@@ -30,17 +31,23 @@ export function FocusShell({
   headerClassName?: string;
   composerClassName?: string;
   responsiveContextVariant?: "inline" | "sheet";
+  mainLabel?: string;
 }) {
   return (
     <div
       className={cn(
-        "grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background xl:grid-cols-[minmax(0,1fr)_23rem]",
+        "grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background xl:grid-cols-[minmax(0,1fr)_23.625rem]",
         className,
       )}
     >
       <section className="flex min-h-0 min-w-0 flex-col">
         {header && <div className={cn("border-b border-border bg-card px-4 py-3 sm:px-5", headerClassName)}>{header}</div>}
-        <main className={cn("min-h-0 flex-1 overflow-y-auto", mainClassName)}>{children}</main>
+        <main
+          className={cn("min-h-0 flex-1 overflow-y-auto", mainClassName)}
+          data-member-history-scroll-owner={mainLabel ? "true" : undefined}
+          aria-label={mainLabel}
+          tabIndex={mainLabel ? 0 : undefined}
+        >{children}</main>
         {context && (
           <details className={cn(
             "group shrink-0 border-t border-border bg-card xl:hidden",

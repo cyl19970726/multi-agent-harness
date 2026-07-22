@@ -16,4 +16,3 @@ Right rail: selected Org/HR context with capability gaps, pending OrgChangePropo
 Constraints: Lead has exactly four direct Agent reports; no business Agent directly under Lead;
              no generic card grid; no fictional provider telemetry; no Project; no watermark
 ```
-

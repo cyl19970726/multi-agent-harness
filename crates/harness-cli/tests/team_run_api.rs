@@ -108,6 +108,10 @@ fn team_run_cli_create_list_status_send_events() {
     let home = TempHome::new("team-run-cli");
     let project_id = init_project(&home, "alpha");
     seed_native_mission_wave(&home, &project_id);
+    let project_root = std::fs::canonicalize(home.base().join("alpha"))
+        .expect("canonical project root")
+        .display()
+        .to_string();
 
     // create (plain output): bare run id on stdout.
     let out = run_harness(
@@ -126,10 +130,14 @@ fn team_run_cli_create_list_status_send_events() {
             "wave-test",
             "--budget-usd",
             "5.5",
+            "--execution-root",
+            &project_root,
             "--member",
             "lead:coordinator:kimi",
             "--member",
             "worker-1:implementer:codex:gpt-5@crates/a,docs",
+            "--member-worktree",
+            &format!("worker-1:{project_root}"),
         ],
     );
     assert!(
@@ -148,6 +156,10 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(runs[0]["status"].as_str(), Some("planning"));
     assert_eq!(runs[0]["wave_index"].as_u64(), Some(2));
     assert_eq!(runs[0]["mission_id"].as_str(), Some("mission-test"));
+    assert_eq!(
+        runs[0]["execution_root"].as_str(),
+        Some(project_root.as_str())
+    );
     assert_eq!(runs[0]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(runs[0]["budget_limit_usd"].as_f64(), Some(5.5));
     let member_ids: Vec<&str> = runs[0]["member_run_ids"]
@@ -169,6 +181,10 @@ fn team_run_cli_create_list_status_send_events() {
         "member order follows --member order"
     );
     assert_eq!(members[1]["member_run"]["model"].as_str(), Some("gpt-5"));
+    assert_eq!(
+        members[1]["member_run"]["worktree_ref"].as_str(),
+        Some(project_root.as_str())
+    );
     assert_eq!(
         members[1]["member_run"]["owned_paths"],
         serde_json::json!(["crates/a", "docs"]),
@@ -825,6 +841,8 @@ fn linked_team_run_rejects_previous_attempt_from_another_wave() {
 fn post_team_run_creates_entities_and_snapshot() {
     let home = TempHome::new("team-run-api");
     let project_id = init_project(&home, "alpha");
+    let project_root =
+        std::fs::canonicalize(home.base().join("alpha")).expect("canonical project root");
     seed_native_mission_wave(&home, &project_id);
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
@@ -834,11 +852,12 @@ fn post_team_run_creates_entities_and_snapshot() {
             "objective": "Ship v0",
             "mission_id": "mission-test",
             "wave_id": "wave-test",
+            "execution_root": project_root,
             "budget_limit_usd": 5.0,
             "members": [
                 {"name": "lead", "role": "coordinator", "provider": "kimi"},
                 {"name": "worker-1", "role": "implementer", "provider": "codex",
-                 "model": "gpt-5", "owned_paths": ["crates/a"]},
+                 "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a"]},
             ],
         }),
     );
@@ -855,11 +874,19 @@ fn post_team_run_creates_entities_and_snapshot() {
     );
     assert_eq!(result["team_run"]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(
+        result["team_run"]["execution_root"].as_str(),
+        Some(project_root.to_str().expect("project root"))
+    );
+    assert_eq!(
         result["team_run"]["host_surface"].as_str(),
         Some("http"),
         "HTTP-created runs default host_surface to http"
     );
     assert_eq!(result["member_runs"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        result["member_runs"][1]["worktree_ref"].as_str(),
+        Some(project_root.to_str().expect("project root"))
+    );
     assert_eq!(
         result["assignment_messages"].as_array().map(Vec::len),
         Some(2)
@@ -1132,6 +1159,429 @@ fn post_team_run_message_and_start_async() {
 }
 
 #[test]
+fn codex_app_server_member_can_be_steered_in_place() {
+    let home = TempHome::new("team-run-codex-app-server");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-app"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise live Codex control",
+            "members": [{
+                "name": "codex-live",
+                "role": "implementer",
+                "provider": "codex",
+                "execution_mode": "codex_app_server"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut live = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        live = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some("thread_fake_codex_app_server")
+            });
+        if live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(live, "app-server member never became live");
+
+    let (status, steered) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
+        &serde_json::json!({"content": "finish with the requested report", "requested_by": "operator"}),
+    );
+    assert_eq!(status, 200, "body: {steered}");
+    assert_eq!(
+        steered["result"]["control"]["delivery"].as_str(),
+        Some("steered")
+    );
+    assert_eq!(
+        steered["result"]["message"]["deliveries"][0]["policy"].as_str(),
+        Some("inject")
+    );
+
+    let mut completed = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        completed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("completed")
+            });
+        if completed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(completed, "steered member did not complete");
+}
+
+#[test]
+fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
+    let home = TempHome::new("team-run-codex-interrupt");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-interrupt"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise Codex interruption",
+            "members": [{"name": "codex-stop", "role": "observer", "provider": "codex", "execution_mode": "codex_app_server"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+    let mut running = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        running = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if running {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(running, "Codex app-server member never became live");
+    let (status, result) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
+        &serde_json::json!({"requested_by": "operator", "reason": "stop deterministic turn"}),
+    );
+    assert_eq!(status, 200, "body: {result}");
+    assert_eq!(
+        result["result"]["status"].as_str(),
+        Some("interrupt_requested")
+    );
+    let mut stopped = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        if stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        stopped,
+        "Codex member was marked terminal before/without provider interruption acknowledgement"
+    );
+}
+
+#[test]
+fn kimi_acp_member_can_be_cancelled_cooperatively() {
+    let home = TempHome::new("team-run-kimi-cancel");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_WAIT", "1"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise Kimi cancellation",
+            "members": [{"name": "kimi-live", "role": "observer", "provider": "kimi", "model": "k2.5"}]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    let mut live = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        live = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(live, "Kimi ACP member never became live");
+    let (status, interrupted) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
+        &serde_json::json!({"requested_by": "operator", "reason": "stop this observation"}),
+    );
+    assert_eq!(status, 200, "body: {interrupted}");
+    assert_eq!(
+        interrupted["result"]["status"].as_str(),
+        Some("cancel_requested")
+    );
+    let mut stopped = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        if stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(stopped, "Kimi ACP member did not acknowledge cancellation");
+}
+
+#[test]
+fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
+    let home = TempHome::new("team-run-codex-question");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-question"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("PATH", path.as_str()), ("FAKE_CODEX_ASK", "1")],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise Codex reverse input",
+            "members": [{"name": "codex-question", "role": "implementer", "provider": "codex", "execution_mode": "codex_app_server"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+    let mut interaction_id = None;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        interaction_id = snapshot["pending_interactions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|interaction| {
+                interaction["member_run_id"].as_str() == Some(member_id.as_str())
+                    && interaction["status"].as_str() == Some("pending")
+            })
+            .and_then(|interaction| interaction["id"].as_str().map(str::to_string));
+        if interaction_id.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let interaction_id = interaction_id.expect("Codex PendingInteraction");
+    let (status, resolved) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/interactions/{interaction_id}/resolve"),
+        &serde_json::json!({"option_id": "implementation::0", "resolved_by": "host"}),
+    );
+    assert_eq!(status, 200, "body: {resolved}");
+    assert_eq!(resolved["result"]["status"].as_str(), Some("answered"));
+    let mut completed = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        completed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("completed")
+            });
+        if completed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(completed, "Codex did not resume after Lead answer");
+}
+
+#[test]
+fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
+    let home = TempHome::new("team-run-kimi-waiting-cancel");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_ASK", "1"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Wait for Lead, then be interrupted",
+            "members": [{"name": "kimi-waiting", "role": "observer", "provider": "kimi", "model": "k2.5"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+    let mut waiting = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        waiting = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("waiting")
+            });
+        if waiting {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        waiting,
+        "Kimi never entered provider-interaction waiting state"
+    );
+    let (status, interrupted) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
+        &serde_json::json!({"reason": "cancel while waiting", "requested_by": "operator"}),
+    );
+    assert_eq!(status, 200, "body: {interrupted}");
+    let mut stopped_with_cancelled_interaction = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        let cancelled = snapshot["pending_interactions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|interaction| {
+                interaction["member_run_id"].as_str() == Some(member_id.as_str())
+                    && interaction["status"].as_str() == Some("cancelled")
+            });
+        stopped_with_cancelled_interaction = stopped && cancelled;
+        if stopped_with_cancelled_interaction {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        stopped_with_cancelled_interaction,
+        "interrupt did not close both waiting interaction and prompt"
+    );
+}
+
+#[test]
 fn post_team_run_transition_and_compatibility_lineage() {
     let home = TempHome::new("team-run-transition");
     let project_id = init_project(&home, "alpha");
@@ -1373,6 +1823,43 @@ fn post_team_run_transition_and_compatibility_lineage() {
             .unwrap_or("")
             .contains("running cancellation requires provider interruption"),
         "body: {body}"
+    );
+
+    // Once an operator has independently stopped every provider process, the
+    // explicit recovery path terminates the stale attempt and its members with
+    // an auditable reason. It is deliberately separate from status-only cancel.
+    let recovered = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "cancel",
+            "--id",
+            &running_id,
+            "--confirm-provider-stopped",
+            "--reason",
+            "foreground orchestrator was interrupted",
+            "--cancelled-by",
+            "test-operator",
+            "--json",
+        ],
+    );
+    assert_eq!(recovered["status"].as_str(), Some("cancelled"));
+    let recovered_status = team_run_json(
+        &home,
+        &project_id,
+        &["status", "--id", &running_id, "--json"],
+    );
+    assert_eq!(
+        recovered_status["members"][0]["member_run"]["status"].as_str(),
+        Some("stopped")
+    );
+    assert_eq!(
+        recovered_status["members"][0]["latest_action"]["action_type"].as_str(),
+        Some("interrupted")
+    );
+    assert_eq!(
+        recovered_status["members"][0]["latest_action"]["status"].as_str(),
+        Some("cancelled")
     );
 }
 

@@ -64,7 +64,8 @@ interface MissionsProps {
 interface MemberDraft {
   name: string;
   role: string;
-  provider: "kimi";
+  provider: "codex" | "kimi";
+  executionMode: "codex_exec" | "codex_app_server" | "kimi_acp";
   model: string;
   ownedPaths: string;
 }
@@ -138,7 +139,14 @@ function runsForWave(model: WorkbenchModel, wave: Wave): TeamRun[] {
 }
 
 function blankMember(): MemberDraft {
-  return { name: "", role: "", provider: "kimi", model: "", ownedPaths: "" };
+  return {
+    name: "",
+    role: "",
+    provider: "codex",
+    executionMode: "codex_app_server",
+    model: "",
+    ownedPaths: "",
+  };
 }
 
 function exitCriteriaFor(wave: Wave): string[] {
@@ -304,7 +312,24 @@ function MissionDetail({
     latestSelectedRun?.status === "completed";
 
   return (
-    <DocumentSurface className="max-w-[1280px] space-y-0">
+    <DocumentSurface
+      className="h-full max-w-[1280px] space-y-0 overflow-y-auto overscroll-contain px-3 py-5 sm:px-5 xl:px-0"
+      data-mission-scroll-owner="true"
+      role="region"
+      aria-label="Mission detail"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const page = Math.max(event.currentTarget.clientHeight * 0.85, 240);
+        if (event.key === "PageDown" || event.key === "PageUp") {
+          event.preventDefault();
+          event.currentTarget.scrollBy({ top: event.key === "PageDown" ? page : -page, behavior: "auto" });
+        } else if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          event.currentTarget.scrollTo({ top: event.key === "Home" ? 0 : event.currentTarget.scrollHeight, behavior: "auto" });
+        }
+      }}
+    >
       <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_21rem] xl:gap-0">
         <section className="min-w-0 xl:pl-5 xl:pr-6">
           <button
@@ -747,13 +772,31 @@ function WaveCanvasCard({
               {activeMembers.length > 0 && (
                 <div className="flex flex-wrap gap-4">
                   {activeMembers.map((member) => (
-                    <span key={`${member.team_run_id}:${member.name}:${member.role}`} className="inline-flex min-w-0 items-center gap-2">
-                      <Avatar name={member.name || member.role || "Member"} tone={waveTone(member.status)} size="sm" />
+                    <button
+                      key={`${member.team_run_id}:${member.id}`}
+                      type="button"
+                      onClick={() => onSelectionChange({
+                        surface: "team",
+                        teamId: latest.id,
+                        memberRunId: member.id,
+                        missionId: wave.mission_id,
+                        waveId: wave.id,
+                      })}
+                      aria-label={`Open member ${member.name || member.role || member.id}`}
+                      className="group inline-flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Avatar
+                        name={member.name || member.role || "Member"}
+                        identity={`${member.role ?? "member"} ${member.id}`}
+                        tone={waveTone(member.status)}
+                        size="sm"
+                      />
                       <span className="min-w-0">
-                        <span className="block max-w-28 truncate text-[10px] font-medium text-foreground">{member.name || "Member"}</span>
+                        <span className="block max-w-28 truncate text-[10px] font-medium text-foreground group-hover:text-primary">{member.name || "Member"}</span>
                         <span className="block text-[9px] text-muted-foreground">{member.status || "unknown"}</span>
                       </span>
-                    </span>
+                      <ChevronRight className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                    </button>
                   ))}
                 </div>
               )}
@@ -1029,6 +1072,7 @@ function AttemptDialog({
           name: member.name.trim(),
           role: member.role.trim(),
           provider: member.provider,
+          executionMode: member.executionMode,
           model: member.model.trim() || undefined,
           ownedPaths: parseList(member.ownedPaths),
         })),
@@ -1091,12 +1135,50 @@ function AttemptDialog({
                   />
                 )}
               </Field>
-              <Field label="Provider" required hint="Kimi is currently the executable provider.">
+              <Field label="Provider" required hint="Choose the provider; control capability is execution-mode specific.">
                 {(id) => (
-                  <Select id={id} value={member.provider} onChange={() => undefined}>
+                  <Select
+                    id={id}
+                    value={member.provider}
+                    onChange={(event) => {
+                      const provider = event.target.value as MemberDraft["provider"];
+                      updateMember(index, {
+                        provider,
+                        executionMode: provider === "codex" ? "codex_app_server" : "kimi_acp",
+                        model: provider === "kimi" ? "k2.5" : "",
+                      });
+                    }}
+                  >
+                    <option value="codex">Codex</option>
                     <option value="kimi">Kimi</option>
-                    <option disabled>Codex (coming later)</option>
                     <option disabled>Claude (coming later)</option>
+                  </Select>
+                )}
+              </Field>
+              <Field
+                label="Execution mode"
+                hint={member.executionMode === "codex_app_server"
+                  ? "Interactive: same-turn steer and cooperative interrupt."
+                  : member.executionMode === "codex_exec"
+                    ? "Batch: messages queue for the next round."
+                    : "ACP: provider questions resume in-turn; chat queues to the next round."}
+              >
+                {(id) => (
+                  <Select
+                    id={id}
+                    value={member.executionMode}
+                    onChange={(event) => updateMember(index, {
+                      executionMode: event.target.value as MemberDraft["executionMode"],
+                    })}
+                  >
+                    {member.provider === "codex" ? (
+                      <>
+                        <option value="codex_app_server">Interactive app-server</option>
+                        <option value="codex_exec">Batch exec</option>
+                      </>
+                    ) : (
+                      <option value="kimi_acp">Kimi ACP</option>
+                    )}
                   </Select>
                 )}
               </Field>

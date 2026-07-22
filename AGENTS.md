@@ -34,6 +34,19 @@ The shared substrate includes provider sessions/runtimes, capability snapshots,
 permission and budget ceilings, messages, artifacts, events, plugins/MCP, and
 Dashboard projections. It does not collapse WorkflowRun, AgentTeamRun,
 Host-native subagents, or future Standing Agents into one universal object.
+Provider capability claims are execution-mode and version specific. Run
+`harness member providers --fail-on-review` after provider upgrades; an
+unreviewed version is `review_required`, not silently compatible. Interactive
+chat/steer/interrupt controls must be backed by the selected mode's real
+protocol and terminal acknowledgements.
+
+Provider release discovery is read-only and should run at most once per day by
+default. Never install, upgrade, downgrade, or switch Codex, Claude Code, Kimi,
+or another provider version without explicit Human confirmation naming that
+provider and candidate version. One approval does not authorize other
+providers or future upgrades. After an approved change, keep the adapter
+`review_required` until mode-specific deterministic checks and a proportional
+live canary justify updating the reviewed-version set.
 
 Standing Agents + Docs are the current product direction. Their Company OS
 contracts are additive and still being implemented; do not claim planned
@@ -61,10 +74,20 @@ it into normal planning context, create new records, use its commands, or add
 new dependencies. Historical stores must be exported and verified before their
 old ledgers or code are deleted.
 
-For `executor_kind=agent_team`, the canonical execution records are
-`AgentTeamRun`, `MemberRun`, `TeamMessage`, explicit `MemberAction` summaries,
-artifacts, and the Wave gate. Assignment ownership is proven by
-`TeamMessage(kind=assignment)` plus `correlation_id`.
+For `executor_kind=agent_team`, Harness owns the coordination records:
+`AgentTeamRun`, `MemberRun` plus its native-session binding, `TeamMessage`,
+`PendingInteraction`, explicit outcome and artifact/check references, control
+acknowledgements, and the Wave gate. Assignment ownership is proven by
+`TeamMessage(kind=assignment)` plus `correlation_id`. The provider's native
+session store is the sole execution truth for that member's transcript, tool
+calls, commands, file events, and provider turn lifecycle; do not mirror those
+streams into Harness ledgers.
+
+Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
+capability, execution-mode capability, adapter coverage, and product permission
+are separate claims. Provider questions, approvals, and plan reviews must be
+routed as PendingInteraction records. A provider `completed` status is not by
+itself proof of semantic success, answer, or approval.
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but
@@ -79,6 +102,12 @@ Do not claim that an Agent Team Wave was accepted unless the store shows:
   occurred;
 - an explicit outcome, plus artifact/check references when they are useful;
 - a Wave gate naming the accepted completed attempt.
+
+Execution claims must also resolve to the provider-native session when the
+member used a provider. Missing or incompatible native sessions are reported
+honestly; Harness coordination history does not impersonate a backup
+transcript. Resume must use the provider-native session id and verified
+provider operation, never a replay assembled from Harness events.
 
 For `dynamic_workflow`, WorkflowRun/WorkflowStep and its result/artifacts are
 the execution truth. For `host`, record the observable outcome and artifacts
@@ -101,8 +130,10 @@ The Lead Agent should use this sequence for non-trivial new work:
    messages and correlations for lane ownership. Give concurrent members
    disjoint owned paths or worktrees and surface shared-file conflicts to the
    Host.
-5. Keep explicit actions, checks, artifacts, blockers, handoffs, reviews, and
-   outcomes durable. Do not persist provider thinking.
+5. Keep Harness-owned checks, artifact references, blockers, handoffs, reviews,
+   control acknowledgements, and outcomes durable. Keep provider chat, tool,
+   command, file, turn, and reasoning streams in the provider-native session;
+   do not persist a duplicate in Harness.
 6. Apply review proportional to risk. A reviewer member or stricter repository
    governance may be added when useful, but Proposal/Decision/outcome evaluation is
    not a universal product chain.
@@ -115,8 +146,14 @@ The Lead Agent should use this sequence for non-trivial new work:
 
 One `serve` / dashboard manages many projects. Each has a centralized
 `store_root` (`~/.harness/projects/<id>/`, the JSONL ledgers) and a `project_root`
-(the git repo where `CLAUDE.md` / `AGENTS.md` / worktrees live); a spawned
-worker's cwd derives from `project_root`, not the harness process cwd.
+(the registered git repo where project instructions and configuration live).
+Agent Team provider cwd resolves as member `worktree_ref` > TeamRun
+`execution_root` > `project_root`, never `store_root`. Overrides must be the
+project root or a Git worktree sharing its Git common directory; external Codex
+worktrees are valid. Because cwd changes which project/root instructions,
+skills, plugins, and MCP configuration a provider may discover, treat it as an
+explicit execution and permission boundary. See ADR 0033 and
+[docs/multi-project.md](docs/multi-project.md).
 
 - Select the project explicitly (`--project <id|path>`, `HARNESS_PROJECT`, or
   `harness project switch`) before spawning workers; do not rely on cwd.
@@ -179,7 +216,9 @@ mechanism, but must say so and add focused acceptance for the path it creates.
 - A small typo or single-line doc fix may be Lead-local, but the final summary
   must say that it was a Lead-local exception.
 - Any feature claim about Agent Team behavior must be backed by linked run,
-  member, assignment/correlation, explicit action/outcome, and Wave-gate state.
+  member/native-session binding, assignment/correlation, explicit outcome and
+  useful artifact/check references, Wave-gate state, and resolvable native
+  provider records for claims about the member's own execution.
 - When the current workflow feels slow or manual, record a follow-up Wave or
   issue instead of normalizing hidden local reasoning.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
@@ -215,7 +254,8 @@ A native Mission/Wave slice is done only when the store can explain:
 - which Wave and executor were selected;
 - which run attempts occurred and which one was accepted;
 - which TeamMessages assigned or handed off Agent Team lanes;
-- which explicit outcomes, checks, and artifacts support acceptance;
+- which explicit outcomes, checks, and artifacts support acceptance and which
+  provider-native session supports claims about the member's execution;
 - what the Wave gate accepted, revised, or blocked;
 - what should be reused, improved, split, or followed up next.
 

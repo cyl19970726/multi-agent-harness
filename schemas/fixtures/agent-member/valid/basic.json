@@ -28,6 +28,7 @@
   "current_task_id": null,
   "current_proposal_id": null,
   "provider_runtime_id": null,
+  "native_session": null,
   "provider_thread_id": null,
   "provider_agent_path": "/root/architect",
   "provider_agent_nickname": "Architect",

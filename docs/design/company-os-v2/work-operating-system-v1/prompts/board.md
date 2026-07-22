@@ -19,4 +19,3 @@ Composition: seven narrow horizontally scrollable lanes inside the desktop canva
              Completed is visually quieter; the center remains dense and readable
 Constraints: accountable owner and assignee use distinct labels; no floating decorative art
 ```
-
