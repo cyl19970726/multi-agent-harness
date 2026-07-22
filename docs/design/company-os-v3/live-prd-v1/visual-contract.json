@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "workstream": "live-prd-v1",
+  "artifact_policy": {
+    "expected": "durable",
+    "selected_comparisons": "durable",
+    "raw_browser_runs": "/Users/hhh0x/multi-agent-harness/.visual-evidence/company-os-v3/live-prd-v1"
+  },
+  "fidelity_policy": {
+    "required_for_p0": true,
+    "expected_viewport_must_match": true,
+    "minimum_implementation_iterations": 2,
+    "explainer_rendering": "embed-approved-expected-directly",
+    "actual_evidence": "browser-rendered-product-pages-only"
+  },
+  "cases": [
+    {
+      "id": "live-prd--product-map--desktop-1536x1024",
+      "priority": "P0",
+      "page": "live-prd",
+      "state": "product-map",
+      "route": "docs/company-os/live-prd.html?view=overview",
+      "fixture": "canonical-company-os-docs-and-versioned-visual-assets",
+      "viewport": {
+        "width": 1536,
+        "height": 1024,
+        "device_scale_factor": 1
+      },
+      "baseline": null,
+      "expected": "expected/live-prd--product-map--desktop-1536x1024.png",
+      "expected_hash": "sha256:b76f7f26f238ebc3ca1bbe151d497d80298a0b42537271cd2f75f01b08dbbaa2",
+      "implemented": ".visual-evidence/company-os-v3/live-prd-v1/final/implemented/live-prd--overview--desktop-1536x1024.png",
+      "comparison": null,
+      "prompt": "prompts/live-prd--product-map.md",
+      "design_spec": "specs/live-prd--product-map--desktop-1536x1024.json",
+      "asset_inventory": "assets/live-prd--product-map--asset-inventory.md",
+      "overlay": null,
+      "baseline_revision": null,
+      "implementation_iterations": [
+        ".visual-evidence/company-os-v3/live-prd-v1/structural/implemented/live-prd--overview--desktop-1536x1024.png",
+        ".visual-evidence/company-os-v3/live-prd-v1/iteration-2/implemented/live-prd--overview--desktop-1536x1024.png",
+        ".visual-evidence/company-os-v3/live-prd-v1/final/implemented/live-prd--overview--desktop-1536x1024.png"
+      ],
+      "expected_approval": {
+        "status": "approved",
+        "approver": "Human Owner",
+        "decided_at": "2026-07-22"
+      },
+      "gates": {
+        "product_truth": {
+          "status": "pass",
+          "evidence": "reviews/live-prd-implementation-review.md"
+        },
+        "visual_fidelity": {
+          "status": "pass",
+          "evidence": "Approved Expected is embedded directly; final browser capture and interaction checks passed."
+        }
+      },
+      "review": {
+        "status": "pass",
+        "defects": [],
+        "intentional_deviations": ["The report embeds the approved explainer instead of recreating it as HTML."]
+      }
+    },
+    {
+      "id": "live-prd--product-journey--desktop-1536x1024",
+      "priority": "P0",
+      "page": "live-prd",
+      "state": "product-journey",
+      "route": "docs/company-os/live-prd.html?view=journey",
+      "fixture": "canonical-company-os-docs-and-versioned-visual-assets",
+      "viewport": {
+        "width": 1536,
+        "height": 1024,
+        "device_scale_factor": 1
+      },
+      "baseline": null,
+      "expected": "expected/live-prd--product-journey--desktop-1536x1024.png",
+      "expected_hash": "sha256:8aa3f88303d7859abdd5321e18f5653e7ea866ded996a57ac0c8fbfb42fc1f65",
+      "implemented": ".visual-evidence/company-os-v3/live-prd-v1/final/implemented/live-prd--journey--desktop-1536x1024.png",
+      "comparison": null,
+      "prompt": "prompts/live-prd--product-journey.md",
+      "design_spec": "specs/live-prd--product-journey--desktop-1536x1024.json",
+      "asset_inventory": "assets/live-prd--product-journey--asset-inventory.md",
+      "overlay": null,
+      "baseline_revision": null,
+      "implementation_iterations": [
+        ".visual-evidence/company-os-v3/live-prd-v1/structural/implemented/live-prd--journey--desktop-1536x1024.png",
+        ".visual-evidence/company-os-v3/live-prd-v1/iteration-2/implemented/live-prd--journey--desktop-1536x1024.png",
+        ".visual-evidence/company-os-v3/live-prd-v1/final/implemented/live-prd--journey--desktop-1536x1024.png"
+      ],
+      "expected_approval": {
+        "status": "approved",
+        "approver": "Human Owner",
+        "decided_at": "2026-07-22"
+      },
+      "gates": {
+        "product_truth": { "status": "pass", "evidence": "reviews/live-prd-implementation-review.md" },
+        "visual_fidelity": { "status": "pass", "evidence": "Approved Expected is embedded directly; real product screenshots retain truth labels." }
+      },
+      "review": {
+        "status": "pass",
+        "defects": [],
+        "intentional_deviations": ["The Expected journey is embedded directly; HTML below it explains real routes, objects, authority, and Actual evidence."]
+      }
+    },
+    {
+      "id": "live-prd--os-architecture--desktop-1536x1024",
+      "priority": "P0",
+      "page": "live-prd",
+      "state": "os-architecture",
+      "route": "docs/company-os/live-prd.html?view=architecture",
+      "fixture": "canonical-company-os-docs-and-versioned-visual-assets",
+      "viewport": {
+        "width": 1536,
+        "height": 1024,
+        "device_scale_factor": 1
+      },
+      "baseline": null,
+      "expected": "expected/live-prd--os-architecture--desktop-1536x1024.png",
+      "expected_hash": "sha256:b4b799a9051b74c2149404f45935e2430511cf4d8305725bb220470fc190df72",
+      "implemented": ".visual-evidence/company-os-v3/live-prd-v1/final/implemented/live-prd--architecture--desktop-1536x1024.png",
+      "comparison": null,
+      "prompt": "prompts/live-prd--os-architecture.md",
+      "design_spec": "specs/live-prd--os-architecture--desktop-1536x1024.json",
+      "asset_inventory": "assets/live-prd--os-architecture--asset-inventory.md",
+      "overlay": null,
+      "baseline_revision": null,
+      "implementation_iterations": [
+        ".visual-evidence/company-os-v3/live-prd-v1/structural/implemented/live-prd--architecture--desktop-1536x1024.png",
+        ".visual-evidence/company-os-v3/live-prd-v1/iteration-2/implemented/live-prd--architecture--desktop-1536x1024.png",
+        ".visual-evidence/company-os-v3/live-prd-v1/final/implemented/live-prd--architecture--desktop-1536x1024.png"
+      ],
+      "expected_approval": {
+        "status": "approved",
+        "approver": "Human Owner",
+        "decided_at": "2026-07-22"
+      },
+      "gates": {
+        "product_truth": { "status": "pass", "evidence": "reviews/live-prd-implementation-review.md" },
+        "visual_fidelity": { "status": "pass", "evidence": "Approved architecture is embedded directly with an accessible transcript." }
+      },
+      "review": {
+        "status": "pass",
+        "defects": [],
+        "intentional_deviations": ["The architecture graphic remains a source image; semantic HTML provides the transcript instead of redrawing it."]
+      }
+    }
+  ]
+}

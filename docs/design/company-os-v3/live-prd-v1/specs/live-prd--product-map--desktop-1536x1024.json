@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "page": "live-prd-product-map",
+  "expected": "../expected/live-prd--product-map--desktop-1536x1024.png",
+  "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
+  "geometry": {
+    "regions": [
+      { "name": "contents rail", "width": 232, "position": "sticky left" },
+      { "name": "reading canvas", "width": 990, "position": "primary" },
+      { "name": "truth rail", "width": 280, "position": "sticky right" }
+    ],
+    "grid": { "desktop": "232px minmax(0,1fr) 280px", "system_map": "repeat(4,minmax(0,1fr))" },
+    "gutters": { "outer": 24, "content": 20, "section": 48 },
+    "max_content_width": 1536,
+    "scroll_owner": "document body",
+    "sticky_regions": ["contents rail", "truth rail"]
+  },
+  "vertical_landmarks": [
+    { "name": "metadata bar", "y": 16 },
+    { "name": "product thesis", "y": 68 },
+    { "name": "canonical loop", "y": 180 },
+    { "name": "four-system map", "y": 290 },
+    { "name": "core pages handoff", "y": 740 }
+  ],
+  "typography": [
+    { "role": "display", "family": "Georgia, serif", "size": 64, "line_height": 1.02 },
+    { "role": "section", "family": "Georgia, serif", "size": 38, "line_height": 1.1 },
+    { "role": "body", "family": "Inter, system-ui, sans-serif", "size": 14, "line_height": 1.55 },
+    { "role": "meta", "family": "Inter, system-ui, sans-serif", "size": 11, "line_height": 1.35 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 24, 32, 48, 64],
+  "surfaces": ["warm application canvas", "ivory document paper", "hairline bounded system blocks", "flat status labels"],
+  "colors": [
+    { "token": "ink", "value": "#28241f" },
+    { "token": "canvas", "value": "#eee8de" },
+    { "token": "paper", "value": "#fffdf8" },
+    { "token": "docs", "value": "#205b86" },
+    { "token": "organization", "value": "#637858" },
+    { "token": "work", "value": "#d95336" },
+    { "token": "finance", "value": "#b57b1d" }
+  ],
+  "icons_and_assets": ["code-native semantic line icons", "approved architecture explainers", "actual and expected product screenshots"],
+  "component_strategy": {
+    "reuse": ["truth badge", "system token", "source-labelled figure", "canonical link"],
+    "page_specific": ["editorial thesis", "four-system loop", "implementation truth rail"],
+    "replace_or_split": ["collapse right truth rail into inline sections below 1100px"]
+  },
+  "responsive_transformations": [
+    "tablet: contents rail becomes compact top navigation; truth rail becomes inline summary",
+    "mobile: one reading column; system map stacks; architecture images scroll inside labelled figure",
+    "all: no page-level horizontal overflow"
+  ],
+  "design_risks": ["generated labels are shorter than canonical copy", "long report could lose section location", "Expected and Actual images require explicit labels"],
+  "unresolved_decisions": []
+}

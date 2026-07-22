@@ -41,6 +41,13 @@ Before claiming any part of this loop is implemented, read the
 Organization, Work and Finance from contract through acceptance and names the
 remaining native gaps in the trademark scenario.
 
+For a visual, navigable overview of how the core pages, business lines, truth
+systems, and governed handoffs fit together, open the
+[Company OS Live PRD](live-prd.html). Its Expected designs, browser-rendered
+Actual evidence links, and review contract are indexed under
+[`docs/design/company-os-v3/live-prd-v1`](../design/company-os-v3/live-prd-v1/README.md);
+the source Actual comparison plates remain with their owning acceptance slice.
+
 ## Knowledge boundary
 
 Company knowledge is deliberate and inspectable: documents, typed business

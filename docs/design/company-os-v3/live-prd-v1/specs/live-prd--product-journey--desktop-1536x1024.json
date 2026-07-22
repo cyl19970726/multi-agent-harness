@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "page": "live-prd-product-journey",
+  "expected": "../expected/live-prd--product-journey--desktop-1536x1024.png",
+  "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
+  "geometry": {
+    "regions": [
+      { "name": "business-line rail", "width": 204, "position": "fixed left" },
+      { "name": "journey canvas", "width": 1018, "position": "primary" },
+      { "name": "jump contract", "width": 300, "position": "right" },
+      { "name": "handoff graph", "height": 400, "position": "lower primary" }
+    ],
+    "grid": { "desktop": "204px minmax(0,1fr) 300px", "steps": "repeat(6,minmax(150px,1fr))" },
+    "gutters": { "outer": 16, "content": 14, "step": 10 },
+    "max_content_width": 1536,
+    "scroll_owner": "journey main region; step strip gains local horizontal scroll below 1180px",
+    "sticky_regions": ["business-line rail", "jump contract tabs"]
+  },
+  "vertical_landmarks": [
+    { "name": "journey context", "y": 18 },
+    { "name": "six page previews", "y": 100 },
+    { "name": "handoff graph", "y": 590 }
+  ],
+  "typography": [
+    { "role": "title", "family": "Georgia, serif", "size": 30, "line_height": 1.15 },
+    { "role": "step title", "family": "Georgia, serif", "size": 16, "line_height": 1.2 },
+    { "role": "body", "family": "Inter, system-ui, sans-serif", "size": 12, "line_height": 1.45 },
+    { "role": "route", "family": "ui-monospace, monospace", "size": 10, "line_height": 1.4 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 24, 32],
+  "surfaces": ["page-preview frames", "selected coral handoff", "sage authority lane", "flat evidence rail"],
+  "colors": [
+    { "token": "docs", "value": "#205b86" },
+    { "token": "organization", "value": "#637858" },
+    { "token": "work", "value": "#d95336" },
+    { "token": "finance", "value": "#b57b1d" }
+  ],
+  "icons_and_assets": ["real repository page screenshots", "code-native arrows", "actor portraits contained in source screenshots"],
+  "component_strategy": {
+    "reuse": ["business-line button", "truth badge", "source-labelled screenshot", "object token"],
+    "page_specific": ["journey step strip", "jump contract inspector", "three-lane handoff graph"],
+    "replace_or_split": ["desktop side inspector becomes inline disclosure on mobile"]
+  },
+  "responsive_transformations": [
+    "tablet: business lines become horizontally scrollable tabs; jump contract moves below steps",
+    "mobile: page steps are snap-scrolling cards; graph becomes stacked route/object/authority lists",
+    "focus follows selected handoff and remains visible after business-line changes"
+  ],
+  "design_risks": ["six previews can become illegible if treated as screenshots only", "other business lines are Expected examples, not verified implementations", "routes and preserved refs must remain selectable text"],
+  "unresolved_decisions": []
+}
