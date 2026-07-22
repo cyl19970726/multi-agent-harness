@@ -56,7 +56,8 @@ Approval or returned result.
   the complete scenario is reproducible through governed Actions and tests.
 - `visual_fidelity`: the three P0 trademark pages now pass exact-size
   Expected/Store-live Actual review through
-  [`trademark-native-closure-v1`](../design/company-os-v3/trademark-native-closure-v1/README.md).
+  [`trademark-native-closure-v1`](../design/company-os-v3/trademark-native-closure-v1/review.html),
+  whose status is sourced from the adjacent machine-readable visual contract.
   Product truth cannot waive visual defects and visual similarity cannot waive
   missing records. The Work board's six native records are an explicit,
   truth-preserving deviation from the 24-card concept image.
