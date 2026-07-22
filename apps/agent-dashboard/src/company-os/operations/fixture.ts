@@ -2,6 +2,7 @@ import type {
   ActorAvailability,
   ActorKind,
   ActorSummary,
+  AssignmentView,
   CanonicalActorRef,
   CanonicalEntityRef,
   ApprovalView,
@@ -28,6 +29,10 @@ function records(value: unknown): JsonRecord[] {
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => text(item)).filter(Boolean) : [];
 }
 
 function refId(value: unknown): string {
@@ -164,7 +169,23 @@ export const companyOsActors = {
   trademarkAgent: { id: "actor-agent-trademark", name: "Trademark Agent", kind: "standing_agent", role: "Proposed trademark role", unit: "Brand & IP", organizationRoleState: "proposed" },
   financeAgent: { id: "actor-agent-finance", name: "Finance Agent", kind: "standing_agent", role: "Financial review", unit: "Finance" },
   externalLawyer: { id: "actor-external-lawyer", name: "External Lawyer", kind: "external", role: "Matter-specific legal support", unit: "Brand & IP" },
-  documentArchitecture: { id: "actor-agent-document-architecture", name: "Document Architecture Agent", kind: "standing_agent", role: "Document architecture", unit: "Governance", availability: "available" },
+  documentArchitecture: {
+    id: "actor-agent-document-architecture",
+    name: "Document Architecture Agent",
+    kind: "standing_agent",
+    role: "Document architecture",
+    unit: "Governance",
+    availability: "available",
+    membershipRole: "member",
+    responsibilitySummary: "Maintains company knowledge structure and routes durable results back into Docs.",
+    systemPromptRef: "document-agent-prompt-docs-governance",
+    toolRefs: ["tool-docs-write", "tool-record-query"],
+    skillRefs: ["skill-document-governance"],
+    maintainedDocumentRefs: ["document-company-operating-manual", "document-trademark-application-cn-2026-018"],
+    acceptedWorkTypeRefs: ["work-type-document-governance"],
+    permissionPolicyRefs: ["policy-docs-governance"],
+    escalationPolicyRef: "policy-governance-escalation",
+  },
   ipLead: { id: "actor-agent-ip-lead", name: "IP Lead Agent", kind: "standing_agent", role: "IP lead", unit: "Brand & IP" },
   organizationGovernance: { id: "actor-agent-organization-governance", name: "Organization Governance Agent", kind: "standing_agent", role: "Organization governance", unit: "Governance" },
   contentStrategy: { id: "actor-agent-content-strategy", name: "Content Strategy Agent", kind: "standing_agent", role: "Strategy partner", unit: "Content Operations" },
@@ -191,6 +212,45 @@ export const trademarkWorkItem: WorkItemView = {
   legalReviewer: companyOsActors.externalLawyer,
   approver: companyOsActors.brandOwner,
   updatedAt: "20 Jul 2026 · 09:10",
+};
+
+export const documentArchitectureWorkItem: WorkItemView = {
+  id: "workitem-organize-trademark-knowledge",
+  title: "Organize trademark filing knowledge",
+  status: "in_progress",
+  sourceDocument: trademarkSource,
+  requestedBy: companyOsActors.ipLead,
+  submittedBy: companyOsActors.documentArchitecture,
+  accountableOwner: companyOsActors.ipLead,
+  assignees: [companyOsActors.documentArchitecture],
+  contributors: [],
+  updatedAt: "2026-07-20T09:21:00+08:00",
+};
+
+export const trademarkAssignment: AssignmentView = {
+  id: "assignment-trademark-agent",
+  workItemId: trademarkWorkItem.id,
+  recipient: companyOsActors.trademarkAgent,
+  sender: companyOsActors.ipLead,
+  assignedRole: "Filing owner",
+  scope: "Prepare the CN trademark filing package and return durable evidence.",
+  deliveryState: "delivered",
+  correlationId: "corr-trademark-018",
+  deliveryEvidenceRef: "evidence-assignment-delivered",
+  assignedAt: "2026-07-20T09:05:00+08:00",
+};
+
+export const documentArchitectureAssignment: AssignmentView = {
+  id: "assignment-document-architecture",
+  workItemId: documentArchitectureWorkItem.id,
+  recipient: companyOsActors.documentArchitecture,
+  sender: companyOsActors.ipLead,
+  assignedRole: "Knowledge architecture owner",
+  scope: "Organize trademark filing guidance and return a durable structure proposal to Docs.",
+  deliveryState: "delivered",
+  correlationId: "corr-document-architecture",
+  deliveryEvidenceRef: "evidence-document-assignment-delivered",
+  assignedAt: "2026-07-20T09:02:00+08:00",
 };
 
 export const trademarkCommitment: FinancialRecordView = {
@@ -235,6 +295,8 @@ export const prototypeTrademarkOperationsProjection: TrademarkOperationsProjecti
   contentPlanDocument: { id: "document-brand-a-content-operating-plan", label: "Brand A · Content operating plan", detail: "Content Operations" },
   typedApplication: { id: "trademark-application-cn-2026-018", label: "Trademark application CN-2026-018", detail: "Typed application record · filing preparation" },
   workItem: trademarkWorkItem,
+  workItems: [trademarkWorkItem, documentArchitectureWorkItem],
+  assignments: [trademarkAssignment, documentArchitectureAssignment],
   commitment: trademarkCommitment,
   approval: trademarkApproval,
   evidence: [
@@ -252,7 +314,7 @@ export const prototypeTrademarkOperationsProjection: TrademarkOperationsProjecti
  * data. It preserves the input's ids, labels and responsibility relations; it
  * never adds a payment or derives ownership from execution telemetry.
  */
-export function adaptTrademarkOperationsProjection(projection: unknown): TrademarkOperationsProjection {
+export function adaptTrademarkOperationsProjection(projection: unknown, options: { workItemId?: string } = {}): TrademarkOperationsProjection {
   const root = projection && typeof projection === "object" ? projection as JsonRecord : {};
   const actorRecords = records(root.actors);
 
@@ -274,6 +336,15 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
       unit: text(unit?.name) || undefined,
       availability: (text(reported?.value) || (text(actor.availability) !== "unknown" ? text(actor.availability) : "")) as ActorAvailability || undefined,
       organizationRoleState: text(roleState?.value) === "proposed" ? "proposed" : undefined,
+      membershipRole: text(membership?.membership_role) as ActorSummary["membershipRole"] || undefined,
+      responsibilitySummary: text(actor.responsibility_summary) || undefined,
+      systemPromptRef: text(actor.system_prompt_ref) || undefined,
+      toolRefs: stringArray(actor.tool_refs),
+      skillRefs: stringArray(actor.skill_refs),
+      maintainedDocumentRefs: stringArray(actor.maintained_document_refs),
+      acceptedWorkTypeRefs: stringArray(actor.accepted_work_type_refs),
+      permissionPolicyRefs: stringArray(actor.permission_policy_refs),
+      escalationPolicyRef: text(actor.escalation_policy_ref) || undefined,
     };
   }
   const actor = (id: unknown): ActorSummary => actorById[refId(id)] ?? {
@@ -283,6 +354,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
   const documents = records(root.documents);
   const typedRecords = records(root.typed_records);
   const workRecords = records(root.work_items);
+  const assignmentRecords = records(root.assignments);
   const financeRecords = records(root.financial_records);
   const approvalRecords = records(root.approvals);
   const pageDefinitions = records(root.custom_page_definitions);
@@ -296,7 +368,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
     ...records(root.explicit_metrics),
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
   ];
-  const workRecord = pick(workRecords, "workitem-trademark-filing-brand-a");
+  const workRecord = pick(workRecords, options.workItemId ?? "workitem-trademark-filing-brand-a");
   const sourceDocument = pick(documents, text(workRecord.source_document_ref, "document-trademark-application-cn-2026-018"));
   const contentPlan = pick(documents, "document-brand-a-content-operating-plan");
   const application = pick(typedRecords, "trademark-application-cn-2026-018");
@@ -334,6 +406,37 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
     outcomeSummary: text(workRecord.outcome_summary) || undefined,
     updatedAt: text(workRecord.updated_at),
   };
+  const workItems = workRecords.map((record) => {
+    if (text(record.id) === workItem.id) return workItem;
+    const recordSource = find(documents, text(record.source_document_ref));
+    return {
+      id: text(record.id, "unresolved-work-item"),
+      title: text(record.title, "Unresolved work"),
+      status: workStatus(record.status),
+      sourceDocument: asRef(recordSource?.id ?? record.source_document_ref, recordSource?.title ?? record.source_document_ref, recordSource?.space ?? recordSource?.space_id),
+      requestedBy: actor(record.requested_by_ref ?? record.requested_by),
+      submittedBy: actor(record.submitted_by_ref ?? record.submitted_by),
+      accountableOwner: actor(record.accountable_owner_ref ?? record.accountable_owner),
+      assignees: Array.isArray(record.assignee_refs) ? record.assignee_refs.map(actor) : Array.isArray(record.assignees) ? record.assignees.map(actor) : [],
+      contributors: Array.isArray(record.contributor_refs) ? record.contributor_refs.map(actor) : Array.isArray(record.contributors) ? record.contributors.map(actor) : [],
+      reviewer: record.reviewer_ref || record.reviewer ? actor(record.reviewer_ref ?? record.reviewer) : undefined,
+      approver: record.approver_ref || record.approver ? actor(record.approver_ref ?? record.approver) : undefined,
+      outcomeSummary: text(record.outcome_summary) || undefined,
+      updatedAt: text(record.updated_at),
+    } satisfies WorkItemView;
+  });
+  const assignments: AssignmentView[] = assignmentRecords.map((record) => ({
+    id: text(record.id, "unresolved-assignment"),
+    workItemId: text(record.work_item_id),
+    recipient: actor(record.recipient),
+    sender: actor(record.sender),
+    assignedRole: text(record.assigned_role, "Assigned contributor"),
+    scope: text(record.scope, "No assignment scope recorded"),
+    deliveryState: text(record.delivery_state, "pending") as AssignmentView["deliveryState"],
+    correlationId: text(record.correlation_id),
+    deliveryEvidenceRef: text(record.delivery_evidence_ref) || undefined,
+    assignedAt: text(record.assigned_at),
+  }));
   const workAccountableOwner = canonicalActorRef(workRecord.accountable_owner);
   const workAssignees = Array.isArray(workRecord.assignees)
     ? workRecord.assignees.map(canonicalActorRef).filter((value): value is CanonicalActorRef => Boolean(value))
@@ -447,6 +550,8 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
     contentPlanDocument: asRef(contentPlan.id, contentPlan.title, contentPlan.space ?? contentPlan.space_id),
     typedApplication: asRef(application.id, field(application, "display_id") ? `Trademark application ${text(field(application, "display_id"))}` : application.display_name ?? application.title, "Typed application record · filing preparation"),
     workItem,
+    workItems,
+    assignments,
     commitment,
     approval,
     evidence,

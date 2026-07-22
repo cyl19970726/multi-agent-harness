@@ -18,6 +18,15 @@ export interface ActorSummary {
   availability?: ActorAvailability;
   /** Organization role state, not a provider or runtime state. */
   organizationRoleState?: "proposed" | "active" | "paused";
+  membershipRole?: "lead" | "member" | "advisor" | "observer" | "external_partner";
+  responsibilitySummary?: string;
+  systemPromptRef?: string;
+  toolRefs?: string[];
+  skillRefs?: string[];
+  maintainedDocumentRefs?: string[];
+  acceptedWorkTypeRefs?: string[];
+  permissionPolicyRefs?: string[];
+  escalationPolicyRef?: string;
 }
 
 export interface RelatedLink {
@@ -50,6 +59,19 @@ export interface WorkItemView {
   updatedAt: string;
   /** Present only when Store truth declares the governed lifecycle Action. */
   transitionContext?: WorkItemTransitionContext;
+}
+
+export interface AssignmentView {
+  id: string;
+  workItemId: string;
+  recipient: ActorSummary;
+  sender: ActorSummary;
+  assignedRole: string;
+  scope: string;
+  deliveryState: "pending" | "delivered" | "acknowledged" | "failed" | "cancelled";
+  correlationId: string;
+  deliveryEvidenceRef?: string;
+  assignedAt: string;
 }
 
 export type WorkItemTransitionStatus = "in_progress" | "blocked" | "in_review" | "completed";
@@ -170,6 +192,8 @@ export interface TrademarkOperationsProjection {
   contentPlanDocument: RelatedLink;
   typedApplication: RelatedLink;
   workItem: WorkItemView;
+  workItems?: WorkItemView[];
+  assignments?: AssignmentView[];
   commitment: FinancialRecordView;
   approval: ApprovalView;
   evidence: RelatedLink[];

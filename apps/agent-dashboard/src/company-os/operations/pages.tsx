@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { Bot, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, FileText, Landmark, Network, Plus, Scale, Search, Send, ShieldCheck, Tag, Users } from "lucide-react";
+import { Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, FileText, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, Send, ShieldCheck, Sparkles, Tag, Users, Wrench } from "lucide-react";
 
 import {
   ActorPill, ContextRail, DecisionNotice,
@@ -10,6 +10,11 @@ import { buildApprovalDecisionCommand } from "./approvalAction";
 import { buildWorkItemTransitionCommand } from "./workItemAction";
 import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, TrademarkOperationsProjection, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
 import { ActorAvatar, ObjectEmblem } from "../visuals";
+import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
+import { ContextModule, ContextRail as WorkbenchContextRail } from "@/components/workbench/context/ContextRail";
+import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
+import { Badge } from "@/components/ui/badge";
+import type { SelectionState } from "@/app/selection";
 
 type OperationsPageProps = { data?: TrademarkOperationsProjection };
 type ApprovalFocusProps = OperationsPageProps & {
@@ -138,7 +143,7 @@ export function HumanMemberFocus({ data }: OperationsPageProps) {
   </PageFrame>;
 }
 
-export function StandingAgentFocus({ data, actorId }: OperationsPageProps & { actorId?: string }) {
+export function StandingAgentFocus({ data, actorId, onSelectionChange }: OperationsPageProps & { actorId?: string; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const view = projection(data);
   const actor = actorOr(view, actorId ?? "actor-agent-document-architecture", view.actorList[0] ?? view.workItem.submittedBy);
   const authoredProposal = view.governanceProposal.proposedById === actor.id && !view.governanceProposal.id.startsWith("unresolved")
@@ -154,9 +159,131 @@ export function StandingAgentFocus({ data, actorId }: OperationsPageProps & { ac
       .map((candidateId) => view.actors[candidateId])
       .filter((candidate): candidate is ActorSummary => candidate?.kind === "standing_agent" && candidate.id !== actor.id)
     : [];
-  return <PageFrame eyebrow="Standing Agent workspace" title={actor.name} description="A durable organization role with documented collaboration. Execution attempts and hidden reasoning do not define membership." context={<ContextRail label="Organization context"><Panel title="Identity"><div className="flex flex-col items-center py-2 text-center"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size="hero" ring={actor.availability === "available" ? "good" : "neutral"} /><p className="mt-4 font-semibold">{actor.name}</p><p className="mt-1 text-xs text-muted-foreground">{actor.role} · {actor.unit ?? "No unit linked"}</p>{actor.availability === "available" ? <p className="mt-3 inline-flex items-center gap-2 rounded-full border border-status-good/30 bg-status-good/10 px-3 py-1 text-xs font-medium text-status-good"><span className="size-2 rounded-full bg-status-good" />Available · explicitly reported</p> : <p className="mt-3 text-xs leading-5 text-muted-foreground">Availability has not been explicitly reported.</p>}</div></Panel><Panel title="Related structure"><LinkedRecord wrapLabel recordRef={view.businessModule.id} label={humanReadable(view.businessModule.label, "Business module")} detail={view.businessModule.detail} /></Panel><Panel title="Authority boundary"><p className="text-xs leading-5 text-muted-foreground">This role may propose document structure. Authority changes remain governed company actions.</p></Panel></ContextRail>}>
-    <section aria-label="Standing Agent collaboration" className="flex min-h-[36rem] flex-col overflow-hidden rounded-2xl border border-border bg-card/80 shadow-sm"><header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4"><div className="flex items-center gap-3"><ObjectEmblem kind="agent" /><div><h2 className="company-editorial-title text-2xl">Collaboration</h2><p className="mt-1 text-xs text-muted-foreground">Activities, messages, WorkItems, and governed proposals · no hidden reasoning</p></div></div>{actor.availability === "available" && <span className="inline-flex items-center gap-2 text-xs font-medium text-status-good"><span className="size-2 rounded-full bg-status-good" />Available</span>}</header><div className="min-h-0 flex-1 space-y-4 bg-muted/[0.16] p-5">{authoredProposal ? <article className="max-w-3xl rounded-xl border border-border bg-background/90 p-4 shadow-sm" data-company-os-ref={authoredProposal.id}><div className="flex items-start justify-between gap-3"><ActorPill actor={actor} compact /><span className="text-xs text-muted-foreground">Documented proposal</span></div><div className="mt-3"><LinkedRecord wrapLabel recordRef={authoredProposal.id} label={humanReadable(authoredProposal.label, "Governance proposal")} detail={authoredProposal.detail} /><p className="mt-2 text-sm leading-6 text-muted-foreground">Proposed company structure for a governed review. The linked module remains related structure, not a second authored activity.</p></div></article> : isLead ? <div className="space-y-5"><section className="rounded-xl border border-border bg-background/90 p-4"><p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Direct reports from organization projection{leadUnit ? ` · ${leadUnit.label}` : ""}</p><div className="mt-4 grid gap-3 sm:grid-cols-2">{directReports.length > 0 ? directReports.map((report) => <div key={report.id} className="rounded-lg border border-border bg-card p-3"><ActorPill actor={report} /></div>) : <p className="text-sm text-muted-foreground">No Standing Agent direct report is recorded for this unit.</p>}</div></section><section className="rounded-xl border border-primary/20 bg-primary/[0.035] p-4" data-company-os-ref={view.workItem.id}><p className="text-[11px] font-semibold uppercase tracking-wider text-primary">Current linked pressure</p><h3 className="mt-2 font-semibold">{view.workItem.title}</h3><p className="mt-1 text-sm text-muted-foreground">{view.workItem.status.replace(/_/g, " ")} · Human approval remains required</p></section></div> : <p className="max-w-xl rounded-md border border-dashed border-border p-4 text-sm leading-6 text-muted-foreground">No documented collaboration entry is linked to this Standing Agent in the current projection.</p>}</div><form className="border-t border-border bg-card p-4" aria-label="Message composer"><label className="sr-only" htmlFor="standing-agent-message">Message {actor.name}</label><div className="flex items-end gap-2"><textarea id="standing-agent-message" disabled rows={2} placeholder={`Message ${actor.name}…`} aria-describedby="standing-agent-message-reason" className="min-h-14 flex-1 resize-none rounded-xl border border-input bg-muted/70 px-3 py-2 text-sm text-muted-foreground" /><button type="submit" disabled title={commandUnavailable} aria-label={`Send message. Unavailable: ${commandUnavailable}`} className="grid size-11 shrink-0 cursor-not-allowed place-items-center rounded-xl bg-muted text-muted-foreground"><Send className="size-4" /></button></div><p id="standing-agent-message-reason" className="mt-2 text-xs leading-5 text-muted-foreground">{commandUnavailable}</p></form></section>
-  </PageFrame>;
+  const membershipUnit = view.organization.units.find((unit) => unit.actorIds.includes(actor.id));
+  const reportsTo = actor.membershipRole === "lead"
+    ? undefined
+    : view.actors[membershipUnit?.agentLeadActorId ?? ""];
+  const assignedItems = (view.workItems ?? [view.workItem]).filter((workItem) =>
+    workItem.assignees.some((assignee) => assignee.id === actor.id)
+    || workItem.accountableOwner.id === actor.id
+    || workItem.submittedBy.id === actor.id,
+  );
+  const actorAssignments = (view.assignments ?? []).filter((assignment) => assignment.recipient.id === actor.id);
+  const assignedWork = assignedItems.length > 0;
+  const maintainedDocuments = (actor.maintainedDocumentRefs ?? []).map((recordRef) => {
+    if (recordRef === view.sourceDocument.id) return view.sourceDocument;
+    if (recordRef === view.contentPlanDocument.id) return view.contentPlanDocument;
+    return { id: recordRef, label: recordRef, detail: "Maintained document reference" };
+  });
+  const activity: WorkbenchActivityItem[] = [
+    ...actorAssignments.map((assignment) => ({
+      id: `assignment-${assignment.id}`,
+      kind: "delegation" as const,
+      glyph: "assignment" as const,
+      tone: assignment.deliveryState === "failed" ? "bad" as const : "info" as const,
+      title: `${assignment.sender.name} assigned ${assignment.assignedRole}`,
+      body: assignment.scope,
+      actor: assignment.sender.name,
+      timestamp: displayTimestamp(assignment.assignedAt),
+      evidenceRefs: [assignment.deliveryEvidenceRef, assignment.correlationId].filter((value): value is string => Boolean(value)),
+    })),
+    ...assignedItems.map((workItem) => ({
+      id: `work-${workItem.id}`,
+      kind: "action" as const,
+      glyph: workItem.status === "completed" ? "complete" as const : "start" as const,
+      tone: workItem.status === "completed" ? "good" as const : "running" as const,
+      title: workItem.title,
+      body: `Organization work · ${humanReadable(workItem.status, workItem.status)}${workItem.outcomeSummary ? ` · ${workItem.outcomeSummary}` : ""}`,
+      actor: actor.name,
+      timestamp: displayTimestamp(workItem.updatedAt),
+      evidenceRefs: [workItem.sourceDocument.id],
+    })),
+    ...(authoredProposal ? [{
+      id: `proposal-${authoredProposal.id}`,
+      kind: "decision" as const,
+      glyph: "decision" as const,
+      tone: "decision" as const,
+      title: humanReadable(authoredProposal.label, "Governance proposal"),
+      body: authoredProposal.detail ?? "Submitted for governed organization review.",
+      actor: actor.name,
+      evidenceRefs: [authoredProposal.id],
+    }] : []),
+    ...maintainedDocuments.map((document) => ({
+      id: `document-${document.id}`,
+      kind: "evidence" as const,
+      glyph: "artifact" as const,
+      title: document.label,
+      body: "Durable company context maintained by this Standing Agent.",
+      actor: actor.name,
+      evidenceRefs: [document.id],
+    })),
+  ];
+  const configurationEmpty = !actor.systemPromptRef
+    && !(actor.toolRefs?.length)
+    && !(actor.skillRefs?.length)
+    && !(actor.permissionPolicyRefs?.length);
+  return <div className="h-full min-h-0 bg-[#fdfcf9]" data-standing-agent-workspace data-company-os-ref={actor.id}>
+    <FocusShell
+      className="h-full min-h-0 bg-[#fdfcf9]"
+      headerClassName="bg-[#fdfcf9] px-6 py-4 sm:px-8"
+      composerClassName="bg-background px-6 py-3 shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)] sm:px-8"
+      responsiveContextVariant="sheet"
+      mainLabel="Standing Agent work and activity"
+      header={<FocusHeader
+        eyebrow="Organization · Standing Agent"
+        title={<span className="flex items-center gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size="md" ring={actor.availability === "available" ? "good" : "neutral"} /><span>{actor.name}</span></span>}
+        description={actor.responsibilitySummary ?? "A durable organization identity. Runtime attempts and private reasoning do not define membership or authority."}
+        meta={<><Badge tone={actor.availability === "available" ? "good" : "muted"}>{actor.availability ?? "availability unknown"}</Badge><Badge tone="muted">{actor.role}</Badge>{actor.unit && <Badge tone="muted">{actor.unit}</Badge>}</>}
+      />}
+      context={<WorkbenchContextRail label="Organization context" quiet>
+        <ContextModule title="Organization identity" kicker={actor.membershipRole ?? "member"} icon={<Bot className="size-3.5" />} tone={actor.availability === "available" ? "good" : undefined}>
+          <dl className="space-y-2 text-xs"><RailFact label="Unit" value={actor.unit ?? "Not linked"} /><RailFact label="Reports to" value={reportsTo?.name ?? (isLead ? "Human Owner / company policy" : "Not recorded")} /><RailFact label="Capacity" value={assignedWork ? "Active assignment visible" : "No linked active assignment"} /></dl>
+          {isLead && directReports.length > 0 && <div className="mt-3 border-t border-border/70 pt-3"><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Direct reports</p><div className="space-y-2">{directReports.map((report) => <ActorPill key={report.id} actor={report} compact />)}</div></div>}
+        </ContextModule>
+        <ContextModule title="Permissions" kicker="Organization-owned authority" icon={<KeyRound className="size-3.5" />} collapsible>
+          <ReferenceList values={actor.permissionPolicyRefs} empty="No permission policy is recorded." />
+        </ContextModule>
+        <ContextModule title="Prompt, tools & skills" kicker="Configuration references" icon={<Wrench className="size-3.5" />} collapsible defaultOpen={!configurationEmpty}>
+          <ReferenceGroup label="System prompt" values={actor.systemPromptRef ? [actor.systemPromptRef] : []} />
+          <ReferenceGroup label="Tools" values={actor.toolRefs} />
+          <ReferenceGroup label="Skills" values={actor.skillRefs} />
+          {configurationEmpty && <p className="text-xs leading-5 text-muted-foreground">This projection does not yet provide native configuration references.</p>}
+        </ContextModule>
+        <ContextModule title="Work routing" kicker="Accepted work & escalation" icon={<Route className="size-3.5" />} collapsible>
+          <ReferenceGroup label="Work types" values={actor.acceptedWorkTypeRefs} />
+          <ReferenceGroup label="Escalation" values={actor.escalationPolicyRef ? [actor.escalationPolicyRef] : []} />
+        </ContextModule>
+        <ContextModule title="Maintained Docs" kicker="Linked company memory" icon={<Library className="size-3.5" />} collapsible>
+          {maintainedDocuments.length > 0 ? maintainedDocuments.map((document) => <LinkedRecord key={document.id} wrapLabel recordRef={document.id} label={document.label} detail={document.detail} onClick={onSelectionChange ? () => onSelectionChange({ surface: "docs", documentId: document.id }) : undefined} />) : <p className="text-xs text-muted-foreground">No maintained Document is recorded.</p>}
+        </ContextModule>
+        <ContextModule title="Authority boundary" icon={<ShieldCheck className="size-3.5" />}>
+          <p className="text-xs leading-5 text-muted-foreground">Tools and Skills enable work; they never grant authority. Money requires Finance policy, and sensitive company actions may still require a named Human approval.</p>
+        </ContextModule>
+      </WorkbenchContextRail>}
+      composer={<form aria-label="Message Standing Agent" className="mx-auto flex w-full max-w-[1080px] items-end gap-2"><div className="min-w-0 flex-1"><label className="sr-only" htmlFor="standing-agent-message">Message {actor.name}</label><textarea id="standing-agent-message" disabled rows={2} placeholder={`Message ${actor.name}…`} aria-describedby="standing-agent-message-reason" className="min-h-14 w-full resize-none rounded-xl border border-input bg-muted/65 px-3 py-2 text-sm text-muted-foreground" /><p id="standing-agent-message-reason" className="mt-1 text-[10px] text-muted-foreground">{commandUnavailable}</p></div><button type="submit" disabled title={commandUnavailable} aria-label={`Send message. Unavailable: ${commandUnavailable}`} className="grid size-11 shrink-0 cursor-not-allowed place-items-center rounded-xl bg-muted text-muted-foreground"><Send className="size-4" /></button></form>}
+    >
+      <div className="mx-auto w-full max-w-[1080px] space-y-5 px-5 py-6 sm:px-8">
+        <section aria-labelledby="standing-agent-current-work" className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm">
+          <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><BriefcaseBusiness className="size-4" /></span><div><h2 id="standing-agent-current-work" className="text-lg font-semibold tracking-tight">Current work</h2><p className="text-xs text-muted-foreground">Native WorkItems linked through accountable actor references</p></div></div>
+          {assignedWork ? <div className="mt-4 space-y-3">{assignedItems.map((workItem) => <div key={workItem.id} className="rounded-xl border border-primary/20 bg-primary/[0.035] p-4" data-company-os-ref={workItem.id}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-wider text-primary">{workItem.status.replace(/_/g, " ")}</p>{onSelectionChange ? <button type="button" onClick={() => onSelectionChange({ surface: "work", workItemId: workItem.id })} className="mt-1 text-left font-semibold underline-offset-4 hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{workItem.title}</button> : <h3 className="mt-1 font-semibold">{workItem.title}</h3>}{workItem.outcomeSummary && <p className="mt-1 text-xs leading-5 text-muted-foreground">{workItem.outcomeSummary}</p>}</div><StatusTag status={workItem.status} /></div><div className="mt-3"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Source Document" onClick={onSelectionChange ? () => onSelectionChange({ surface: "docs", documentId: workItem.sourceDocument.id }) : undefined} /></div></div>)}</div> : <p className="mt-4 rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No WorkItem in the current Store projection is assigned to this Standing Agent.</p>}
+        </section>
+        <section aria-labelledby="standing-agent-activity" className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4"><div className="flex items-center gap-3"><Sparkles className="size-4 text-primary" /><div><h2 id="standing-agent-activity" className="text-lg font-semibold tracking-tight">Activity & collaboration</h2><p className="text-xs text-muted-foreground">Durable work, messages, decisions, evidence and Docs updates · never private thinking</p></div></div><Badge tone="muted">{activity.length} records</Badge></header><ActivityStream items={activity} variant="timeline" empty={<p className="text-sm text-muted-foreground">No durable activity is linked in this projection.</p>} className="px-5 py-2" /></section>
+      </div>
+    </FocusShell>
+  </div>;
+}
+
+function RailFact({ label, value }: { label: string; value: string }) {
+  return <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2"><dt className="text-muted-foreground">{label}</dt><dd className="break-words text-foreground">{value}</dd></div>;
+}
+
+function ReferenceList({ values, empty }: { values?: string[]; empty: string }) {
+  return values?.length ? <ul className="space-y-1.5">{values.map((value) => <li key={value} title={value} className="min-w-0 rounded-md border border-border/70 bg-background/70 px-2 py-1.5"><span className="block break-words text-[11px] font-medium text-foreground">{humanReadable(value, value)}</span><code className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">{value}</code></li>)}</ul> : <p className="text-xs leading-5 text-muted-foreground">{empty}</p>;
+}
+
+function ReferenceGroup({ label, values }: { label: string; values?: string[] }) {
+  if (!values?.length) return null;
+  return <div className="mb-3 last:mb-0"><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><ReferenceList values={values} empty="" /></div>;
 }
 
 export function WorkboardPage({ data }: OperationsPageProps) {

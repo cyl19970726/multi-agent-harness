@@ -16520,7 +16520,7 @@ fn print_help() {
   project remove | project show | project migrate
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
-  mission create|list|show
+  mission create|list|show|close
   wave create|list|show|gate
   team-run create|list|status|start|send|events|complete|cancel
   team create|list|show|close

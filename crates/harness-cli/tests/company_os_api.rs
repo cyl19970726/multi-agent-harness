@@ -137,6 +137,12 @@ fn agent_record(id: &str, name: &str, role: &str) -> Value {
             "membership_refs": [],
             "responsibility_summary": role,
             "capability_refs": ["company.records.write", "company.work.execute"],
+            "system_prompt_ref": format!("document-prompt-{id}"),
+            "tool_refs": ["tool-company-records"],
+            "skill_refs": ["skill-governed-work"],
+            "maintained_document_refs": [],
+            "accepted_work_type_refs": ["work-type-general"],
+            "escalation_policy_ref": "policy-lead-escalation",
             "permission_policy_refs": ["company.records.write", "company.work.execute"],
             "runtime_refs": [],
             "native_session_refs": [],
@@ -175,6 +181,33 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         &serve,
         "/v1/company-os/actors",
         human("human-brand-owner", "Brand Owner"),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/actors",
+        admin(agent_record(
+            "agent-sales",
+            "Sales Agent",
+            "Run merchant outreach and return durable business evidence",
+        )),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/actors",
+        admin(agent_record(
+            "agent-company-lead",
+            "Lead Agent",
+            "Coordinate company priorities and governance",
+        )),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/actors",
+        admin(agent_record(
+            "agent-work-governance",
+            "Work Governance Agent",
+            "Create, classify, and route durable company work",
+        )),
     );
     post_ok(
         &serve,
@@ -439,8 +472,8 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         "business_module_ref": "module-trademark",
         "result_document_ref": null,
         "result_record_refs": [],
-        "submitted_by": actor("agent", "agent-trademark"),
-        "requested_by": actor("human", "human-brand-owner"),
+        "submitted_by": actor("agent", "agent-work-governance"),
+        "requested_by": actor("agent", "agent-company-lead"),
         "accountable_owner": actor("human", "human-brand-owner"),
         "assignees": [actor("agent", "agent-trademark")],
         "contributors": [actor("external", "external-lawyer")],
@@ -462,11 +495,12 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     post_ok(
         &serve,
         "/v1/company-os/actions/dispatch",
-        action(
+        action_by(
             "action-create-trademark-work",
             "work_item.append",
             json!({"kind": "document", "id": "document-trademark-cn-2026-018"}),
             work_item.clone(),
+            actor("agent", "agent-work-governance"),
             "page-trademark:work_item.append",
             "company.records.write",
             "r1",
@@ -479,7 +513,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         "id": "assignment-trademark-agent",
         "work_item_id": "work-trademark-filing",
         "recipient": actor("agent", "agent-trademark"),
-        "sender": actor("human", "human-brand-owner"),
+        "sender": actor("agent", "agent-work-governance"),
         "assigned_role": "filing owner",
         "scope": "Prepare CN filing",
         "delivery_state": "delivered",
@@ -493,11 +527,12 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     post_ok(
         &serve,
         "/v1/company-os/actions/dispatch",
-        action(
+        action_by(
             "action-assign-trademark-work",
             "assignment.append",
             json!({"kind": "work_item", "id": "work-trademark-filing"}),
             assignment,
+            actor("agent", "agent-work-governance"),
             "page-trademark:assignment.append",
             "company.records.write",
             "r1",
@@ -506,6 +541,236 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "audit-assign-trademark-work",
         ),
     );
+
+    // A non-financial path follows the same Lead -> Work Governance ->
+    // Business Agent contract without creating a Commitment or Approval.
+    let outreach_document = json!({
+        "id": "document-merchant-outreach",
+        "space_id": "brand-ip",
+        "parent_document_id": document["id"],
+        "title": "Merchant outreach brief",
+        "kind": "page",
+        "lifecycle_status": "active",
+        "block_ids": [],
+        "template_ref": null,
+        "permission_policy_refs": ["company.records.write"],
+        "reference_refs": [],
+        "created_by": actor("human", "human-brand-owner"),
+        "updated_by": actor("human", "human-brand-owner"),
+        "created_at": NOW,
+        "updated_at": NOW
+    });
+    post_ok(
+        &serve,
+        "/v1/company-os/documents",
+        admin(outreach_document.clone()),
+    );
+    let outreach_work = json!({
+        "id": "work-merchant-outreach",
+        "title": "Contact candidate merchants",
+        "objective": "Collect non-binding merchant interest and return structured notes",
+        "status": "submitted",
+        "source_document_ref": outreach_document["id"],
+        "source_record_refs": [],
+        "milestone_ref": null,
+        "work_type": "operations",
+        "business_module_ref": "module-trademark",
+        "result_document_ref": null,
+        "result_record_refs": [],
+        "submitted_by": actor("agent", "agent-work-governance"),
+        "requested_by": actor("agent", "agent-company-lead"),
+        "accountable_owner": actor("human", "human-brand-owner"),
+        "assignees": [actor("agent", "agent-sales")],
+        "contributors": [],
+        "reviewer": actor("human", "human-brand-owner"),
+        "approver": null,
+        "execution_mode": "direct",
+        "execution_refs": [],
+        "approval_refs": [],
+        "evidence_refs": [],
+        "artifact_refs": [],
+        "outcome_summary": null,
+        "due_at": null,
+        "priority": "normal",
+        "risk_level": "low",
+        "created_at": NOW,
+        "updated_at": NOW,
+        "completed_at": null
+    });
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-create-merchant-outreach",
+            "work_item.append",
+            json!({"kind": "document", "id": "document-merchant-outreach"}),
+            outreach_work.clone(),
+            actor("agent", "agent-work-governance"),
+            "page-trademark:work_item.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-create-merchant-outreach",
+        ),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-assign-merchant-outreach",
+            "assignment.append",
+            json!({"kind": "work_item", "id": "work-merchant-outreach"}),
+            json!({
+                "id": "assignment-sales-outreach",
+                "work_item_id": "work-merchant-outreach",
+                "recipient": actor("agent", "agent-sales"),
+                "sender": actor("agent", "agent-work-governance"),
+                "assigned_role": "Merchant outreach owner",
+                "scope": "Contact the approved candidate list; do not make a purchase or monetary promise",
+                "delivery_state": "delivered",
+                "delivery_policy_ref": "company.records.write",
+                "correlation_id": "corr-merchant-outreach",
+                "delivery_evidence_ref": "evidence-outreach-assignment-delivered",
+                "assigned_at": NOW,
+                "delivered_at": NOW,
+                "acknowledged_at": null
+            }),
+            actor("agent", "agent-work-governance"),
+            "page-trademark:assignment.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-assign-merchant-outreach",
+        ),
+    );
+    let mut outreach_in_progress = outreach_work.clone();
+    outreach_in_progress["status"] = json!("in_progress");
+    outreach_in_progress["updated_at"] = json!("2026-07-20T10:02:00+08:00");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-start-merchant-outreach",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-merchant-outreach"}),
+            outreach_in_progress.clone(),
+            actor("agent", "agent-sales"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-start-merchant-outreach",
+        ),
+    );
+    let mut outreach_in_review = outreach_in_progress;
+    outreach_in_review["status"] = json!("in_review");
+    outreach_in_review["result_document_ref"] = outreach_document["id"].clone();
+    outreach_in_review["evidence_refs"] = json!(["evidence-merchant-conversation-notes"]);
+    outreach_in_review["outcome_summary"] = json!(
+        "Three merchants contacted; two requested a follow-up. No monetary commitment was made."
+    );
+    outreach_in_review["updated_at"] = json!("2026-07-20T10:12:00+08:00");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-submit-merchant-outreach",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-merchant-outreach"}),
+            outreach_in_review.clone(),
+            actor("agent", "agent-sales"),
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-submit-merchant-outreach",
+        ),
+    );
+    let mut outreach_completed = outreach_in_review;
+    outreach_completed["status"] = json!("completed");
+    outreach_completed["completed_at"] = json!("2026-07-20T10:14:00+08:00");
+    outreach_completed["updated_at"] = json!("2026-07-20T10:14:00+08:00");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action(
+            "action-complete-merchant-outreach",
+            "work_item.transition",
+            json!({"kind": "work_item", "id": "work-merchant-outreach"}),
+            outreach_completed,
+            "page-trademark:work_item.transition",
+            "company.work.execute",
+            "r2",
+            false,
+            vec![],
+            "audit-complete-merchant-outreach",
+        ),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-return-merchant-outreach-block",
+            "block.append",
+            json!({"kind": "document", "id": "document-merchant-outreach"}),
+            json!({
+                "id": "block-merchant-outreach-result",
+                "document_id": "document-merchant-outreach",
+                "kind": "callout",
+                "position": 0,
+                "content": {
+                    "title": "Merchant outreach completed",
+                    "text": "Three merchants contacted; two requested follow-up; no monetary commitment was made.",
+                    "evidence_refs": ["evidence-merchant-conversation-notes"]
+                },
+                "referenced_entities": [{"kind": "work_item", "id": "work-merchant-outreach"}],
+                "created_by": actor("agent", "agent-sales"),
+                "updated_by": actor("agent", "agent-sales"),
+                "created_at": "2026-07-20T10:15:00+08:00",
+                "updated_at": "2026-07-20T10:15:00+08:00"
+            }),
+            actor("agent", "agent-sales"),
+            "page-trademark:block.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-return-merchant-outreach-block",
+        ),
+    );
+    let mut returned_outreach_document = outreach_document.clone();
+    returned_outreach_document["block_ids"] = json!(["block-merchant-outreach-result"]);
+    returned_outreach_document["reference_refs"] =
+        json!([{"kind": "work_item", "id": "work-merchant-outreach"}]);
+    returned_outreach_document["updated_by"] = actor("agent", "agent-sales");
+    returned_outreach_document["updated_at"] = json!("2026-07-20T10:15:00+08:00");
+    post_ok(
+        &serve,
+        "/v1/company-os/actions/dispatch",
+        action_by(
+            "action-return-merchant-outreach-document",
+            "document.append",
+            json!({"kind": "document", "id": "document-merchant-outreach"}),
+            returned_outreach_document,
+            actor("agent", "agent-sales"),
+            "page-trademark:document.append",
+            "company.records.write",
+            "r1",
+            false,
+            vec![],
+            "audit-return-merchant-outreach-document",
+        ),
+    );
+    let (status, nonfinancial_snapshot) =
+        serve.get_json(&format!("/v1/company-os/snapshot{query}"));
+    assert_eq!(status, 200, "{nonfinancial_snapshot}");
+    assert_eq!(nonfinancial_snapshot["result"]["commitments"], json!([]));
+    assert_eq!(nonfinancial_snapshot["result"]["approvals"], json!([]));
+
     post_ok(
         &serve,
         "/v1/company-os/relations",
@@ -1359,20 +1624,24 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         .is_some_and(|value| value.starts_with("fnv1a64:")));
     assert_eq!(
         snapshot["result"]["work_items"].as_array().map(Vec::len),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         snapshot["result"]["milestones"].as_array().map(Vec::len),
         Some(1)
     );
-    assert_eq!(snapshot["result"]["work"]["summary"]["total"], 1);
+    assert_eq!(snapshot["result"]["work"]["summary"]["total"], 2);
     assert_eq!(
         snapshot["result"]["work"]["work_types"]["legal"],
         json!(["work-trademark-filing"])
     );
     assert_eq!(
+        snapshot["result"]["work"]["work_types"]["operations"],
+        json!(["work-merchant-outreach"])
+    );
+    assert_eq!(
         snapshot["result"]["work"]["business_lines"]["module-trademark"],
-        json!(["work-trademark-filing"])
+        json!(["work-merchant-outreach", "work-trademark-filing"])
     );
     assert_eq!(
         snapshot["result"]["commitments"].as_array().map(Vec::len),
@@ -1392,11 +1661,11 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         snapshot["result"]["action_commands"]
             .as_array()
             .map(Vec::len),
-        Some(19)
+        Some(26)
     );
     assert_eq!(
         snapshot["result"]["audit_events"].as_array().map(Vec::len),
-        Some(38)
+        Some(52)
     );
 
     let (status, detail) = serve.get_json("/v1/company-os/work-items/work-trademark-filing");
@@ -1438,10 +1707,10 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     );
     let (status, list) = serve.get_json("/v1/company-os/actors");
     assert_eq!(status, 200, "{list}");
-    assert_eq!(list["result"]["count"], 4);
+    assert_eq!(list["result"]["count"], 7);
     let (status, work_projection) = serve.get_json("/v1/company-os/work-projection");
     assert_eq!(status, 200, "{work_projection}");
-    assert_eq!(work_projection["result"]["summary"]["total"], 1);
+    assert_eq!(work_projection["result"]["summary"]["total"], 2);
     assert_eq!(
         work_projection["result"]["milestones"][0]["progress_percent"],
         100

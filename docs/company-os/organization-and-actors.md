@@ -141,7 +141,7 @@ and fields:
 | Actor type | Durable identity and lifecycle | May hold responsibility | Distinct boundary |
 | --- | --- | --- | --- |
 | `human` | Person identity, membership status, availability, permissions | Yes | Can be required for legal, financial, and governance authority; has no provider runtime. |
-| `agent` | Durable AgentMember identity, organization role, capacity, skills, permissions | Yes, within policy | A Standing Agent is an AgentMember operating mode; process health never creates business authority. |
+| `agent` | Durable StandingAgent identity, organization role, capacity, skills, permissions | Yes, within policy | A StandingAgent is not an Agent Team MemberRun or provider session; process health never creates business authority. |
 | `external` | Named outside person or organization, engagement and access expiry | Limited, explicit only | Never receives implied internal membership or broad visibility. |
 | `service` | Technical identity such as an integration or automation | Only when policy explicitly permits it | Cannot impersonate a human approver or a Standing Agent. |
 
@@ -155,6 +155,7 @@ StandingAgent
 - id, display_name, role, responsibility_scope, availability, assignment_capacity?
 - organization memberships, capabilities, permissions
 - system_prompt_ref?, tool_refs[], skill_refs[]
+- maintained_document_refs[], accepted_work_type_refs[], escalation_policy_ref?
 - runtime and provider-session references
 
 ExternalParticipant

@@ -100,8 +100,12 @@ export function ContextRail({ label = "Context", children }: { label?: string; c
   return <div className="space-y-5"><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>{children}</div>;
 }
 
-export function LinkedRecord({ label, detail, recordRef, wrapLabel = false, icon = <FileText className="size-4" /> }: { label: string; detail?: string; recordRef?: string; wrapLabel?: boolean; icon?: ReactNode }) {
-  return <button type="button" data-company-os-ref={recordRef} className="flex w-full items-start gap-2 rounded-md p-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="mt-0.5 text-muted-foreground">{icon}</span><span className="min-w-0 flex-1"><span className={cn("block text-sm font-medium", wrapLabel ? "whitespace-normal leading-5" : "truncate")}>{label}</span>{detail && <span className="block text-xs leading-5 text-muted-foreground">{detail}</span>}</span><ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" /></button>;
+export function LinkedRecord({ label, detail, recordRef, wrapLabel = false, icon = <FileText className="size-4" />, onClick }: { label: string; detail?: string; recordRef?: string; wrapLabel?: boolean; icon?: ReactNode; onClick?: () => void }) {
+  const content = <><span className="mt-0.5 text-muted-foreground">{icon}</span><span className="min-w-0 flex-1"><span className={cn("block text-sm font-medium", wrapLabel ? "whitespace-normal leading-5" : "truncate")}>{label}</span>{detail && <span className="block text-xs leading-5 text-muted-foreground">{detail}</span>}</span>{onClick && <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}</>;
+  const className = cn("flex w-full items-start gap-2 rounded-md p-2 text-left", onClick && "transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring");
+  return onClick
+    ? <button type="button" data-company-os-ref={recordRef} onClick={onClick} className={className}>{content}</button>
+    : <div data-company-os-ref={recordRef} className={className}>{content}</div>;
 }
 
 export function FinancialRecordCard({ record }: { record: FinancialRecordView }) {

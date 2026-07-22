@@ -68,12 +68,13 @@ async function main() {
   check(!navigation.includes("Legacy") && !navigation.includes("Tasks") && !navigation.includes("Goals"), "old Goal/Task compatibility navigation is absent from the product rail");
   check(shell.includes("whitespace-nowrap\">{item.label}") && shell.includes("mobilePrimaryItems"), "primary labels are not truncated on desktop or mobile navigation");
   check(shell.includes("CompanyOsRouter") && shell.includes("isCompanyOsSurface"), "Company OS surfaces are mounted in the real Workbench shell");
+  check(shell.includes('{companyContext ? "Company context" : "Active context"}') && shell.includes("Docs holds context, Organization holds authority, Work holds commitments, and Finance records monetary effects."), "Company OS navigation keeps four-system context separate from Mission and Wave execution context");
 
   const pages = ["home", "docs-workspace", "document-focus", "workboard", "work-item-focus", "finance", "agents-organization", "standing-agent-focus", "governance-proposal", "approval-focus", "business-module-focus", "human-member-focus"];
   check(pages.every((page) => router.includes(`\"${page}\"`)), "router owns all twelve core page contracts");
   check(router.includes('data-company-os-prototype={isLive ? "false" : "true"}') && router.includes("fixed fixture fallback") && router.includes("not claiming live Company OS persistence"), "fixture fallback is visibly and structurally labelled as prototype data");
   check(router.includes("Live · Store-backed Company OS") && router.includes('data-company-os-data-mode="store-live"'), "authoritative store projections have a distinct live truth label");
-  check(router.includes("adaptCompanyOsDocsProjection(resolved.value,") && router.includes("adaptTrademarkOperationsProjection(resolved.value)"), "fixture and store-live routes pass the resolved projection directly into both presentation adapters");
+  check(router.includes("adaptCompanyOsDocsProjection(resolved.value,") && router.includes("adaptTrademarkOperationsProjection(resolved.value,"), "fixture and store-live routes pass the resolved projection directly into both presentation adapters");
   check((router.match(/actionsEnabled && resolved\.mode === "store-live"/g) ?? []).length >= 2 && router.includes("onTransition") && router.includes("onDecision") && router.includes('"X-Harness-Company-OS-Token"'), "WorkItem and Approval Action transports are enabled only for Store-live truth and send the session capability in the dedicated header");
   check(api.includes("...options.headers") && api.includes("payload.detail || payload.error") && app.includes("postAction(apiUrl, path, body, selectedProjectId, options)"), "browser Action requests carry scoped headers, preserve server denial detail, and refresh through the existing mutation path");
 
