@@ -126,15 +126,18 @@ path as an execution root is a routing defect.
 The integration is usable only when a user can start from a Codex prompt and
 reconstruct the result from native state:
 
-- Mission and ordered Wave exist;
-- the TeamRun is linked to both;
+- Mission and ordered Host-plan Wave exist;
+- the TeamRun is linked to the Mission and stable AgentTeam; the Wave may cite
+  its assignments/outcome through context or optional origin metadata without
+  owning the run;
 - actual MemberRuns have Assignment messages and correlations;
 - start returns without blocking the Host conversation;
 - the exact URL opens the correct Workspace and selected TeamRun;
 - handoffs and ACKs appear in the event stream;
 - provider interactions preserve route, resolution actor, exact option id, and
   distinct transport/semantic status;
-- outcome, useful artifacts/checks, and the Wave gate explain acceptance;
+- outcome, useful artifacts/checks, and explicit Host Wave advance explain the
+  plan decision;
 - no durable thinking rows are created.
 
 Run the deterministic product gate with:

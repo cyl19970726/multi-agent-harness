@@ -16,7 +16,7 @@
   "sessionStart": {
     "skill": "agent-team-orchestrator"
   },
-  "skillInstructions": "Use the canonical Harness CLI as the complete path; MCP is an optional thin adapter. Mission stores durable intent, Wave stores Host plan and judgment, and an independent AgentTeamRun may span Waves. Assignment messages own work and provider-native sessions own execution history. Never let a member perform sensitive external actions without the applicable Human approval.",
+  "skillInstructions": "Use the canonical Harness CLI as the complete path; MCP is an optional thin adapter. Mission stores durable intent, Wave stores Host plan and judgment, and an independent AgentTeamRun may span Waves. The current Host that creates and coordinates an Agent Team is its Team Lead, not an implicit MemberRun. Assignment messages own work and provider-native sessions own execution history. Never let a member perform sensitive external actions without the applicable Human approval.",
   "mcpServers": {
     "harness": {
       "command": "harness",

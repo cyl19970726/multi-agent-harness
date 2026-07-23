@@ -35,7 +35,7 @@ part of active navigation or authoring.
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
 | What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
-| What needs the user? | Authorization, blocker, failed delivery, budget, retry, and Wave-gate alerts. |
+| What needs the user? | Authorization, blocker, failed delivery, budget, retry, and Host Wave-decision alerts. |
 | Can I trust the view? | Capability gaps are explicit; unsupported joins are never fabricated. |
 
 ## Information Architecture
@@ -76,9 +76,9 @@ flowchart TD
 | Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
 | Mission detail | Read durable context, linked teams, ordered Host-plan Waves, and outcome. | link/create team, create/update/advance Wave, close |
 | Wave timeline | Compare Host plan revisions, carry-over, evidence, and advance outcomes. | update/advance Wave, open linked execution |
-| Agent Team | Operate one collaborative Wave attempt. | start asynchronously, message, ACK/re-deliver, open member, request review |
+| Agent Team | Operate one standalone or Mission-scoped TeamRun that may span Waves. | start asynchronously, message, ACK/re-deliver, open member, request review |
 | Member detail | Inspect one MemberRun lane and its assignments/actions. | send control/question, review handoff |
-| Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, attach result to gate |
+| Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, cite result from Host plan |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
 | Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, revise Wave |
 
@@ -87,13 +87,12 @@ flowchart TD
 The target ownership chain is:
 
 ```text
-Wave
-  -> AgentTeamRun attempt
+Mission <-> AgentTeam -> Mission-scoped AgentTeamRun
   -> TeamMessage(kind=assignment)
   -> correlation_id
   -> explicit member actions / blocker / handoff / review / delegation
   -> artifacts + outcome
-  -> Wave gate
+Wave -. Host plan / optional origin metadata .-> assignment or outcome
 ```
 
 Automatic handoff preserves assignment correlation. Manual CLI, HTTP, and MCP
@@ -105,14 +104,14 @@ with omitted lineage as unanchored rather than fabricating ownership.
 
 | Workbench need | Required contract |
 | --- | --- |
-| Mission/Wave | additive ids, status, ordered membership, objective, executor kind |
-| Attempts | executor run ids, lineage, accepted run id |
+| Mission/Wave | ids, Mission status/context, ordered Wave index, Markdown context, revision, Host outcome/advance |
+| Executions | independent TeamRun/WorkflowRun ids, status, lineage, outcomes, and explicit Mission/context relations |
 | Team ownership | assignment message id and reusable correlation/causation inputs |
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
 | Delivery | per-recipient delivery/ACK state and retry/escalation |
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
-| Wave gate | accepted/revise/blocked, actor/time, note, artifacts, accepted run |
+| Wave decision | Host outcome, actor/time, note, artifacts, and next-plan context |
 
 Fields that affect acceptance, authorization, or ownership belong in schemas
 and runtime contracts, not frontend-only state.
@@ -165,10 +164,12 @@ exists yet.
 Workbench acceptance requires fixtures plus at least one live Mission showing:
 
 1. ordered Waves without a legacy dependency graph;
-2. at least one Agent Team attempt with assignment/delivery/member/handoff data;
-3. at least one other executor kind or an explicit unsupported-state fixture;
-4. retry lineage and one accepted attempt;
-5. artifacts/outcome and a lightweight Wave gate;
+2. at least one Mission-linked AgentTeam and Mission-scoped TeamRun with
+   assignment/delivery/member/handoff data;
+3. at least one independent WorkflowRun/Host-work projection or an explicit
+   unsupported-state fixture;
+4. preserved terminal run history without making a Wave own the run;
+5. artifacts/outcome and an explicit Host Wave decision;
 6. authorization and failed-delivery alerts;
 7. honest correlation and provider capability degradation;
 8. no new thinking in durable snapshots after the transient migration;

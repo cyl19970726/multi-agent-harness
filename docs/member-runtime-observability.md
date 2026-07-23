@@ -9,7 +9,7 @@ commands, file activity, native children, and resume state.
 ```text
 Harness coordination truth
   assignment / delivery / pending interaction / control ack
-  explicit outcome / artifact / check / Wave gate
+  explicit outcome / artifact / check / Host Wave decision
                      +
 NativeSessionRef
   provider / execution_mode / native_session_id / locator
@@ -35,7 +35,7 @@ live state and is never replayed or evidence.
 | What is the agent doing? | on-demand provider-native activity projection |
 | Is input or approval required? | Harness `PendingInteraction` |
 | Can execution resume? | `NativeSessionRef.supports_resume` plus availability/version checks |
-| What result is accepted? | explicit outcome, artifact/check references, and Wave gate |
+| What supports the Host decision? | explicit outcome, artifact/check references, and Host Wave update/advance |
 
 Process-alive is not execution-ready. A green runtime requires positive protocol
 and delivery probes; unknown or stale layers render amber.
@@ -51,7 +51,7 @@ Durable Harness data:
 - delivery claim, status, terminal source, and native session reference;
 - assignment, handoff, blocker, review, and Host/Lead/Policy interaction;
 - steer/interrupt/stop/resume request and acknowledgement;
-- explicit outcome summaries, artifacts, checks, and gates.
+- explicit outcome summaries, artifacts, checks, and Host Wave decisions.
 
 Ephemeral provider projection:
 

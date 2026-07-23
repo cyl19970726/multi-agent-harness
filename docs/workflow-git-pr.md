@@ -1,25 +1,27 @@
 # Git, PR, And Review Workflow
 
-This document defines how Mission/Wave executors integrate file changes with
-Git, worktrees, pull requests, review, and acceptance. Git owns repository
-facts; Harness owns execution attribution and Wave acceptance.
+This document defines how execution used during a Mission integrates file
+changes with Git, worktrees, pull requests, review, and Host plan decisions.
+Git owns repository facts; Harness owns execution attribution and Wave
+plan/outcome history.
 
 ## Native Flow
 
 ```text
 Mission
-  -> Wave(executor)
-  -> executor attempt
+  -> ordered Host-plan Wave
+  -> Host invokes Agent Team | Dynamic Workflow | direct Host work
+  -> executor run or observable Host work
   -> isolated or explicitly direct file changes
   -> diff / commit / PR evidence
-  -> executor outcome
-  -> Wave gate
+  -> execution outcome
+  -> explicit Host Wave advance
   -> next Wave or Mission closeout
 ```
 
-Merging a PR does not accept a Wave, and accepting a Wave does not merge a PR.
-The Wave gate names the accepted completed attempt and records the outcome and
-useful artifacts/checks.
+Merging a PR does not advance a Wave, and advancing a Wave does not merge a PR.
+The Host records what outcome and useful artifacts/checks justified the plan
+change. The Wave does not own the execution run.
 
 ## Executor Boundaries
 
@@ -46,7 +48,7 @@ Host child it does not control.
 
 No universal Mission branch or per-Wave branch is required. A repository may
 choose one branch per Mission, Wave, or change set, but the policy must be
-declared before concurrent edits and reflected in the attempt's artifacts.
+declared before concurrent edits and reflected in the execution artifacts.
 
 ## Dynamic Workflow Patches
 
@@ -68,10 +70,10 @@ selected project root for normal Git review.
 A PR should reference:
 
 - Mission and Wave ids;
-- executor attempt id;
+- relevant executor run id, when one exists;
 - assignment correlation for Agent Team-owned work;
 - checks and relevant artifact/diff refs; and
-- the outcome being proposed for the Wave gate.
+- the outcome the Host may use when updating or advancing its Wave plan.
 
 Review depth is proportional to risk. A dedicated reviewer member or external
 code owner may be useful, but Proposal/Review/Decision is not a mandatory
@@ -83,23 +85,23 @@ never grants it.
 
 ## Retry And Failure
 
-- A revise gate creates a new executor attempt and preserves the earlier one.
+- If the Host chooses another execution run, the earlier run remains history.
 - A rejected WorkflowPatch remains rejected history; do not mutate it into the
   replacement patch.
 - A failed apply must leave the target branch recoverable and report the exact
   conflict or dirty-tree condition.
 - Work outside owned paths is a blocker until reviewed or reassigned.
-- If a PR merges before a gate, the gate still needs an explicit outcome and
-  accepted attempt; if a gate accepts before merge, the PR still follows Git
+- If a PR merges before Wave advance, the Host still records the explicit
+  outcome; if a Wave advances before merge, the PR still follows Git
   protection and review rules.
 
 ## Acceptance Checklist
 
-1. Mission, Wave, executor kind, and attempt are reconstructable.
+1. Mission, current Host-plan Wave, and relevant execution run are reconstructable.
 2. File-changing ownership and isolation are explicit.
 3. Diff, commit, patch, or PR evidence resolves to the actual change.
 4. Required checks and reviews are recorded.
-5. The Wave gate names one completed accepted attempt.
+5. The Wave advance records the Host outcome and useful supporting evidence.
 6. The Mission closeout reflects accepted Wave outcomes.
 7. No retired coordination object or hidden provider transcript is needed to
    explain the result.

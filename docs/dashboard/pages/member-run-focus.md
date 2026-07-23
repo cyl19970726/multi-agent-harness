@@ -57,7 +57,7 @@ historical event.
 
 The projection must distinguish source and durability. Assignment, handoff,
 PendingInteraction resolution, explicit outcome, control acknowledgement, and
-Wave gate are durable Harness records. Native chat/tool/command/file/turn
+Host Wave decisions are durable Harness records. Native chat/tool/command/file/turn
 activity is read from the provider session and is rebuildable, non-evidence UI
 state. Harness does not silently fall back to a mirrored history.
 

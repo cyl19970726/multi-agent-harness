@@ -700,8 +700,8 @@
    "canonicalFor": [
     "Git worktree workflow",
     "PR integration",
-    "executor-aware change attribution and review flow",
-    "Wave-scoped concurrency rules"
+    "execution-aware change attribution and review flow",
+    "Host-plan coordination for concurrent changes"
    ],
    "dependsOn": [
     "docs/concept-model.md",
@@ -720,7 +720,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Wave executor concurrency, worktree, WorkflowPatch, PR, review, or gate workflow changes.",
+   "reorgTrigger": "Host-plan coordination, execution concurrency, worktree, WorkflowPatch, PR, review, or Wave-decision workflow changes.",
    "authorityClass": "implementation_reference",
    "implementationState": "partial",
    "truthRefs": [

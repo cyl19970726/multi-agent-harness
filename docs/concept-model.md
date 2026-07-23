@@ -194,8 +194,9 @@ The learning and governance layer remains domain-neutral.
 
 ## Agent Runtime And Native Session
 
-`AgentRuntime` and `NativeSessionRef` connect durable members, Wave executors,
-and host tools to external providers such as Codex, Claude, or Kimi.
+`AgentRuntime` and `NativeSessionRef` connect durable members, independent
+execution runs, and Host tools to external providers such as Codex, Claude, or
+Kimi.
 
 Rules:
 
@@ -236,8 +237,11 @@ define current product state and are not projected as active activity.
 The product contract and this repository's current self-hosting governance are
 deliberately different:
 
-- a Wave product gate records `accepted | revise | blocked`, the accepted run
-  attempt, actor/time, outcome summary, a short note, and useful artifact refs;
+- a Wave decision records the Host's `accepted | revise | blocked` judgment,
+  actor/time, outcome summary, a short note, and useful artifact refs;
+- new AgentTeamRun and WorkflowRun records remain independent; a Wave does not
+  need or own an `accepted_run_id`. That field is legacy direct-executor
+  compatibility only;
 - a Mission outcome is based on its Wave gates and an explicit Mission-level
   closeout summary;
 - this repository may layer review, evidence, or evaluation on high-risk Waves,

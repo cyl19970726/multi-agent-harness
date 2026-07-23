@@ -45,8 +45,8 @@ stream into JSONL ledgers.
 
 Harness is canonical for coordination and responsibility. It persists:
 
-- Mission, Wave, executor attempt, MemberRun identity, role, constraints, and
-  lifecycle state owned by Harness;
+- Mission, current Host-plan Wave, independent execution-run identity,
+  MemberRun identity, role, constraints, and lifecycle state owned by Harness;
 - assignment, handoff, blocker, review, and cross-member/Host messages whose
   existence matters outside the provider session;
 - `PendingInteraction`, because routing an Agent question or permission request
@@ -65,7 +65,8 @@ Harness does not persist:
   store.
 
 An explicit Harness outcome summary is not a transcript copy. It is a
-coordination fact authored or accepted at the TeamRun/Wave boundary.
+coordination fact authored at the TeamRun boundary or deliberately cited by a
+Host Wave decision.
 
 ### Native session binding
 

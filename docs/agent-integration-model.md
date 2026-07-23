@@ -73,10 +73,10 @@ prompt artifact, not inline chat text**. The contract:
   full system prompt per delivery from this stack:
 
 ```text
-harness base system prompt          (Mission/Wave, honest execution records, gates)
+harness base system prompt          (Mission/Wave, honest execution records, decisions)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
-  -> execution context               (Mission, Wave, executor, run and assignments)
+  -> execution context               (Mission, current Host-plan Wave, run and assignments)
   -> optional company context        (WorkItem, source Document, Actors, approval policy)
   -> delivery envelope               (current executor-owned assignment or host request)
   -> permission and evidence policy   (allowed tools, approval, report format)
