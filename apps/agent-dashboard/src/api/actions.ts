@@ -2,7 +2,7 @@
 //
 // The backend (crates/harness-cli/src/main.rs `handle_http_action`) exposes:
 //   POST /v1/messages                          { from, to, content, kind, task, sender_kind }
-//   POST /v1/teams                             { name, description, owner }
+//   POST /v1/teams                             { name, description, lead_agent_id }
 //   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
@@ -88,13 +88,14 @@ export function operatorMessage(params: {
 }
 
 /**
- * Create a new team. POST /v1/teams requires name, description and owner (the
- * Lead/owner agent id). Returns the created AgentTeam in the action result.
+ * Create a new team. POST /v1/teams requires name, description and the Team
+ * Lead agent id. The Host Agent creating and coordinating the team is its Lead.
+ * Returns the created AgentTeam in the action result.
  */
 export function createTeam(params: {
   name: string;
   description: string;
-  owner: string;
+  leadAgentId: string;
 }): ActionDescriptor {
   return {
     method: "POST",
@@ -102,7 +103,7 @@ export function createTeam(params: {
     body: {
       name: params.name,
       description: params.description,
-      owner: params.owner,
+      lead_agent_id: params.leadAgentId,
     },
   };
 }
@@ -370,7 +371,7 @@ export function createMissionTeam(params: {
   missionId: string;
   name: string;
   description: string;
-  owner?: string;
+  leadAgentId?: string;
   memberIds?: string[];
 }): ActionDescriptor {
   return {
@@ -379,7 +380,7 @@ export function createMissionTeam(params: {
     body: {
       name: params.name,
       description: params.description,
-      owner: params.owner ?? "host",
+      lead_agent_id: params.leadAgentId ?? "host",
       member: params.memberIds ?? [],
     },
   };

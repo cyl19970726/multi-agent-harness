@@ -16,6 +16,7 @@ Maintain these meanings:
 Mission = durable intent and context
 Wave = versioned Host plan and judgment
 Agent Team = independent, long-lived collaboration capability
+Team Lead = current Host Agent that created and coordinates the Team
 Assignment message = owned work
 Provider-native session = member execution truth
 ```
@@ -24,6 +25,12 @@ Never turn a Wave into a task graph, runtime container, synchronization barrier,
 or transcript store. A member may continue working while the Host advances to
 the next Wave. Never duplicate provider tool, command, chat, or thinking streams
 in Harness.
+
+The Host using this skill is the Team Lead for every Agent Team it creates.
+Lead is a control-plane role: form the team, assign work, answer members,
+change composition, integrate results, and decide acceptance. Do not create an
+implicit Lead MemberRun. Add the Host as a member only when it deliberately owns
+an execution lane with its own native session.
 
 Read `docs/product/mission-wave-host-plan.md` and ADR 0034 when the product
 contract itself is in question. Do not reproduce their schemas in this skill.
@@ -63,7 +70,7 @@ the same MemberRun and native session from Wave 1.
 
 | Member | Role | Responsibility | Deliverable |
 | --- | --- | --- | --- |
-| Builder | Lead builder | Integrate the accepted baseline | Patch and checks |
+| Builder | Primary builder | Integrate the accepted baseline | Patch and checks |
 | Reviewer | Interaction reviewer | Continue pending-input validation | Review report |
 | Repair | Fixer | Join only if a real defect appears | Focused fix |
 
@@ -89,7 +96,7 @@ Create intent, team relation, and the first Host memo:
 harness mission create --title "<title>" --objective "<objective>" \
   --context "<mission-markdown>" --json
 harness mission create-team --id <mission-id> --name "<team>" \
-  --description "<purpose>" --member <agent-member-id>
+  --description "<purpose>" --lead host --member <agent-member-id>
 harness wave create --mission-id <mission-id> --title "<wave-title>" \
   --objective "<short objective>" --context "<wave-markdown>" \
   --updated-by host --json

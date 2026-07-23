@@ -8,6 +8,7 @@ Use `$ARGUMENTS` as an objective sketch and follow
 1. Select the Workspace explicitly and inspect existing Missions, linked teams,
    runs, and provider capabilities.
 2. Reuse a suitable independent AgentTeam or propose a new stable team.
+   The current Host is its Team Lead and is not an implicit MemberRun.
 3. Ensure the Mission has durable Markdown context and links the chosen team.
 4. Write the first Wave Markdown with changed facts, member responsibilities,
    deliverables, open decisions, and advance evidence.
@@ -24,7 +25,7 @@ Primary command shape:
 harness mission create --title "..." --objective "..." \
   --context "<mission-markdown>"
 harness mission create-team --id <mission-id> --name "..." \
-  --description "..." --member <agent-member-id>
+  --description "..." --lead host --member <agent-member-id>
 harness wave create --mission-id <mission-id> --title "..." \
   --objective "..." --context "<wave-markdown>"
 harness team-run create --mission-id <mission-id> \

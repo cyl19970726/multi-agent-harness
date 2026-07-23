@@ -166,6 +166,15 @@ async function main() {
     "Agent Team home supports independent, Mission-scoped, and labelled legacy runs",
   );
   check(
+    agentTeamsHomeSource.includes("Team Lead ·")
+      && warRoomSource.includes("Lead · {teamLeadLabel")
+      && warRoomSource.includes("from Team Lead · current Host")
+      && warRoomSource.includes("outside MemberRuns unless it explicitly joins")
+      && missionSource.includes('label="Team Lead"')
+      && missionSource.includes("not counted as a MemberRun unless explicitly added"),
+    "Agent Team surfaces identify the current Host as Team Lead without inventing a Lead MemberRun",
+  );
+  check(
     captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")
       && captureSource.includes("api=${encodeURIComponent(webBase)}")
       && captureSource.includes('manifest.routes["agent-teams-home"]'),

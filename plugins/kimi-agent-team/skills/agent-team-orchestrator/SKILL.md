@@ -12,12 +12,17 @@ This is the Kimi distribution wrapper for the repository's canonical
 Mission = durable intent and Markdown context
 Wave = versioned Host plan and judgment
 Agent Team = independent, long-lived collaboration capability
+Team Lead = current Host Agent that created and coordinates the Team
 Assignment message = owned work
 Provider-native session = member execution truth
 ```
 
 Read ADR 0034 and `docs/product/mission-wave-host-plan.md` when changing the
 contract. Never make this skill a second architecture source.
+
+The Kimi Host using this skill is the Team Lead of every team it creates. Lead
+is a control-plane role, not an implicit MemberRun. Add the Host as an
+executing member only when it deliberately owns a lane with a native session.
 
 ## Host Loop
 
@@ -43,7 +48,7 @@ the same store and application behavior.
 harness mission create --title "<title>" --objective "<objective>" \
   --context "<mission-markdown>"
 harness mission create-team --id <mission-id> --name "<team>" \
-  --description "<purpose>" --member <agent-member-id>
+  --description "<purpose>" --lead host --member <agent-member-id>
 harness wave create --mission-id <mission-id> --title "<wave>" \
   --objective "<objective>" --context "<wave-markdown>"
 harness team-run create --mission-id <mission-id> \

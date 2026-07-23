@@ -78,7 +78,7 @@ ordinary Markdown:
 ```markdown
 | Member | Role | Responsibility | Deliverable |
 | --- | --- | --- | --- |
-| Builder | Lead builder | Integrate the baseline | Patch and checks |
+| Builder | Primary builder | Integrate the baseline | Patch and checks |
 | Reviewer | Reviewer | Continue interaction validation | Review report |
 ```
 

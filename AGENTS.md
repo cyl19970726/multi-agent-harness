@@ -194,7 +194,7 @@ target/debug/harness init
 target/debug/harness mission create --title <title> --objective <objective> \
   --context <mission-markdown>
 target/debug/harness mission create-team --id <mission> --name <team> \
-  --description <purpose> --member <agent-member-id>
+  --description <purpose> --lead host --member <agent-member-id>
 target/debug/harness wave create --mission-id <mission> --title <title> \
   --objective <objective> --context <wave-markdown>
 target/debug/harness team-run create --mission-id <mission> \

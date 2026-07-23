@@ -70,7 +70,7 @@ The current Mission/Team authoring path is available through Cargo:
 cargo run -p harness-cli -- --help
 cargo run -p harness-cli -- init
 cargo run -p harness-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
-cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose>
+cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
 cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
 cargo run -p harness-cli -- team-run create --mission-id <mission-id> --agent-team-id <team-id> --objective <objective> --member name:role:provider
 cargo run -p harness-cli -- team-run start --id <team-run-id>

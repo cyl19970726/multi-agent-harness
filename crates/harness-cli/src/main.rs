@@ -1285,7 +1285,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 id: value(args, "--id").unwrap_or_else(|| generated_id("team")),
                 name: required(args, "--name")?,
                 description: required(args, "--description")?,
-                owner_agent_id: required(args, "--owner")?,
+                owner_agent_id: required(args, "--lead").or_else(|_| required(args, "--owner"))?,
                 status: AgentTeamStatus::Active,
                 member_ids: many(args, "--member"),
                 created_at: now_string(),
@@ -1420,7 +1420,9 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 id: value(args, "--team-id").unwrap_or_else(|| generated_id("team")),
                 name: required(args, "--name")?,
                 description: required(args, "--description")?,
-                owner_agent_id: value(args, "--owner").unwrap_or_else(|| "host".to_string()),
+                owner_agent_id: value(args, "--lead")
+                    .or_else(|| value(args, "--owner"))
+                    .unwrap_or_else(|| "host".to_string()),
                 status: AgentTeamStatus::Active,
                 member_ids: many(args, "--member"),
                 created_at: now_string(),
@@ -8387,7 +8389,9 @@ fn create_team_value(
         id: json_string(body, "id").unwrap_or_else(|| generated_id("team")),
         name: required_json_string(body, "name")?,
         description: required_json_string(body, "description")?,
-        owner_agent_id: required_json_string(body, "owner")
+        owner_agent_id: required_json_string(body, "lead_agent_id")
+            .or_else(|_| required_json_string(body, "lead"))
+            .or_else(|_| required_json_string(body, "owner"))
             .or_else(|_| required_json_string(body, "owner_agent_id"))?,
         status: AgentTeamStatus::Active,
         member_ids: json_string_array(body, "member"),
@@ -17286,7 +17290,10 @@ fn print_help() {
   daemon start|status|stop
 
 Retired coordination commands fail explicitly. Historical rows are available only
-through legacy-goal-task export|verify."#
+through legacy-goal-task export|verify.
+
+Agent Team creation uses --lead <host-agent-id>; --owner remains a compatibility
+alias. Mission create-team defaults the Lead to the current Host Agent (`host`)."#
     );
 }
 #[cfg(test)]
@@ -22282,7 +22289,7 @@ mod tests {
         let body = serde_json::json!({
             "name": "Platform Squad",
             "description": "Owns the dashboard",
-            "owner": "lead-1",
+            "lead_agent_id": "lead-1",
             "member": ["worker-1", "worker-2"]
         });
 

@@ -68,7 +68,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     let project_id = init_project(&home, "host-plan");
 
     for (id, name, role, provider) in [
-        ("agent-lead", "LeadBuilder", "lead builder", "codex"),
+        ("agent-build", "PrimaryBuilder", "primary builder", "codex"),
         ("agent-review", "ReviewPartner", "reviewer", "kimi"),
         ("agent-repair", "RepairFixer", "repair specialist", "codex"),
     ] {
@@ -101,10 +101,10 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "Platform Team",
             "--description",
             "Long-lived Mission team",
-            "--owner",
+            "--lead",
             "host",
             "--member",
-            "agent-lead",
+            "agent-build",
             "--member",
             "agent-review",
         ],
@@ -180,7 +180,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--mission-id",
             "mission-host-plan",
             "--resume-member",
-            "LeadBuilder:codex-session-1",
+            "PrimaryBuilder:codex-session-1",
             "--json",
         ],
     );
@@ -194,7 +194,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     );
     assert!(created["team_run"]["wave_id"].is_null());
     let team_run_id = created["team_run"]["id"].as_str().unwrap();
-    let lead_member_id = created["member_runs"][0]["id"]
+    let builder_member_id = created["member_runs"][0]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -311,14 +311,14 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         &project_id,
         &["team-run", "status", "--id", team_run_id, "--json"],
     );
-    let lead = status["members"]
+    let builder = status["members"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|member| member["member_run"]["id"].as_str() == Some(&lead_member_id))
+        .find(|member| member["member_run"]["id"].as_str() == Some(&builder_member_id))
         .unwrap();
     assert_eq!(
-        lead["member_run"]["native_session"]["native_session_id"].as_str(),
+        builder["member_run"]["native_session"]["native_session_id"].as_str(),
         Some("codex-session-1"),
         "Wave advance must not replace the MemberRun or provider-native session"
     );
@@ -336,10 +336,10 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "Other Team",
             "--description",
             "Retry isolation fixture",
-            "--owner",
+            "--lead",
             "host",
             "--member",
-            "agent-lead",
+            "agent-build",
         ],
     );
     run_json(
@@ -422,7 +422,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--from",
             "host",
             "--to",
-            &lead_member_id,
+            &builder_member_id,
             "--kind",
             "assignment",
             "--body",

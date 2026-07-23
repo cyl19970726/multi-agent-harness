@@ -14,6 +14,8 @@ Mission <-> independent AgentTeam -> TeamRun -> MemberRun
 
 A TeamRun may span Waves. Assignment messages own work; provider-native
 sessions own transcripts, tools, commands, files, turns, and resume.
+The Host that creates and coordinates a team is its Team Lead. Lead remains
+outside the MemberRun roster unless explicitly added to execute a lane.
 
 ## Prerequisites
 
@@ -41,7 +43,7 @@ mode/version-specific; the plugin never silently substitutes another provider.
 ```bash
 harness mission create --title "..." --objective "..." --context "..."
 harness mission create-team --id <mission-id> --name "..." \
-  --description "..." --member <agent-member-id>
+  --description "..." --lead host --member <agent-member-id>
 harness wave create --mission-id <mission-id> --title "..." \
   --objective "..." --context "..."
 harness team-run create --mission-id <mission-id> \
@@ -57,6 +59,7 @@ correctness and owns no storage or lifecycle.
 ## Ground Rules
 
 - Wave is Host memory, never a TeamRun container or barrier.
+- The current Host is Team Lead; do not invent a Lead MemberRun.
 - Mission closeout never deletes or archives a team.
 - Provider transcripts and thinking are never mirrored into Harness.
 - Pending questions/approvals require semantic resolution; a provider

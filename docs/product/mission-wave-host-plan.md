@@ -13,7 +13,8 @@ turning that memory into a rigid scheduler.
 
 - **Mission** says what we are trying to accomplish and why.
 - **Wave** records the Host's current plan, judgment, and important changes.
-- **Agent Team** is an independent reusable group the Host may use.
+- **Agent Team** is an independent reusable group led by the Host that created
+  and coordinates it.
 - **Assignment messages** say who is doing what.
 - **Provider-native sessions** prove what each member actually executed.
 
@@ -44,7 +45,7 @@ checks question/approval behavior.
 
 | Member | Role | Responsibility | Deliverable |
 | --- | --- | --- | --- |
-| WorkspaceFixer | Lead builder | Build and launch from latest master | Run evidence |
+| WorkspaceFixer | Primary builder | Build and launch from latest master | Run evidence |
 | InteractionReviewer | Reviewer | Exercise interaction edge cases | Review report |
 
 ## Host judgment
@@ -88,8 +89,15 @@ The existing assignment correlation and provider session continue.
 
 ### Agent Team
 
-- Stable definition with editable name, description, owner, status, and member
-  identities.
+- Stable definition with editable name, description, Team Lead, status, and
+  member identities.
+- The Host Agent that creates and coordinates a team is its **Team Lead**.
+  `owner_agent_id` is the compatibility wire field for that identity; `host`
+  means the current Host Agent.
+- The Team Lead owns formation, assignments, member interaction, composition
+  changes, integration, and acceptance. It is not an ordinary MemberRun and is
+  not counted in the member roster unless it explicitly joins as an executing
+  member.
 - Can be standalone or linked to Missions.
 - A Mission-scoped TeamRun uses `mission_id` and `agent_team_id`; `wave_id` is
   absent in the primary path.

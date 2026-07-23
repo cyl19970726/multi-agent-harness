@@ -79,6 +79,14 @@ message, steer, interrupt, add, rename, or deactivate members according to the
 real provider and permission capabilities. A provider `completed` frame is not
 semantic completion.
 
+The Host Agent that creates and coordinates the team is its **Team Lead**.
+Harness retains `owner_agent_id` as the compatibility wire field for this
+identity, and reserves `host` to mean the current Host Agent. The Lead owns team
+formation, assignment, member interaction, composition changes, integration,
+and acceptance. It is a control-plane actor, not an implicit `MemberRun`; if the
+Lead also performs an execution lane, the Host must explicitly add a member and
+bind that member to its native provider session.
+
 ### CLI is canonical; MCP is a thin optional adapter
 
 The complete Host control surface is shared application logic exposed through
@@ -132,4 +140,3 @@ The deterministic scenario must prove:
    Dashboard projections;
 9. close the Mission without deleting or silently completing the team; and
 10. prove MCP, when enabled, delegates to the same behavior as CLI.
-

@@ -20,7 +20,8 @@ The page must remain useful when the same TeamRun spans several Host-plan Waves.
 
 Required data:
 
-- independent `AgentTeam` definition and editable member identities;
+- independent `AgentTeam` definition, explicit Team Lead, and editable member
+  identities;
 - `AgentTeamRun`, optional `mission_id`, optional legacy `wave_id`, status,
   previous run, host/runtime facts, and outcome;
 - `MemberRun` identity, role, provider/model, status, capability profile,
@@ -38,6 +39,13 @@ The TeamRun may be standalone or linked to a Mission. In the primary
 Mission-scoped path it is not owned by one Wave. Wave context explains how the
 Host is currently using the team.
 
+The Host Agent that created and coordinates the team is the Team Lead. The page
+must show that identity separately from the member roster. `host` means the
+current Host Agent. Lead messages, assignments, composition changes, and
+acceptance decisions are control-plane actions; they do not create an implicit
+Lead `MemberRun`. If the Lead also executes a lane, that requires an explicit
+member with its own native-session binding.
+
 ## Desktop Layout
 
 Use the shared Workbench shell with compact member controls, one chronological
@@ -46,7 +54,7 @@ activity stream, a persistent composer, and flexible context modules.
 ```text
 +----------------------+--------------------------------------+------------------+
 | Product sidebar      | Team header                          | Mission context  |
-|                      | definition · run · status · actions  | Current Wave     |
+|                      | definition · Lead · run · actions    | Current Wave     |
 | Active context tree  +--------------------------------------+ Selected member  |
 |                      | compact member controls              | Runtime          |
 |                      | role/model/status/action/pressure    | Artifacts        |
@@ -88,6 +96,8 @@ replace status or source labels.
 ## Actions
 
 - Message the whole team or one explicit member.
+- Make it clear that Host-authored coordination comes from the Team Lead;
+  Human/operator authorship remains separately attributable where supported.
 - Create a correlated assignment with optional origin Wave metadata.
 - Add, rename, deactivate, steer, interrupt, or resume a member where the
   selected provider mode honestly supports it.

@@ -112,6 +112,9 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
                           : "Standalone team run"}
                         {legacyWave ? ` · Legacy Wave ${legacyWave.index}` : ""}
                       </span>
+                      <span className="mt-1 block truncate text-[11px] text-muted-foreground">
+                        Team Lead · {teamLeadLabel(team?.owner_agent_id)}
+                      </span>
                     </span>
                     <ArrowRight className="mt-2 size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
                   </div>
@@ -176,6 +179,11 @@ function timestamp(value?: string | null): number {
   if (!value) return 0;
   if (value.startsWith("unix-ms:")) return Number(value.slice(8)) || 0;
   return Date.parse(value) || 0;
+}
+
+function teamLeadLabel(leadAgentId?: string | null): string {
+  if (!leadAgentId || leadAgentId === "host") return "Current Host Agent";
+  return leadAgentId;
 }
 
 function formatRelative(value?: string | null): string {

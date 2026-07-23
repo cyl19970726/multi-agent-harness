@@ -359,6 +359,12 @@ function MissionDetail({
   const latestSelectedRun = selectedRuns[selectedRuns.length - 1];
   const missionRuns = runsForMission(model, mission);
   const latestMissionRun = missionRuns[missionRuns.length - 1];
+  const linkedMissionTeams = (model.snapshot.teams ?? []).filter((team) =>
+    (mission.agent_team_ids ?? []).includes(team.id),
+  );
+  const latestMissionTeam = latestMissionRun?.agent_team_id
+    ? linkedMissionTeams.find((team) => team.id === latestMissionRun.agent_team_id)
+    : linkedMissionTeams[0];
   const missionRunIds = new Set(missionRuns.map((run) => run.id));
   const selectedMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id && missionRunIds.has(member.team_run_id),
@@ -623,10 +629,14 @@ function MissionDetail({
             >
               <dl className="space-y-2 text-[11px] leading-relaxed">
                 <ContextFact label="Linked" value={`${mission.agent_team_ids?.length ?? 0} reusable team${mission.agent_team_ids?.length === 1 ? "" : "s"}`} />
+                <ContextFact label="Team Lead" value={!latestMissionTeam?.owner_agent_id || latestMissionTeam.owner_agent_id === "host" ? "Current Host Agent" : latestMissionTeam.owner_agent_id} />
                 <ContextFact label="Run" value={latestMissionRun ? `${latestMissionRun.status ?? "planning"} · ${latestMissionRun.objective ?? latestMissionRun.id}` : "Not yet started"} />
                 <ContextFact label="Members" value={selectedMembers.length ? `${selectedMembers.length} linked members` : "No members yet"} />
                 <ContextFact label="Lifetime" value="Continues across Waves" />
               </dl>
+              <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                The current Host is Team Lead; it is not counted as a MemberRun unless explicitly added to execute a lane.
+              </p>
               {latestMissionRun && (
                 <button
                   type="button"

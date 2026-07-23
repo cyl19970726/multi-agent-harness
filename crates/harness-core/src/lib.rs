@@ -448,6 +448,10 @@ pub struct AgentTeam {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Stable identity of the Host Agent that created and coordinates this
+    /// team. The wire name is retained for compatibility; product surfaces
+    /// call this actor the Team Lead. A Lead is not a MemberRun unless it
+    /// explicitly joins the team as an executing member.
     pub owner_agent_id: String,
     #[serde(default = "default_agent_team_status")]
     pub status: AgentTeamStatus,

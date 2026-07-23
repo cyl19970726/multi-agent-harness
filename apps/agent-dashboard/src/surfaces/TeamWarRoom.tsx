@@ -251,6 +251,7 @@ export function TeamWarRoom({
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
               <Badge tone="muted">attempt {attemptNumber(attempts, run.id)}</Badge>
+              <Badge tone="muted">Lead · {teamLeadLabel(stableTeam?.owner_agent_id)}</Badge>
               {navigationWave && <Badge tone={gateTone(navigationWave.gate_status)}>Host plan: Wave {navigationWave.index}</Badge>}
             </>
           }
@@ -302,7 +303,7 @@ export function TeamWarRoom({
               <option value="blocker">Blocker</option>
               <option value="review_request">Review request</option>
             </Select>
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Host / operator</span>
+            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Team Lead · current Host</span>
           </div>
           <div className="flex items-end gap-2">
             <TextArea
@@ -325,6 +326,7 @@ export function TeamWarRoom({
           <MissionTeamModule
             missionTitle={navigationMission?.title}
             teamName={stableTeam?.name}
+            leadAgentId={stableTeam?.owner_agent_id}
             missionScoped={Boolean(run.mission_id && !run.wave_id)}
             onOpen={() => navigationMission && onSelectionChange({ surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined })}
           />
@@ -568,9 +570,10 @@ function memberPressureRank(status?: string | null): number {
   return 5;
 }
 
-function MissionTeamModule({ missionTitle, teamName, missionScoped, onOpen }: {
+function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped, onOpen }: {
   missionTitle?: string;
   teamName?: string;
+  leadAgentId?: string;
   missionScoped: boolean;
   onOpen: () => void;
 }) {
@@ -584,13 +587,24 @@ function MissionTeamModule({ missionTitle, teamName, missionScoped, onOpen }: {
       <p className="text-[12px] leading-relaxed text-foreground">
         {missionTitle ? `Linked to ${missionTitle}.` : "This Team is running independently."}
       </p>
+      <div className="mt-2">
+        <Fact label="Team Lead" value={teamLeadLabel(leadAgentId)} />
+      </div>
       <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
         {missionScoped
           ? "Its members and provider-native sessions may continue across multiple Host-plan Waves."
           : "The Team remains an independent capability and can be linked to a Mission when useful."}
       </p>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+        The Lead coordinates the Team and is outside MemberRuns unless it explicitly joins as an executing member.
+      </p>
     </ContextModule>
   );
+}
+
+function teamLeadLabel(leadAgentId?: string | null): string {
+  if (!leadAgentId || leadAgentId === "host") return "Current Host Agent";
+  return leadAgentId;
 }
 
 function WaveModule({ wave, directExecutor, onOpen }: { wave?: Wave; directExecutor: boolean; onOpen: () => void }) {

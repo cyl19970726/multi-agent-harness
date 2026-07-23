@@ -90,6 +90,7 @@ export interface AgentTeam {
   id: string;
   name?: string;
   description?: string;
+  /** Team Lead identity. `host` means the current Host Agent. */
   owner_agent_id?: string;
   status?: "active" | "closed" | "archived";
   member_ids?: string[];
