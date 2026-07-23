@@ -4862,6 +4862,20 @@ fn codex_team_sandbox() -> &'static str {
     "danger-full-access"
 }
 
+fn enabled_env_switch(value: Option<&str>) -> bool {
+    value
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn codex_team_ignore_user_config() -> bool {
+    enabled_env_switch(
+        std::env::var("HARNESS_CODEX_IGNORE_USER_CONFIG")
+            .ok()
+            .as_deref(),
+    )
+}
+
 /// Run one Codex turn and consume its event stream in memory. Members without
 /// owned paths still receive the temporary full-access development policy;
 /// ownership remains a durable coordination contract. Raw events and reasoning
@@ -4875,8 +4889,16 @@ fn run_codex_team_turn(
     ledger: &TeamRunLedger,
 ) -> CliResult<CodexTeamTurn> {
     let mut cmd = Command::new("codex");
-    cmd.arg("exec")
-        .arg("--cd")
+    cmd.arg("exec");
+    // Agent Team members normally inherit the provider's user configuration so
+    // global skills and MCP servers remain discoverable. Operators can opt into
+    // a clean provider process when an unrelated user MCP is unavailable or
+    // inappropriate for the member's execution boundary. Authentication still
+    // comes from CODEX_HOME; only config.toml is ignored by Codex.
+    if codex_team_ignore_user_config() {
+        cmd.arg("--ignore-user-config");
+    }
+    cmd.arg("--cd")
         .arg(cwd)
         .arg("--sandbox")
         .arg(codex_team_sandbox())
@@ -22473,6 +22495,17 @@ mod sse_tests {
     fn codex_team_sandbox_uses_temporary_full_access_policy() {
         assert_eq!(codex_team_sandbox(), "danger-full-access");
         assert_eq!(claude_team_permission_mode(), "bypassPermissions");
+    }
+
+    #[test]
+    fn codex_team_user_config_isolation_switch_is_explicit() {
+        for enabled in ["1", "true", "yes", "on", " true "] {
+            assert!(enabled_env_switch(Some(enabled)));
+        }
+        for disabled in ["", "0", "false", "off", "unexpected"] {
+            assert!(!enabled_env_switch(Some(disabled)));
+        }
+        assert!(!enabled_env_switch(None));
     }
 
     #[test]
