@@ -59,6 +59,19 @@ enum CliError {
 
 type CliResult<T> = Result<T, CliError>;
 
+/// Whether a routed message is currently actionable as a manual acknowledgement.
+///
+/// The compatibility `unacked_messages` projection deliberately excludes queued,
+/// injected, failed, expired, and already-acknowledged deliveries. A message is
+/// counted once when at least one recipient has a `manual_ack` delivery that has
+/// reached `delivered`.
+pub(crate) fn has_actionable_delivered_manual_ack(message: &TeamMessage) -> bool {
+    message.deliveries.iter().any(|delivery| {
+        delivery.policy == TeamDeliveryPolicy::ManualAck
+            && delivery.status == TeamDeliveryStatus::Delivered
+    })
+}
+
 fn store_conflict_as_usage<T>(result: Result<T, StoreError>) -> CliResult<T> {
     match result {
         Ok(value) => Ok(value),
@@ -3694,12 +3707,7 @@ fn team_run_command(
             let unacked_messages = messages
                 .iter()
                 .filter(|message| message.team_run_id == id)
-                .filter(|message| {
-                    message
-                        .deliveries
-                        .iter()
-                        .any(|delivery| delivery.status != TeamDeliveryStatus::Acknowledged)
-                })
+                .filter(|message| has_actionable_delivered_manual_ack(message))
                 .count();
             if json {
                 let members: Vec<serde_json::Value> = member_runs
@@ -3742,7 +3750,7 @@ fn team_run_command(
                         last
                     );
                 }
-                println!("unacked_messages: {unacked_messages}");
+                println!("unacked_messages (delivered manual ACKs): {unacked_messages}");
             }
         }
         "send" => {

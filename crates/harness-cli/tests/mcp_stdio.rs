@@ -7,7 +7,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use harness_core::TeamDeliveryStatus;
+use harness_core::{TeamDeliveryPolicy, TeamDeliveryStatus};
 use harness_store::HarnessStore;
 
 mod fake_provider;
@@ -388,8 +388,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert_eq!(call_payload(&response)["status"].as_str(), Some("stopped"));
 
-    // 6. team_run_status → all members + dashboard URL (+ the three queued
-    //    assignment messages count as unacked).
+    // 6. team_run_status → all members + dashboard URL. Queued assignments
+    // are not actionable manual acknowledgements.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -415,7 +415,7 @@ fn mcp_stdio_agent_team_tools() {
         payload["pending_interactions"].as_array().map(Vec::len),
         Some(0)
     );
-    assert_eq!(payload["unacked_messages"].as_u64(), Some(3));
+    assert_eq!(payload["unacked_messages"].as_u64(), Some(0));
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
@@ -516,10 +516,23 @@ fn mcp_stdio_agent_team_tools() {
         .rev()
         .find(|message| message.id == assignment_id)
         .expect("assignment row");
+    delivered_assignment.deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
     delivered_assignment.deliveries[0].status = TeamDeliveryStatus::Delivered;
     store
         .append_team_message(&delivered_assignment)
-        .expect("mark assignment delivered");
+        .expect("mark assignment as delivered manual ACK");
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": team_run_id}
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["unacked_messages"].as_u64(),
+        Some(1),
+        "MCP status shares the CLI actionable manual-ACK projection"
+    );
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -535,6 +548,18 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": team_run_id}
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["unacked_messages"].as_u64(),
+        Some(0),
+        "acknowledged manual ACKs are no longer actionable"
     );
     let response = mcp.request(
         "tools/call",

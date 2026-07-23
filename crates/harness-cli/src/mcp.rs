@@ -19,21 +19,21 @@ use std::{
     time::Duration,
 };
 
-use harness_core::{TeamDeliveryStatus, TeamRunEvent, TeamRunStatus};
+use harness_core::{TeamRunEvent, TeamRunStatus};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
     acknowledge_team_message, add_team_run_member, advance_wave, close_mission, create_mission,
     create_team_run, create_wave, deactivate_team_run_member, drive_prepared_team_run, gate_wave,
-    interrupt_team_member_value, latest_member_runs_in_append_order,
-    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
-    latest_team_run, latest_team_runs_in_append_order, parse_team_message_kind,
-    parse_wave_executor_kind, prepare_team_run_start, rename_team_run_member,
-    resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
-    revise_wave, send_team_message, steer_team_member_value, team_member_specs_from_definition,
-    team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
-    ResolvedStore, TeamMemberSpec,
+    has_actionable_delivered_manual_ack, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
+    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start,
+    rename_team_run_member, resolve_pending_interaction_value, revise_mission_context,
+    revise_mission_team_link, revise_wave, send_team_message, steer_team_member_value,
+    team_member_specs_from_definition, team_run_wave_index, transition_team_run,
+    visible_member_actions_in_append_order, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -640,8 +640,9 @@ fn tool_team_run_list(store: &HarnessStore) -> Result<Value, String> {
 }
 
 /// `team_run_status` — one run with its members (each carrying the latest
-/// MemberAction, if any), the count of not-yet-acknowledged messages, and the
-/// dashboard URL. Mirrors the `team-run status --json` projection.
+/// MemberAction, if any), the compatibility `unacked_messages` count of
+/// actionable delivered `manual_ack` messages, and the dashboard URL. Mirrors
+/// the `team-run status --json` projection.
 fn tool_team_run_status(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -680,12 +681,7 @@ fn tool_team_run_status(
     let unacked_messages = messages
         .iter()
         .filter(|message| message.team_run_id == id)
-        .filter(|message| {
-            message
-                .deliveries
-                .iter()
-                .any(|delivery| delivery.status != TeamDeliveryStatus::Acknowledged)
-        })
+        .filter(|message| has_actionable_delivered_manual_ack(message))
         .count();
     Ok(json!({
         "team_run": run,
@@ -1032,7 +1028,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions including exact option ids, the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions including exact option ids, compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

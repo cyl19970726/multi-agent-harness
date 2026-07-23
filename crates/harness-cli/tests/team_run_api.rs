@@ -11,6 +11,9 @@
 
 use std::time::Duration;
 
+use harness_core::{TeamDeliveryPolicy, TeamDeliveryStatus};
+use harness_store::HarnessStore;
+
 mod fake_provider;
 mod harness_env;
 use harness_env::{collect_sse_data, current_project_id, run_harness, ServeHandle, TempHome};
@@ -194,7 +197,53 @@ fn team_run_cli_create_list_status_send_events() {
         members.iter().all(|m| m["latest_action"].is_null()),
         "no member actions journaled yet: {members:?}"
     );
-    assert_eq!(status["unacked_messages"].as_u64(), Some(2));
+    assert_eq!(
+        status["unacked_messages"].as_u64(),
+        Some(0),
+        "queued deliveries are not actionable manual acknowledgements"
+    );
+
+    // The compatibility field counts only manual_ack deliveries that actually
+    // reached delivered: a queued manual ACK remains non-actionable.
+    let store = HarnessStore::new(home.projects_dir().join(&project_id));
+    let mut assignments = store.team_messages().expect("assignment messages");
+    assignments.sort_by(|left, right| left.id.cmp(&right.id));
+    assignments[0].deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
+    assignments[0].deliveries[0].status = TeamDeliveryStatus::Queued;
+    assignments[1].deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
+    assignments[1].deliveries[0].status = TeamDeliveryStatus::Delivered;
+    store
+        .append_team_message(&assignments[0])
+        .expect("append queued manual ACK delivery");
+    store
+        .append_team_message(&assignments[1])
+        .expect("append delivered manual ACK delivery");
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    assert_eq!(
+        status["unacked_messages"].as_u64(),
+        Some(1),
+        "only delivered manual ACKs are actionable"
+    );
+    assignments[1].deliveries[0].status = TeamDeliveryStatus::Failed;
+    store
+        .append_team_message(&assignments[1])
+        .expect("append failed manual ACK delivery");
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    assert_eq!(
+        status["unacked_messages"].as_u64(),
+        Some(0),
+        "failed manual ACK deliveries are terminal rather than actionable"
+    );
+    assignments[1].deliveries[0].status = TeamDeliveryStatus::Expired;
+    store
+        .append_team_message(&assignments[1])
+        .expect("append expired manual ACK delivery");
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    assert_eq!(
+        status["unacked_messages"].as_u64(),
+        Some(0),
+        "expired manual ACK deliveries are terminal rather than actionable"
+    );
 
     // send --json: a blocker from the worker to the lead.
     let message = team_run_json(
