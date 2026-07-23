@@ -53,22 +53,53 @@ async function main() {
     readFile(join(dashboardRoot, "src/components/workbench/context/ContextRail.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/index.css"), "utf8"),
   ]);
-  const [missions, waves, runs, members, messages, actions, events] = await Promise.all([
-    rows("missions.jsonl"), rows("waves.jsonl"), rows("team_runs.jsonl"),
+  const [missions, waves, teams, runs, members, messages, actions, events] = await Promise.all([
+    rows("missions.jsonl"), rows("waves.jsonl"), rows("teams.jsonl"), rows("team_runs.jsonl"),
     rows("member_runs.jsonl"), rows("team_messages.jsonl"),
     rows("member_actions.jsonl"), rows("team_run_events.jsonl"),
   ]);
 
   const mission = missions.find((item) => item.id === manifest.mission_id);
+  const linkedTeam = teams.find((item) => item.id === manifest.agent_team_id);
   const currentWave = waves.find((item) => item.id === manifest.wave_id);
   const priorWave = waves.find((item) => item.id === "wave-foundation");
   const currentRun = runs.find((item) => item.id === manifest.team_run_id);
   const currentMember = members.find((item) => item.id === manifest.member_run_id);
 
-  check(mission?.status === "running" && mission.wave_ids.length === 3, "Mission has three explicit ordered Waves");
-  check(priorWave?.status === "completed" && priorWave.gate_status === "accepted" && priorWave.accepted_run_id === "teamrun-wave1-accepted", "Wave 1 is completed and accepted against a completed attempt");
-  check(currentWave?.status === "running" && currentWave.gate_status === "pending" && currentWave.executor_run_ids.length === 2, "Wave 2 is running on retry Attempt 2 with a separate pending gate");
-  check(currentRun?.status === "running" && currentRun.previous_run_id === "teamrun-wave2-attempt1" && currentRun.member_run_ids.length === 4, "Current TeamRun is a four-member retry attempt");
+  check(
+    mission?.status === "running"
+      && mission.wave_ids.length === 3
+      && mission.context.includes("# Ship the Star Harness Host integration")
+      && mission.agent_team_ids.includes(manifest.agent_team_id),
+    "Mission has durable Markdown context, three ordered Waves, and one linked independent Team",
+  );
+  check(
+    linkedTeam?.status === "active" && linkedTeam.name === "Platform Foundation Team",
+    "Fixture contains the stable reusable AgentTeam linked by Mission",
+  );
+  check(
+    priorWave?.status === "completed"
+      && priorWave.gate_status === "accepted"
+      && priorWave.accepted_run_id === null
+      && priorWave.context.includes("Host judgment"),
+    "Wave 1 records an explicit Host advance without an accepted executor attempt",
+  );
+  check(
+    currentWave?.status === "running"
+      && currentWave.gate_status === "pending"
+      && currentWave.executor_run_ids.length === 0
+      && currentWave.revision === 2
+      && currentWave.context.includes("| Member | Role | Responsibility | Deliverable |"),
+    "Wave 2 is a versioned Host-plan memo with a Markdown responsibility table",
+  );
+  check(
+    currentRun?.status === "running"
+      && currentRun.agent_team_id === manifest.agent_team_id
+      && currentRun.mission_id === manifest.mission_id
+      && currentRun.wave_id === null
+      && currentRun.member_run_ids.length === 4,
+    "Current four-member TeamRun is Mission-scoped and independent of one Wave",
+  );
   check(
     shellSource.includes("Registered project root:")
       && shellSource.includes("Central store root:")
@@ -126,7 +157,23 @@ async function main() {
       && typesSource.includes("skill_roots: string[]"),
     "Dashboard types mirror the backward-compatible TeamRun and MemberRun workspace wire contract",
   );
-  check(agentTeamsHomeSource.includes("waves.get(run.wave_id)") && agentTeamsHomeSource.includes("wave.index") && !agentTeamsHomeSource.includes(`run.${duplicateWaveField}`), "Agent Team home joins native attempts to Wave labels through wave_id");
+  check(
+    agentTeamsHomeSource.includes("run.agent_team_id")
+      && agentTeamsHomeSource.includes("Mission-scoped")
+      && agentTeamsHomeSource.includes("Standalone team run")
+      && agentTeamsHomeSource.includes("Legacy Wave")
+      && !agentTeamsHomeSource.includes(`run.${duplicateWaveField}`),
+    "Agent Team home supports independent, Mission-scoped, and labelled legacy runs",
+  );
+  check(
+    agentTeamsHomeSource.includes("Team Lead ·")
+      && warRoomSource.includes("Lead · {teamLeadLabel")
+      && warRoomSource.includes("from Team Lead · current Host")
+      && warRoomSource.includes("outside MemberRuns unless it explicitly joins")
+      && missionSource.includes('label="Team Lead"')
+      && missionSource.includes("not counted as a MemberRun unless explicitly added"),
+    "Agent Team surfaces identify the current Host as Team Lead without inventing a Lead MemberRun",
+  );
   check(
     captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")
       && captureSource.includes("api=${encodeURIComponent(webBase)}")

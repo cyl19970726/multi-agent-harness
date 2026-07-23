@@ -101,7 +101,7 @@ coordination boundary:
 | member explicitly hands work to another actor | `TeamMessage(kind=handoff)` |
 | member/Host declares an outcome | explicit outcome summary + refs |
 | file/check/result supports acceptance | artifact/check reference, optionally hash |
-| Wave is judged | Wave gate |
+| Host judges the current plan | Wave decision/update with outcome and refs |
 
 The same text may exist in both systems only when a Human/Lead deliberately
 promotes it into a coordination object. Automatic copying is prohibited.

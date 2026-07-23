@@ -1,105 +1,78 @@
-# Agent Team — Kimi Code Plugin
+# Star Harness — Kimi Code Distribution
 
-Kimi Code 插件包：给 host 会话接入 Multi-Agent Harness 的 **Agent Team** 能力
-(ADR 0025 / Issue #206) — 创建 Mission/Wave/AgentTeamRun、拉起当前已实现的
-Kimi ACP MemberRun、显式 ACK 消息并观察成员状态。
+This provider-specific package installs the shared Star Harness experience into
+Kimi Code. Runtime and product semantics remain in Harness; the package only
+provides a thin Host skill, shortcuts, optional MCP registration, and lifecycle
+hooks.
 
-English summary: this plugin turns a Kimi Code session into the host (Lead) of an
-agent team. A sub-agent is one function call; a team member is a
-living collaborator with its own state, mailbox, and responsibility domain. The
-plugin ships the method (skills), the call surface (MCP), the plumbing (CLI
-commands), and the nerves (hooks) — it contains no runtime logic of its own.
-
-Product context is **Mission → ordered Wave → executor**. An `AgentTeamRun` is
-one attempt for an `agent_team` Wave. The target ownership chain starts from
-`TeamMessage(kind=assignment)` and its `correlation_id`. Automatic handoff
-reuses the assignment correlation; manual CLI/API/MCP sends may pass
-`correlation_id` and `causation_id` explicitly.
-
-## 前置要求 / Prerequisites
-
-- `harness` CLI 在 PATH 中（本仓库构建：`cargo install --path crates/harness-cli`）。
-- 想用 Browser Team Console 时，先起常驻服务：
-  `harness serve --addr 127.0.0.1:8787`，然后访问
-  <http://127.0.0.1:8787/team-console>。
-  CLI 文本视图是同一 read model 的紧凑投影，两者同一事实源。
-
-## 安装 / Install
-
-Kimi Code 内：
+The current model is:
 
 ```text
-/plugins install <github-url-or-local-path-to-this-plugin-dir>
+Mission -> ordered Host-plan Wave
+Mission <-> independent AgentTeam -> TeamRun -> MemberRun
 ```
 
-例如本地安装：`/plugins install /path/to/multi-agent-harness/plugins/kimi-agent-team`。
+A TeamRun may span Waves. Assignment messages own work; provider-native
+sessions own transcripts, tools, commands, files, turns, and resume.
+The Host that creates and coordinates a team is its Team Lead. Lead remains
+outside the MemberRun roster unless explicitly added to execute a lane.
 
-manifest 为 `kimi.plugin.json`（优先于 `.kimi-plugin/plugin.json`）。
+## Prerequisites
 
-## 包含什么 / Contents
+- `harness` is on `PATH`.
+- A Workspace is explicitly selected.
+- For the web UI, run the Harness API and Vite Dashboard; use the exact
+  Workspace-scoped deep link returned by the CLI/MCP response.
 
-| 部件 | 内容 |
+## Contents
+
+| Part | Responsibility |
 | --- | --- |
-| Skills | `agent-team-orchestrator`（编排方法，会话开始自动加载）、`agent-team-member`（被拉起 member 的交付契约与 handoff 格式） |
-| MCP server | `harness`（stdio，`harness mcp`）：Mission create/list、Wave create/list/gate，以及 TeamRun create/start/cancel/list/status/send/ACK/events |
-| Commands | `/agent-team:new-run` 创建 run、`/agent-team:status` 紧凑状态表、`/agent-team:dashboard` 打开 Team Console |
-| Hooks | `hooks/team-events.sh`：SessionStart 与 Stop 时注入一行 active run 摘要（run id / status / 未 ACK 数 / console URL），10s 超时，失败静默放行 (fail-open) |
+| Host skill | Mission context, Host-plan Waves, team/member changes, carry-over and closeout |
+| Member skill | assignment, evidence, blocker and handoff contract |
+| CLI commands | create/status/dashboard shortcuts over canonical CLI behavior |
+| Optional MCP | typed adapter over the same application services and store |
+| Hooks | fail-open active-run/status injection |
 
-## 使用 / Usage
+Codex batch, Codex app-server, Kimi ACP, and Claude CLI are executable member
+modes when their reviewed provider profiles are available. Capability is
+mode/version-specific; the plugin never silently substitutes another provider.
 
-1. 优先让 Host 使用 MCP 的 `mission_create`、`wave_create`、
-   `team_run_create` 与 `team_run_start`。`start` 会立即返回带 Workspace 的
-   run 深链，执行在后台继续。
-2. `/agent-team:new-run` 是便捷入口；CLI 命令只作为人工调试和 MCP
-   不可用时的兜底。
-3. `/agent-team:status [run-id]` — 成员 / 状态 / 当前动作 / 心跳 / 未 ACK
-   的紧凑状态表，附 Team Console URL。
-4. `/agent-team:dashboard` — 打印并尝试打开
-   <http://127.0.0.1:8787/team-console>（macOS `open`，Linux `xdg-open`）。
-
-CLI 兜底（不经过插件也可用）：
+## Primary CLI Path
 
 ```bash
-harness mission create --title "..." --objective "..." --desired-outcome "..."
-harness wave create --mission-id <mission-id> --title "..." --objective "..." \
-  --executor-kind agent_team
-harness team-run create --mission-id <mission-id> --wave-id <wave-id> \
-  --objective "..." [--budget-usd X] \
-  [--member name:role:provider[:model][@path1,path2]]...
+harness mission create --title "..." --objective "..." --context "..."
+harness mission create-team --id <mission-id> --name "..." \
+  --description "..." --lead host --member <agent-member-id>
+harness wave create --mission-id <mission-id> --title "..." \
+  --objective "..." --context "..."
+harness team-run create --mission-id <mission-id> \
+  --agent-team-id <team-id> --objective "..."
 harness team-run start --id <run-id>
-harness team-run status --id <run-id> [--json]
-harness team-run send --id <run-id> --from <id|host> --to <ids> \
-  --kind <kind> --body "..." [--correlation-id <assignment-correlation>] \
-  [--causation-id <message-id>]
-harness team-run events --id <run-id> [--after-seq N] [--json]
-harness wave gate --id <wave-id> --status accepted --run-id <run-id> \
-  --accepted-by <actor> --note "..." --outcome "..." [--artifact <ref>]...
+harness team-run status --id <run-id> --json
+harness wave advance --id <wave-id> --outcome "..." --advanced-by host
 ```
 
-## 纪律 / Ground Rules
+Use MCP when Kimi benefits from typed tool discovery. It is not required for
+correctness and owns no storage or lifecycle.
 
-- **授权闸**：部署、删除远端资源、支付选型等外部变更必须上报用户拍板，
-  member 与 host 都不得自行决定。
-- **ACK 纪律**：handoff 与关键任务消息必须 ACK；超阈未 ACK 会重发并升级告警。
-- **当前 Provider 边界**：可执行的 Team Member adapter 只有 Kimi ACP。
-  Codex/Claude 可以作为 Host，但不能把声明的 Codex/Claude MemberRun
-  当成已经可启动；运行时会明确失败，直到对应 adapter 落地。
-- **归属**：`TeamMessage(kind=assignment)` 的 message id 与 `correlation_id`
-  是 lane 的目标主身份。自动 handoff 会复用它；手工 blocker / progress /
-  review 消息应传入同一 assignment correlation，或通过同一 run 的
-  `causation_id` 继承。
-- **判断标准**：结果需要回到我的上下文 → sub-agent；结果留在执行者那里、
-  我只留指针 → Agent Team member。member 自主调用自己的原生 sub-agent，
-  harness 只捕获归属、不调度。
-- 每次状态输出都必须带 Team Console URL。
+## Ground Rules
 
-## 卸载 / Uninstall
+- Wave is Host memory, never a TeamRun container or barrier.
+- The current Host is Team Lead; do not invent a Lead MemberRun.
+- Mission closeout never deletes or archives a team.
+- Provider transcripts and thinking are never mirrored into Harness.
+- Pending questions/approvals require semantic resolution; a provider
+  `completed` frame is insufficient.
+- Deploy, payment, legal submission, remote deletion, permission, and
+  organization changes require the applicable Human approval.
+- Provider upgrades always require explicit Human confirmation and adapter
+  review.
 
-Kimi Code 内 `/plugins uninstall agent-team`，或直接移除本目录。插件不向
-仓库写入任何运行时文件；harness store 中的 run 历史不受影响。
+## Canonical References
 
-## 参考 / References
-
-- [ADR 0025: Agent Team Run Control Plane](../../docs/decisions/0025-agent-team-run-control-plane.md)
-- [Agent Team War Room page spec](../../docs/dashboard/pages/team-run-war-room.md)
-- [Concept model](../../docs/concept-model.md)
+- [Host-plan product contract](../../docs/product/mission-wave-host-plan.md)
+- [ADR 0034](../../docs/decisions/0034-host-plan-waves-and-mission-teams.md)
+- [Provider integration model](../../docs/agent-integration-model.md)
+- [Mission Canvas](../../docs/dashboard/pages/mission-wave-canvas.md)
+- [Team War Room](../../docs/dashboard/pages/team-run-war-room.md)

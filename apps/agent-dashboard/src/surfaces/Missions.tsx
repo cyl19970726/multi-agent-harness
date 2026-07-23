@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentProps } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -40,7 +40,9 @@ import {
 } from "@/components/workbench/OperatorForms";
 
 import {
+  advanceWave,
   closeMission,
+  createMissionTeam,
   createMission,
   createTeamRun,
   createWave,
@@ -138,6 +140,70 @@ function runsForWave(model: WorkbenchModel, wave: Wave): TeamRun[] {
     .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 }
 
+function runsForMission(model: WorkbenchModel, mission: Mission): TeamRun[] {
+  const teamIds = new Set(mission.agent_team_ids ?? []);
+  return [...(model.snapshot.team_runs ?? [])]
+    .filter((run) =>
+      run.mission_id === mission.id
+      && (!run.agent_team_id || teamIds.size === 0 || teamIds.has(run.agent_team_id)),
+    )
+    .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+}
+
+function MarkdownContext({ value, empty }: { value?: string | null; empty: string }) {
+  if (!value?.trim()) {
+    return <p className="text-[12px] leading-relaxed text-muted-foreground">{empty}</p>;
+  }
+  const lines = value.split("\n");
+  const content: ReactNode[] = [];
+  const cells = (line: string) => line.slice(1, -1).split("|").map((cell) => cell.trim());
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (/^\|.*\|$/.test(line)) {
+      const tableLines: string[] = [];
+      while (index < lines.length && /^\|.*\|$/.test(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      const rows = tableLines
+        .map(cells)
+        .filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell)));
+      if (rows.length > 0) {
+        const [head, ...body] = rows;
+        content.push(
+          <div key={`table-${index}`} className="overflow-x-auto rounded-lg border border-border/70 bg-background/70">
+            <table className="w-full min-w-[34rem] border-collapse text-left text-[11px]">
+              <thead className="bg-muted/55 text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
+                <tr>{head.map((cell, cellIndex) => <th key={cellIndex} className="border-b border-border/70 px-3 py-2 font-semibold">{cell}</th>)}</tr>
+              </thead>
+              <tbody>
+                {body.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="border-b border-border/45 last:border-b-0">
+                    {row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-2 align-top text-foreground/85">{cell}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>,
+        );
+      }
+      continue;
+    }
+    if (line.startsWith("### ")) content.push(<h4 key={index} className="pt-1 text-[11px] font-semibold uppercase tracking-wider">{line.slice(4)}</h4>);
+    else if (line.startsWith("## ")) content.push(<h3 key={index} className="pt-1 text-sm font-semibold">{line.slice(3)}</h3>);
+    else if (line.startsWith("# ")) content.push(<h2 key={index} className="text-base font-semibold tracking-tight">{line.slice(2)}</h2>);
+    else if (/^[-*] /.test(line)) content.push(<p key={index} className="pl-3 before:mr-2 before:text-primary before:content-['•']">{line.slice(2)}</p>);
+    else if (line.trim()) content.push(<p key={index} className="whitespace-pre-wrap">{line}</p>);
+    else content.push(<span key={index} className="block h-1" aria-hidden="true" />);
+    index += 1;
+  }
+  return (
+    <div className="space-y-2 text-[12px] leading-relaxed text-foreground">
+      {content}
+    </div>
+  );
+}
+
 function blankMember(): MemberDraft {
   return {
     name: "",
@@ -205,8 +271,7 @@ export function MissionsSurface({
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">Missions</h1>
           <p className="text-sm text-muted-foreground">
-            Durable intent, ordered Waves, and their executor attempts. Team Runs belong
-            to a Wave; they are not the plan.
+            Durable intent, Host plan revisions, and independent long-lived Agent Teams.
           </p>
         </div>
         <ActionButton enabled={actionsEnabled} onClick={() => setCreateOpen(true)}>
@@ -276,6 +341,7 @@ function MissionDetail({
   onAction,
 }: MissionsProps & { mission: Mission; selectedWaveId?: string }) {
   const [waveOpen, setWaveOpen] = useState(false);
+  const [teamOpen, setTeamOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const waves = wavesFor(model, mission.id);
   const readyToClose =
@@ -291,11 +357,20 @@ function MissionDetail({
     waves[0];
   const selectedRuns = selectedWave ? runsForWave(model, selectedWave) : [];
   const latestSelectedRun = selectedRuns[selectedRuns.length - 1];
+  const missionRuns = runsForMission(model, mission);
+  const latestMissionRun = missionRuns[missionRuns.length - 1];
+  const linkedMissionTeams = (model.snapshot.teams ?? []).filter((team) =>
+    (mission.agent_team_ids ?? []).includes(team.id),
+  );
+  const latestMissionTeam = latestMissionRun?.agent_team_id
+    ? linkedMissionTeams.find((team) => team.id === latestMissionRun.agent_team_id)
+    : linkedMissionTeams[0];
+  const missionRunIds = new Set(missionRuns.map((run) => run.id));
   const selectedMembers = (model.snapshot.member_runs ?? []).filter(
-    (member) => member.team_run_id === latestSelectedRun?.id,
+    (member) => member.team_run_id && missionRunIds.has(member.team_run_id),
   );
   const selectedMessages = (model.snapshot.team_messages ?? []).filter(
-    (message) => message.team_run_id === latestSelectedRun?.id,
+    (message) => message.team_run_id && missionRunIds.has(message.team_run_id),
   );
   const pendingMembers = selectedMembers.filter((member) =>
     ["waiting", "reviewing", "blocked"].includes(member.status ?? ""),
@@ -348,6 +423,7 @@ function MissionDetail({
               <p className="line-clamp-2 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{mission.objective}</p>
               <div className="flex flex-wrap items-center gap-1.5">
                 <Badge tone="muted">{waves.length} ordered waves</Badge>
+                <Badge tone="muted">{mission.agent_team_ids?.length ?? 0} linked teams</Badge>
                 <Badge tone={missionTone(mission.status)}>{mission.status ?? "planned"}</Badge>
               </div>
             </div>
@@ -368,6 +444,14 @@ function MissionDetail({
               >
                 <Plus className="size-3.5" /> Add Wave
               </ActionButton>
+              <ActionButton
+                enabled={actionsEnabled}
+                disabled={mission.status === "completed" || mission.status === "cancelled"}
+                variant="secondary"
+                onClick={() => setTeamOpen(true)}
+              >
+                <Users className="size-3.5" /> New Team
+              </ActionButton>
               {mission.status !== "completed" && (
                 <ActionButton
                   enabled={actionsEnabled}
@@ -382,11 +466,22 @@ function MissionDetail({
             </div>
           </header>
 
+          <section className="border-b border-border/70 py-5">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Mission context</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Durable brief used by the Host across every Wave.</p>
+              </div>
+              <Badge tone="muted">Markdown</Badge>
+            </div>
+            <MarkdownContext value={mission.context} empty="No Mission context has been recorded yet." />
+          </section>
+
           {waves.length === 0 ? (
             <EmptyState
               icon={Waves}
               title="Define the first Wave"
-              description="Start with one small ordered unit, its executor, and a clear exit criterion."
+              description="Record the Host's first operational memo and the plan decision that should come next."
             />
           ) : (
             <div className="mt-5">
@@ -459,6 +554,7 @@ function MissionDetail({
             <dl className="space-y-2 text-[11px] leading-relaxed">
               <ContextFact label="Objective" value={mission.objective} />
               <ContextFact label="Desired" value={mission.desired_outcome || "Not declared"} />
+              <ContextFact label="Teams" value={`${mission.agent_team_ids?.length ?? 0} linked`} />
               {mission.outcome_summary && <ContextFact label="Closeout" value={mission.outcome_summary} />}
               <ContextFact label="Updated" value={fmt(mission.updated_at ?? mission.created_at)} />
             </dl>
@@ -484,13 +580,13 @@ function MissionDetail({
                 ) : pendingMembers.length > 0 ? (
                   <p>{pendingMembers.length} member{pendingMembers.length === 1 ? "" : "s"} need review or a response.</p>
                 ) : null}
-                {blockedMember && latestSelectedRun && (
+                {blockedMember && latestMissionRun && (
                   <button
                     type="button"
                     onClick={() =>
                       onSelectionChange({
                         surface: "team",
-                        teamId: latestSelectedRun.id,
+                        teamId: latestMissionRun.id,
                         memberRunId: blockedMember.id,
                         missionId: selectedWave?.mission_id,
                         waveId: selectedWave?.id,
@@ -515,41 +611,46 @@ function MissionDetail({
             >
               <dl className="space-y-2 text-[11px] leading-relaxed">
                 <ContextFact label="Objective" value={selectedWave.objective} />
-                <ContextFact label="Executor" value={executorLabel(selectedWave.executor_kind)} />
-                <ContextFact label="Exit" value={selectedWave.exit_criteria || "Not declared"} />
+                <ContextFact label="Revision" value={`r${selectedWave.revision ?? 0} · ${selectedWave.updated_by ?? "legacy"}`} />
+                <ContextFact label="Decision" value={selectedWave.exit_criteria || "Host judgment"} />
                 {selectedWave.outcome_summary && <ContextFact label="Outcome" value={selectedWave.outcome_summary} />}
               </dl>
             </ContextModule>
           )}
 
-          {selectedWave?.executor_kind === "agent_team" && (
+          {(mission.agent_team_ids?.length ?? 0) > 0 && (
             <ContextModule
               className="order-5 xl:order-5"
-              title="Agent Team"
-              kicker="Executor compact"
+              title="Mission Agent Teams"
+              kicker="Independent relation"
               icon={<Users className="size-3.5" />}
-              tone={latestSelectedRun ? waveTone(latestSelectedRun.status) : "idle"}
-              live={latestSelectedRun?.status === "running"}
+              tone={latestMissionRun ? waveTone(latestMissionRun.status) : "idle"}
+              live={latestMissionRun?.status === "running"}
             >
               <dl className="space-y-2 text-[11px] leading-relaxed">
-                <ContextFact label="Attempt" value={latestSelectedRun ? `Attempt ${selectedRuns.length} · ${latestSelectedRun.status ?? "planning"}` : "Not yet started"} />
+                <ContextFact label="Linked" value={`${mission.agent_team_ids?.length ?? 0} reusable team${mission.agent_team_ids?.length === 1 ? "" : "s"}`} />
+                <ContextFact label="Team Lead" value={!latestMissionTeam?.owner_agent_id || latestMissionTeam.owner_agent_id === "host" ? "Current Host Agent" : latestMissionTeam.owner_agent_id} />
+                <ContextFact label="Run" value={latestMissionRun ? `${latestMissionRun.status ?? "planning"} · ${latestMissionRun.objective ?? latestMissionRun.id}` : "Not yet started"} />
                 <ContextFact label="Members" value={selectedMembers.length ? `${selectedMembers.length} linked members` : "No members yet"} />
-                <ContextFact label="Lineage" value={`${selectedRuns.length} preserved attempt${selectedRuns.length === 1 ? "" : "s"}`} />
+                <ContextFact label="Lifetime" value="Continues across Waves" />
               </dl>
-              {latestSelectedRun && (
+              <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                The current Host is Team Lead; it is not counted as a MemberRun unless explicitly added to execute a lane.
+              </p>
+              {latestMissionRun && (
                 <button
                   type="button"
                   onClick={() =>
                     onSelectionChange({
                       surface: "team",
-                      teamId: latestSelectedRun.id,
-                      missionId: selectedWave.mission_id,
-                      waveId: selectedWave.id,
+                      teamId: latestMissionRun.id,
+                      missionId: mission.id,
+                      waveId: selectedWave?.id,
                     })
                   }
                   className="mt-3 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
                 >
-                  Open team attempt <ChevronRight className="size-3.5" />
+                  Open Mission team <ChevronRight className="size-3.5" />
                 </button>
               )}
             </ContextModule>
@@ -628,6 +729,13 @@ function MissionDetail({
         actionsEnabled={actionsEnabled}
         onAction={onAction}
         onClose={() => setWaveOpen(false)}
+      />
+      <MissionTeamDialog
+        open={teamOpen}
+        mission={mission}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onClose={() => setTeamOpen(false)}
       />
       <MissionCloseDialog
         open={closeOpen}
@@ -733,9 +841,16 @@ function WaveCanvasCard({
       {wave.status === "running" && <LiveTrace className="mb-4" />}
 
       <div className="space-y-4 px-1 pb-5">
+        <section className="rounded-lg border border-border/70 bg-muted/20 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Host plan context</span>
+            <Badge tone="muted">r{wave.revision ?? 0}</Badge>
+          </div>
+          <MarkdownContext value={wave.context} empty="No detailed Host plan has been recorded for this Wave." />
+        </section>
         <div className="flex flex-wrap gap-x-7 gap-y-2 text-[11px]">
-          <p><span className="mr-2 font-semibold uppercase tracking-wider text-muted-foreground">Executor</span><span className="font-medium text-foreground">{executorLabel(wave.executor_kind)}</span></p>
-          <p className="min-w-0 flex-1"><span className="mr-2 font-semibold uppercase tracking-wider text-muted-foreground">Exit</span><span className="text-foreground">{wave.exit_criteria || "Not declared"}</span></p>
+          <p><span className="mr-2 font-semibold uppercase tracking-wider text-muted-foreground">Updated by</span><span className="font-medium text-foreground">{wave.updated_by || "legacy row"}</span></p>
+          <p className="min-w-0 flex-1"><span className="mr-2 font-semibold uppercase tracking-wider text-muted-foreground">Advance when</span><span className="text-foreground">{wave.exit_criteria || "Host judgment changes materially"}</span></p>
         </div>
 
         {canTeamRun ? (
@@ -837,7 +952,7 @@ function WaveCanvasCard({
               variant="secondary"
               onClick={() => setGateOpen(true)}
             >
-              <ShieldCheck className="size-3.5" /> Gate Wave
+              <ShieldCheck className="size-3.5" /> {wave.executor_kind === "host" ? "Advance Wave" : "Gate Wave"}
             </ActionButton>
           </div>
           </div>
@@ -874,12 +989,14 @@ function MissionDialog({
   const [title, setTitle] = useState("");
   const [objective, setObjective] = useState("");
   const [outcome, setOutcome] = useState("");
+  const [context, setContext] = useState("");
 
   useEffect(() => {
     if (open) {
       setTitle("");
       setObjective("");
       setOutcome("");
+      setContext("");
     }
   }, [open]);
 
@@ -891,6 +1008,7 @@ function MissionDialog({
         title: title.trim(),
         objective: objective.trim(),
         desiredOutcome: outcome.trim() || undefined,
+        context: context.trim() || undefined,
       }),
     );
     onClose();
@@ -918,6 +1036,9 @@ function MissionDialog({
         </Field>
         <Field label="Desired outcome" hint="Optional success description.">
           {(id) => <TextArea id={id} value={outcome} onChange={(event) => setOutcome(event.target.value)} />}
+        </Field>
+        <Field label="Mission context" hint="Markdown brief shared across all Waves and linked teams.">
+          {(id) => <TextArea id={id} value={context} onChange={(event) => setContext(event.target.value)} />}
         </Field>
         <DialogFooter
           submitLabel="Create Mission"
@@ -948,20 +1069,20 @@ function WaveDialog({
 }) {
   const [title, setTitle] = useState("");
   const [objective, setObjective] = useState("");
-  const [executor, setExecutor] = useState<"agent_team" | "dynamic_workflow" | "host">("agent_team");
   const [exit, setExit] = useState("");
+  const [context, setContext] = useState("");
 
   useEffect(() => {
     if (open) {
       setTitle("");
       setObjective("");
-      setExecutor("agent_team");
       setExit("");
+      setContext("");
     }
   }, [open]);
 
   const submit = () => {
-    if (!title.trim() || !objective.trim()) return;
+    if (!title.trim() || !objective.trim() || !context.trim()) return;
     dispatch(
       onAction,
       createWave({
@@ -969,8 +1090,9 @@ function WaveDialog({
         index: nextIndex,
         title: title.trim(),
         objective: objective.trim(),
-        executorKind: executor,
+        executorKind: "host",
         exitCriteria: exit.trim() || undefined,
+        context: context.trim() || undefined,
       }),
     );
     onClose();
@@ -980,7 +1102,7 @@ function WaveDialog({
     <Dialog
       open={open}
       title={`Add Wave ${nextIndex}`}
-      description="A Wave is a small ordered unit. Its executor owns its internal plan."
+      description="A Wave is the Host's versioned operational memo, not a runtime container."
       onClose={onClose}
     >
       <form
@@ -996,30 +1118,76 @@ function WaveDialog({
         <Field label="Objective" required>
           {(id) => <TextArea id={id} value={objective} onChange={(event) => setObjective(event.target.value)} />}
         </Field>
-        <Field
-          label="Executor"
-          required
-          hint="Agent Team is executable here. Dynamic Workflow and Host are visible seams, not active Console controls yet."
-        >
-          {(id) => (
-            <Select
-              id={id}
-              value={executor}
-              onChange={(event) => setExecutor(event.target.value as typeof executor)}
-            >
-              <option value="agent_team">Agent Team</option>
-              <option value="dynamic_workflow" disabled>Dynamic Workflow (coming later)</option>
-              <option value="host" disabled>Host (coming later)</option>
-            </Select>
-          )}
+        <Field label="Wave context" required hint="Markdown plan, member responsibilities, carry-over, questions, and Host judgment.">
+          {(id) => <TextArea id={id} value={context} onChange={(event) => setContext(event.target.value)} />}
         </Field>
-        <Field label="Exit criteria">
+        <Field label="Advance when">
           {(id) => <TextInput id={id} value={exit} onChange={(event) => setExit(event.target.value)} />}
         </Field>
         <DialogFooter
           submitLabel="Add Wave"
           actionsEnabled={actionsEnabled}
-          canSubmit={Boolean(title.trim() && objective.trim())}
+          canSubmit={Boolean(title.trim() && objective.trim() && context.trim())}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+function MissionTeamDialog({
+  open,
+  mission,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  mission: Mission;
+  actionsEnabled: boolean;
+  onAction: MissionsProps["onAction"];
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setDescription("");
+    }
+  }, [open]);
+
+  const valid = Boolean(name.trim() && description.trim());
+  const submit = () => {
+    if (!valid) return;
+    dispatch(onAction, createMissionTeam({
+      missionId: mission.id,
+      name: name.trim(),
+      description: description.trim(),
+    }));
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title="Create Mission Agent Team"
+      description="Creates an independent reusable team and links it to this Mission. Closing the Mission will not close the team."
+      onClose={onClose}
+    >
+      <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        <Field label="Team name" required>
+          {(id) => <TextInput id={id} value={name} onChange={(event) => setName(event.target.value)} />}
+        </Field>
+        <Field label="Purpose" required>
+          {(id) => <TextArea id={id} value={description} onChange={(event) => setDescription(event.target.value)} />}
+        </Field>
+        <DialogFooter
+          submitLabel="Create and link team"
+          actionsEnabled={actionsEnabled}
+          canSubmit={valid}
           onCancel={onClose}
           onSubmit={submit}
         />
@@ -1339,26 +1507,32 @@ function GateDialog({
   const selectableRuns = status === "accepted" ? completedRuns : runs;
   const submit = () => {
     if (!valid) return;
-    dispatch(
-      onAction,
-      gateWave({
-        waveId: wave.id,
-        status,
-        runId: runId || undefined,
-        acceptedBy: "host",
-        outcome: outcome.trim() || undefined,
-        note: note.trim() || undefined,
-        artifactRefs: parseList(artifacts),
-      }),
-    );
+    dispatch(onAction, wave.executor_kind === "host" && status === "accepted"
+      ? advanceWave({
+          waveId: wave.id,
+          outcome: outcome.trim(),
+          advancedBy: "host",
+          artifactRefs: parseList(artifacts),
+        })
+      : gateWave({
+          waveId: wave.id,
+          status,
+          runId: runId || undefined,
+          acceptedBy: "host",
+          outcome: outcome.trim() || undefined,
+          note: note.trim() || undefined,
+          artifactRefs: parseList(artifacts),
+        }));
     onClose();
   };
 
   return (
     <Dialog
       open={open}
-      title="Gate Wave"
-      description="The Host records accepted, revise, or blocked without deleting any attempt."
+      title={wave.executor_kind === "host" ? "Advance Host plan" : "Gate legacy executor Wave"}
+      description={wave.executor_kind === "host"
+        ? "Record why the Host is advancing. Active assignments and provider sessions continue unchanged."
+        : "The Host records accepted, revise, or blocked without deleting any attempt."}
       onClose={onClose}
     >
       <form

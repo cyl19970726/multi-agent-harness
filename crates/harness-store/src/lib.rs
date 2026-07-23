@@ -79,6 +79,49 @@ impl HarnessStore {
         self.append_jsonl("missions.jsonl", value)
     }
 
+    /// Compare-and-append one Mission revision. Used for context and AgentTeam
+    /// relation edits so concurrent Host decisions cannot overwrite each
+    /// other.
+    pub fn compare_and_append_mission(
+        &self,
+        expected: &Mission,
+        next: &Mission,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+            mission.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("mission not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "mission {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        if next.id != current.id
+            || next.created_at != current.created_at
+            || next.wave_ids != current.wave_ids
+        {
+            return Err(StoreError::Conflict(
+                "mission revision must preserve identity, creation time, and Wave membership"
+                    .to_string(),
+            ));
+        }
+        let teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+            team.id.clone()
+        });
+        for team_id in &next.agent_team_ids {
+            if !teams.contains_key(team_id) {
+                return Err(StoreError::Conflict(format!(
+                    "agent team not found: {team_id}"
+                )));
+            }
+        }
+        self.append_jsonl_unlocked("missions.jsonl", next)
+    }
+
     /// Insert a new native Mission under the store lock. Unlike the generic
     /// append method this rejects a concurrently-created duplicate id.
     pub fn insert_mission(&self, value: &Mission) -> StoreResult<()> {
@@ -327,9 +370,9 @@ impl HarnessStore {
         self.append_jsonl("team_runs.jsonl", value)
     }
 
-    /// Atomically append a newly-created TeamRun and register it as an attempt
-    /// of its native Wave. New writes are either fully unlinked compatibility
-    /// runs or carry both Mission and Wave ids; Mission-only rows are rejected.
+    /// Atomically append a newly-created TeamRun. Mission-scoped runs are the
+    /// primary path and intentionally have no Wave id. Rows with both ids are
+    /// retained only for legacy direct-Wave executor compatibility.
     pub fn insert_team_run_and_register_attempt(
         &self,
         value: &AgentTeamRun,
@@ -349,10 +392,36 @@ impl HarnessStore {
 
         match (value.mission_id.as_deref(), value.wave_id.as_deref()) {
             (None, None) => self.append_jsonl_unlocked("team_runs.jsonl", value),
-            (Some(_), None) | (None, Some(_)) => Err(StoreError::Conflict(
-                "new TeamRun must be either unlinked or linked to both Mission and Wave"
-                    .to_string(),
+            (None, Some(_)) => Err(StoreError::Conflict(
+                "a TeamRun with wave_id must also name that Wave's Mission".to_string(),
             )),
+            (Some(mission_id), None) => {
+                let mission =
+                    latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+                        mission.id.clone()
+                    })
+                    .remove(mission_id)
+                    .ok_or_else(|| {
+                        StoreError::Conflict(format!("mission not found: {mission_id}"))
+                    })?;
+                if matches!(
+                    mission.status,
+                    MissionStatus::Completed | MissionStatus::Cancelled
+                ) {
+                    return Err(StoreError::Conflict(format!(
+                        "mission {mission_id} is {:?} and cannot start another TeamRun",
+                        mission.status
+                    )));
+                }
+                if let Some(team_id) = value.agent_team_id.as_deref() {
+                    if !mission.agent_team_ids.iter().any(|id| id == team_id) {
+                        return Err(StoreError::Conflict(format!(
+                            "agent team {team_id} is not linked to mission {mission_id}"
+                        )));
+                    }
+                }
+                self.append_jsonl_unlocked("team_runs.jsonl", value)
+            }
             (Some(mission_id), Some(wave_id)) => {
                 let mission =
                     latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
@@ -583,6 +652,17 @@ impl HarnessStore {
 
         let linked_wave = match (next.mission_id.as_deref(), next.wave_id.as_deref()) {
             (None, None) => None,
+            (Some(mission_id), None) => {
+                latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+                    mission.id.clone()
+                })
+                .remove(mission_id)
+                .ok_or_else(|| StoreError::Conflict(format!("mission not found: {mission_id}")))?;
+                // Mission closeout does not own or stop this run. A linked
+                // long-lived Team must still be able to complete, fail, or be
+                // cancelled after the Mission records its own outcome.
+                None
+            }
             (Some(mission_id), Some(wave_id)) => {
                 let mission =
                     latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
@@ -621,9 +701,9 @@ impl HarnessStore {
                 wave.updated_at = wave_updated_at.to_string();
                 Some(wave)
             }
-            _ => {
+            (None, Some(_)) => {
                 return Err(StoreError::Conflict(
-                    "TeamRun lifecycle has incomplete Mission/Wave linkage".to_string(),
+                    "TeamRun lifecycle has a wave_id without mission_id".to_string(),
                 ));
             }
         };
@@ -971,9 +1051,11 @@ mod tests {
             id: "mission-1".into(),
             title: "Ship Mission/Wave".into(),
             objective: "Add the migration foundation".into(),
+            context: String::new(),
             desired_outcome: Some("A compatible, durable contract".into()),
             status: MissionStatus::Planned,
             wave_ids: vec!["wave-1".into()],
+            agent_team_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -994,6 +1076,9 @@ mod tests {
             index: 1,
             title: "Contract".into(),
             objective: "Define the additive contract".into(),
+            context: String::new(),
+            revision: 1,
+            updated_by: Some("host".into()),
             exit_criteria: Some("Schema and store rows validate".into()),
             status: WaveStatus::Running,
             executor_kind: WaveExecutorKind::AgentTeam,
@@ -1050,9 +1135,11 @@ mod tests {
                 id: "mission-concurrent".into(),
                 title: "Concurrent Mission".into(),
                 objective: "Keep native joins lossless".into(),
+                context: String::new(),
                 desired_outcome: None,
                 status: MissionStatus::Planned,
                 wave_ids: Vec::new(),
+                agent_team_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -1074,6 +1161,9 @@ mod tests {
                         index: 0,
                         title: id.into(),
                         objective: "one ordered wave".into(),
+                        context: String::new(),
+                        revision: 1,
+                        updated_by: Some("host".into()),
                         exit_criteria: None,
                         status: WaveStatus::Planned,
                         executor_kind: WaveExecutorKind::AgentTeam,
@@ -1137,6 +1227,7 @@ mod tests {
                     &AgentTeamRun {
                         id: id.into(),
                         definition_id: None,
+                        agent_team_id: None,
                         previous_run_id: None,
                         mission_id: Some("mission-concurrent".into()),
                         wave_id: Some(wave_id),
@@ -1240,9 +1331,11 @@ mod tests {
                         id: format!("mission-{worker}-{index}"),
                         title: "Concurrent".into(),
                         objective: "Exercise concurrent append integrity".into(),
+                        context: String::new(),
                         desired_outcome: None,
                         status: MissionStatus::Running,
                         wave_ids: Vec::new(),
+                        agent_team_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "2026-05-26T00:00:00Z".into(),
@@ -1286,9 +1379,11 @@ mod tests {
             id: "mission-stale-lock".into(),
             title: "Stale lock".into(),
             objective: "Verify an unlocked existing lock file is reusable".into(),
+            context: String::new(),
             desired_outcome: None,
             status: MissionStatus::Running,
             wave_ids: Vec::new(),
+            agent_team_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "2026-05-26T00:00:00Z".into(),
@@ -1445,6 +1540,7 @@ mod tests {
         let run = AgentTeamRun {
             id: "tr-1".into(),
             definition_id: Some("td-1".into()),
+            agent_team_id: Some("td-1".into()),
             previous_run_id: Some("tr-0".into()),
             mission_id: Some("mission-1".into()),
             wave_id: Some("wave-2".into()),
@@ -1548,6 +1644,7 @@ mod tests {
         let message = TeamMessage {
             id: "tm-1".into(),
             team_run_id: "tr-1".into(),
+            origin_wave_id: Some("wave-2".into()),
             from_member_id: "host".into(),
             to_member_ids: vec!["mr-1".into()],
             kind: TeamMessageKind::Assignment,

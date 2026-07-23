@@ -1,9 +1,0 @@
-{
-  "id": "team-run-invalid-link",
-  "mission_id": "mission-1",
-  "host_surface": "test",
-  "objective": "Invalid partial native link",
-  "status": "planning",
-  "created_at": "unix-ms:1",
-  "updated_at": "unix-ms:1"
-}

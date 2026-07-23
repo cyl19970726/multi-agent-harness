@@ -21,7 +21,7 @@ without inventing lifecycle control.
 Final acceptance for this mechanism:
 
 ```text
-select Mission/Wave executor or direct WorkItem action
+select Mission-linked execution, Host-plan context, or direct WorkItem action
   -> start or resume AgentRuntime
   -> deliver bounded request / executor-native assignment
   -> bind provider-native session
@@ -34,7 +34,7 @@ select Mission/Wave executor or direct WorkItem action
 
 | Question | Runtime answer |
 | --- | --- |
-| What requested execution? | Mission/Wave executor, Host action or linked WorkItem execution reference. |
+| What requested execution? | Mission-linked run, Host action, Dynamic Workflow invocation, or linked WorkItem execution reference. |
 | Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |

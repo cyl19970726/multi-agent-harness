@@ -38,6 +38,9 @@ import type { SelectionState } from "../app/selection";
 export interface TeamWarRoomProps {
   model: WorkbenchModel;
   teamRunId?: string;
+  /** Optional navigation context. A Mission-scoped TeamRun is not owned by it. */
+  missionId?: string;
+  waveId?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
@@ -55,13 +58,16 @@ const FILTERS: Array<{ id: StreamFilter; label: string }> = [
 ];
 
 /**
- * One operational view of one AgentTeamRun attempt.  Its durable input is the
- * native Mission → Wave → TeamRun hierarchy; it deliberately has no inferred dependency graph
- * projection and keeps Wave acceptance visibly separate from attempt status.
+ * One operational view of one AgentTeamRun. New runs are independent or
+ * Mission-scoped and may span Host-plan Waves; a selected Wave is navigation
+ * context only. Legacy direct-Wave attempts remain readable without inventing
+ * a dependency graph.
  */
 export function TeamWarRoom({
   model,
   teamRunId,
+  missionId,
+  waveId,
   onSelectionChange,
   actionsEnabled = false,
   onAction,
@@ -99,6 +105,13 @@ export function TeamWarRoom({
   }
 
   const { run, mission, wave, attempts, members, memberById, messages, actions, delegations, events, liveActivityByMember, needsYou } = context;
+  const navigationMission = mission ?? model.snapshot.missions?.find((item) => item.id === missionId);
+  const navigationWave = wave ?? model.snapshot.waves?.find(
+    (item) =>
+      item.id === waveId &&
+      (!navigationMission || item.mission_id === navigationMission.id),
+  );
+  const stableTeam = model.snapshot.teams?.find((item) => item.id === run.agent_team_id);
   const orderedMembers = [...members].sort(
     (left, right) => memberPressureRank(left.status) - memberPressureRank(right.status),
   );
@@ -223,22 +236,23 @@ export function TeamWarRoom({
             <button
               type="button"
               onClick={() => onSelectionChange(
-                run.mission_id && run.wave_id
-                  ? { surface: "missions", missionId: run.mission_id, waveId: run.wave_id, teamId: undefined }
+                navigationMission
+                  ? { surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined }
                   : { surface: "team", teamId: undefined },
               )}
               className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
             >
               <ChevronLeft className="size-3.5" />
-              {mission?.title ?? "Mission"} <span className="text-border">/</span> {wave ? `Wave ${wave.index}` : "Agent Teams"}
+              {navigationMission?.title ?? "Agent Teams"} <span className="text-border">/</span> {navigationWave ? `Wave ${navigationWave.index}` : "Team"}
             </button>
           }
-          title={wave ? `${wave.title} · Agent Team` : "Agent Team attempt"}
+          title={stableTeam?.name ?? "Agent Team attempt"}
           meta={
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
               <Badge tone="muted">attempt {attemptNumber(attempts, run.id)}</Badge>
-              {wave && <Badge tone={gateTone(wave.gate_status)}>Wave gate: {wave.gate_status ?? "pending"}</Badge>}
+              <Badge tone="muted">Lead · {teamLeadLabel(stableTeam?.owner_agent_id)}</Badge>
+              {navigationWave && <Badge tone={gateTone(navigationWave.gate_status)}>Host plan: Wave {navigationWave.index}</Badge>}
             </>
           }
           actions={
@@ -289,7 +303,7 @@ export function TeamWarRoom({
               <option value="blocker">Blocker</option>
               <option value="review_request">Review request</option>
             </Select>
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Host / operator</span>
+            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Team Lead · current Host</span>
           </div>
           <div className="flex items-end gap-2">
             <TextArea
@@ -309,8 +323,19 @@ export function TeamWarRoom({
       }
       context={
         <ContextRail quiet label="Team context">
-          <WaveModule wave={wave} onOpen={() => wave && onSelectionChange({ surface: "missions", missionId: wave.mission_id, waveId: wave.id, teamId: undefined })} />
-          <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />
+          <MissionTeamModule
+            missionTitle={navigationMission?.title}
+            teamName={stableTeam?.name}
+            leadAgentId={stableTeam?.owner_agent_id}
+            missionScoped={Boolean(run.mission_id && !run.wave_id)}
+            onOpen={() => navigationMission && onSelectionChange({ surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined })}
+          />
+          <WaveModule
+            wave={navigationWave}
+            directExecutor={Boolean(wave && wave.id === navigationWave?.id)}
+            onOpen={() => navigationWave && onSelectionChange({ surface: "missions", missionId: navigationWave.mission_id, waveId: navigationWave.id, teamId: undefined })}
+          />
+          {wave && <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />}
           <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
           <SelectedMemberModule
             member={selectedMember}
@@ -545,12 +570,50 @@ function memberPressureRank(status?: string | null): number {
   return 5;
 }
 
-function WaveModule({ wave, onOpen }: { wave?: Wave; onOpen: () => void }) {
-  if (!wave) return <ContextModule title="Wave unavailable" kicker="Wave"><p className="text-[11px] text-muted-foreground">This attempt has no resolved parent Wave in the snapshot.</p></ContextModule>;
+function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped, onOpen }: {
+  missionTitle?: string;
+  teamName?: string;
+  leadAgentId?: string;
+  missionScoped: boolean;
+  onOpen: () => void;
+}) {
   return (
-    <ContextModule title={`Wave ${wave.index} · ${wave.title}`} kicker="Wave" tone={waveTone(wave.status)} action={<button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open</button>}>
+    <ContextModule
+      title={teamName ?? "Independent Agent Team"}
+      kicker={missionScoped ? "Mission-linked team" : "Agent Team"}
+      tone="good"
+      action={missionTitle ? <button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open Mission</button> : undefined}
+    >
+      <p className="text-[12px] leading-relaxed text-foreground">
+        {missionTitle ? `Linked to ${missionTitle}.` : "This Team is running independently."}
+      </p>
+      <div className="mt-2">
+        <Fact label="Team Lead" value={teamLeadLabel(leadAgentId)} />
+      </div>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+        {missionScoped
+          ? "Its members and provider-native sessions may continue across multiple Host-plan Waves."
+          : "The Team remains an independent capability and can be linked to a Mission when useful."}
+      </p>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+        The Lead coordinates the Team and is outside MemberRuns unless it explicitly joins as an executing member.
+      </p>
+    </ContextModule>
+  );
+}
+
+function teamLeadLabel(leadAgentId?: string | null): string {
+  if (!leadAgentId || leadAgentId === "host") return "Current Host Agent";
+  return leadAgentId;
+}
+
+function WaveModule({ wave, directExecutor, onOpen }: { wave?: Wave; directExecutor: boolean; onOpen: () => void }) {
+  if (!wave) return <ContextModule title="No Wave selected" kicker="Host plan"><p className="text-[11px] text-muted-foreground">Open this Team from a Mission Wave to carry that planning context into the console.</p></ContextModule>;
+  return (
+    <ContextModule title={`Wave ${wave.index} · ${wave.title}`} kicker={directExecutor ? "Legacy direct executor" : "Current Host plan"} tone={waveTone(wave.status)} action={<button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open</button>}>
       <p className="text-[12px] leading-relaxed text-foreground">{wave.objective}</p>
-      <div className="mt-2 flex flex-wrap gap-1"><Badge tone="muted">{wave.executor_kind}</Badge><Badge tone={gateTone(wave.gate_status)}>gate {wave.gate_status ?? "pending"}</Badge></div>
+      <div className="mt-2 flex flex-wrap gap-1"><Badge tone={gateTone(wave.gate_status)}>decision {wave.gate_status ?? "pending"}</Badge><Badge tone="muted">revision {wave.revision ?? 1}</Badge></div>
+      {!directExecutor && <p className="mt-2 text-[11px] text-muted-foreground">Navigation context only: assignments and messages tell this long-lived Team what to do; the Wave does not own its runtime.</p>}
       {wave.exit_criteria && <p className="mt-2 text-[11px] text-muted-foreground">Exit: {wave.exit_criteria}</p>}
     </ContextModule>
   );

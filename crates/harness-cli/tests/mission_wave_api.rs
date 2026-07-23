@@ -63,6 +63,462 @@ fn force_team_run_reviewing(
 }
 
 #[test]
+fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
+    let home = TempHome::new("host-plan-mission-team");
+    let project_id = init_project(&home, "host-plan");
+
+    for (id, name, role, provider) in [
+        ("agent-build", "PrimaryBuilder", "primary builder", "codex"),
+        ("agent-review", "ReviewPartner", "reviewer", "kimi"),
+        ("agent-repair", "RepairFixer", "repair specialist", "codex"),
+    ] {
+        run_json(
+            &home,
+            &project_id,
+            &[
+                "agent",
+                "create",
+                "--id",
+                id,
+                "--name",
+                name,
+                "--role",
+                role,
+                "--provider",
+                provider,
+            ],
+        );
+    }
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-platform",
+            "--name",
+            "Platform Team",
+            "--description",
+            "Long-lived Mission team",
+            "--lead",
+            "host",
+            "--member",
+            "agent-build",
+            "--member",
+            "agent-review",
+        ],
+    );
+    let mission = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-host-plan",
+            "--title",
+            "Ship host plan",
+            "--objective",
+            "Prove members can continue across Waves",
+            "--context",
+            "# Mission context\n\nKeep provider-native sessions.",
+            "--json",
+        ],
+    );
+    assert!(mission["context"]
+        .as_str()
+        .is_some_and(|context| context.contains("provider-native")));
+    let linked = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "link-team",
+            "--id",
+            "mission-host-plan",
+            "--team-id",
+            "team-platform",
+        ],
+    );
+    assert_eq!(
+        linked["agent_team_ids"],
+        serde_json::json!(["team-platform"])
+    );
+    let wave_1 = run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "create",
+            "--id",
+            "wave-plan-1",
+            "--mission-id",
+            "mission-host-plan",
+            "--title",
+            "Baseline",
+            "--objective",
+            "Start concurrent lanes",
+            "--context",
+            "# Wave 1\n\nTwo lanes start; review may carry forward.",
+            "--json",
+        ],
+    );
+    assert_eq!(wave_1["executor_kind"].as_str(), Some("host"));
+    assert_eq!(wave_1["revision"].as_u64(), Some(1));
+
+    let created = run_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "create",
+            "--objective",
+            "Work across Host plan revisions",
+            "--agent-team-id",
+            "team-platform",
+            "--mission-id",
+            "mission-host-plan",
+            "--resume-member",
+            "PrimaryBuilder:codex-session-1",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        created["team_run"]["agent_team_id"].as_str(),
+        Some("team-platform")
+    );
+    assert_eq!(
+        created["team_run"]["mission_id"].as_str(),
+        Some("mission-host-plan")
+    );
+    assert!(created["team_run"]["wave_id"].is_null());
+    let team_run_id = created["team_run"]["id"].as_str().unwrap();
+    let builder_member_id = created["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        created["member_runs"][0]["native_session"]["native_session_id"].as_str(),
+        Some("codex-session-1")
+    );
+
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "advance",
+            "--id",
+            "wave-plan-1",
+            "--outcome",
+            "Baseline lane is ready; review continues",
+        ],
+    );
+    let wave_2 = run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "create",
+            "--id",
+            "wave-plan-2",
+            "--mission-id",
+            "mission-host-plan",
+            "--title",
+            "Repair if needed",
+            "--objective",
+            "Integrate completed work while review continues",
+            "--context",
+            "# Wave 2\n\nCarry ReviewPartner forward and add RepairFixer.",
+            "--json",
+        ],
+    );
+    assert_eq!(wave_2["index"].as_u64(), Some(2));
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "add-member",
+            "--id",
+            "team-platform",
+            "--member",
+            "agent-repair",
+        ],
+    );
+    let joined = run_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "add-member",
+            "--id",
+            team_run_id,
+            "--member",
+            "RepairFixer:repair specialist:codex",
+            "--assignment",
+            "Repair any issue found by the review lane",
+            "--origin-wave-id",
+            "wave-plan-2",
+        ],
+    );
+    assert_eq!(
+        joined["assignment"]["origin_wave_id"].as_str(),
+        Some("wave-plan-2")
+    );
+    assert_eq!(
+        joined["team_run"]["member_run_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let repair_member_id = joined["member_run"]["id"].as_str().unwrap().to_string();
+    let renamed = run_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "rename-member",
+            "--id",
+            team_run_id,
+            "--member-run-id",
+            &repair_member_id,
+            "--name",
+            "TargetedRepair",
+        ],
+    );
+    assert_eq!(renamed["name"].as_str(), Some("TargetedRepair"));
+    let deactivated = run_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "deactivate-member",
+            "--id",
+            team_run_id,
+            "--member-run-id",
+            &repair_member_id,
+            "--reason",
+            "No reproducible defect remained after review",
+        ],
+    );
+    assert_eq!(deactivated["status"].as_str(), Some("stopped"));
+
+    let status = run_json(
+        &home,
+        &project_id,
+        &["team-run", "status", "--id", team_run_id, "--json"],
+    );
+    let builder = status["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["member_run"]["id"].as_str() == Some(&builder_member_id))
+        .unwrap();
+    assert_eq!(
+        builder["member_run"]["native_session"]["native_session_id"].as_str(),
+        Some("codex-session-1"),
+        "Wave advance must not replace the MemberRun or provider-native session"
+    );
+
+    // Explicit retry lineage cannot jump to another stable Team or Mission.
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-other",
+            "--name",
+            "Other Team",
+            "--description",
+            "Retry isolation fixture",
+            "--lead",
+            "host",
+            "--member",
+            "agent-build",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "link-team",
+            "--id",
+            "mission-host-plan",
+            "--team-id",
+            "team-other",
+        ],
+    );
+    let cross_team_retry = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "invalid cross-team retry",
+            "--agent-team-id",
+            "team-other",
+            "--mission-id",
+            "mission-host-plan",
+            "--previous",
+            team_run_id,
+        ],
+    );
+    assert!(!cross_team_retry.status.success());
+    assert!(
+        String::from_utf8_lossy(&cross_team_retry.stderr).contains("not for the same agent team")
+    );
+
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-other",
+            "--title",
+            "Other Mission",
+            "--objective",
+            "Retry isolation fixture",
+            "--json",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "create",
+            "--id",
+            "wave-other",
+            "--mission-id",
+            "mission-other",
+            "--title",
+            "Other Mission plan",
+            "--objective",
+            "Prove origin references cannot cross Missions",
+            "--json",
+        ],
+    );
+    let cross_mission_origin = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            team_run_id,
+            "--from",
+            "host",
+            "--to",
+            &builder_member_id,
+            "--kind",
+            "assignment",
+            "--body",
+            "invalid cross-Mission origin",
+            "--origin-wave-id",
+            "wave-other",
+        ],
+    );
+    assert!(!cross_mission_origin.status.success());
+    assert!(String::from_utf8_lossy(&cross_mission_origin.stderr)
+        .contains("not TeamRun Mission mission-host-plan"));
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "link-team",
+            "--id",
+            "mission-other",
+            "--team-id",
+            "team-platform",
+        ],
+    );
+    let cross_mission_retry = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "invalid cross-mission retry",
+            "--agent-team-id",
+            "team-platform",
+            "--mission-id",
+            "mission-other",
+            "--previous",
+            team_run_id,
+        ],
+    );
+    assert!(!cross_mission_retry.status.success());
+    assert!(
+        String::from_utf8_lossy(&cross_mission_retry.stderr).contains("not in the same mission")
+    );
+
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "wave",
+            "advance",
+            "--id",
+            "wave-plan-2",
+            "--outcome",
+            "Host plan complete",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "close",
+            "--id",
+            "mission-host-plan",
+            "--outcome",
+            "Mission completed while the reusable team remains independent",
+            "--json",
+        ],
+    );
+    let team = run_json(
+        &home,
+        &project_id,
+        &["team", "show", "--id", "team-platform"],
+    );
+    assert_eq!(team["status"].as_str(), Some("active"));
+    let run = run_json(
+        &home,
+        &project_id,
+        &["team-run", "status", "--id", team_run_id, "--json"],
+    );
+    assert_eq!(run["team_run"]["status"].as_str(), Some("planning"));
+    let cancelled = run_json(
+        &home,
+        &project_id,
+        &["team-run", "cancel", "--id", team_run_id, "--json"],
+    );
+    assert_eq!(
+        cancelled["status"].as_str(),
+        Some("cancelled"),
+        "Mission closeout must not prevent the independent TeamRun from settling"
+    );
+}
+
+#[test]
 fn host_wave_accepts_direct_outcome_without_fake_run() {
     let home = TempHome::new("host-wave-gate");
     let project_id = init_project(&home, "host-wave");

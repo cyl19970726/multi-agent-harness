@@ -16,12 +16,18 @@
     "id": { "type": "string", "minLength": 1 },
     "title": { "type": "string", "minLength": 1 },
     "objective": { "type": "string", "minLength": 1 },
+    "context": { "type": "string" },
     "desired_outcome": { "type": ["string", "null"], "minLength": 1 },
     "status": {
       "type": "string",
       "enum": ["planned", "running", "blocked", "completed", "cancelled"]
     },
     "wave_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "agent_team_ids": {
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }

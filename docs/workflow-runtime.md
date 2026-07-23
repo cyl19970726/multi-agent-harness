@@ -4,8 +4,9 @@ This document defines the canonical workflow runtime for `crates/harness-workflo
 
 ## Vision Link
 
-The product needs a programmable executor between a Wave and provider-specific
-worker CLIs. A workflow is useful only after the harness can explain:
+The product needs a programmable executor the Host can invoke while pursuing a
+Mission, without making the Wave own that runtime. A workflow is useful only
+after the harness can explain:
 
 ```text
 Starlark program
@@ -17,9 +18,10 @@ Starlark program
   -> explicit patch apply/reject when writable
 ```
 
-The workflow runtime is the canonical internal executor for a
-`Wave(executor_kind=dynamic_workflow)`. A Lead-authored `.star` program owns its
-steps and records its result without creating a task graph.
+The workflow runtime is the canonical engine for `dynamic_workflow`.
+A Lead-authored `.star` program owns its steps and records its result without
+creating a task graph. Mission/Wave context may cite the `WorkflowRun` and its
+outcome, but the run remains independent of the Wave lifecycle.
 
 ## Boundary
 
@@ -378,8 +380,8 @@ Security note: the throwaway worktree only contains writes made inside that chec
 `harness workflow run-script` evaluates an authored `.star` file, journals a
 `WorkflowRun` plus `WorkflowStep` rows, saves eligible writable diffs as
 `WorkflowPatch` rows, and discards worktrees after capture. A patch is applied
-or rejected explicitly. A Wave gate may use the WorkflowRun result and artifact
-references, but it never implicitly applies a patch.
+or rejected explicitly. A Host Wave update or advance may cite the WorkflowRun
+result and artifact references, but it never implicitly applies a patch.
 
 ## Invariants
 

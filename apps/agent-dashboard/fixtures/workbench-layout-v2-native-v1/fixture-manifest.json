@@ -1,20 +1,22 @@
 {
   "id": "workbench-layout-v2-native-v1",
-  "description": "Deterministic native Mission/Wave/Agent Team pressure state for visual-contract capture.",
-  "capture_now": "2026-07-19T10:15:00Z",
+  "description": "Deterministic Mission context, Host-plan Waves, Mission-linked long-lived Agent Team, and member pressure state for visual-contract capture.",
+  "capture_now": "2026-07-23T10:15:00Z",
   "mission_id": "mission-workbench-v2",
   "wave_id": "wave-team-console",
-  "team_run_id": "teamrun-wave2-current",
+  "agent_team_id": "team-platform-foundation",
+  "team_run_id": "teamrun-mission-current",
   "member_run_id": "member-wave2-research",
   "routes": {
     "agent-teams-home": "/?surface=team",
     "mission-wave-canvas": "/?surface=missions&mission=mission-workbench-v2&wave=wave-team-console",
-    "team-war-room": "/?surface=team&team=teamrun-wave2-current",
-    "member-run-focus": "/?surface=team&team=teamrun-wave2-current&memberRun=member-wave2-research"
+    "team-war-room": "/?surface=team&team=teamrun-mission-current&mission=mission-workbench-v2&wave=wave-team-console",
+    "member-run-focus": "/?surface=team&team=teamrun-mission-current&memberRun=member-wave2-research&mission=mission-workbench-v2&wave=wave-team-console"
   },
   "ledgers": [
     "missions.jsonl",
     "waves.jsonl",
+    "teams.jsonl",
     "team_runs.jsonl",
     "member_runs.jsonl",
     "team_messages.jsonl",
@@ -24,12 +26,12 @@
     "evidence.jsonl"
   ],
   "invariants": [
-    "Wave 1 is completed and accepted with an accepted attempt.",
-    "Wave 2 is running on retry Attempt 2 with a pending Wave gate.",
-    "Four MemberRuns include running, reviewing, and blocked pressure states.",
-    "The current TeamRun records its execution root; member snapshots record actual cwd, Git identity, and discovered path roots only.",
-    "A member worktree override may live outside the project path while older TeamRuns remain readable without workspace fields.",
-    "Assignments use stable correlation ids and evidence refs without a dependency graph.",
+    "Mission stores full Markdown context and links one independent AgentTeam.",
+    "Waves store versioned Host plan and judgment; Wave 2 does not own the TeamRun.",
+    "The Mission-scoped TeamRun has agent_team_id and mission_id but no wave_id.",
+    "Four MemberRuns include running, reviewing, and blocked pressure states and remain eligible to carry forward.",
+    "Assignments use stable correlation ids and optional origin_wave_id provenance without a task graph.",
+    "The current TeamRun records execution root; member snapshots record actual cwd, Git identity, and discovered path roots only.",
     "No durable thinking row exists; live preview must be injected after SSE connects."
   ]
 }

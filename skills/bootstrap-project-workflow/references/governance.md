@@ -107,7 +107,8 @@ Documentation governance belongs in the delivery path whenever docs are an
 acceptance-critical artifact. The selected executor should report the changed
 or generated document paths, run the repository's documented governance checks,
 and attach both to its outcome. A Mission/Wave host can then make those artifacts
-and checks part of the Wave gate without inventing a second internal plan.
+and checks part of the Host's Wave decision without inventing a second internal
+plan.
 
 The integration must remain honest about scope: a focused check proves only the
 declared outputs it inspected. Run the broad repository check when the change can

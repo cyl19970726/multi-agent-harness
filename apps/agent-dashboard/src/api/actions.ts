@@ -2,7 +2,7 @@
 //
 // The backend (crates/harness-cli/src/main.rs `handle_http_action`) exposes:
 //   POST /v1/messages                          { from, to, content, kind, task, sender_kind }
-//   POST /v1/teams                             { name, description, owner }
+//   POST /v1/teams                             { name, description, lead_agent_id }
 //   POST /v1/agents                            { name, role, provider?, skill[], team[], ... }
 //   POST /v1/agents/{id}/deliver               { start_runtime?, dry_run?, ... }
 //   POST /v1/agents/{id}/retry-delivery        { message_id, ... }
@@ -88,13 +88,14 @@ export function operatorMessage(params: {
 }
 
 /**
- * Create a new team. POST /v1/teams requires name, description and owner (the
- * Lead/owner agent id). Returns the created AgentTeam in the action result.
+ * Create a new team. POST /v1/teams requires name, description and the Team
+ * Lead agent id. The Host Agent creating and coordinating the team is its Lead.
+ * Returns the created AgentTeam in the action result.
  */
 export function createTeam(params: {
   name: string;
   description: string;
-  owner: string;
+  leadAgentId: string;
 }): ActionDescriptor {
   return {
     method: "POST",
@@ -102,7 +103,7 @@ export function createTeam(params: {
     body: {
       name: params.name,
       description: params.description,
-      owner: params.owner,
+      lead_agent_id: params.leadAgentId,
     },
   };
 }
@@ -245,7 +246,8 @@ export function createTeamRun(params: {
   budgetLimitUsd?: number;
   /** Retry lineage: an earlier attempt of this same native Wave. */
   previousRunId?: string;
-  /** Native executor context. Both ids are required together. */
+  /** Stable AgentTeam definition; primary Mission-scoped runs omit waveId. */
+  agentTeamId?: string;
   missionId?: string;
   waveId?: string;
   /** Optional TeamRun workspace; defaults to the selected registered project_root. */
@@ -281,6 +283,9 @@ export function createTeamRun(params: {
   if (params.previousRunId) {
     body.previous_run_id = params.previousRunId;
   }
+  if (params.agentTeamId) {
+    body.agent_team_id = params.agentTeamId;
+  }
   if (params.missionId) {
     body.mission_id = params.missionId;
   }
@@ -298,9 +303,11 @@ export function createMission(params: {
   title: string;
   objective: string;
   desiredOutcome?: string;
+  context?: string;
 }): ActionDescriptor {
   const body: Record<string, unknown> = { title: params.title, objective: params.objective };
   if (params.desiredOutcome) body.desired_outcome = params.desiredOutcome;
+  if (params.context) body.context = params.context;
   return { method: "POST", path: "/v1/missions", body };
 }
 
@@ -325,21 +332,87 @@ export function createWave(params: {
   missionId: string;
   title: string;
   objective: string;
-  executorKind: "agent_team" | "dynamic_workflow" | "host";
+  executorKind?: "agent_team" | "dynamic_workflow" | "host";
   index?: number;
   exitCriteria?: string;
   planNote?: string;
+  context?: string;
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
     mission_id: params.missionId,
     title: params.title,
     objective: params.objective,
-    executor_kind: params.executorKind,
+    executor_kind: params.executorKind ?? "host",
   };
   if (params.index != null) body.index = params.index;
   if (params.exitCriteria) body.exit_criteria = params.exitCriteria;
   if (params.planNote) body.plan_note = params.planNote;
+  if (params.context) body.context = params.context;
   return { method: "POST", path: "/v1/waves", body };
+}
+
+export function updateMissionContext(missionId: string, context: string): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/missions/${encodeId(missionId)}/context`,
+    body: { context },
+  };
+}
+
+export function linkMissionTeam(missionId: string, teamId: string): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/missions/${encodeId(missionId)}/link-team`,
+    body: { team_id: teamId },
+  };
+}
+
+export function createMissionTeam(params: {
+  missionId: string;
+  name: string;
+  description: string;
+  leadAgentId?: string;
+  memberIds?: string[];
+}): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/missions/${encodeId(params.missionId)}/teams`,
+    body: {
+      name: params.name,
+      description: params.description,
+      lead_agent_id: params.leadAgentId ?? "host",
+      member: params.memberIds ?? [],
+    },
+  };
+}
+
+export function updateWaveContext(
+  waveId: string,
+  context: string,
+  updatedBy = "host",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/waves/${encodeId(waveId)}/context`,
+    body: { context, updated_by: updatedBy },
+  };
+}
+
+export function advanceWave(params: {
+  waveId: string;
+  outcome: string;
+  advancedBy?: string;
+  artifactRefs?: string[];
+}): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/waves/${encodeId(params.waveId)}/advance`,
+    body: {
+      outcome: params.outcome,
+      advanced_by: params.advancedBy ?? "host",
+      artifact_refs: params.artifactRefs ?? [],
+    },
+  };
 }
 
 /** Record a Wave gate result without rewriting its attempt history. */
@@ -379,6 +452,7 @@ export function sendTeamMessage(
     correlationId?: string;
     /** The assignment message that caused this anchored follow-up. */
     causationId?: string;
+    originWaveId?: string;
   },
 ): ActionDescriptor {
   const body: Record<string, unknown> = {
@@ -392,6 +466,9 @@ export function sendTeamMessage(
   }
   if (params.causationId) {
     body.causation_id = params.causationId;
+  }
+  if (params.originWaveId) {
+    body.origin_wave_id = params.originWaveId;
   }
   return {
     method: "POST",

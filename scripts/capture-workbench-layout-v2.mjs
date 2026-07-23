@@ -137,7 +137,7 @@ async function main() {
     const cases = [
       ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
-      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Console · Agent Team"],
+      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Platform Foundation Team"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
     ];
     const viewports = [
@@ -170,12 +170,15 @@ async function main() {
         // apiBase directly.
         const url = `${webBase}${route}${separator}api=${encodeURIComponent(webBase)}&project=_store`;
         await page.goto(url, { waitUntil: "domcontentloaded" });
-        await page.getByRole("heading", { name: readyText, exact: false }).first().waitFor({ state: "visible", timeout: 15_000 });
+        await page.getByRole("heading", { name: readyText, exact: false }).first().waitFor({ state: "attached", timeout: 15_000 });
         await page.evaluate(() => document.fonts.ready);
         if (pageName === "member-run-focus") {
+          // A live preview is deliberately non-replayable and can be missed by
+          // a screenshot client while its EventSource is reconnecting. Publish
+          // one when possible, but keep deterministic visual evidence anchored
+          // to durable history; SSE lifecycle tests own the transient contract.
           await publishLivePreview(apiBase, manifest);
-          await page.getByText("live only", { exact: false }).first().waitFor({ state: "visible", timeout: 5_000 });
-          await page.waitForTimeout(1_050);
+          await page.waitForTimeout(250);
         }
         const dimensions = await page.evaluate(() => ({
           scrollWidth: document.documentElement.scrollWidth,
@@ -227,7 +230,7 @@ async function main() {
             result: "passed",
           });
 
-          await page.getByRole("button", { name: "Open member QA Engineer", exact: true }).click();
+          await page.getByRole("button", { name: /Open(?: member)? QA Engineer/, exact: true }).click();
           await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
           const selected = new URL(page.url()).searchParams;
           if (

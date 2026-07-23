@@ -14,7 +14,8 @@ import type {
 } from "../types";
 
 /**
- * Read-model selectors for the native Mission → Wave → AgentTeamRun hierarchy.
+ * Read-model selectors for Mission-linked independent Agent Teams, TeamRuns,
+ * versioned Host-plan Waves, and provider-native MemberRun bindings.
  *
  * These selectors intentionally do not project a MemberRun into a standing
  * AgentMember. A MemberRun is one participation in one TeamRun attempt, and
@@ -84,7 +85,7 @@ export interface TeamRunContext {
   run: TeamRun;
   mission?: Mission;
   wave?: Wave;
-  /** All attempts attached to the parent Wave, in retry/history order. */
+  /** Direct-Wave compatibility attempts, or this Mission-scoped run alone. */
   attempts: TeamRun[];
   members: MemberRun[];
   memberById: Map<string, MemberRun>;
@@ -127,7 +128,7 @@ export function selectMission(snapshot: DashboardSnapshot, missionId?: string): 
   return (snapshot.missions ?? []).find((mission) => mission.id === missionId);
 }
 
-/** Ordered Waves are the Mission execution plan. */
+/** Ordered Waves are versioned Host plan and judgment records for a Mission. */
 export function selectOrderedWaves(snapshot: DashboardSnapshot, missionId?: string): Wave[] {
   if (!missionId) return [];
   return [...(snapshot.waves ?? [])]
@@ -136,8 +137,9 @@ export function selectOrderedWaves(snapshot: DashboardSnapshot, missionId?: stri
 }
 
 /**
- * AgentTeamRun attempts for one Wave. Explicit `executor_run_ids` order wins;
- * older snapshots without it fall back to creation time, then id.
+ * Compatibility lookup for AgentTeamRun attempts directly owned by one Wave.
+ * New Mission-scoped Teams are intentionally absent: their lifecycle can span
+ * Waves, while assignment messages carry the current Host-plan context.
  */
 export function selectWaveAttempts(snapshot: DashboardSnapshot, wave: Wave | string | undefined): TeamRun[] {
   const resolvedWave = typeof wave === "string" ? (snapshot.waves ?? []).find((item) => item.id === wave) : wave;
