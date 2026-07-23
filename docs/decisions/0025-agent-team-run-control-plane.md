@@ -5,6 +5,12 @@
 Accepted as the v0 Agent Team substrate.
 
 Superseded in part by ADR
+[0034](0034-host-plan-waves-and-mission-teams.md): AgentTeamRun is no longer
+owned by one Wave on the primary path, and a Mission-scoped run may span Waves.
+This ADR remains historical context and canonical only for retained MemberRun,
+TeamMessage, PendingInteraction, correlation, and control-plane boundaries.
+
+Superseded in part by ADR
 [0026](0026-mission-wave-architecture.md) for top-level product hierarchy,
 Mission/Wave terminology, and thinking policy. This ADR remains canonical for
 the v0 Agent Team object set, delegation guardrails, and host/tooling split.

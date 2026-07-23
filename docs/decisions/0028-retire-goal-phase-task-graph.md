@@ -8,10 +8,11 @@ verifiable; detailed implementation history remains recoverable from Git.
 
 ## Active Decision
 
-`Mission -> ordered Wave -> executor` is the only coordination hierarchy for
-new work. The former Goal, GoalPhase, task-graph, and ledger-backed planning
-surfaces are not active product objects, authoring paths, navigation entries,
-or compatibility UI.
+`Mission -> ordered Host-plan Wave` is the only planning hierarchy for new
+work. Mission-linked independent Agent Teams and other execution capabilities
+retain their own lifecycle under ADR 0034. The former Goal, GoalPhase,
+task-graph, and ledger-backed planning surfaces are not active product objects,
+authoring paths, navigation entries, or compatibility UI.
 
 Historical data must be exported and verified before removal when preservation
 is required. For stores explicitly declared disposable, old rows may be

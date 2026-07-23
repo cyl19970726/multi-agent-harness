@@ -10,28 +10,30 @@ rules those fields must preserve.
 Star Harness must turn durable intent into:
 
 ```text
-Mission -> ordered Wave -> executor attempt(s)
+Mission -> ordered Host-plan Wave
+Mission <-> AgentTeam -> Mission-scoped TeamRun -> MemberRun
   -> explicit coordination/artifacts/outcome + provider-native session refs
-  -> lightweight Wave gate -> next Wave or Mission closeout
+  -> explicit Host advance -> next Wave or Mission closeout
 ```
 
-The executor is `agent_team`, `dynamic_workflow`, or `host`. A Wave never
-requires a legacy dependency graph. The data model succeeds when another human or agent can
-reconstruct the selected executor, attempts, ownership, outcome, and gate from
-Harness state, and resolve member execution detail from provider-native
-sessions without duplicating those sessions.
+Agent Team, Dynamic Workflow, and Host work retain distinct runtime truth. A
+Wave never requires a legacy dependency graph and never owns their lifecycle.
+The data model succeeds when another human or agent can reconstruct Host plan
+changes, execution selection, assignment ownership, outcomes, and advance
+decisions from Harness state, then resolve member execution detail from
+provider-native sessions without duplicating those sessions.
 
 ## Key Questions
 
 | Question | Data-model answer |
 | --- | --- |
 | What is the durable intent? | Native `Mission`. |
-| What is the ordered work boundary? | Native `Wave` rows ordered by `index`; there is no required work graph. |
-| Which execution happened? | `Wave.executor_run_ids`; executor-specific ledgers own internal state. |
+| What is the ordered plan record? | Native `Wave` rows ordered by `index`; there is no required work graph. |
+| Which execution happened? | Mission-linked TeamRuns, WorkflowRuns, Host outcomes, and their native records. |
 | How is Agent Team work assigned? | `TeamMessage(kind=assignment)` plus its `correlation_id`. |
 | Who is accountable inside a team attempt? | `MemberRun` role/identity plus assignment and handoff lineage. |
 | What supports an outcome? | Explicit Harness outcome/check/artifact refs and handoffs, plus provider-native records for member-execution claims. |
-| What is being accepted? | The Wave outcome and one completed attempt through the lightweight Wave gate. |
+| What advances? | The Host's explicit Wave outcome; unrelated execution may continue. |
 | What is provider state? | A mode-aware native session binding; the provider-native store owns transcript, tools, turns, and resume state. |
 | What becomes reusable learning? | Mission closeout, follow-up Waves/issues, and optional evaluation/cases. |
 
@@ -43,15 +45,16 @@ sessions without duplicating those sessions.
 | Object meaning | [concept-model.md](concept-model.md) and schemas | Dashboard labels, CLI help |
 | Coordination state | Harness store | Dashboard projections |
 | Mission status | latest native `Mission` row | Dashboard summary |
-| Wave order and gate | latest native `Wave` rows | Dashboard Wave timeline |
-| Agent Team attempts | `AgentTeamRun` rows linked by Mission/Wave ids | run cards |
+| Wave order and Host judgment | latest native `Wave` rows and revision history | Dashboard Wave timeline |
+| Mission-team relation | `Mission.agent_team_ids` plus stable `AgentTeam` | linked-team controls |
+| Agent Team runs | `AgentTeamRun` rows linked by Mission/team ids | run cards |
 | Agent Team assignment | assignment `TeamMessage` plus correlation lineage | member current action, lane UI |
 | Agent Team identity | `MemberRun` inside one TeamRun | provider thread id, prompt file |
 | Runtime health | Harness lifecycle/control acknowledgement plus provider adapter availability | pid, socket, native provider status |
 | Provider execution | provider-native session selected by `NativeSessionRef` | ephemeral normalized Dashboard projection |
 | Provider interaction routing | Harness `PendingInteraction` | provider reverse-RPC frame in the native session |
 | Outcome support | explicit Harness outcome and artifact/check refs; provider-native session for execution claims | unaccepted chat summary |
-| Wave acceptance | `Wave.gate_status` + `accepted_run_id` + outcome/artifacts | reviewer comment or provider self-report alone |
+| Wave advance | Host outcome/actor/time plus artifacts on latest Wave row | reviewer comment or provider self-report alone |
 | Optional evaluator output | `Review` | report message text |
 | Defect / risk ledger | `Gap` (Bug = `Gap(category=bug)`) | `product-gap-inbox.md` flat file |
 | Reusable lesson | `LearningNote` or an explicit reusable document | full transcript |
@@ -62,9 +65,11 @@ sessions without duplicating those sessions.
 ```mermaid
 flowchart TD
   Mission[Mission] --> Wave[Wave]
-  Wave --> TeamRun[AgentTeamRun attempt]
-  Wave --> WorkflowRun[WorkflowRun attempt]
-  Wave --> HostRun[Host outcome reference]
+  Mission --> Team[AgentTeam]
+  Team --> TeamRun[Mission-scoped AgentTeamRun]
+  Wave -. Host plan .-> TeamRun
+  Wave -. Host plan .-> WorkflowRun[WorkflowRun]
+  Wave -. Host plan .-> HostRun[Host outcome reference]
   TeamRun --> TeamMsg[TeamMessage assignment + correlation]
   TeamRun --> Member[MemberRun]
   Member --> Binding[NativeSessionRef]
@@ -73,7 +78,7 @@ flowchart TD
   Session -. execution detail .-> Artifact
   WorkflowRun --> Artifact
   HostRun --> Artifact
-  Artifact --> Gate[Wave gate]
+  Artifact --> Gate[Host Wave advance]
   Gate --> Wave
 ```
 
@@ -109,18 +114,19 @@ Native invariants:
 
 1. Every Wave references one native Mission and has a positive, unique order
    within it.
-2. Every AgentTeamRun linked to a Wave uses an `agent_team` Wave and the same
-   Mission id.
-3. Every accepted Agent Team Wave names a completed run already present in its
-   immutable attempt list.
-4. Explicit message lineage stays inside one TeamRun; assignment correlation is
+2. Every Mission-linked team id resolves to an independent AgentTeam.
+3. Every Mission-scoped AgentTeamRun resolves to a team linked to the same
+   Mission; its optional `wave_id` exists only for legacy direct-executor rows.
+4. Wave advance never terminates an active run, member, assignment, or native
+   session.
+5. Explicit message lineage stays inside one TeamRun; assignment correlation is
    never fabricated from body text.
-5. New provider transcripts, tool/command/file event streams, and thinking are
+6. New provider transcripts, tool/command/file event streams, and thinking are
    never mirrored into durable Harness actions, snapshots, replay, evidence,
    or peer messages.
-6. Domain project facts and behavior enter through adapters, skills, and tool
+7. Domain project facts and behavior enter through adapters, skills, and tool
    descriptors, not generic core state.
-7. Parallel file-changing members need distinct workspaces, branches, or
+8. Parallel file-changing members need distinct workspaces, branches, or
    explicit owned-path coordination.
 
 Retired coordination flows have no separate active invariants. Archive records

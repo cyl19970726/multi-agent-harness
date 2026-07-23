@@ -7,16 +7,16 @@ outputs, adapters, and the Agent Dashboard.
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent, desired outcome, ordered Wave membership, and closeout |
-| `Wave` | One lightweight ordered objective, executor attempts, outcome/artifacts, and gate |
-| `AgentTeamRun` | One `agent_team` attempt linked to a Mission/Wave |
+| `Mission` | Durable intent/context, linked Agent Teams, ordered Waves, and closeout |
+| `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
+| `AgentTeamRun` | One standalone or Mission-scoped use of an independent Agent Team |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
-| `TeamMessage` | Assignment, correlation/causation, handoff, review, and delivery state |
+| `TeamMessage` | Assignment, correlation/causation, optional origin Wave, handoff, review, and delivery state |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
-Dynamic Workflow and Host execution retain their distinct executor-specific
+Dynamic Workflow and Host execution retain their distinct execution-specific
 objects. Existing Goal/Task/Evidence/Proposal/Decision schemas remain supported
 for compatibility and optional stricter governance; they are not required
 inside a native Wave.
@@ -28,7 +28,7 @@ inside a native Wave.
 | Concept | Current maturity | Gateable now |
 | --- | --- | --- |
 | `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
-| `Wave` | Rust + JSON schema + JSONL store + Agent Team attempts/gate | yes for `agent_team`; other executors pending |
+| `Wave` | Rust + JSON schema + JSONL revisions + Host update/advance | yes |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Goal` | Rust + JSON schema | yes |
 | `AgentTeam` | Rust + JSON schema | yes |

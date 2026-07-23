@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted. ADR 0027 establishes Docs and the mixed Organization as the primary
-product. This ADR defines the execution foundation they may invoke.
+Partially superseded by ADR
+[0034](0034-host-plan-waves-and-mission-teams.md). Mission/Wave names and the
+transient-thinking policy remain; Wave-as-executor and accepted-attempt
+ownership are historical compatibility semantics. ADR 0027 establishes Docs
+and the mixed Organization as the primary product.
 
 ## Decision
 

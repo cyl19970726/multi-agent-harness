@@ -22,10 +22,9 @@
         "properties": { "gate_status": { "const": "accepted" } }
       },
       "then": {
-        "required": ["accepted_run_id", "outcome_summary", "accepted_by", "accepted_at"],
+        "required": ["outcome_summary", "accepted_by", "accepted_at"],
         "properties": {
           "status": { "const": "completed" },
-          "accepted_run_id": { "type": "string", "minLength": 1 },
           "outcome_summary": { "type": "string", "minLength": 1 },
           "accepted_by": { "type": "string", "minLength": 1 },
           "accepted_at": { "type": "string", "minLength": 1 }
@@ -57,6 +56,9 @@
     "index": { "type": "integer", "minimum": 1 },
     "title": { "type": "string", "minLength": 1 },
     "objective": { "type": "string", "minLength": 1 },
+    "context": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "updated_by": { "type": ["string", "null"], "minLength": 1 },
     "exit_criteria": { "type": ["string", "null"], "minLength": 1 },
     "status": {
       "type": "string",

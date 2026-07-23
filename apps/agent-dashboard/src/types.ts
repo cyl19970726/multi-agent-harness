@@ -190,9 +190,11 @@ export interface Mission {
   id: string;
   title: string;
   objective: string;
+  context?: string;
   desired_outcome?: string | null;
   status?: MissionStatus | string;
   wave_ids?: string[];
+  agent_team_ids?: string[];
   outcome_summary?: string | null;
   completed_by?: string | null;
   created_at?: string;
@@ -223,6 +225,9 @@ export interface Wave {
   index: number;
   title: string;
   objective: string;
+  context?: string;
+  revision?: number;
+  updated_by?: string | null;
   exit_criteria?: string | null;
   status?: WaveStatus | string;
   executor_kind: WaveExecutorKind | string;
@@ -250,18 +255,19 @@ export type TeamRunStatus =
   | "cancelled";
 
 /**
- * One Agent Team run: a host-orchestrated group of member runs working one
- * objective in waves. Wire shape is snake_case; timestamps are "unix-ms:<ms>"
- * strings like the rest of the snapshot.
+ * One independent or Mission-scoped Agent Team run. Its members and native
+ * sessions may continue across Host-plan Waves. Wire shape is snake_case;
+ * timestamps are "unix-ms:<ms>" strings like the rest of the snapshot.
  */
 export interface TeamRun {
   id: string;
   definition_id?: string | null;
-  /** Native Mission context when this is an executor attempt. */
+  agent_team_id?: string | null;
+  /** Optional Mission relation for a long-lived TeamRun. */
   mission_id?: string | null;
-  /** Native Wave context when this is an executor attempt. */
+  /** Legacy direct-Wave ownership only; new runs leave this null. */
   wave_id?: string | null;
-  /** Retry lineage: the previous attempt of this same native Wave, if any. */
+  /** Explicit retry lineage when this run replaces an earlier run, if any. */
   previous_run_id?: string | null;
   host_surface?: string | null;
   host_thread_id?: string | null;
@@ -416,6 +422,7 @@ export type TeamMessageKind =
 export interface TeamMessage {
   id: string;
   team_run_id?: string;
+  origin_wave_id?: string | null;
   from_member_id?: string;
   to_member_ids?: string[];
   kind?: TeamMessageKind | string;

@@ -133,13 +133,17 @@ A WorkItem may be executed directly by a human or Standing Agent, or may start
 one of the product's one-time long-task capabilities:
 
 ```text
-Mission -> ordered Wave -> executor
-  executor = agent_team | dynamic_workflow | host
+Mission -> ordered Host-plan Wave
+Mission <-> independent AgentTeam
+execution = Agent Team | Dynamic Workflow | Host work
 ```
 
-- `Mission/Wave` structures one bounded long-running outcome.
-- `AgentTeamRun/MemberRun` records one temporary collaborative attempt inside
-  that execution.
+- `Mission` structures one bounded long-running outcome and links reusable
+  Agent Teams.
+- `Wave` preserves the Host's evolving plan and judgment without becoming a
+  runtime container or barrier.
+- `AgentTeamRun/MemberRun` records temporary collaboration that may span
+  several Waves while native sessions continue.
 - `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
 - provider sessions, plugins, MCP, and child work remain execution evidence.
 

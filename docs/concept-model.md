@@ -14,10 +14,11 @@ relationship rules, active vocabulary, and anti-drift invariants.
 The accepted product vision is:
 
 ```text
-Turn a project objective into an agent-operable workflow:
-Mission -> Scenario -> Infra -> Wave -> executor
+Turn a project objective into agent-operable work:
+Mission -> ordered Host-plan Wave
+Mission <-> independent AgentTeam -> TeamRun -> MemberRun
   -> Harness coordination / native session refs / artifacts
-  -> lightweight Wave gate -> Mission outcome
+  -> explicit Host advance -> Mission outcome
 ```
 
 The harness is the coordination and evidence system. Project-specific tools are
@@ -48,7 +49,7 @@ flowchart TD
   Provider[NativeSessionRef / provider-owned execution]
   Event[Durable event stream]
   Evidence[Artifacts / optional Evidence]
-  Gate[Lightweight Wave gate]
+  Gate[Host Wave advance]
   Outcome[Mission outcome]
   Proposal[Proposal]
   Review[Review / Critic]
@@ -58,9 +59,10 @@ flowchart TD
 
   Vision --> Mission
   Mission --> Wave
-  Wave --> TeamRun
-  Wave --> WorkflowRun
-  Wave --> HostExec
+  Mission --> TeamRun
+  Wave -. plan explains .-> TeamRun
+  Wave -. plan explains .-> WorkflowRun
+  Wave -. plan explains .-> HostExec
   TeamRun --> TeamMessage
   TeamRun --> Member
   WorkflowRun --> Event
@@ -85,38 +87,37 @@ flowchart TD
 
 ## Mission And Wave
 
-A `Mission` is the durable objective. A `Wave` is the lightweight ordered unit
-inside a Mission.
+A `Mission` is the durable objective and relation boundary for reusable teams.
+A `Wave` is a lightweight, versioned Markdown record of the Host's current
+plan and judgment.
 
 Rules:
 
 - a Mission owns objective, success interpretation, priority, and closeout
   standard;
-- a Wave owns objective, exit criteria, status, executor reference, outcome,
-  and a lightweight gate;
+- a Mission may link zero or more independent AgentTeams;
+- a Wave records changed facts, assignments/member changes, blockers,
+  carry-over, evidence, and the Host's advance outcome;
 - a Wave does not require or expose a legacy dependency graph as a product concept;
-- replanning happens between Waves as an explicit design/update step, not as a
-  hidden side effect;
+- a Wave is not an executor container, task graph, session boundary, or barrier;
+- replanning is an explicit Wave update/advance, not a hidden side effect;
 - a Mission is not complete because activity happened; it is complete when its
-  Wave gates and explicit closeout summary support the desired outcome. Stricter
+  Host decisions and explicit closeout summary support the desired outcome. Stricter
   evidence or evaluation may be layered on when the domain or risk requires it.
 
 Failure mode this prevents: replacing a durable objective with a sequence of
 convenient implementation steps and then claiming completion from activity
 alone.
 
-## Executors
+## Execution Capabilities
 
-A Wave chooses one executor kind:
-
-- `agent_team`
-- `dynamic_workflow`
-- `host`
+The Host may use an Agent Team, Dynamic Workflow, direct Host work, or a
+combination. Wave context explains the choice without owning the runtime.
 
 ### `agent_team`
 
 Agent Team is for living collaborators with persistent session state, explicit
-assignment, handoff, review, and lane ownership inside the Wave.
+assignment, handoff, review, and lane ownership that may span Waves.
 
 The target proof is assignment-message correlation:
 
@@ -135,13 +136,13 @@ unknown, and mismatched lineage is rejected before persistence.
 
 ### `dynamic_workflow`
 
-Dynamic Workflow is a one-shot structured executor. It may share runtime
+Dynamic Workflow is a one-shot structured engine. It may share runtime
 infrastructure with other executors, but it is not an Agent Team and should not
 be described with Agent Team semantics.
 
 ### `host`
 
-The Host executor is direct work by the resident Host Agent. The host may use
+Host execution is direct work by the resident Host Agent. The host may use
 provider-native subagents internally. Those subagents are optional observation
 targets, not canonical child records unless the harness actually controls them.
 
@@ -155,12 +156,12 @@ product flow.
 
 ## Agent Team Objects
 
-`AgentTeamRun` is one wave-scoped execution owned by the `agent_team`
-executor kind. It is not a standing organization.
+`AgentTeamRun` is one standalone or Mission-scoped use of an independent team.
+It is not a standing organization and is not owned by one Wave.
 
 | Object | Meaning | Rule |
 | --- | --- | --- |
-| `AgentTeamRun` | One team execution attempt for one Wave. | One Wave may have multiple attempts; every terminal attempt becomes read-only history. |
+| `AgentTeamRun` | One standalone or Mission-scoped team execution. | May span Waves; every terminal run remains read-only history. |
 | `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
 | `TeamMessage` | Run-scoped communication envelope with delivery records. | Assignment, handoff, blocker, review, and control messages live here. |
 | `MemberAction` | Transitional Harness action row. Target use is limited to Harness-owned coordination/control facts. | Provider tool, command, file, chat, turn, and reasoning streams stay solely in the native provider session. |
@@ -169,13 +170,12 @@ executor kind. It is not a standing organization.
 
 Relationship rules:
 
-- a Wave using `agent_team` may instantiate one or more `AgentTeamRun` attempts
-  and records which attempt its gate accepted;
-- ownership inside the Wave is explained by `TeamMessage(kind=assignment)` plus
+- a Mission may link multiple independent teams and create multiple TeamRuns;
+- ownership is explained by `TeamMessage(kind=assignment)` plus
   `correlation_id`;
 - `TeamMessage`, explicit outcomes, and Harness control facts may reference
   artifacts or `Evidence`; the
-  Wave gate needs an explicit outcome and acceptance note but does not require
+  Host Wave advance needs an explicit outcome but does not require
   Proposal/Review/Decision objects;
 - residual task-named runtime fields are removal debt, not the product model or
   a supported ownership path.

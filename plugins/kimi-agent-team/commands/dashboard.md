@@ -1,25 +1,16 @@
 ---
-description: Print the Browser Team Console URL and try to open it (macOS `open`, Linux `xdg-open`). Usage: /agent-team:dashboard
+description: Print and open the Workspace-scoped Star Harness Dashboard deep link. Usage: /agent-team:dashboard [run-id]
 ---
 
-Open the Browser Team Console for live Agent Team observation.
+1. Resolve the TeamRun id from `$ARGUMENTS` or the latest active run.
+2. Run `harness team-run status --id <run-id> --json`.
+3. Use the exact `dashboard_url` from that response. Do not reconstruct a URL
+   or confuse the API service on port 8787 with the Vite UI on port 5173.
+4. If the API or UI is unavailable, report the missing process and the
+   documented start commands. Do not start a long-running service without
+   telling the user.
+5. Open the exact URL with the platform browser when supported, and always
+   print it.
 
-1. Check whether the harness dashboard is serving:
-   `curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8787/team-console`
-2. If it is not serving, start it in the background:
-   `harness serve --addr 127.0.0.1:8787`
-   then re-check once with the same curl. If the `harness` binary is missing,
-   tell the user to install/build it (`cargo install --path crates/harness-cli`
-   from the multi-agent-harness repo) and stop.
-3. Try to open the page in the user's browser:
-   - macOS: `open http://127.0.0.1:8787/team-console`
-   - Linux: `xdg-open http://127.0.0.1:8787/team-console`
-   Detect the OS with `uname -s`; if neither opener exists, skip silently.
-4. Print the URL regardless of whether opening worked, exactly:
-
-```text
-Team Console: http://127.0.0.1:8787/team-console
-```
-
-If there is an active run (check `harness team-run list --json`), mention
-its id and status on one line so the user knows what the console will show.
+Preserve `project`, `surface`, `team`, and any Mission/Wave/member deep-link
+parameters. One Dashboard service may manage several Workspaces.

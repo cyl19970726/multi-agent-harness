@@ -166,12 +166,20 @@ fn mcp_stdio_agent_team_tools() {
         names,
         [
             "mission_create",
+            "mission_update_context",
+            "mission_link_team",
+            "mission_unlink_team",
             "mission_close",
             "mission_list",
             "wave_create",
+            "wave_update",
+            "wave_advance",
             "wave_list",
             "wave_gate",
             "team_run_create",
+            "team_run_add_member",
+            "team_run_rename_member",
+            "team_run_deactivate_member",
             "team_run_start",
             "team_run_cancel",
             "team_message_acknowledge",
@@ -320,7 +328,67 @@ fn mcp_stdio_agent_team_tools() {
         Some(expected_dashboard.as_str())
     );
 
-    // 5. team_run_status → both members + dashboard URL (+ the two queued
+    // 5. The thin MCP adapter can extend the same run and records the
+    // origin Wave only as Host-plan provenance.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_add_member",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "origin_wave_id": "wave-mcp",
+                "assignment": "repair the interaction path",
+                "member": {
+                    "name": "repair",
+                    "role": "fixer",
+                    "provider": "kimi",
+                    "owned_paths": ["crates/repair"]
+                }
+            }
+        }),
+    );
+    let added = call_payload(&response);
+    assert_eq!(
+        added["assignment_message"]["origin_wave_id"].as_str(),
+        Some("wave-mcp")
+    );
+    assert_eq!(
+        added["team_run"]["member_run_ids"].as_array().map(Vec::len),
+        Some(3)
+    );
+    let added_member_id = added["member_run"]["id"]
+        .as_str()
+        .expect("added member id")
+        .to_string();
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_rename_member",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "member_run_id": added_member_id,
+                "name": "targeted-repair"
+            }
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["name"].as_str(),
+        Some("targeted-repair")
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_deactivate_member",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "member_run_id": added_member_id,
+                "reason": "review found no defect"
+            }
+        }),
+    );
+    assert_eq!(call_payload(&response)["status"].as_str(), Some("stopped"));
+
+    // 6. team_run_status → all members + dashboard URL (+ the three queued
     //    assignment messages count as unacked).
     let response = mcp.request(
         "tools/call",
@@ -335,7 +403,7 @@ fn mcp_stdio_agent_team_tools() {
         Some(team_run_id.as_str())
     );
     let members = payload["members"].as_array().expect("members");
-    assert_eq!(members.len(), 2, "members: {payload}");
+    assert_eq!(members.len(), 3, "members: {payload}");
     for member in members {
         assert!(
             member["member_run"]["id"].is_string(),
@@ -347,13 +415,13 @@ fn mcp_stdio_agent_team_tools() {
         payload["pending_interactions"].as_array().map(Vec::len),
         Some(0)
     );
-    assert_eq!(payload["unacked_messages"].as_u64(), Some(2));
+    assert_eq!(payload["unacked_messages"].as_u64(), Some(3));
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
     );
 
-    // 6. team_run_send_message can immediately reuse the automatic Assignment
+    // 7. team_run_send_message can immediately reuse the automatic Assignment
     // returned by team_run_create; the Host never needs a second fake anchor.
     let response = mcp.request(
         "tools/call",
@@ -382,7 +450,7 @@ fn mcp_stdio_agent_team_tools() {
         "correlation id: {payload}"
     );
 
-    // 7. team_run_events → strictly increasing seq, and the send above is
+    // 8. team_run_events → strictly increasing seq, and the send above is
     //    journaled as a message/created event. after_seq resumes the tail.
     let response = mcp.request(
         "tools/call",
@@ -393,9 +461,9 @@ fn mcp_stdio_agent_team_tools() {
     );
     let payload = call_payload(&response);
     //    create journals 1 (run) + 2×2 (member + assignment) = 5 events,
-    //    the handoff adds one more.
+    //    add-member journals two and the handoff adds one more.
     let events = payload.as_array().expect("events array");
-    assert!(events.len() >= 6, "events: {}", events.len());
+    assert!(events.len() >= 8, "events: {}", events.len());
     let seqs: Vec<u64> = events
         .iter()
         .map(|event| event["seq"].as_u64().expect("event seq"))
@@ -423,7 +491,7 @@ fn mcp_stdio_agent_team_tools() {
     let payload = call_payload(&response);
     assert_eq!(payload.as_array().expect("events array").len(), 0);
 
-    // 8. ACK refuses a message that has not actually been delivered.
+    // 9. ACK refuses a message that has not actually been delivered.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -488,7 +556,7 @@ fn mcp_stdio_agent_team_tools() {
                     .is_some_and(|summary| summary.contains("acknowledged"))
         }));
 
-    // 9. A planning run can be cancelled through MCP using the same guarded
+    // 10. A planning run can be cancelled through MCP using the same guarded
     // transition helper as CLI and HTTP.
     let response = mcp.request(
         "tools/call",
@@ -504,7 +572,7 @@ fn mcp_stdio_agent_team_tools() {
         Some(expected_dashboard.as_str())
     );
 
-    // 10. MCP start is asynchronous: it immediately returns the reserved
+    // 11. MCP start is asynchronous: it immediately returns the reserved
     // running projection and exact URL, then the provider completes in the
     // background while the same Host session remains responsive.
     let response = mcp.request(

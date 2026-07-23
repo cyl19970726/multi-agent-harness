@@ -3,199 +3,137 @@
 ```text
 status: implemented
 owner_role: product-design
-canonical_for: one AgentTeamRun attempt that executes an agent_team Wave
-route_or_surface: Missions -> Wave -> Agent Team attempt
+canonical_for: one standalone or Mission-scoped AgentTeamRun
+route_or_surface: Agent Teams -> TeamRun
+architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle
 ```
 
 ## User Problem
 
-An operator coordinating a live Agent Team needs one answerable surface:
-which members are working, blocked, or waiting; what messages and outputs are
-moving through the team; and what the operator needs to decide next. The
-existing split between overview, actions, and messages makes the story hard to
-follow and hides urgency.
+The Host and Human need one surface to understand and steer a living Agent
+Team: who owns which assignment, what is active or blocked, what questions need
+answers, which native sessions can be resumed, and what evidence has arrived.
 
-The War Room makes the team attempt observable and steerable without claiming
-that a Wave is a legacy dependency graph or that provider-native child agents are fully
-controlled by the harness.
+The page must remain useful when the same TeamRun spans several Host-plan Waves.
 
-## Canonical Data And Semantics
+## Canonical Semantics
 
 Required data:
 
-- parent `Mission` and `Wave`, including objective, exit criteria, and gate;
-- selected `AgentTeamRun`, its status, `previous_run_id`, and host/runtime
-  facts;
-- `MemberRun` state, role, provider/model, current explicit action, pressure,
-  availability, and last update;
-- `TeamMessage` delivery state and correlation lineage;
-- Harness control/lifecycle records, observed `DelegationRun`, artifacts,
-  evidence/check references, and attempt outcome;
-- `PendingInteraction` questions, approvals, and plan reviews, including route,
-  exact provider options, semantic resolution, and resolving actor;
-- resource/worktree/native-session binding summaries; and
-- ephemeral native member activity projections when the provider session is
-  available, plus transient thinking previews when eligible.
+- independent `AgentTeam` definition and editable member identities;
+- `AgentTeamRun`, optional `mission_id`, optional legacy `wave_id`, status,
+  previous run, host/runtime facts, and outcome;
+- `MemberRun` identity, role, provider/model, status, capability profile,
+  worktree, and native-session binding;
+- assignment/message correlation, delivery, ACK, optional `origin_wave_id`,
+  pending interactions, controls, artifacts, and checks;
+- provider-native activity read on demand, clearly labeled by source and
+  availability.
 
-The War Room is a joined read model, not a transcript database. Durable nodes
-come from Harness coordination; provider chat, tools, commands, file events,
-and turns are read on demand from each member's native session and labelled by
-source/availability. Their absence does not erase assignments, outcomes, or
-Wave gates.
+Harness does not mirror provider transcripts, tool calls, commands, file
+events, turns, or thinking. A provider `completed` lifecycle update is not an
+answer, approval, or semantic result.
 
-Ownership belongs to assignment messages plus `correlation_id`. The page may
-summarize owned paths/constraints but must not manufacture per-member Tasks.
+The TeamRun may be standalone or linked to a Mission. In the primary
+Mission-scoped path it is not owned by one Wave. Wave context explains how the
+Host is currently using the team.
 
-An AgentTeamRun is an attempt for one Wave. It may complete, fail, or be
-stopped. That does **not** accept its parent Wave. The Wave gate is separately
-recorded by the Host as `accepted`, `revise`, or `blocked`; only that gate can
-name an accepted completed attempt.
+## Desktop Layout
 
-## Layout Contract
-
-The visual reference is the approved
-`team-war-room/running-needs-you--desktop` expected design in
-[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
-
-### Desktop — `1440x1000`
-
-Use the shared shell: 230px product sidebar, about 800px main work surface,
-and 340px Context Rail.
+Use the shared Workbench shell with compact member controls, one chronological
+activity stream, a persistent composer, and flexible context modules.
 
 ```text
 +----------------------+--------------------------------------+------------------+
-| Product sidebar      | Team header                          | Context Rail     |
-|                      | Mission > Wave > Attempt · status    | Wave compact     |
-| Active context tree  +--------------------------------------+ Gate readiness   |
-|                      | compact Member controls              | Attempt           |
-|                      | role/model/status/action/pressure    | Selected member  |
-|                      +--------------------------------------+ Resources        |
-|                      | unified Team activity stream          |                  |
-|                      | pressure + QA attached to records     |                  |
-|                      | filters: All/Messages/Actions/        |                  |
-|                      | Decisions/Evidence                    |                  |
-|                      | sticky Message team or @member…       |                  |
+| Product sidebar      | Team header                          | Mission context  |
+|                      | definition · run · status · actions  | Current Wave     |
+| Active context tree  +--------------------------------------+ Selected member  |
+|                      | compact member controls              | Runtime          |
+|                      | role/model/status/action/pressure    | Artifacts        |
+|                      +--------------------------------------+                  |
+|                      | unified Team activity stream         |                  |
+|                      | messages/actions/decisions/evidence  |                  |
+|                      | sticky Team or @member composer      |                  |
 +----------------------+--------------------------------------+------------------+
 ```
 
-Member controls are compact controls, not dashboard metric cards. Each shows
-identity, role, provider/model, status, current action, pressure, and last
-meaningful update. Selecting one populates the right rail's Selected Member
-module; `Open member` navigates to the MemberRun Focus page rather than opening
-a blocking drawer.
+Member controls use project-default portraits when no explicit avatar exists.
+They navigate to Member Focus; a blocking details drawer is not a replacement
+for the full page.
 
-The center uses one chronological team stream. Filters change visibility but
-not the data model. The default `All` projection keeps the attempt creation,
-assignment ownership, and latest pressure-bearing activity visible; `Full
-record` expands to the complete durable timeline. Messages show
-sender/recipient/delivery/correlation;
-actions and evidence retain their member attribution; decision rows distinguish
-attempt outcome from parent Wave-gate decision. Operator actions such as ACK,
-review, or start-pending attach to the relevant activity record instead of
-forming a separate alert band.
+Activity is one source-aware timeline:
 
-A pending provider interaction is a pressure-bearing decision row with the
-provider's exact options. Selecting an option posts to the TeamRun-scoped
-resolve route. `tool completed` remains provider lifecycle, while
-answered/approved/denied/dismissed is the semantic outcome. The UI must never
-label an unanswered question successful.
+- Harness assignments, messages, pending interactions, controls, and outcomes;
+- ephemeral provider-native tool/command/chat/turn activity when available;
+- semantic Markdown handoffs, artifacts, and checks;
+- explicit “native session unavailable” states instead of invented history.
 
-### Tablet — `900x1180`
+The page is a joined read model, not a transcript database. Native activity is
+read on demand and remains rebuildable.
 
-- Collapse the product sidebar; retain mission/wave/attempt breadcrumb.
-- Member controls become a horizontally scrollable but keyboard-accessible
-  strip, or a two-column grid with no hidden critical status.
-- Encode actionable pressure in member controls and its related activity row.
-- Context Rail becomes an inline section after the stream or a right sheet;
-  Wave and Gate remain first.
-- Composer remains fixed to the safe area.
+Tool icons are meaningful and consistent; provider and member avatars never
+replace status or source labels.
 
-### Mobile — `390x844`
+## Context Modules
 
-- Header has back-to-Wave, attempt state, and context-sheet affordance.
-- Show the highest-pressure member first with an explicit `View all members`
-  disclosure; the expanded list orders blocked/waiting before running and
-  completed members.
-- Keep the actionable activity row visible without duplicating it in a
-  separate `Needs You` band.
-- One stream with filter chips scrolls beneath it; composer supports Team or
-  an explicitly chosen member, never an ambiguous recipient.
-- Context appears in a bottom sheet ordered Wave, Gate, Attempt, Selected
-  Member, Resources. No horizontal overflow or modal/drawer replacement for a
-  full member page.
-
-## Context Rail Modules
-
-1. **WaveCompact** — Wave objective, executor, exit-criteria progress, gate
-   state, and open-Wave action.
-2. **GateReadiness** — satisfied/missing criteria, candidate attempt outcome,
-   blockers, and a clear statement that this page cannot accept the Wave.
-3. **AttemptSummary** — attempt number, retry lineage, start/end, host surface,
-   status, and honest capability degradation.
-4. **SelectedMemberCompact** — selected member identity, assignment/current
-   action, message action, and open-member-page action.
-5. **Resources** — aggregate sessions/worktrees/budget signals and release or
-   acquisition failures. It must not imply termination control that is absent.
+1. **MissionCompact** — optional Mission relation and open-Mission action.
+2. **CurrentHostPlan** — selected/latest Wave context excerpt for orientation;
+   never claims runtime ownership.
+3. **SelectedMember** — identity, assignment, capability, message, steer,
+   interrupt, resume, and open-member actions supported by the real adapter.
+4. **Runtime** — worktree, native session id, provider mode/version,
+   permission/budget, and honest availability.
+5. **Artifacts** — explicit files/checks/evidence with open/download actions.
 
 ## Actions
 
 - Message the whole team or one explicit member.
-- Inspect a message's assignment, delivery, or correlation lineage.
-- Acknowledge/re-deliver an eligible message.
-- Open MemberRun Focus, Wave Canvas, an artifact, or a provider session
+- Create a correlated assignment with optional origin Wave metadata.
+- Add, rename, deactivate, steer, interrupt, or resume a member where the
+  selected provider mode honestly supports it.
+- Inspect delivery/ACK/correlation lineage and answer PendingInteractions.
+- Open Mission, current Wave context, Member Focus, artifact, or native-session
   summary.
-- Review blockers, waiting-for-approval, handoffs, and evidence.
-- Answer a Lead-routed provider question or plan review; display policy/Human
-  routing honestly and do not let a Lead bypass company authority rules.
-- Complete or stop the attempt only when the backend supports that transition;
-  running-provider cancellation is hidden until cooperative interruption is
-  real.
+- Complete or stop the TeamRun only through a real acknowledged lifecycle
+  transition.
 
-Wave gating occurs from the Wave Canvas/gate surface after a completed attempt
-is eligible. It is never an implicit side effect of a TeamRun button.
+Wave creation/advance occurs from Mission Canvas. It never implicitly stops or
+restarts this TeamRun.
 
-## Empty, Loading, And Failure States
+## States And Responsive Behavior
 
-- **No members:** explain that no runnable member instances were created and
-  surface the attempt creation error or next Wave action.
-- **Starting:** show admitted members and pending runtime acquisition; do not
-  label them as working before an explicit action/state supports it.
-- **No Team activity:** retain member controls and explain that durable
-  messages/actions will arrive here; do not add invented placeholders.
-- **One or more blocked:** encode pressure on the member and the related
-  activity row only when an action or decision is known; otherwise say the
-  blocker is being reported.
-- **Provider/session failure:** attribute it to the affected member and retain
-  attempt history; do not mark the whole Wave accepted/failed automatically.
-- **Completed/failed/stopped attempt:** read-only stream, outcome, artifacts,
-  and next instruction: review/gate/retry from the parent Wave.
-- **Read error:** preserve a stale last projection with timestamp and scoped
-  retry instead of an empty dashboard.
+- No members: explain whether the stable team definition is empty or run
+  materialization failed.
+- Starting: show admission/runtime acquisition without calling it working.
+- Blocked/question: attach pressure and action to the exact record.
+- Provider/session unavailable: retain coordination and show the missing
+  source.
+- Completed/stopped: read-only history plus explicit resume/new-run choices;
+  do not imply a Mission or Wave completed.
+- Tablet/mobile: collapse sidebar, make member strip keyboard accessible,
+  preserve one stream and composer, and move context into sheet/bottom sheet.
+- Navigation preserves filters, selected member, scroll, Mission id, TeamRun id,
+  and project id.
 
-## Screenshot Acceptance
+## Screenshot And UX Acceptance
 
-For `team-war-room--running-needs-you--desktop`:
+Desktop acceptance must show the shared shell, team identity, compact member
+controls with portraits, a source-aware activity stream, composer, Mission/Wave
+orientation, runtime, and artifacts. Verify:
 
-- captures use the registered native fixture, route, and `1440x1000` viewport;
-- first viewport includes the shared sidebar, attempt header, four compact
-  member controls, one clear pressure signal, unified activity stream, sticky
-  composer, and Wave/Gate/Attempt context modules;
-- filters read `All`, `Messages`, `Actions`, `Decisions`, and `Evidence`; they
-  are stream filters, not replacing primary page tabs;
-- default `All` preserves creation, assignment ownership, and current pressure,
-  while `Full record` exposes all durable records without inventing activity;
-- selected member context provides `Message` and `Open member`, and the latter
-  resolves to a standalone MemberRun page;
-- Team completion and Wave gate state are visibly different in text and color;
-- implementation/baseline/expected comparison and intentional deviations are
-  recorded through the Workbench Layout V2 visual contract.
+- member controls open the correct Member Focus and return without state loss;
+- PendingInteraction answer, chat, steer, interrupt, and resume states match
+  real adapter acknowledgements;
+- Markdown handoffs and tool activity render with suitable icons and density;
+- the same TeamRun remains visible after Mission Wave advance;
+- empty, loading, error, unavailable-native-session, and long-stream behavior;
+- actual screenshot against the approved expected reference.
 
 ## Explicit Boundaries
 
-- The page is an `AgentTeamRun` attempt, not a standing team directory.
-- A `MemberRun` is not a StandingAgent, even when it has a source identity.
-- Host/provider-native subagents are observed delegation facts, not controlled
-  MemberRuns, unless a separate orchestrated contract exists.
-- There is no legacy dependency graph requirement or task-centric ownership UI.
-- Attempt completion never equals Wave acceptance; the Wave gate remains the
-  durable parent decision.
+- A TeamRun is not a Standing Agent or OrgUnit.
+- Assignment correlation owns work; Wave prose explains Host intent.
+- Provider-native subagents are observations unless a real orchestrated
+  lifecycle exists.
+- TeamRun completion does not advance a Wave; Wave advance does not complete a
+  TeamRun.

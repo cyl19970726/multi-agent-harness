@@ -3,21 +3,22 @@
 ## Product Contract
 
 The Host Agent is the user's interactive Codex, Claude Code, Kimi Code, or
-another long-lived coding agent. It is not an Agent Team member. Its default
-control surface is MCP:
+another long-lived coding agent. It is not an Agent Team member. Its complete
+control surface is the canonical CLI; MCP is an optional thin typed adapter:
 
 ```text
 Host Agent
-  -> harness MCP (typed authoring and control)
+  -> thin orchestration skill
+  -> harness CLI (complete authoring and control)
   -> shared Rust application operations
-  -> Mission / Wave / AgentTeamRun / Store
+  -> Mission / Host-plan Wave / AgentTeam / AgentTeamRun / Store
   -> provider member adapter
 
+MCP       <- optional typed adapter over the same operations
 Dashboard <- HTTP + SSE projections of the same store
-CLI       <- human, CI, diagnosis, and fallback surface
 ```
 
-Skills may teach the Host when to form a team and how to gate a Wave, but they
+Skills may teach the Host when to form a team and how to advance a Wave, but they
 do not own product truth or execute runtime operations. Commands and hooks are
 optional conveniences. Provider-specific integration packs configure these
 parts; they do not fork the core model.
@@ -25,7 +26,9 @@ parts; they do not fork the core model.
 ## Current Executable Boundary
 
 - Host: Codex can call the stdio MCP server after local registration below.
-- Coordination: Mission, ordered Wave, and AgentTeamRun are native.
+- Coordination: Mission context, ordered Host-plan Wave revisions,
+  Mission-linked independent AgentTeams, and Mission-scoped AgentTeamRuns are
+  native.
 - Member execution: Kimi ACP, Codex batch (`codex_exec`), Codex interactive
   (`codex_app_server`), and Claude CLI (`claude_cli`) are registered executable
   Team Member modes. Any other provider or mode is rejected explicitly; Harness
@@ -94,10 +97,12 @@ path as an execution root is a routing defect.
 
 ## Host Journey
 
-1. Call `mission_create` for durable intent.
-2. Call `wave_create` with `executor_kind=agent_team` for the next lightweight
-   outcome boundary.
-3. Call `team_run_create` with role-specific supported provider members,
+1. Call `mission_create` for durable intent and Markdown context.
+2. Create or select an independent AgentTeam and link it to the Mission. Create
+   the next Host-plan Wave with full Markdown context; do not bind Team runtime
+   ownership to it.
+3. Call `team_run_create` with `mission_id + agent_team_id`, role-specific
+   supported provider members,
    disjoint owned paths, and workspace overrides only when needed. Keep the
    returned execution/member roots, Assignment message ids, and correlations.
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
@@ -112,8 +117,9 @@ path as an execution root is a routing defect.
    Codex app-server or Kimi ACP when cooperative cancellation is intended.
    Other messages use `team_run_send_message` and are delivered next round.
 8. Acknowledge delivered handoffs with `team_message_acknowledge`.
-9. Check outcomes and artifacts, then call `wave_gate` with
-   `accepted | revise | blocked`. Acceptance names the completed attempt.
+9. Check outcomes and artifacts, update the current Wave with the Host's actual
+   judgment, then `wave advance` or record `accepted | revise | blocked`. Active
+   MemberRuns may carry forward; Wave advance never completes them implicitly.
 
 ## Experience Acceptance
 

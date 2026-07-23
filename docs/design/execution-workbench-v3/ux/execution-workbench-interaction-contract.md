@@ -4,8 +4,10 @@ Status: active implementation contract
 
 The approved screenshots define visual states. This file defines behavior that
 cannot be recovered from a still image. Mission, Agent Team, and Member Focus
-keep one URL-addressable selection model and preserve Mission/Wave parent context
-when moving into an execution attempt or member.
+keep one URL-addressable selection model and preserve Mission/Wave navigation context
+when moving into a Team or Member. This is navigation context, not runtime
+ownership: a Mission-scoped Agent Team and its provider-native member sessions
+may continue while the Host advances, revises, or replaces a Wave.
 
 ## Hotspots and navigation
 
@@ -13,7 +15,7 @@ when moving into an execution attempt or member.
 | --- | --- | --- | --- | --- |
 | Mission rail item | link-like button | selected Mission | Workspace | Browser Back and `Missions` return |
 | Wave node/card | link-like button | selected Wave within Mission | Mission | prior Mission scroll/selection when history permits |
-| Agent Team attempt | link-like button | Team War Room | Mission + Wave | breadcrumb/back returns to selected Wave |
+| Agent Team | link-like button | Team War Room | TeamRun plus optional Mission + selected Host-plan Wave | breadcrumb/back returns to selected Wave without making it the TeamRun parent |
 | Agent member portrait/name | link-like button | Member Focus | TeamRun + Mission + Wave | `Back to team`, breadcrumb, and Browser Back |
 | Pending member decision | action link | Member Focus at pressure context | TeamRun + Mission + Wave | same as member navigation |
 
@@ -33,6 +35,23 @@ same `memberRun` deep-link contract.
 The Mission detail region owns `overflow-y:auto`, has an accessible region name,
 and accepts keyboard focus. Longest representative Mission content must reach
 the final Wave and final context module.
+
+## Mission, Wave, and Team relationship
+
+- Mission detail renders the durable Mission Markdown before its ordered Waves.
+- Each Wave renders its full versioned Host-plan Markdown. A responsibility
+  table is ordinary Markdown authored by the Host, not a second task graph.
+- Mission may link one or more independent Agent Teams. The same Team remains
+  visible across Wave changes.
+- Opening a Team from a Wave preserves `mission` and `wave` in the URL so the
+  operator knows why the Team is being viewed. The Team context rail labels the
+  selected Wave as `Current Host plan` and explicitly says the Wave does not own
+  the runtime.
+- Assignment messages, optionally carrying `origin_wave_id`, are the durable
+  record of which member owns work from that Host-plan revision.
+- A legacy TeamRun directly attached to a Wave may still show a Wave Gate
+  compatibility module. New Mission-scoped TeamRuns do not impersonate that
+  containment.
 
 ## Identity assets
 
@@ -97,7 +116,7 @@ thinking.
 | Id | Route/actions | Assertions |
 | --- | --- | --- |
 | `mission-content-reachability` | open longest Mission; focus Mission detail; PageDown/scroll to end | one scroll owner exists and `scrollTop` advances toward `scrollHeight-clientHeight` |
-| `mission-member-deep-link` | select current Wave; activate a member row | URL contains exact `surface=team`, `team`, `memberRun`, `mission`, and `wave`; Member Focus heading matches |
+| `mission-member-deep-link` | select current Wave; activate a member row | URL contains exact `surface=team`, `team`, `memberRun`, `mission`, and `wave`; Member Focus heading matches and labels the Wave as navigation/Host-plan context |
 | `member-return-context` | from Member Focus use `Back to team`, breadcrumb, and Browser Back | returns to the originating Team/Mission context without selecting a different attempt |
 | `member-keyboard-path` | Tab to member row and press Enter | same deep link and visible focus treatment as pointer activation |
 | `execution-responsive-path` | repeat primary navigation at desktop/tablet/mobile | no horizontal overflow; context remains reachable; composer/action remains usable |
@@ -106,3 +125,10 @@ thinking.
 Source checks may ensure these controls exist, but P0 acceptance requires these
 journeys to run against the browser with the stable native fixture or a named
 live store snapshot.
+
+Latest deterministic capture: `.visual-evidence/execution-workbench-v3/host-plan-final/`.
+Its manifest proves desktop/tablet/mobile capture, Mission content
+reachability, Mission → Member deep-link identity, and return-context behavior.
+Transient provider previews are intentionally excluded from screenshot
+readiness because they are non-replayable; SSE lifecycle tests own that
+contract.

@@ -939,13 +939,14 @@ pub struct Vision {
 // ---------------------------------------------------------------------------
 // Mission / Wave product contracts (ADR 0026)
 //
-// A Mission owns durable intent and outcome; each Wave owns a small, ordered
-// execution attempt and delegates its internal execution semantics to its
-// selected executor.
+// A Mission owns durable intent, context, linked independent Teams, and
+// outcome. Each Wave is one versioned Host plan/judgment memo. Execution
+// records remain independently addressable and are related through Mission,
+// assignment messages, correlations, and optional origin_wave_id.
 // ---------------------------------------------------------------------------
 
-/// Lifecycle of a [`Mission`]. Executor-specific progress belongs to Waves and
-/// their runs.
+/// Lifecycle of a [`Mission`]. Execution progress belongs to the selected
+/// TeamRun, WorkflowRun, Host, and provider-native sessions—not to a Wave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MissionStatus {
@@ -965,6 +966,10 @@ pub struct Mission {
     pub id: String,
     pub title: String,
     pub objective: String,
+    /// Durable Markdown brief used by the Host when planning and revising
+    /// Waves. Older rows deserialize as an empty brief.
+    #[serde(default)]
+    pub context: String,
     #[serde(default)]
     pub desired_outcome: Option<String>,
     #[serde(default)]
@@ -974,6 +979,11 @@ pub struct Mission {
     /// for reading the Wave ledger by `mission_id`.
     #[serde(default)]
     pub wave_ids: Vec<String>,
+    /// Independent reusable AgentTeam definitions available to this Mission.
+    /// Linking does not transfer ownership or couple team lifecycle to Mission
+    /// closeout.
+    #[serde(default)]
+    pub agent_team_ids: Vec<String>,
     #[serde(default)]
     pub outcome_summary: Option<String>,
     /// Actor that explicitly performed Mission closeout. Wave acceptance does
@@ -986,9 +996,10 @@ pub struct Mission {
     pub completed_at: Option<String>,
 }
 
-/// The executor selected for a [`Wave`]. Its execution records live in the
-/// executor's own ledger: `AgentTeamRun`, `WorkflowRun`, or a Host-owned run
-/// reference. This enum intentionally has no task-graph variant.
+/// Compatibility/projection hint retained on [`Wave`] rows. New Host-plan
+/// Waves default to `Host`; they do not own the TeamRun, WorkflowRun, or native
+/// session that informed the Host's plan. This enum intentionally has no
+/// task-graph variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveExecutorKind {
@@ -1023,9 +1034,10 @@ pub enum WaveGateStatus {
     Blocked,
 }
 
-/// One ordered unit of a Mission. Retries and replacement attempts are recorded
-/// in `executor_run_ids`; `accepted_run_id` identifies the attempt accepted by
-/// the Wave gate. A Wave has no task graph or executor-specific child model.
+/// One ordered, versioned Host plan/judgment memo in a Mission. A Wave has no
+/// task graph, runtime children, synchronization barrier, or session lifecycle.
+/// `executor_run_ids` and `accepted_run_id` remain only for reading historical
+/// direct-executor Wave rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Wave {
     pub id: String,
@@ -1033,13 +1045,27 @@ pub struct Wave {
     pub index: u32,
     pub title: String,
     pub objective: String,
+    /// Versioned Markdown operational memo: the Host's current plan, judgment,
+    /// assignments, carry-over, and important deviations.
+    #[serde(default)]
+    pub context: String,
+    /// Monotonic revision within this Wave id. Append-only Wave rows retain the
+    /// prior revisions.
+    #[serde(default)]
+    pub revision: u32,
+    /// Actor that authored the latest revision.
+    #[serde(default)]
+    pub updated_by: Option<String>,
     #[serde(default)]
     pub exit_criteria: Option<String>,
     #[serde(default)]
     pub status: WaveStatus,
+    /// Historical direct-executor hint; new authoring uses `Host`.
     pub executor_kind: WaveExecutorKind,
+    /// Historical direct-executor attempt references.
     #[serde(default)]
     pub executor_run_ids: Vec<String>,
+    /// Historical accepted direct-executor attempt.
     #[serde(default)]
     pub accepted_run_id: Option<String>,
     #[serde(default)]
@@ -1561,6 +1587,11 @@ pub struct AgentTeamRun {
     pub id: String,
     #[serde(default)]
     pub definition_id: Option<String>,
+    /// Stable independent AgentTeam definition used by this run. New writes
+    /// use this field; `definition_id` remains a transitional alias for older
+    /// rows.
+    #[serde(default)]
+    pub agent_team_id: Option<String>,
     #[serde(default)]
     pub previous_run_id: Option<String>,
     /// Optional outer product identity (ADR 0026). Existing v0 team-run rows
@@ -1930,6 +1961,11 @@ pub struct TeamMessageDelivery {
 pub struct TeamMessage {
     pub id: String,
     pub team_run_id: String,
+    /// Optional Host-plan Wave that explains why this message was authored.
+    /// It is navigation metadata only and never controls message or member
+    /// lifecycle.
+    #[serde(default)]
+    pub origin_wave_id: Option<String>,
     pub from_member_id: String,
     #[serde(default)]
     pub to_member_ids: Vec<String>,

@@ -43,7 +43,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
-import type { NativeActivityItem, NativeActivityProjection } from "@/types";
+import type { NativeActivityItem, NativeActivityProjection, Wave } from "@/types";
 import type { SelectionState } from "@/app/selection";
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to message this member";
@@ -51,6 +51,9 @@ const ACTIONS_DISABLED_HINT = "Connect a live source to message this member";
 export interface MemberRunFocusProps {
   model: WorkbenchModel;
   memberRunId?: string;
+  /** Optional Mission/Wave navigation context; it does not own this MemberRun. */
+  missionId?: string;
+  waveId?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   /** True only when the dashboard is connected to a writable live source. */
   actionsEnabled?: boolean;
@@ -72,6 +75,8 @@ export interface MemberRunFocusProps {
 export function MemberRunFocus({
   model,
   memberRunId,
+  missionId,
+  waveId,
   onSelectionChange,
   actionsEnabled = false,
   onAction,
@@ -134,6 +139,13 @@ export function MemberRunFocus({
     ? activityItems
     : projectKeyActivity(activityItems);
   const evidence = collectEvidence(context, model);
+  const navigationMission = context.mission ?? model.snapshot.missions?.find((item) => item.id === missionId);
+  const navigationWave = context.wave ?? model.snapshot.waves?.find(
+    (item) =>
+      item.id === waveId &&
+      (!navigationMission || item.mission_id === navigationMission.id),
+  );
+  const stableTeam = model.snapshot.teams?.find((item) => item.id === context.run.agent_team_id);
 
   const goBackToTeam = () =>
     onSelectionChange({
@@ -179,6 +191,8 @@ export function MemberRunFocus({
       context={
         <MemberContextRail
           context={context}
+          navigationWave={navigationWave}
+          teamName={stableTeam?.name}
           evidence={evidence}
           sessionStatus={context.member.native_session?.availability}
           onSelectionChange={onSelectionChange}
@@ -382,51 +396,56 @@ function Breadcrumb({
 
 function MemberContextRail({
   context,
+  navigationWave,
+  teamName,
   evidence,
   sessionStatus,
   onSelectionChange,
 }: {
   context: MemberRunContext;
+  navigationWave?: Wave;
+  teamName?: string;
   evidence: EvidenceItem[];
   sessionStatus?: string;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
   const assignment = context.assignments[0];
   const activeMembers = context.members.filter((member) => member.status === "running").length;
-  const gateTone = waveGateTone(context.wave?.gate_status);
+  const gateTone = waveGateTone(navigationWave?.gate_status);
 
   return (
     <ContextRail label="Member context" hideHeader className="bg-[#fbfaf7]" contentClassName="flex flex-col gap-4 space-y-0 p-5">
       <ContextModule
-        title={context.wave ? `Wave ${context.wave.index} · ${context.wave.title}` : "Wave context unavailable"}
+        title={navigationWave ? `Wave ${navigationWave.index} · ${navigationWave.title}` : "No Host-plan Wave selected"}
         icon={<GitBranch className="size-3.5" />}
         tone={gateTone}
         className="order-2 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
         action={
-          context.wave ? (
+          navigationWave ? (
             <RailOpenButton
               label="Open wave"
-              onClick={() => onSelectionChange({ surface: "missions", missionId: context.wave?.mission_id, waveId: context.wave?.id })}
+              onClick={() => onSelectionChange({ surface: "missions", missionId: navigationWave.mission_id, waveId: navigationWave.id })}
             />
           ) : undefined
         }
       >
-        {context.wave ? (
+        {navigationWave ? (
           <div className="space-y-2 text-[12px]">
-            <p className="line-clamp-3 leading-relaxed text-foreground">{context.wave.objective}</p>
-            <RailKeyValue label="Executor" value={context.wave.executor_kind} />
+            <p className="line-clamp-3 leading-relaxed text-foreground">{navigationWave.objective}</p>
+            <RailKeyValue label="Revision" value={String(navigationWave.revision ?? 1)} />
             <div className="flex flex-wrap gap-1.5 pt-0.5">
-              <Badge tone={gateTone}>gate {context.wave.gate_status ?? "pending"}</Badge>
-              <Badge tone="muted">attempt {context.attempts.findIndex((attempt) => attempt.id === context.run.id) + 1}/{context.attempts.length}</Badge>
+              <Badge tone={gateTone}>decision {navigationWave.gate_status ?? "pending"}</Badge>
+              <Badge tone="muted">{context.wave ? "legacy direct executor" : "navigation context"}</Badge>
             </div>
+            {!context.wave && <p className="text-[11px] leading-relaxed text-muted-foreground">This MemberRun continues independently; its assignment message records what it owns in this Wave.</p>}
           </div>
         ) : (
-          <RailEmpty>Parent Wave is not present in this snapshot.</RailEmpty>
+          <RailEmpty>Open this member from a Mission to retain the current Host-plan context.</RailEmpty>
         )}
       </ContextModule>
 
       <ContextModule
-        title="Agent Team"
+        title={teamName ?? "Agent Team"}
         icon={<Users className="size-3.5" />}
         tone={teamStatusTone(context.run.status)}
         className="order-1 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"

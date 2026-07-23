@@ -17,9 +17,9 @@ headless exec-stream, per
 Star Harness must support Codex first — with Claude Code and Kimi now
 registered as further exec-stream providers — while leaving room for others
 such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
-integrations are successful only when they preserve the native
-`Mission -> ordered Wave -> executor` contract and the executor's own honest
-runtime records. Provider integrations must not reintroduce the retired
+integrations are successful only when they preserve Mission intent,
+Host-plan Waves, Mission-linked independent teams, and each execution
+capability's honest native records. Provider integrations must not reintroduce the retired
 Goal/GoalPhase planning stack.
 
 ## Integration Boundary

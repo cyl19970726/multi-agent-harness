@@ -1,8 +1,9 @@
 # Agent Workbench
 
 The Agent Workbench is the operator UI for Star Harness. Its job is to make
-Mission/Wave planning, executor state, assignment ownership, artifacts, gates,
-and capability gaps inspectable without raw JSON or provider transcripts.
+Mission/Wave Host planning, linked Agent Teams, execution state, assignment
+ownership, artifacts, advance decisions, and capability gaps inspectable
+without raw JSON or duplicated provider transcripts.
 
 `Agent Workbench` is the product name. `Agent Dashboard` remains a compatibility
 module/path name in `apps/agent-dashboard`, snapshots, and commands.
@@ -11,10 +12,11 @@ module/path name in `apps/agent-dashboard`, snapshots, and commands.
 
 ```text
 Mission
-  -> ordered Wave
-  -> executor attempt (agent_team | dynamic_workflow | host)
+  -> ordered Host-plan Wave
+  <-> independent Agent Team -> Mission-scoped TeamRun
+  -> Dynamic Workflow | Host work
   -> observable actions/messages/artifacts/outcome
-  -> Wave gate (accept | revise | blocked)
+  -> explicit Host Wave advance
   -> next Wave or Mission closeout
 ```
 
@@ -26,9 +28,9 @@ part of active navigation or authoring.
 
 | Question | Workbench answer |
 | --- | --- |
-| What durable outcome are we pursuing? | Mission header with objective, status, Wave progress, and closeout summary. |
-| What should happen next? | Ordered Wave list with objective, executor, gate, deviation, and next action. |
-| Which attempt is accepted? | Attempt lineage with status, artifacts, outcome, and explicit accepted run. |
+| What durable outcome are we pursuing? | Mission header with Markdown context, status, linked teams, and closeout summary. |
+| What should happen next? | Ordered Wave list with full Host context, revision, carry-over, outcome, and next action. |
+| Which execution is active? | Mission-linked TeamRuns/Workflows/Host work with honest native status; Wave does not own them. |
 | Who owns Agent Team work? | Assignment-message id/correlation, member lane, delivery/ACK, handoff, and review state. |
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
@@ -53,9 +55,10 @@ flowchart TD
 
   Missions --> Mission
   Mission --> Waves
-  Waves --> Team
-  Waves --> Workflow
-  Waves --> Host
+  Mission --> Team
+  Waves -. context .-> Team
+  Waves -. context .-> Workflow
+  Waves -. context .-> Host
   Team --> Member
   Team --> Artifacts
   Workflow --> Artifacts
@@ -71,8 +74,8 @@ flowchart TD
 | View | Purpose | Safe actions |
 | --- | --- | --- |
 | Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
-| Mission detail | Read durable intent, ordered Waves, attempts, and outcome. | create Wave, create/retry Agent Team attempt, open gate |
-| Wave timeline | Compare executor attempts and accepted outcome. | create Agent Team attempt, revise, accept, block |
+| Mission detail | Read durable context, linked teams, ordered Host-plan Waves, and outcome. | link/create team, create/update/advance Wave, close |
+| Wave timeline | Compare Host plan revisions, carry-over, evidence, and advance outcomes. | update/advance Wave, open linked execution |
 | Agent Team | Operate one collaborative Wave attempt. | start asynchronously, message, ACK/re-deliver, open member, request review |
 | Member detail | Inspect one MemberRun lane and its assignments/actions. | send control/question, review handoff |
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, attach result to gate |

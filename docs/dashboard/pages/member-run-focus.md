@@ -119,14 +119,15 @@ the recipient and permits a reply, clarification, or review request.
 The rail uses shared density variants (`micro`, `compact`, `panel`) rather
 than page-specific cards. Its default order is:
 
-1. **WaveCompact** — title/index, objective, executor, exit-criteria progress,
-   gate state, and open-Wave action.
+1. **WaveCompact** — the selected Host-plan Wave's title/index, objective,
+   revision, judgment state, and open-Wave action. For a Mission-scoped
+   TeamRun this is navigation/assignment context, not a parent runtime.
 2. **TeamCompact** — attempt identity, member status roll-up, one blocked or
    waiting signal, and open-war-room action.
 3. **AssignmentContract** — assignment sender/time/correlation, requested
    outcome, owned paths, permissions, and applicable constraints.
 4. **OutputsEvidence** — artifacts, checks, report, and contribution to the
-   parent Wave gate. It must label absent evidence honestly.
+   Host's current judgment. It must label absent evidence honestly.
 5. **RuntimeSummary** — provider/model/native-session binding, availability,
    resume compatibility, worktree, and actionable failure state. It is
    operational context, not the primary page.
@@ -141,7 +142,7 @@ reordering is not a requirement.
 - Send a message, clarification, handoff, or review request directly to this
   member when it is addressable.
 - Open the assignment anchor and other correlated messages.
-- Open parent Team or Wave without losing selection context.
+- Open the Team or selected Host-plan Wave without losing navigation context.
 - Open an artifact, check, or provider session summary.
 - Acknowledge a waiting/blocker signal where the message protocol permits it.
 - Resolve a provider question, tool approval, or plan review when the current
@@ -150,7 +151,8 @@ reordering is not a requirement.
 
 Do not offer fake lifecycle control. A stop/cancel action appears only after
 the provider exposes cooperative interruption and the backend can prove its
-outcome. Completion of the MemberRun is an attempt fact, not Wave acceptance.
+outcome. Completion of the MemberRun is an execution fact, not an implicit
+Wave advance.
 
 ## Empty, Loading, And Failure States
 
@@ -198,5 +200,6 @@ must remain immutable while awaiting explicit user approval.
 - It does not require or display a legacy dependency graph as the ownership model.
 - Provider-native subagents remain observed delegation unless the harness owns
   their lifecycle.
-- TeamRun completion only says that one attempt ended; the parent Wave gate is
-  the sole `accepted | revise | blocked` decision and names any accepted run.
+- TeamRun completion only says that one run ended. The Host separately records
+  `accepted | revise | blocked` judgment or advances the plan; a Wave does not
+  own or implicitly stop the MemberRun.

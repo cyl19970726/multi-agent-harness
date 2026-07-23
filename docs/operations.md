@@ -42,15 +42,17 @@ cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threa
 ```
 
 There is currently no packaged live-provider command. When a claim depends on
-a real provider, record the exact Mission, Wave, TeamRun, MemberRuns,
-assignment correlations, handoffs, artifacts, and accepted Wave gate from the
-live run. Do not present deterministic provider-shim tests as live proof.
+a real provider, record the exact Mission, selected Host-plan Wave revision,
+Mission-scoped TeamRun, MemberRuns, provider-native session ids, assignment
+correlations (including `origin_wave_id` when useful), handoffs, artifacts, and
+Host judgment from the live run. Do not present deterministic provider-shim
+tests as live proof.
 
 For Kimi ACP members, `--member name:role:kimi:<model-alias>` is applied with
 ACP `session/set_config_option` before the first prompt. The alias must exist in
 the active Kimi Code configuration; a recorded name alone is never proof of the
 model actually used. Keep scarce-provider review lanes narrow and inspect the
-MemberRun plus provider output before accepting the Wave.
+MemberRun plus provider output before advancing or accepting the Host plan.
 
 The retired `acceptance:mvp*` and `acceptance:autonomous-team` commands belonged
 to the superseded Goal/GoalPhase planning stack and are intentionally not part
@@ -62,23 +64,19 @@ Start the operator surface with an explicit Workspace selection:
 harness serve --addr 127.0.0.1:8787
 ```
 
-The first CLI is available through Cargo:
+The current Mission/Team authoring path is available through Cargo:
 
 ```bash
 cargo run -p harness-cli -- --help
 cargo run -p harness-cli -- init
-cargo run -p harness-cli -- agent health --id <agent>
-cargo run -p harness-cli -- git status --task <task>
-cargo run -p harness-cli -- proposal from-diff --task <task> --agent <agent> --worktree <path> --title <title> --summary <text> --check-cmd "cargo test"
-cargo run -p harness-cli -- review gate --task <task> --reviewer <agent> --decision accept --rationale <text> --evidence <id>
-cargo run -p harness-cli -- agent gateway --once --dry-run
-cargo run -p harness-cli -- autonomy plan-next --goal <goal> --task <task> --observer <agent> --lead <agent>
-cargo run -p harness-cli -- autonomy decide --task <task> --lead <agent> --proposal <evidence> --decision accept --rationale <text>
-cargo run -p harness-cli -- autonomy tick --observer <agent> --lead <agent> --goal <goal> --auto-accept --assignee <agent> --reviewer <agent> --vision-ref <path> --dry-run
-cargo run -p harness-cli -- autonomy loop --iterations 2 --observer <agent> --lead <agent> --auto-accept --assignee <agent> --reviewer <agent> --vision-ref <path> --dry-run
-cargo run -p harness-cli -- agent gateway --start-runtime
+cargo run -p harness-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
+cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose>
+cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
+cargo run -p harness-cli -- team-run create --mission-id <mission-id> --agent-team-id <team-id> --objective <objective> --member name:role:provider
+cargo run -p harness-cli -- team-run start --id <team-run-id>
+cargo run -p harness-cli -- wave advance --id <wave-id> --outcome "<host-decision>" --advanced-by host
+cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <next-title> --objective <next-objective> --context "<next-wave-markdown>"
 cargo run -p harness-cli -- dashboard snapshot
-cargo run -p harness-cli -- board
 cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
 ```
 

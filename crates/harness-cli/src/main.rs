@@ -1,6 +1,6 @@
 #![recursion_limit = "256"]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -1275,7 +1275,10 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "team create|list|show|close")?;
+    require_subcommand(
+        args,
+        "team create|list|show|rename|add-member|remove-member|close|archive",
+    )?;
     match args[0].as_str() {
         "create" => {
             let team = AgentTeam {
@@ -1305,12 +1308,57 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
             print_json(&team)?;
         }
+        "rename" => {
+            let id = required(args, "--id")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            team.name = required(args, "--name")?;
+            if let Some(description) = value(args, "--description") {
+                team.description = description;
+            }
+            team.updated_at = now_string();
+            store.append_team(&team)?;
+            print_json(&team)?;
+        }
+        "add-member" | "remove-member" => {
+            let id = required(args, "--id")?;
+            let member_id = required(args, "--member")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            if args[0] == "add-member" {
+                if !latest_members(store)?.contains_key(&member_id) {
+                    return Err(CliError::Usage(format!(
+                        "agent member not found: {member_id}"
+                    )));
+                }
+                if !team.member_ids.iter().any(|id| id == &member_id) {
+                    team.member_ids.push(member_id);
+                }
+            } else {
+                team.member_ids.retain(|id| id != &member_id);
+            }
+            team.updated_at = now_string();
+            store.append_team(&team)?;
+            print_json(&team)?;
+        }
         "close" => {
             let id = required(args, "--id")?;
             let mut team = latest_teams(store)?
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
             team.status = AgentTeamStatus::Closed;
+            team.updated_at = now_string();
+            store.append_team(&team)?;
+            print_json(&team)?;
+        }
+        "archive" => {
+            let id = required(args, "--id")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            team.status = AgentTeamStatus::Archived;
             team.updated_at = now_string();
             store.append_team(&team)?;
             print_json(&team)?;
@@ -1325,7 +1373,10 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 // ---------------------------------------------------------------------------
 
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission create|list|show|close")?;
+    require_subcommand(
+        args,
+        "mission create|list|show|update-context|create-team|link-team|unlink-team|close",
+    )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
@@ -1335,6 +1386,7 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 &required(args, "--title")?,
                 &required(args, "--objective")?,
                 value(args, "--desired-outcome"),
+                value(args, "--context"),
             )?;
             if json {
                 print_json(&mission)?;
@@ -1352,6 +1404,39 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
             print_json(&mission)?;
         }
+        "update-context" => print_json(&revise_mission_context(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--context")?,
+        )?)?,
+        "link-team" => print_json(&revise_mission_team_link(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--team-id")?,
+            true,
+        )?)?,
+        "create-team" => {
+            let team = AgentTeam {
+                id: value(args, "--team-id").unwrap_or_else(|| generated_id("team")),
+                name: required(args, "--name")?,
+                description: required(args, "--description")?,
+                owner_agent_id: value(args, "--owner").unwrap_or_else(|| "host".to_string()),
+                status: AgentTeamStatus::Active,
+                member_ids: many(args, "--member"),
+                created_at: now_string(),
+                updated_at: now_string(),
+            };
+            persist_new_team(store, &team)?;
+            let mission =
+                revise_mission_team_link(store, &required(args, "--id")?, &team.id, true)?;
+            print_json(&serde_json::json!({"mission": mission, "team": team}))?;
+        }
+        "unlink-team" => print_json(&revise_mission_team_link(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--team-id")?,
+            false,
+        )?)?,
         "close" => {
             let mission = close_mission(
                 store,
@@ -1370,9 +1455,10 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Complete durable Mission intent only after every ordered Wave has settled
-/// through an accepted gate. Closeout is idempotent for the same outcome and
-/// immutable for a conflicting second outcome.
+/// Complete durable Mission intent only after every ordered Wave has an
+/// explicit Host advance outcome (stored in the compatible accepted-gate
+/// fields). Closeout is idempotent for the same outcome and immutable for a
+/// conflicting second outcome. It never changes linked Team lifecycle.
 pub(crate) fn close_mission(
     store: &HarnessStore,
     mission_id: &str,
@@ -1417,7 +1503,7 @@ pub(crate) fn close_mission(
 }
 
 fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "wave create|list|show|gate")?;
+    require_subcommand(args, "wave create|list|show|history|update|advance|gate")?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
@@ -1434,9 +1520,13 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     .transpose()?,
                 &required(args, "--title")?,
                 &required(args, "--objective")?,
-                parse_wave_executor_kind(&required(args, "--executor-kind")?)?,
+                parse_wave_executor_kind(
+                    &value(args, "--executor-kind").unwrap_or_else(|| "host".to_string()),
+                )?,
                 value(args, "--exit-criteria"),
                 value(args, "--plan-note"),
+                value(args, "--context"),
+                value(args, "--updated-by"),
             )?;
             if json {
                 print_json(&wave)?;
@@ -1458,6 +1548,31 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&waves)?;
         }
         "show" => print_json(&latest_wave(store, &required(args, "--id")?)?)?,
+        "history" => {
+            let id = required(args, "--id")?;
+            let history = store
+                .waves()?
+                .into_iter()
+                .filter(|wave| wave.id == id)
+                .collect::<Vec<_>>();
+            if history.is_empty() {
+                return Err(CliError::Usage(format!("wave not found: {id}")));
+            }
+            print_json(&history)?;
+        }
+        "update" => print_json(&revise_wave(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--context")?,
+            &value(args, "--updated-by").unwrap_or_else(|| "host".to_string()),
+        )?)?,
+        "advance" => print_json(&advance_wave(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--outcome")?,
+            &value(args, "--advanced-by").unwrap_or_else(|| "host".to_string()),
+            many(args, "--artifact"),
+        )?)?,
         "gate" => {
             let wave = gate_wave(
                 store,
@@ -1488,6 +1603,7 @@ pub(crate) fn create_mission(
     title: &str,
     objective: &str,
     desired_outcome: Option<String>,
+    context: Option<String>,
 ) -> CliResult<Mission> {
     let id = id.unwrap_or_else(|| generated_id("mission"));
     if id.trim().is_empty() {
@@ -1516,9 +1632,11 @@ pub(crate) fn create_mission(
         id,
         title: title.to_string(),
         objective: objective.to_string(),
+        context: context.unwrap_or_default(),
         desired_outcome,
         status: MissionStatus::Planned,
         wave_ids: Vec::new(),
+        agent_team_ids: Vec::new(),
         outcome_summary: None,
         completed_by: None,
         created_at: now_string(),
@@ -1526,6 +1644,74 @@ pub(crate) fn create_mission(
         completed_at: None,
     };
     store_conflict_as_usage(store.insert_mission(&mission))?;
+    Ok(mission)
+}
+
+pub(crate) fn revise_mission_context(
+    store: &HarnessStore,
+    mission_id: &str,
+    context: &str,
+) -> CliResult<Mission> {
+    if context.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission context must not be empty".to_string(),
+        ));
+    }
+    let mut mission = store
+        .latest_missions()?
+        .into_iter()
+        .find(|mission| mission.id == mission_id)
+        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+    if matches!(
+        mission.status,
+        MissionStatus::Completed | MissionStatus::Cancelled
+    ) {
+        return Err(CliError::Usage(format!(
+            "mission {mission_id} is terminal and cannot be revised"
+        )));
+    }
+    let expected = mission.clone();
+    mission.context = context.to_string();
+    mission.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_mission(&expected, &mission))?;
+    Ok(mission)
+}
+
+pub(crate) fn revise_mission_team_link(
+    store: &HarnessStore,
+    mission_id: &str,
+    team_id: &str,
+    link: bool,
+) -> CliResult<Mission> {
+    if team_id.trim().is_empty() {
+        return Err(CliError::Usage("team id must not be empty".to_string()));
+    }
+    let mut mission = store
+        .latest_missions()?
+        .into_iter()
+        .find(|mission| mission.id == mission_id)
+        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+    if matches!(
+        mission.status,
+        MissionStatus::Completed | MissionStatus::Cancelled
+    ) {
+        return Err(CliError::Usage(format!(
+            "mission {mission_id} is terminal and its team relations are immutable"
+        )));
+    }
+    let expected = mission.clone();
+    if link {
+        if !latest_teams(store)?.contains_key(team_id) {
+            return Err(CliError::Usage(format!("team not found: {team_id}")));
+        }
+        if !mission.agent_team_ids.iter().any(|id| id == team_id) {
+            mission.agent_team_ids.push(team_id.to_string());
+        }
+    } else {
+        mission.agent_team_ids.retain(|id| id != team_id);
+    }
+    mission.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_mission(&expected, &mission))?;
     Ok(mission)
 }
 
@@ -1543,6 +1729,8 @@ pub(crate) fn create_wave(
     executor_kind: WaveExecutorKind,
     exit_criteria: Option<String>,
     plan_note: Option<String>,
+    context: Option<String>,
+    updated_by: Option<String>,
 ) -> CliResult<Wave> {
     if mission_id.trim().is_empty() || title.trim().is_empty() || objective.trim().is_empty() {
         return Err(CliError::Usage(
@@ -1574,6 +1762,9 @@ pub(crate) fn create_wave(
         index: index.unwrap_or(0),
         title: title.to_string(),
         objective: objective.to_string(),
+        context: context.unwrap_or_default(),
+        revision: 1,
+        updated_by: Some(updated_by.unwrap_or_else(|| "host".to_string())),
         exit_criteria,
         status: WaveStatus::Planned,
         executor_kind,
@@ -1590,6 +1781,71 @@ pub(crate) fn create_wave(
         updated_at: now,
     };
     store_conflict_as_usage(store.insert_wave_and_update_mission(wave, index, &now_string()))
+}
+
+pub(crate) fn revise_wave(
+    store: &HarnessStore,
+    wave_id: &str,
+    context: &str,
+    updated_by: &str,
+) -> CliResult<Wave> {
+    if context.trim().is_empty() || updated_by.trim().is_empty() {
+        return Err(CliError::Usage(
+            "wave context and updated-by actor must not be empty".to_string(),
+        ));
+    }
+    let mut wave = latest_wave(store, wave_id)?;
+    if matches!(
+        wave.status,
+        WaveStatus::Completed | WaveStatus::Cancelled | WaveStatus::Failed
+    ) {
+        return Err(CliError::Usage(format!(
+            "wave {wave_id} is terminal and cannot be revised"
+        )));
+    }
+    let expected = wave.clone();
+    wave.context = context.to_string();
+    wave.revision = wave.revision.max(1).saturating_add(1);
+    wave.updated_by = Some(updated_by.to_string());
+    wave.status = WaveStatus::Running;
+    wave.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
+    Ok(wave)
+}
+
+/// Record the Host's decision to advance its operational plan. Active members,
+/// assignments, and provider sessions intentionally remain untouched.
+pub(crate) fn advance_wave(
+    store: &HarnessStore,
+    wave_id: &str,
+    outcome: &str,
+    advanced_by: &str,
+    artifact_refs: Vec<String>,
+) -> CliResult<Wave> {
+    if outcome.trim().is_empty()
+        || advanced_by.trim().is_empty()
+        || artifact_refs.iter().any(|value| value.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "wave advance outcome, actor, and artifact refs must not be empty".to_string(),
+        ));
+    }
+    let mut wave = latest_wave(store, wave_id)?;
+    if wave.status == WaveStatus::Completed && wave.gate_status == WaveGateStatus::Accepted {
+        return Ok(wave);
+    }
+    let expected = wave.clone();
+    let now = now_string();
+    wave.status = WaveStatus::Completed;
+    wave.gate_status = WaveGateStatus::Accepted;
+    wave.outcome_summary = Some(outcome.to_string());
+    wave.artifact_refs = artifact_refs;
+    wave.accepted_by = Some(advanced_by.to_string());
+    wave.accepted_at = Some(now.clone());
+    wave.updated_by = Some(advanced_by.to_string());
+    wave.updated_at = now;
+    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
+    Ok(wave)
 }
 
 /// Apply the lightweight Wave gate. This is deliberately separate from the
@@ -1829,6 +2085,39 @@ struct TeamMemberSpec {
     worktree_ref: Option<String>,
     owned_paths: Vec<String>,
     resume_native_session_id: Option<String>,
+}
+
+fn team_member_specs_from_definition(
+    store: &HarnessStore,
+    team_id: &str,
+) -> CliResult<Vec<TeamMemberSpec>> {
+    let team = latest_teams(store)?
+        .remove(team_id)
+        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+    let members = latest_members(store)?;
+    team.member_ids
+        .iter()
+        .map(|member_id| {
+            let member = members.get(member_id).ok_or_else(|| {
+                CliError::Usage(format!(
+                    "team {team_id} references missing agent member {member_id}"
+                ))
+            })?;
+            Ok(TeamMemberSpec {
+                name: member.name.clone(),
+                role: member.role.clone(),
+                provider: member.provider.clone(),
+                execution_mode: None,
+                model: member.model.clone(),
+                worktree_ref: member.worktree_ref.clone(),
+                owned_paths: Vec::new(),
+                resume_native_session_id: member
+                    .native_session
+                    .as_ref()
+                    .map(|session| session.native_session_id.clone()),
+            })
+        })
+        .collect()
 }
 
 fn team_member_provider_profile(provider: &str) -> ProviderIntegrationProfile {
@@ -2205,6 +2494,62 @@ struct CreatedTeamRun {
     assignment_messages: Vec<TeamMessage>,
 }
 
+fn build_member_run_for_team(
+    project_context: Option<&ProjectContext>,
+    team_run_id: &str,
+    member: &TeamMemberSpec,
+) -> CliResult<MemberRun> {
+    let profile =
+        team_member_provider_profile_for_mode(&member.provider, member.execution_mode.as_deref());
+    let native_session =
+        member
+            .resume_native_session_id
+            .as_ref()
+            .map(|session_id| NativeSessionRef {
+                provider: member.provider.clone(),
+                execution_mode: profile.execution_mode.clone(),
+                native_session_id: session_id.clone(),
+                native_locator_kind: match member.provider.as_str() {
+                    "codex" => "codex_rollout",
+                    "kimi" => "kimi_code_session",
+                    "claude" => "claude_project_session",
+                    _ => "provider_native",
+                }
+                .to_string(),
+                provider_version: profile.provider_version.clone(),
+                adapter_contract_version: profile
+                    .adapter_contract_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                availability: NativeSessionAvailability::Unknown,
+                supports_resume: profile.supports_resume,
+                last_verified_at: None,
+                parent_native_session_id: Some(session_id.clone()),
+            });
+    Ok(MemberRun {
+        id: generated_id("member-run"),
+        team_run_id: team_run_id.to_string(),
+        slot_id: None,
+        name: member.name.clone(),
+        role: member.role.clone(),
+        provider: member.provider.clone(),
+        model: member.model.clone(),
+        provider_profile: Some(profile),
+        status: MemberRunStatus::Idle,
+        native_session,
+        worktree_ref: member
+            .worktree_ref
+            .as_deref()
+            .map(|value| validate_workspace_override(project_context, value, "member worktree_ref"))
+            .transpose()?,
+        workspace_snapshot: None,
+        owned_paths: member.owned_paths.clone(),
+        started_at: now_string(),
+        last_event_at: None,
+        finished_at: None,
+    })
+}
+
 fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
     serde_json::json!({
         "team_run": created.team_run,
@@ -2217,8 +2562,9 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 /// MemberRun per member, one queued assignment TeamMessage per member
 /// (from the reserved "host" sender), and a folded TeamRunEvent per created
 /// entity (host-sourced, seq increasing). Shared by the `team-run create` CLI
-/// arm and POST /v1/team-runs. `previous_run_id` records retry lineage. For a
-/// native Wave it must name an earlier attempt of that same Mission/Wave.
+/// arm and POST /v1/team-runs. `previous_run_id` records explicit retry
+/// lineage. It must remain inside the same Mission/Team relation; historical
+/// direct-Wave retries additionally remain inside that exact Wave.
 #[allow(clippy::too_many_arguments)]
 fn create_team_run(
     store: &HarnessStore,
@@ -2229,6 +2575,7 @@ fn create_team_run(
     host_surface: &str,
     host_thread_id: Option<String>,
     previous_run_id: Option<String>,
+    agent_team_id: Option<String>,
     mission_id: Option<String>,
     wave_id: Option<String>,
     members: &[TeamMemberSpec],
@@ -2314,8 +2661,28 @@ fn create_team_run(
         }
     }
     let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
-    // A wave chained onto a previous run must name a run that exists. Linked
-    // retries must stay inside the exact same native Mission/Wave.
+    if let Some(team_id) = agent_team_id.as_deref() {
+        let team = latest_teams(store)?
+            .remove(team_id)
+            .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+        if team.status != AgentTeamStatus::Active {
+            return Err(CliError::Usage(format!("team {team_id} is not active")));
+        }
+        if let Some(mission_id) = mission_id.as_deref() {
+            let mission = store
+                .latest_missions()?
+                .into_iter()
+                .find(|mission| mission.id == mission_id)
+                .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+            if !mission.agent_team_ids.iter().any(|id| id == team_id) {
+                return Err(CliError::Usage(format!(
+                    "team {team_id} is not linked to mission {mission_id}; run `harness mission link-team` first"
+                )));
+            }
+        }
+    }
+    // Retry lineage never crosses Mission or stable Team identity. Historical
+    // direct-Wave retries also stay inside that exact Wave.
     if let Some(previous) = previous_run_id.as_deref() {
         let previous = latest_team_run(store, previous)?;
         if let Some(wave) = wave.as_ref() {
@@ -2327,71 +2694,33 @@ fn create_team_run(
                     previous.id, wave.mission_id, wave.id
                 )));
             }
+        } else {
+            if previous.mission_id != mission_id {
+                return Err(CliError::Usage(format!(
+                    "previous run {} is not in the same mission",
+                    previous.id
+                )));
+            }
+            if previous.agent_team_id != agent_team_id {
+                return Err(CliError::Usage(format!(
+                    "previous run {} is not for the same agent team",
+                    previous.id
+                )));
+            }
         }
     }
     let run_id = generated_id("team-run");
     let mut member_runs = Vec::new();
     let mut member_run_ids = Vec::new();
     for member in members {
-        let profile = team_member_provider_profile_for_mode(
-            &member.provider,
-            member.execution_mode.as_deref(),
-        );
-        let native_session =
-            member
-                .resume_native_session_id
-                .as_ref()
-                .map(|session_id| NativeSessionRef {
-                    provider: member.provider.clone(),
-                    execution_mode: profile.execution_mode.clone(),
-                    native_session_id: session_id.clone(),
-                    native_locator_kind: match member.provider.as_str() {
-                        "codex" => "codex_rollout",
-                        "kimi" => "kimi_code_session",
-                        "claude" => "claude_project_session",
-                        _ => "provider_native",
-                    }
-                    .to_string(),
-                    provider_version: profile.provider_version.clone(),
-                    adapter_contract_version: profile
-                        .adapter_contract_version
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    availability: NativeSessionAvailability::Unknown,
-                    supports_resume: profile.supports_resume,
-                    last_verified_at: None,
-                    parent_native_session_id: Some(session_id.clone()),
-                });
-        let member_run = MemberRun {
-            id: generated_id("member-run"),
-            team_run_id: run_id.clone(),
-            slot_id: None,
-            name: member.name.clone(),
-            role: member.role.clone(),
-            provider: member.provider.clone(),
-            model: member.model.clone(),
-            provider_profile: Some(profile),
-            status: MemberRunStatus::Idle,
-            native_session,
-            worktree_ref: member
-                .worktree_ref
-                .as_deref()
-                .map(|value| {
-                    validate_workspace_override(project_context, value, "member worktree_ref")
-                })
-                .transpose()?,
-            workspace_snapshot: None,
-            owned_paths: member.owned_paths.clone(),
-            started_at: now_string(),
-            last_event_at: None,
-            finished_at: None,
-        };
+        let member_run = build_member_run_for_team(project_context, &run_id, member)?;
         member_run_ids.push(member_run.id.clone());
         member_runs.push(member_run);
     }
     let team_run = AgentTeamRun {
         id: run_id.clone(),
-        definition_id: None,
+        definition_id: agent_team_id.clone(),
+        agent_team_id,
         previous_run_id,
         mission_id,
         wave_id,
@@ -2445,6 +2774,7 @@ fn create_team_run(
         let message = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: run_id.clone(),
+            origin_wave_id: team_run.wave_id.clone(),
             from_member_id: "host".to_string(),
             to_member_ids: vec![member_run.id.clone()],
             kind: TeamMessageKind::Assignment,
@@ -2487,9 +2817,203 @@ fn create_team_run(
     })
 }
 
-/// Validate optional outer Mission/Wave joins for a new AgentTeamRun. A Wave
-/// is owned by one native Mission, so `--wave-id` can safely supply a missing
-/// mission id; conflicting or unknown joins fail before any run rows append.
+fn add_team_run_member(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    team_run_id: &str,
+    member: &TeamMemberSpec,
+    assignment: &str,
+    origin_wave_id: Option<String>,
+) -> CliResult<(AgentTeamRun, MemberRun, TeamMessage)> {
+    if assignment.trim().is_empty() {
+        return Err(CliError::Usage(
+            "new member assignment must not be empty".to_string(),
+        ));
+    }
+    let current = latest_team_run(store, team_run_id)?;
+    if !matches!(
+        current.status,
+        TeamRunStatus::Planning | TeamRunStatus::Running | TeamRunStatus::Waiting
+    ) {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} is {} and cannot accept a member",
+            serde_snake_label(&current.status)
+        )));
+    }
+    if latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .any(|existing| existing.team_run_id == team_run_id && existing.name == member.name)
+    {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} already has a member named {}",
+            member.name
+        )));
+    }
+    let member_run = build_member_run_for_team(project_context, team_run_id, member)?;
+    let mut next = current.clone();
+    next.member_run_ids.push(member_run.id.clone());
+    next.updated_at = now_string();
+    let linked_wave_status = match current.status {
+        TeamRunStatus::Planning => WaveStatus::Planned,
+        TeamRunStatus::Running => WaveStatus::Running,
+        TeamRunStatus::Waiting | TeamRunStatus::Reviewing => WaveStatus::Waiting,
+        TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled => {
+            WaveStatus::Completed
+        }
+    };
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &current,
+        &next,
+        linked_wave_status,
+        &now_string(),
+    ))?;
+    store.append_member_run(&member_run)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Host,
+        Some(member_run.id.clone()),
+        "member_run",
+        &member_run.id,
+        "created",
+        &format!(
+            "member {} ({}/{}) joined an existing run",
+            member_run.name, member_run.role, member_run.provider
+        ),
+    )?;
+    let message = send_team_message(
+        store,
+        team_run_id,
+        "host",
+        vec![member_run.id.clone()],
+        TeamMessageKind::Assignment,
+        assignment,
+        None,
+        None,
+        origin_wave_id,
+    )?;
+    Ok((next, member_run, message))
+}
+
+fn rename_team_run_member(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    name: &str,
+) -> CliResult<MemberRun> {
+    if name.trim().is_empty() {
+        return Err(CliError::Usage(
+            "member display name must not be empty".to_string(),
+        ));
+    }
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let members = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    if members
+        .iter()
+        .any(|member| member.id != member_run_id && member.name == name)
+    {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} already has a member named {name}"
+        )));
+    }
+    let mut member = members
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.name == name {
+        return Ok(member);
+    }
+    let previous_name = member.name.clone();
+    member.name = name.to_string();
+    member.last_event_at = Some(now_string());
+    store.append_member_run(&member)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "renamed",
+        &format!("member {previous_name} renamed to {name}"),
+    )?;
+    Ok(member)
+}
+
+fn deactivate_team_run_member(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    reason: &str,
+) -> CliResult<MemberRun> {
+    if reason.trim().is_empty() {
+        return Err(CliError::Usage(
+            "member deactivation reason must not be empty".to_string(),
+        ));
+    }
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let mut member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.status == MemberRunStatus::Stopped {
+        return Ok(member);
+    }
+    if matches!(
+        member.status,
+        MemberRunStatus::Starting | MemberRunStatus::Running
+    ) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is {}; interrupt its provider turn first, then deactivate it",
+            serde_snake_label(&member.status)
+        )));
+    }
+    if matches!(
+        member.status,
+        MemberRunStatus::Completed | MemberRunStatus::Failed
+    ) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is already terminal ({})",
+            serde_snake_label(&member.status)
+        )));
+    }
+    let now = now_string();
+    member.status = MemberRunStatus::Stopped;
+    member.last_event_at = Some(now.clone());
+    member.finished_at = Some(now);
+    store.append_member_run(&member)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "deactivated",
+        &format!("member {} deactivated: {reason}", member.name),
+    )?;
+    Ok(member)
+}
+
+/// Validate optional outer Mission/Wave joins for a new AgentTeamRun.
+/// Mission-only is the primary long-lived-team path. Supplying a Wave retains
+/// legacy direct-executor compatibility and can derive its Mission.
 fn resolve_team_run_mission_wave(
     store: &HarnessStore,
     mission_id: Option<String>,
@@ -2506,13 +3030,6 @@ fn resolve_team_run_mission_wave(
         ));
     }
     let mut mission_id = mission_id;
-
-    if mission_id.is_some() && wave_id.is_none() {
-        return Err(CliError::Usage(
-            "a native Mission-linked TeamRun requires --wave-id; omit both ids only for an unlinked compatibility run"
-                .to_string(),
-        ));
-    }
 
     if mission_id.is_some()
         && !store.latest_missions()?.iter().any(|mission| {
@@ -2580,6 +3097,7 @@ fn send_team_message(
     body: &str,
     correlation_id: Option<String>,
     causation_id: Option<String>,
+    origin_wave_id: Option<String>,
 ) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
@@ -2612,11 +3130,26 @@ fn send_team_message(
             )));
         }
     }
+    if let Some(origin_wave_id) = origin_wave_id.as_deref() {
+        let mission_id = run.mission_id.as_deref().ok_or_else(|| {
+            CliError::Usage(format!(
+                "origin_wave_id requires team run {team_run_id} to be linked to a Mission"
+            ))
+        })?;
+        let wave = latest_wave(store, origin_wave_id)?;
+        if wave.mission_id != mission_id {
+            return Err(CliError::Usage(format!(
+                "origin Wave {origin_wave_id} belongs to Mission {}, not TeamRun Mission {mission_id}",
+                wave.mission_id
+            )));
+        }
+    }
     let (correlation_id, causation_id) =
         resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
     let message = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
+        origin_wave_id,
         from_member_id: from_member_id.to_string(),
         to_member_ids: to_member_ids.clone(),
         kind,
@@ -3000,15 +3533,21 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|start|send|resolve-interaction|events|complete|cancel",
+        "team-run create|list|status|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
+            let agent_team_id = value(args, "--agent-team-id");
             let mut members: Vec<TeamMemberSpec> = many(args, "--member")
                 .iter()
                 .map(|raw| parse_team_member_spec(raw))
                 .collect::<CliResult<_>>()?;
+            if members.is_empty() {
+                if let Some(team_id) = agent_team_id.as_deref() {
+                    members = team_member_specs_from_definition(store, team_id)?;
+                }
+            }
             for resume in many(args, "--resume-member") {
                 let (name, session_id) = resume.split_once(':').ok_or_else(|| {
                     CliError::Usage("--resume-member expects name:native-session-id".to_string())
@@ -3048,6 +3587,7 @@ fn team_run_command(
                 &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
                 value(args, "--host-thread-id"),
                 value(args, "--previous"),
+                agent_team_id,
                 value(args, "--mission-id"),
                 value(args, "--wave-id"),
                 &members,
@@ -3224,6 +3764,7 @@ fn team_run_command(
                 &required(args, "--body")?,
                 value(args, "--correlation-id"),
                 value(args, "--causation-id"),
+                value(args, "--origin-wave-id"),
             )?;
             if json {
                 print_json(&message)?;
@@ -3231,6 +3772,34 @@ fn team_run_command(
                 println!("{}", message.id);
             }
         }
+        "add-member" => {
+            let member = parse_team_member_spec(&required(args, "--member")?)?;
+            let (run, member, assignment) = add_team_run_member(
+                store,
+                resolved.context.as_ref(),
+                &required(args, "--id")?,
+                &member,
+                &required(args, "--assignment")?,
+                value(args, "--origin-wave-id"),
+            )?;
+            print_json(&serde_json::json!({
+                "team_run": run,
+                "member_run": member,
+                "assignment": assignment,
+            }))?;
+        }
+        "rename-member" => print_json(&rename_team_run_member(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &required(args, "--name")?,
+        )?)?,
+        "deactivate-member" => print_json(&deactivate_team_run_member(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &required(args, "--reason")?,
+        )?)?,
         "start" => {
             // Foreground orchestration: this process is the WRITER driving
             // member sessions; `harness serve` stays the read/broadcast side.
@@ -3744,51 +4313,112 @@ pub(crate) fn drive_prepared_team_run(
         ledger,
     } = prepared;
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
-    let mut handles = Vec::new();
-    for mut member in members {
-        let ledger = Arc::clone(&ledger);
-        let semaphore = Arc::clone(&semaphore);
-        let objective = objective.clone();
-        let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
-        member.workspace_snapshot = Some(snapshot_member_workspace(&cwd));
-        ledger.save_member_run(&member)?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Host,
-            Some(member.id.clone()),
-            "member_run",
-            &member.id,
-            "workspace_snapshot",
-            &format!("member workspace resolved to {}", cwd.display()),
-        )?;
-        let handle_member = member.clone();
-        let live_sink = live_sink.clone();
-        let handle = std::thread::spawn(move || {
-            let _permit = semaphore.acquire();
-            run_member_orchestration(
-                &ledger,
-                &objective,
-                handle_member,
-                &cwd,
-                idle_timeout,
-                live_sink,
-            )
-        });
-        handles.push((member, handle));
-    }
-
+    let mut queued = members;
+    let mut seen_member_ids = HashSet::new();
     let mut outcomes = Vec::new();
-    for (member, handle) in handles {
-        match handle.join() {
-            Ok(outcome) => outcomes.push(outcome),
-            Err(_) => {
-                // A panicked member thread must not take the run down with it.
-                journal_member_failure(&ledger, &member, "orchestration thread panicked");
-                outcomes.push(MemberOutcome::new(
-                    &member,
-                    MemberRunStatus::Failed,
-                    "orchestration thread panicked".to_string(),
-                ));
+    loop {
+        let mut handles = Vec::new();
+        for mut member in queued.drain(..) {
+            seen_member_ids.insert(member.id.clone());
+            let member_ledger = Arc::clone(&ledger);
+            let member_semaphore = Arc::clone(&semaphore);
+            let member_objective = objective.clone();
+            let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
+            member.workspace_snapshot = Some(snapshot_member_workspace(&cwd));
+            member_ledger.save_member_run(&member)?;
+            member_ledger.fold_event(
+                TeamRunEventSourceKind::Host,
+                Some(member.id.clone()),
+                "member_run",
+                &member.id,
+                "workspace_snapshot",
+                &format!("member workspace resolved to {}", cwd.display()),
+            )?;
+            let handle_member = member.clone();
+            let member_live_sink = live_sink.clone();
+            let handle = std::thread::spawn(move || {
+                let _permit = member_semaphore.acquire();
+                run_member_orchestration(
+                    &member_ledger,
+                    &member_objective,
+                    handle_member,
+                    &cwd,
+                    idle_timeout,
+                    member_live_sink,
+                )
+            });
+            handles.push((member, handle));
+        }
+
+        for (member, handle) in handles {
+            match handle.join() {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(_) => {
+                    journal_member_failure(&ledger, &member, "orchestration thread panicked");
+                    outcomes.push(MemberOutcome::new(
+                        &member,
+                        MemberRunStatus::Failed,
+                        "orchestration thread panicked".to_string(),
+                    ));
+                }
             }
+        }
+
+        let current = latest_team_run(&ledger.store, &run_id)?;
+        queued = latest_member_runs_in_append_order(&ledger.store)?
+            .into_iter()
+            .filter(|member| member.team_run_id == run_id && !seen_member_ids.contains(&member.id))
+            .collect();
+        if !queued.is_empty() {
+            ledger.fold_event(
+                TeamRunEventSourceKind::Host,
+                None,
+                "team_run",
+                &run_id,
+                "updated",
+                &format!("{} member(s) joined while the run was active", queued.len()),
+            )?;
+            continue;
+        }
+
+        // Terminalize against the latest run row. If an add-member CAS lands
+        // between this read and our write, retry and execute the new member
+        // rather than losing it or ending the run early.
+        let any_unfinished = outcomes
+            .iter()
+            .any(|outcome| outcome.status != MemberRunStatus::Completed);
+        let final_status = if any_unfinished {
+            TeamRunStatus::Reviewing
+        } else {
+            TeamRunStatus::Completed
+        };
+        let mut finished = current.clone();
+        finished.status = final_status;
+        finished.updated_at = now_string();
+        if final_status == TeamRunStatus::Completed {
+            finished.completed_at = Some(now_string());
+        }
+        match ledger.store.compare_and_append_team_run_with_wave_status(
+            &current,
+            &finished,
+            WaveStatus::Waiting,
+            &now_string(),
+        ) {
+            Ok(()) => break,
+            Err(StoreError::Conflict(_)) => {
+                queued = latest_member_runs_in_append_order(&ledger.store)?
+                    .into_iter()
+                    .filter(|member| {
+                        member.team_run_id == run_id && !seen_member_ids.contains(&member.id)
+                    })
+                    .collect();
+                if queued.is_empty() {
+                    return Err(CliError::Usage(format!(
+                        "team run {run_id} changed concurrently; inspect status before retrying"
+                    )));
+                }
+            }
+            Err(error) => return Err(error.into()),
         }
     }
 
@@ -3808,18 +4438,6 @@ pub(crate) fn drive_prepared_team_run(
         .iter()
         .filter(|outcome| outcome.status == MemberRunStatus::Completed)
         .count();
-    let mut finished = running.clone();
-    finished.status = final_status;
-    finished.updated_at = now_string();
-    if final_status == TeamRunStatus::Completed {
-        finished.completed_at = Some(now_string());
-    }
-    store_conflict_as_usage(ledger.store.compare_and_append_team_run_with_wave_status(
-        &running,
-        &finished,
-        WaveStatus::Waiting,
-        &now_string(),
-    ))?;
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -4038,6 +4656,9 @@ fn run_codex_member(
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
+            origin_wave_id: assignment
+                .as_ref()
+                .and_then(|message| message.origin_wave_id.clone()),
             from_member_id: member.id.clone(),
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Handoff,
@@ -4606,6 +5227,9 @@ fn run_claude_team_member(
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
+            origin_wave_id: assignment
+                .as_ref()
+                .and_then(|message| message.origin_wave_id.clone()),
             from_member_id: member.id.clone(),
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Handoff,
@@ -5026,6 +5650,9 @@ fn run_kimi_member(
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
+            origin_wave_id: assignment
+                .as_ref()
+                .and_then(|message| message.origin_wave_id.clone()),
             from_member_id: member.id.clone(),
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Handoff,
@@ -7142,6 +7769,49 @@ fn handle_http_action(
     {
         return close_mission_value(store, mission_id, body);
     }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/teams"))
+    {
+        let team_value = create_team_value(store, body)?;
+        let team_id = team_value["id"]
+            .as_str()
+            .ok_or_else(|| CliError::Usage("created team has no id".to_string()))?;
+        let mission = revise_mission_team_link(store, mission_id, team_id, true)?;
+        return Ok(serde_json::json!({"mission": mission, "team": team_value}));
+    }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/context"))
+    {
+        return Ok(serde_json::to_value(revise_mission_context(
+            store,
+            mission_id,
+            &required_json_string(body, "context")?,
+        )?)?);
+    }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/link-team"))
+    {
+        return Ok(serde_json::to_value(revise_mission_team_link(
+            store,
+            mission_id,
+            &required_json_string(body, "team_id")?,
+            true,
+        )?)?);
+    }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/unlink-team"))
+    {
+        return Ok(serde_json::to_value(revise_mission_team_link(
+            store,
+            mission_id,
+            &required_json_string(body, "team_id")?,
+            false,
+        )?)?);
+    }
     if path == "/v1/waves" {
         return create_wave_value(store, body);
     }
@@ -7151,8 +7821,59 @@ fn handle_http_action(
     {
         return gate_wave_value(store, wave_id, body);
     }
+    if let Some(wave_id) = path
+        .strip_prefix("/v1/waves/")
+        .and_then(|rest| rest.strip_suffix("/context"))
+    {
+        return Ok(serde_json::to_value(revise_wave(
+            store,
+            wave_id,
+            &required_json_string(body, "context")?,
+            &optional_json_string(body, "updated_by")?.unwrap_or_else(|| "host".to_string()),
+        )?)?);
+    }
+    if let Some(wave_id) = path
+        .strip_prefix("/v1/waves/")
+        .and_then(|rest| rest.strip_suffix("/advance"))
+    {
+        return Ok(serde_json::to_value(advance_wave(
+            store,
+            wave_id,
+            &required_json_string(body, "outcome")?,
+            &optional_json_string(body, "advanced_by")?.unwrap_or_else(|| "host".to_string()),
+            optional_json_string_array(body, "artifact_refs")?,
+        )?)?);
+    }
     if path == "/v1/team-runs" {
         return create_team_run_value(store, project_context, body);
+    }
+    if let Some(team_run_id) = path
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/members"))
+    {
+        let member = TeamMemberSpec {
+            name: required_json_string(body, "name")?,
+            role: required_json_string(body, "role")?,
+            provider: required_json_string(body, "provider")?,
+            execution_mode: optional_json_string(body, "execution_mode")?,
+            model: optional_json_string(body, "model")?,
+            worktree_ref: optional_json_string(body, "worktree_ref")?,
+            owned_paths: optional_json_string_array(body, "owned_paths")?,
+            resume_native_session_id: optional_json_string(body, "resume_native_session_id")?,
+        };
+        let (run, member, assignment) = add_team_run_member(
+            store,
+            project_context,
+            team_run_id,
+            &member,
+            &required_json_string(body, "assignment")?,
+            optional_json_string(body, "origin_wave_id")?,
+        )?;
+        return Ok(serde_json::json!({
+            "team_run": run,
+            "member_run": member,
+            "assignment": assignment,
+        }));
     }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
@@ -7173,6 +7894,22 @@ fn handle_http_action(
         }
         if let [team_run_id, "members", member_run_id, "interrupt"] = parts.as_slice() {
             return interrupt_team_member_value(store, team_run_id, member_run_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "rename"] = parts.as_slice() {
+            return Ok(serde_json::to_value(rename_team_run_member(
+                store,
+                team_run_id,
+                member_run_id,
+                &required_json_string(body, "name")?,
+            )?)?);
+        }
+        if let [team_run_id, "members", member_run_id, "deactivate"] = parts.as_slice() {
+            return Ok(serde_json::to_value(deactivate_team_run_member(
+                store,
+                team_run_id,
+                member_run_id,
+                &required_json_string(body, "reason")?,
+            )?)?);
         }
     }
     if let Some(team_run_id) = path
@@ -7291,6 +8028,7 @@ fn steer_team_member_value(
         &content,
         None,
         None,
+        json_string(body, "origin_wave_id"),
     )?;
     for delivery in &mut message.deliveries {
         delivery.policy = TeamDeliveryPolicy::Inject;
@@ -7468,6 +8206,7 @@ fn create_mission_value(
         &required_json_string(body, "title")?,
         &required_json_string(body, "objective")?,
         optional_json_string(body, "desired_outcome")?,
+        optional_json_string(body, "context")?,
     )?)?)
 }
 
@@ -7510,9 +8249,13 @@ fn create_wave_value(
         index,
         &required_json_string(body, "title")?,
         &required_json_string(body, "objective")?,
-        parse_wave_executor_kind(&required_json_string(body, "executor_kind")?)?,
+        parse_wave_executor_kind(
+            &optional_json_string(body, "executor_kind")?.unwrap_or_else(|| "host".to_string()),
+        )?,
         optional_json_string(body, "exit_criteria")?,
         optional_json_string(body, "plan_note")?,
+        optional_json_string(body, "context")?,
+        optional_json_string(body, "updated_by")?,
     )?)?)
 }
 
@@ -7668,10 +8411,12 @@ fn create_team_run_value(
                 .to_string(),
         ));
     }
+    let agent_team_id = optional_json_string(body, "agent_team_id")?;
     let member_values = body
         .get("members")
         .and_then(|value| value.as_array())
-        .ok_or_else(|| CliError::Usage("missing JSON field: members".to_string()))?;
+        .cloned()
+        .unwrap_or_default();
     let mut members = Vec::new();
     for (member_index, member) in member_values.iter().enumerate() {
         let owned_paths = match member.get("owned_paths") {
@@ -7704,6 +8449,11 @@ fn create_team_run_value(
             resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
         });
     }
+    if members.is_empty() {
+        if let Some(team_id) = agent_team_id.as_deref() {
+            members = team_member_specs_from_definition(store, team_id)?;
+        }
+    }
     let budget_limit_usd = match body.get("budget_limit_usd") {
         None | Some(serde_json::Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(|| {
@@ -7721,6 +8471,7 @@ fn create_team_run_value(
         &host_surface,
         optional_json_string(body, "host_thread_id")?,
         optional_json_string(body, "previous_run_id")?,
+        agent_team_id,
         optional_json_string(body, "mission_id")?,
         optional_json_string(body, "wave_id")?,
         &members,
@@ -7764,6 +8515,7 @@ fn send_team_message_value(
         &required_json_string(body, "body")?,
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
+        json_string(body, "origin_wave_id"),
     )?;
     Ok(serde_json::to_value(message)?)
 }
@@ -16520,10 +17272,10 @@ fn print_help() {
   project remove | project show | project migrate
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
-  mission create|list|show|close
-  wave create|list|show|gate
-  team-run create|list|status|start|send|events|complete|cancel
-  team create|list|show|close
+  mission create|list|show|update-context|create-team|link-team|unlink-team|close
+  wave create|list|show|history|update|advance|gate
+  team-run create|list|status|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
   agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
@@ -21742,6 +22494,7 @@ mod sse_tests {
         let run = AgentTeamRun {
             id: "team-cwd".into(),
             definition_id: None,
+            agent_team_id: None,
             previous_run_id: None,
             mission_id: None,
             wave_id: None,

@@ -49,7 +49,7 @@ flowchart TD
 | --- | --- | --- |
 | Company product | the company needs one durable model for knowledge, actors, commitments and effects | each fact has one owning system and linked projections never become copies |
 | Governance | sensitive effects need named policy and authority | Approval is distinct from comments, execution completion and Wave gates |
-| Execution foundation | long or parallel work needs provider-neutral coordination | Mission has ordered lightweight Waves; each executor owns its internal plan and records |
+| Execution foundation | long or parallel work needs provider-neutral coordination | Mission has ordered Host-plan Wave revisions; independent runtimes own execution truth and are related by Mission, assignments, and evidence |
 | Runtime | providers differ in process, session, tool and observation capability | provider state never becomes organization identity or business authority |
 | Outcome/evidence | accepted claims must be reconstructable | outcomes point to useful artifacts, checks and durable records without storing private thinking |
 | Interface | humans and Agents need comprehensible operating views | Company OS presents business truth; Agent Dashboard presents execution truth |
@@ -63,8 +63,8 @@ flowchart TD
 | Work | WorkItems, Milestones, responsibility, Assignment, lifecycle, evidence and result routing | source knowledge, organization identity or finance ledger truth | every commitment says who owns it and where its result returns |
 | Finance | budgets, Commitments, invoices, Payments, refunds and financial evidence | general task or document truth | requested, authorized and actual monetary effects remain distinct |
 | Governance | module/organization evolution, policy, Approval and audit | hidden prompt authority or silent structural mutation | high-risk effects stop at the required Human boundary |
-| Mission/Wave | durable intent, ordered execution boundaries, attempts, outcomes and lightweight gates | business ownership, payment approval or a task graph | Wave stays small and executor-specific records remain honest |
-| Agent Team | run-scoped members, assignment messages, correlations, actions and handoffs | Standing Organization membership | ownership is proven by assignment/message lineage |
+| Mission/Wave | durable intent/context and ordered versioned Host plans, changed facts, judgments and advance outcomes | business ownership, payment approval, task graph, or runtime containment | Wave stays small; Host plan history remains reconstructable |
+| Agent Team | independent reusable Team identity, Mission relations, long-lived TeamRuns, run-scoped members, assignment messages, correlations, actions and handoffs | Standing Organization membership or Wave ownership | ownership is proven by assignment/message lineage and native-session bindings |
 | Dynamic Workflow | WorkflowRun, steps, outputs and artifacts | universal company coordination | workflow truth stays inside its executor contract |
 | Provider/runtime | sessions, processes, events, workspace and capability observation | WorkItem or Organization truth | optional hooks may observe only what the provider actually exposes |
 | Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |

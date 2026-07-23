@@ -3,128 +3,127 @@
 ```text
 status: implemented
 owner_role: product-design
-canonical_for: Mission / Wave / Agent Team frontend information architecture
+canonical_for: Mission / Host-plan Wave / Agent Team frontend information architecture
+architecture: ADR 0034
 ```
 
 ## Product Model
 
-The active execution hierarchy has four distinct layers:
-
-| Layer | Meaning | Product rule |
+| Object | Meaning | Product rule |
 | --- | --- | --- |
-| Mission | Durable intent and closeout. | Contains ordered Waves; no task graph. |
-| Wave | Lightweight execution and gate boundary. | Chooses `agent_team`, `dynamic_workflow`, or `host`. |
-| Agent Team | One collaborative executor kind. | A Wave may have multiple immutable attempts. |
-| MemberRun | One run-scoped member instance. | Ownership comes from assignment-message correlation. |
+| Mission | Durable intent, Markdown context, team relations, and closeout. | Contains ordered Waves; links zero or more independent teams. |
+| Wave | Versioned Host plan and judgment. | Not a task graph, executor container, barrier, or session boundary. |
+| Agent Team | Independent reusable collaborator definition. | May be standalone or linked to Missions. |
+| AgentTeamRun | One use of a team. | Mission-scoped runs may span several Waves. |
+| MemberRun | One run-scoped participant and native-session binding. | Assignment-message correlation owns work. |
 
-The former coordination stack is retired under
-[ADR 0028](../decisions/0028-retire-goal-phase-task-graph.md). It is neither an
-active authoring path nor a compatibility UI. Internal residual fields are
-removal debt and do not alter this product model.
-
-This workbench sits beneath the Company OS. Standing Agents and Docs are the
-primary company surfaces defined by
-[ADR 0027](../decisions/0027-company-os-primary-model.md). Mission/Wave,
-Agent Team, and MemberRun pages link back to their WorkItem, source document,
-accountable actors, and approval when those relations exist.
+Standing Agents and Docs remain separate Company OS surfaces. They may share
+shell, avatar, activity, conversation, and compact-control primitives with
+Agent Team pages, but never identity or lifecycle semantics.
 
 ## Information Architecture
 
-- `Missions`: collection, Mission detail, ordered Waves, gate, retry, closeout.
-- `Agent Teams`: only Mission/Wave-linked AgentTeamRun attempts.
-- `Members`: run-scoped drill-in from an Agent Team.
+- `Missions`: collection, Mission context, linked teams, ordered Wave history,
+  advance, and closeout.
+- `Agent Teams`: independent definitions and standalone/Mission-scoped runs.
+- `Members`: run-scoped drill-in from Team controls.
 
 | Level | Surface | User watches | User does |
 | --- | --- | --- | --- |
-| L0 | Missions | status, Wave progress, executor mix, needs-you | create/open Mission |
-| L1 | Mission Canvas | ordered Waves, current attempt, gate, outcome, re-plan note | create/select Wave, open executor, gate, retry, close |
-| L1.5 | Team War Room | member presence, assignments, activity, pressure, evidence | message, ACK, start pending, inspect lineage |
-| L2 | MemberRun Focus | one member's contract, activity, messages, artifacts | talk to or inspect member |
+| L0 | Missions | status, current judgment, linked teams, needs-you | create/open Mission |
+| L1 | Mission Canvas | long Mission context, ordered Waves, responsibilities, carry-over | update/advance Wave, link/open Team, close |
+| L1.5 | Team War Room | members, assignments, activity, pending interactions, evidence | message, ACK, add/steer/interrupt/resume member |
+| L2 | Member Focus | one member's native work history and coordination | chat, inspect, control, open artifacts |
 
 ## Mission Canvas
 
-Waves form one vertical ordered flow. The current Wave expands; accepted Waves
-are concise history; planned Waves remain compact until selected. Each Wave
-shows objective, exit criteria, executor kind, attempt lineage, gate state,
-outcome, artifacts, and any creation-time re-plan note.
+Waves form a vertical ordered flow. The selected Wave renders full Markdown,
+including an optional responsibility table. Mission-linked Team controls live
+at Mission scope. Member/Team controls inside Wave context are navigational
+projections only; the Wave does not own them.
 
-The implemented action contract is create/select, open executor, gate, retry,
-and Mission closeout. Editing or reordering existing Waves and structured
-post-creation re-plan mutation remain follow-up capabilities, not current UI
-claims.
+Advancing a Wave records a Host outcome and may summarize active carry-over.
+It does not require every member to finish. Creating Wave N+1 preserves the
+same TeamRun, MemberRun, assignment correlation, and native session unless the
+Host explicitly changes them.
 
 ## Team War Room
 
-The Team page is one AgentTeamRun attempt for an `agent_team` Wave. It contains:
+The Team page contains:
 
-1. Mission/Wave/attempt header and state.
-2. Compact member presence with role, provider/model, action, and pressure.
-3. One unified durable Team Activity stream.
-4. Message composer and attached operator actions.
-5. Wave, Gate, Attempt, Selected Member, and Resources context modules.
+1. independent team identity and current TeamRun;
+2. compact member controls with role, provider/model, action, pressure, and
+   project-default portraits;
+3. one source-aware Team Activity stream;
+4. Team/@member composer and record-attached actions;
+5. Mission/current-Wave orientation, selected member, runtime, and artifact
+   modules.
 
-The default `All` activity projection preserves attempt creation, assignment
-ownership, and the latest pressure-bearing record. `Full record` reveals the
-complete durable timeline; category filters operate on that full set. ACK,
-review, and start-pending actions attach to the relevant record rather than
-creating a duplicate alert band.
+Harness coordination and ephemeral provider-native projections render
+together but remain source-labelled. Provider transcript, tool, command, file,
+turn, and thinking streams are not copied into Harness ledgers.
 
-Attempt completion remains distinct from the parent Wave gate. Only the Host
-can accept, revise, or block a Wave and name an accepted completed attempt.
+## Member Focus
 
-## MemberRun Focus
+The standalone MemberRun page follows the Codex-like working layout:
 
-The standalone MemberRun page shows role, provider/model, worktree and owned
-paths, assignment contract, explicit actions, direct messages, artifacts,
-evidence, and observable delegations. Unknown action types use a generic
-renderer. A MemberRun is not a Standing Agent, even when both surfaces reuse
-shell, conversation, activity, runtime, or identity components.
+- header and identity;
+- central chronological work history and chat;
+- semantic Markdown handoff, tool/activity groups, artifacts, and checks;
+- right-rail Team, Mission/Wave orientation, runtime, native session, and
+  artifacts;
+- real chat, PendingInteraction, steer, interrupt, and resume controls only
+  when the provider adapter supports them.
+
+Unknown native activity uses a generic source-labelled renderer. A MemberRun is
+not a Standing Agent.
 
 ## Member Lifecycle
 
-1. Validate provider/model, permissions, paths, and budget; persist `starting`.
-2. Acquire worktree/runtime lazily; release in reverse order on failure.
-3. Stop gracefully: stop new assignments, expire queued deliveries, request
-   cancellation, then terminate only where the adapter has real control.
-4. Release runtime resources and preserve sanitized durable history.
-5. Confirm destructive controls; completed attempts and members are read-only.
+1. Validate provider mode/version, permissions, paths/worktree, and budget.
+2. Persist MemberRun and bind a provider-native session.
+3. Assign through correlated TeamMessage.
+4. Continue interaction and resume through the real native session.
+5. Add, rename, deactivate, or stop explicitly; Wave advance changes none of
+   these automatically.
+6. Preserve Harness coordination and native-session locator after terminal
+   state; never mirror private provider history.
 
-Provider-native subagents remain an implementation detail unless hooks expose
-honest delegation facts. The harness does not invent lifecycle control.
-
-## Thinking Visibility
-
-Thinking may appear only as a sanitized, expiring, project-scoped live preview.
-It is never persisted, replayed, used as evidence, or forwarded to peers.
-Durable history contains explicit actions, summaries, blockers, artifacts, and
-outcomes.
+Provider-native subagents remain implementation detail unless hooks expose
+honest attribution. The Harness does not invent lifecycle control.
 
 ## Implemented Data Boundary
 
-- `Wave`: `id`, `mission_id`, `index`, `title`, `objective`, `exit_criteria?`,
-  `status`, `executor_kind`, `executor_run_ids[]`, `accepted_run_id?`,
-  `outcome_summary?`, `artifact_refs[]`, `gate_status`, `gate_note?`,
-  `accepted_by?`, `accepted_at?`, `plan_note?`, timestamps.
-- `AgentTeamRun`: one immutable attempt linked to its Mission and Wave in the
-  active product path.
-- `TeamMessage(kind=assignment)` plus `correlation_id`: member lane ownership.
-- `MemberAction`, `TeamRunEvent`, artifacts, and outcomes: durable execution
-  facts, never private reasoning.
+- `Mission.context`, `Mission.agent_team_ids[]`
+- `Wave.context`, `Wave.revision`, `Wave.updated_by`, ordered append-only
+  history, explicit outcome/artifacts/advance
+- `AgentTeamRun.agent_team_id`, optional `mission_id`, legacy optional
+  `wave_id`
+- `MemberRun.native_session`
+- `TeamMessage(kind=assignment)`, `correlation_id`, optional `origin_wave_id`
 
-## Visual Contract
+Legacy `executor_kind`, attempt-list, accepted-run, and gate fields remain
+readable for direct-Wave-executor history only.
 
-The approved expected images, implemented captures, overlays, and intentional
-deviations live in
-[`execution-workbench-v3/`](execution-workbench-v3/README.md). The canonical
-page specs are the
+## UX And Visual Contract
+
+Every design reference must pair:
+
+1. expected image;
+2. interaction/animation/state annotations;
+3. actual browser capture from a deterministic fixture; and
+4. comparison with classified defects or intentional deviations.
+
+The current visual assets live in
+[`execution-workbench-v3/`](execution-workbench-v3/README.md). Canonical
+behavior is owned by the
 [Mission/Wave Canvas](../dashboard/pages/mission-wave-canvas.md) and
-[Agent Team War Room](../dashboard/pages/team-run-war-room.md).
+[Agent Team War Room](../dashboard/pages/team-run-war-room.md) page specs.
 
 ## Non-goals
 
-- No dependency graph, task-centric member ownership, or universal executor
-  object.
-- No standalone unlinked TeamRun product surface.
-- No durable private reasoning.
-- No claim that provider-native children are harness-controlled.
-- No collapse of MemberRun and Standing Agent identity.
+- dependency/task graph or universal executor object;
+- Wave-owned TeamRun lifecycle;
+- automatic member/team deletion at Wave or Mission closeout;
+- durable private reasoning or provider-event mirror;
+- collapse of MemberRun and Standing Agent identity.

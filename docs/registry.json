@@ -441,7 +441,7 @@
     "source-of-truth rules",
     "provider-native execution versus Harness coordination truth",
     "projection semantics",
-    "Mission/Wave and executor attempt edges",
+    "Mission/Wave Host-plan, Mission-Team relation, and independent runtime edges",
     "optional governance object edges",
     "retired-field removal boundary"
    ],
@@ -462,7 +462,7 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
+   "reorgTrigger": "Mission/Wave Host-plan relationships, Mission-Team/runtime edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
    "authorityClass": "canonical_contract",
    "implementationState": "partial",
    "truthRefs": []
@@ -1254,7 +1254,7 @@
    "canonicalFor": [
     "Agent Team run control plane v0 decision",
     "function-call vs living-collaborator boundary",
-    "Mission -> Wave(executor_kind=agent_team) -> AgentTeamRun -> MemberRun -> DelegationRun layering",
+    "historical Wave-owned TeamRun layering plus retained AgentTeamRun, MemberRun, message, and delegation control-plane boundaries",
     "the six v0 Agent Team objects (AgentTeamRun, MemberRun, TeamMessage, MemberAction, DelegationRun, TeamRunEvent)",
     "capture vs orchestrate delegation guardrails",
     "plugin packaging and call-surface split (Plugin distributes, MCP calls, Skill teaches, CLI pipes, Hook injects)",
@@ -1279,7 +1279,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Agent Team object set, Mission/Wave agent_team layering, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes.",
+   "reorgTrigger": "The Agent Team object set, Mission-Team relations, TeamRun lifecycle, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "partial",
    "truthRefs": [
@@ -1308,7 +1308,7 @@
    "lifecycle": "stable",
    "canonicalFor": [
     "Mission/Wave architecture decision",
-    "Mission -> Wave -> executor hierarchy",
+    "historical Mission -> Wave -> executor hierarchy superseded by ADR 0034",
     "executor kinds (agent_team, dynamic_workflow, host)",
     "shared runtime contracts and transient-thinking policy",
     "non-destructive Goal/historical phase compatibility migration"
@@ -1327,7 +1327,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave hierarchy, executor kinds, shared runtime contracts, transient-thinking policy, or compatibility migration plan change.",
+   "reorgTrigger": "The retained Mission/Wave vocabulary, historical executor fields, shared runtime contracts, transient-thinking policy, or compatibility migration plan change.",
    "authorityClass": "canonical_contract",
    "implementationState": "partial",
    "truthRefs": [
@@ -1583,7 +1583,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, active-navigation policy, or transient-thinking policy changes.",
+   "reorgTrigger": "The Mission/Wave Host-plan IA, Mission-Team relation, member page structure, active-navigation policy, or transient-thinking policy changes.",
    "authorityClass": "design_intent",
    "implementationState": "design_only",
    "truthRefs": [
@@ -3107,6 +3107,87 @@
     {
      "kind": "api",
      "ref": "crates/harness-cli/src/mcp.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Mission durable context and Mission-AgentTeam relation",
+    "versioned Host-plan Wave semantics",
+    "Mission-scoped AgentTeamRun and cross-Wave member lifecycle",
+    "CLI-primary and optional thin MCP integration boundary"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/product/mission-wave-host-plan.md",
+    "docs/architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 acceptance:mission-wave"
+   ],
+   "reorgTrigger": "Mission context, Host-plan Wave semantics, Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP authority boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/mission.schema.json"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/wave.schema.json"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/product/mission-wave-host-plan.md",
+   "ownerRole": "product",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Host user journey for Mission context, Wave revisions, and long-lived Agent Teams",
+    "product acceptance and explicit non-goals for Host orchestration"
+   ],
+   "dependsOn": [
+    "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+    "docs/dashboard/pages/mission-wave-canvas.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check",
+    "npx pnpm@9.15.4 acceptance:mission-wave"
+   ],
+   "reorgTrigger": "Host orchestration journey, Wave context shape, Team membership evolution, or Dashboard relation UX changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0034-host-plan-waves-and-mission-teams.md"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/mission_wave_api.rs"
     }
    ]
   }

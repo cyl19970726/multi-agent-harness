@@ -1,9 +1,9 @@
 {
   "id": "trun-1",
-  "definition_id": "tdef-1",
+  "definition_id": "team-1",
+  "agent_team_id": "team-1",
   "previous_run_id": "trun-0",
   "mission_id": "mission-1",
-  "wave_id": "wave-2",
   "host_surface": "kimi-cli",
   "host_thread_id": "thread-9",
   "objective": "Ship the team run ledger.",

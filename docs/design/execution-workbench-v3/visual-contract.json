@@ -22,9 +22,9 @@
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/mission-wave-canvas--workbench-v2--desktop-1440x1000.png",
       "expected": "expected/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2-1440x1000.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
-      "comparison": "comparisons/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
-      "overlay": "overlays/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+      "comparison": "comparisons/mission-wave-canvas/host-plan-final.png",
+      "overlay": "overlays/mission-wave-canvas/host-plan-final.png",
       "prompt": "prompts/mission-wave-canvas/running-gate-pending--fidelity-v2.md",
       "design_spec": "specs/mission-wave-canvas--running-gate-pending--desktop-1440x1000.json",
       "ux_contract": "ux/execution-workbench-interaction-contract.md",
@@ -42,15 +42,23 @@
           "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
           "stage": "final-responsive",
           "verdict": "pass: shell, Wave journey, attached pressure, evidence, and Gate priority match approved intent"
+        },
+        {
+          "revision": "9d17053-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+          "stage": "host-plan-product-truth",
+          "verdict": "pass: the approved visual language now presents durable Mission Markdown, versioned Host-plan Wave context, a readable responsibility table, and Mission-linked long-lived Teams"
         }
       ],
       "gates": {
-        "product_truth": { "status": "pass", "note": "Mission, ordered Waves, executor attempts, aggregate readiness, and explicit host Gate remain canonical." },
+        "product_truth": { "status": "pass", "note": "Mission holds durable context and linked Teams; ordered Waves are versioned Host plan and judgment records rather than executor containers." },
         "visual_fidelity": { "status": "pass", "note": "Exact viewport geometry, continuous journey, portraits, semantic status, context priority, and responsive transformation are accepted." }
       },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
+          "The approved image remains the visual-language reference, while the implemented product removes the obsolete Wave-owned executor card in favor of full Mission/Wave Markdown context and a responsibility table.",
+          "A Mission can link multiple independent long-lived Agent Teams; the New Team action and linked-team count make this relation explicit.",
           "The right rail prioritizes the actionable Needs you state over the design candidate's passive Now module.",
           "The implementation renders the fixture's four linked members rather than the generated candidate's extra portrait.",
           "Real Mission objective, exit criteria, artifact references, and re-plan text replace abbreviated generated copy."
@@ -69,9 +77,9 @@
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/team-war-room--workbench-v2--desktop-1440x1000.png",
       "expected": "expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-final/team-war-room--running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/team-war-room/running-needs-you--team-activity-correction.png",
-      "overlay": "overlays/team-war-room/running-needs-you--team-activity-correction.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/team-war-room/host-plan-final.png",
+      "overlay": "overlays/team-war-room/host-plan-final.png",
       "prompt": "prompts/team-war-room/running-needs-you--fidelity-v2.md",
       "design_spec": "specs/team-war-room--running-needs-you--desktop-1440x1000.json",
       "ux_contract": "ux/execution-workbench-interaction-contract.md",
@@ -107,15 +115,23 @@
           "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-final/team-war-room--running-needs-you--desktop-1440x1000.png",
           "stage": "activity-final",
           "verdict": "pass: node/spine, timestamp, durable content, and optional pressure action now use the approved independent-column structure on desktop and collapse honestly on mobile"
+        },
+        {
+          "revision": "9d17053-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "mission-scoped-team-truth",
+          "verdict": "pass: the stable Team identity, Mission relation, current Host-plan navigation context, cross-Wave lifecycle, assignments, and member activity are explicit without pretending the Wave owns this runtime"
         }
       ],
       "gates": {
-        "product_truth": { "status": "pass", "note": "MemberRuns, assignment correlations, explicit actions, pressure, attempt state, Wave Gate, and transient-thinking policy remain honest." },
+        "product_truth": { "status": "pass", "note": "Stable AgentTeam, Mission-scoped TeamRun, MemberRuns, assignment correlations with origin Wave, explicit actions, pressure, and transient-thinking policy remain honest." },
         "visual_fidelity": { "status": "pass", "note": "Compact presence, semantic node-first timeline, independent desktop timestamps, key/full activity projection, attached review action, context rail, and responsive composer match approved intent." }
       },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
+          "The right rail names the stable Team and Mission relation first. A selected Wave is labeled navigation context because assignments/messages, not Wave ownership, direct the long-lived Team.",
+          "The obsolete parent-Wave gate module is absent for Mission-scoped runs; legacy directly owned attempts retain their compatibility gate view.",
           "The default All projection shows attempt creation, assignments, and the latest pressure record; the filter control exposes every remaining durable message, action, and event without deleting or rewriting evidence.",
           "The selected QA provider/model and assignment come from the fixture rather than generated text.",
           "The mobile header omits the redundant member-count label because Team presence immediately states membership."

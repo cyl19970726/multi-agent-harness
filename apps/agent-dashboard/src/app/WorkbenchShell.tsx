@@ -801,9 +801,20 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.memberRunId ? (
-        <MemberRunFocus {...shared} memberRunId={selection.memberRunId} isLoading={isLoading} />
+        <MemberRunFocus
+          {...shared}
+          memberRunId={selection.memberRunId}
+          missionId={selection.missionId}
+          waveId={selection.waveId}
+          isLoading={isLoading}
+        />
       ) : selection.teamId ? (
-        <TeamWarRoom {...shared} teamRunId={selection.teamId} />
+        <TeamWarRoom
+          {...shared}
+          teamRunId={selection.teamId}
+          missionId={selection.missionId}
+          waveId={selection.waveId}
+        />
       ) : (
         <AgentTeamsHome {...shared} />
       );
