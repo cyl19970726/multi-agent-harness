@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Finance Operator"
+  short_description: "Operate Company OS commitments, payments, approvals, and monetary evidence"
+  default_prompt: "Use $company-finance-operator to inspect or mutate Company OS Finance through governed Store/API/Action paths while preserving Work, Docs, Org, and approval boundaries."

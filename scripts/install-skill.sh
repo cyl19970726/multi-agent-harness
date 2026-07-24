@@ -2,19 +2,21 @@
 # Install an optional Star Harness authoring skill into a target project
 # (or your user-level library) for Claude Code and/or Codex.
 #
-# The default kit ships star-workflow.
+# The default kit ships star-workflow. Named suites can install related skills
+# together, for example the Company OS governance/operator suite.
 #
 #   Claude Code reads skills from   <base>/.claude/skills/<name>/
 #   Codex      reads skills from     <base>/.agents/skills/<name>/
 #
 # Usage:
 #   scripts/install-skill.sh [--agent claude|codex|both] [--scope project|user] \
-#       [--dest <base-dir>] [--skill <name> ...]
+#       [--dest <base-dir>] [--skill <name> ...] [--suite <name> ...]
 #
 #   --agent   which agent's skill dir to install into       (default: claude)
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
 #   --skill   install an explicit skill directory (repeatable; default: star-workflow)
+#   --suite   install a named skill suite (repeatable; currently: company-os)
 #   --repo    git url to clone when run standalone           (default: this project)
 #   --ref     git ref to clone                               (default: master)
 #
@@ -25,6 +27,7 @@ set -euo pipefail
 # Default shipped skill; --skill may select an explicit source directory.
 DEFAULT_SKILLS="star-workflow"
 SKILLS=""
+SUITES=""
 AGENT="claude"
 SCOPE="project"
 DEST=""
@@ -37,14 +40,31 @@ while [ $# -gt 0 ]; do
     --scope) SCOPE="$2"; shift 2 ;;
     --dest)  DEST="$2"; shift 2 ;;
     --skill) SKILLS="${SKILLS:+$SKILLS }$2"; shift 2 ;;
+    --suite) SUITES="${SUITES:+$SUITES }$2"; shift 2 ;;
     --repo)  REPO="$2"; shift 2 ;;
     --ref)   REF="$2"; shift 2 ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-# Default to the standalone Dynamic Workflow skill when no --skill was given.
+expand_suite() {
+  case "$1" in
+    company-os)
+      echo "company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder"
+      ;;
+    *)
+      echo "unknown suite: $1 (available: company-os)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+for suite in $SUITES; do
+  SKILLS="${SKILLS:+$SKILLS }$(expand_suite "$suite")"
+done
+
+# Default to the standalone Dynamic Workflow skill when no --skill/--suite was given.
 [ -n "$SKILLS" ] || SKILLS="$DEFAULT_SKILLS"
 
 # Base dir the skill dirs are created under.
