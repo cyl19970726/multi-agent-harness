@@ -10,6 +10,31 @@ This file should explain only how Kimi implements those contracts. Shared object
 semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and `Decision` must
 not be redefined here.
 
+## Agent Team native planning
+
+The Agent Team adapter uses Kimi ACP, separate from the older one-shot delivery
+path described below. ACP supplies a real session mode and plan update stream:
+
+```text
+Harness Assignment (durable Member Goal)
+  -> session/set_config_option(configId=mode, value=plan)
+  -> session/prompt on the same native session
+  -> session/update(plan) observed in memory
+  -> explicit TeamMessage(plan_proposal)
+  -> Host plan_feedback -> revised prompt in the same plan session
+  -> Host plan_approval
+  -> session/set_config_option(configId=mode, value=default)
+  -> execute
+```
+
+Kimi does not expose a separate Harness-compatible durable Goal object; the
+Assignment is projected into its prompt, so the profile reports
+`goal_mode=emulated`. Raw ACP plan/thought/tool streams remain provider-native.
+Only the Member's submitted plan and Host coordination are persisted. A Kimi
+ExitPlanMode/approval pause is a `PendingInteraction`; ACP `completed` is not
+semantic Host approval. See
+[ADR 0036](../decisions/0036-provider-native-member-plan-negotiation.md).
+
 ## 核心结论
 
 V1 主方案是：

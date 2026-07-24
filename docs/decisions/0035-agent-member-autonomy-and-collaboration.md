@@ -34,6 +34,12 @@ Member Goal is a Dashboard projection, not a new stored object. It is derived
 from the current Assignment, completion standard, owned paths, status, latest
 progress or blocker, and latest applicable Steer.
 
+For complex or high-risk Assignments, ADR 0036 adds an optional
+provider-neutral plan negotiation. The Assignment remains the Goal:
+`plan_request -> plan_proposal -> (plan_feedback -> plan_proposal)* ->
+plan_approval`. Plan revisions retain the same MemberRun, correlation,
+Workspace, and native session; Host approval gates execution.
+
 A member may use provider-native subagents for bounded design, implementation,
 or verification inside its lane. Those child threads inherit the member's
 permissions and return their results to that member. They do not create an

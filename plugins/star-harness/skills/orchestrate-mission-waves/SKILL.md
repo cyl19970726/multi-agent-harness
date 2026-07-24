@@ -32,8 +32,9 @@ change composition, integrate results, and decide acceptance. Do not create an
 implicit Lead MemberRun. Add the Host as a member only when it deliberately owns
 an execution lane with its own native session.
 
-Read `docs/product/mission-wave-host-plan.md`, ADR 0034, and ADR 0035 when the product
-contract itself is in question. Do not reproduce their schemas in this skill.
+Read `docs/product/mission-wave-host-plan.md`, ADR 0034, ADR 0035, and ADR 0036
+when the product contract itself is in question. Do not reproduce their schemas
+in this skill.
 
 ## Choose The Smallest Truthful Executor
 
@@ -63,16 +64,19 @@ internal test subagent is not independent review.
    the primary path.
 6. Send correlated assignment messages. Use `--origin-wave-id` only for
    navigation and explanation.
-7. **Question and coordinate:** answer correlated member questions, allow
+7. For a complex or high-risk lane, request a Member plan before starting
+   execution. Debate the proposal through correlated feedback, then explicitly
+   approve it. Simple work may skip this negotiation.
+8. **Question and coordinate:** answer correlated member questions, allow
    same-run peer coordination, and use progress, blockers, review, steer,
    interrupt, and provider-native resume according to real capabilities.
-8. **Integrate:** review handoffs and integrate completed lanes immediately.
+9. **Integrate:** review handoffs and integrate completed lanes immediately.
    Do not wait for unrelated members
    merely to make the Wave look complete.
-9. **Re-plan:** compare plan with actual state. Update the current Wave while
+10. **Re-plan:** compare plan with actual state. Update the current Wave while
    judgment is materially unchanged. Advance and create Wave N+1 when plan,
    composition, responsibility, risk, or decision boundary changes materially.
-10. Close the Mission with an explicit outcome. Leave linked teams and their
+11. Close the Mission with an explicit outcome. Leave linked teams and their
     independent lifecycle untouched.
 
 ## Write Useful Context
@@ -133,6 +137,10 @@ Assign and evolve work:
 harness team-run send --id <team-run-id> --from host \
   --to <member-run-id> --kind assignment --body "<owned work>" \
   --correlation-id <stable-work-id> --origin-wave-id <wave-id>
+harness team-run send --id <team-run-id> --from host \
+  --to <member-run-id> --kind plan_request \
+  --body "<what the plan must resolve>" \
+  --correlation-id <stable-work-id> --causation-id <assignment-message-id>
 harness team-run add-member --id <team-run-id> \
   --member repair:fixer:codex --assignment "<repair work>" \
   --origin-wave-id <wave-id>
@@ -158,6 +166,10 @@ harness team-run inbox --id <team-run-id> \
 | Need | Record |
 | --- | --- |
 | Start owned work | `assignment` with stable correlation |
+| Ask a complex lane to plan first | `plan_request` caused by the Assignment |
+| Member submits or revises its plan | `plan_proposal` caused by request/feedback |
+| Host challenges a proposal | `plan_feedback` caused by latest proposal |
+| Host allows execution | `plan_approval` caused by latest proposal |
 | Member needs a Host/peer decision | `question`, then correlated `answer` |
 | Useful checkpoint | `progress` |
 | Work cannot continue | `blocker` with needed actor/action |
@@ -169,6 +181,33 @@ harness team-run inbox --id <team-run-id> \
 Provider-pausing questions, approvals, and plan reviews are
 `PendingInteraction`, not ordinary chat. Unsupported live Steer becomes a
 clearly labeled queued next-round message; never fabricate a control ACK.
+
+The semantic Member plan review is a `TeamMessage` chain. Provider-native Plan
+or ExitPlanMode pauses may additionally create a linked `PendingInteraction`,
+but provider completion never substitutes for Host `plan_approval`.
+
+## Debate A Member Plan
+
+Use planning only where review adds value. The Host controls the decision; the
+Member owns the proposal.
+
+```text
+assignment
+  -> Host plan_request
+  -> Member plan_proposal r1
+  -> Host plan_feedback ("argue": challenge assumptions or boundaries)
+  -> Member plan_proposal r2
+  -> Host plan_approval
+  -> execute in the same MemberRun and native session
+```
+
+Keep the same Assignment correlation throughout. Do not create a Wave revision
+for every Member plan revision. Update or advance the Wave only when Host's
+overall plan or judgment boundary changes.
+
+For providers with a native Goal, keep the Assignment projection paused during
+plan debate. Activate it only after correlated `plan_approval`; provider Goal
+continuation must not cross the Host decision boundary.
 
 Member-to-member messages are allowed inside the same TeamRun and remain
 visible to the Lead. They queue for the recipient's next available round and

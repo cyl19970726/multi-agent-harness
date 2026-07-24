@@ -41,6 +41,23 @@ Translate the Assignment into your own design, implementation, and verification
 steps. Keep the same Assignment correlation across rounds and Host-plan Waves.
 Do not create a new Goal object or wait for the Wave to schedule you.
 
+When the Inbox contains `plan_request`, do not implement yet:
+
+1. Enter the provider's native Plan mode when the adapter exposes it.
+2. Inspect only enough read-only context to form a concrete plan.
+3. Submit `plan_proposal` to Host, caused by the request or latest feedback.
+4. If Host sends `plan_feedback`, argue with evidence where appropriate,
+   revise the plan in the same native session, and submit the next revision.
+5. Begin execution only after correlated `plan_approval`.
+
+The Assignment is still your Goal. A provider-native Goal is only a session
+projection of it. Plan revision does not replace your MemberRun, Workspace,
+correlation, or native session.
+
+While plan approval is pending, keep a provider-native Goal paused. Do not mark
+it active or let automatic Goal continuation start execution before the Host's
+correlated `plan_approval`.
+
 Use a native subagent when a bounded subtask can return to your context. Keep
 work inline when delegation overhead is larger than the task. Subagents:
 
@@ -65,11 +82,18 @@ harness team-run send --id <team-run-id> \
   --from <member-run-id> --to <peer-member-run-id> --kind progress \
   --body "<coordination needed by the peer>" \
   --correlation-id <correlation-id>
+
+harness team-run send --id <team-run-id> \
+  --from <member-run-id> --to host --kind plan_proposal \
+  --body "<Markdown execution plan>" \
+  --correlation-id <correlation-id> \
+  --causation-id <plan-request-or-feedback-message-id>
 ```
 
 Send:
 
 - `question` for a decision or missing boundary;
+- `plan_proposal` for an explicit Host-requested plan or revision;
 - `progress` after a meaningful result or plan change;
 - `blocker` for a specific failure and needed action;
 - `review_request` when another member should inspect evidence;
