@@ -6,10 +6,13 @@ owner_role: product-design
 canonical_for: Company OS core page coverage and visual-contract scope
 ```
 
-The visual source of truth is
-[`docs/design/company-os-v1/visual-contract.json`](../design/company-os-v1/visual-contract.json).
-It contains twelve core pages at `1536 × 1024`; this document explains their
-product responsibility without maintaining a second progress count.
+The current visual source of truth is
+[`docs/design/company-os-v2/visual-contract.json`](../design/company-os-v2/visual-contract.json),
+with the Live PRD journey under
+[`docs/design/company-os-v3/live-prd-v1/`](../design/company-os-v3/live-prd-v1/).
+The retained `company-os-v1/actual` screenshots are legacy baselines only; they
+are not active design intent. This document explains page responsibility
+without maintaining a second progress count.
 
 ## Core pages
 
@@ -34,6 +37,19 @@ Organization Overview and the multi-view Work Operating System. New rich
 Standing/Governance Agent detail workspaces are deferred; the product may show
 their responsibility, prompt, tools/Skills, permissions, maintained Docs, and
 WorkItems in a compact profile or Context Rail first.
+
+Docs also has one implementation-driven governance subpage:
+`?surface=docs&health=structure` (**Document Health Review**). It is not a
+thirteenth broad concept-design page; it is the operational drill-in behind
+the Docs Workspace "Structure health" rail. Its job is to make document
+governance auditable: counts, structural findings, affected durable records,
+recommended governed actions, CLI/Skill command hints, and, when a Store-live
+Action declaration is present, corrective WorkItem creation. For the narrow
+missing Document ↔ TypedRecord Relation case, a scoped `relation.append`
+declaration can also let the page execute the direct repair through the
+standard Action dispatcher. It must not imply that cleanup has run until a Docs
+Action or corrective WorkItem proves it; a created WorkItem is routing truth,
+not the repair itself.
 
 ## Shared layout and navigation
 

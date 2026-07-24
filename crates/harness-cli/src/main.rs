@@ -864,6 +864,7 @@ fn run() -> CliResult<()> {
         "wave" => wave_command(&store, &args[1..])?,
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
+        "company" => company_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &args[1..])?,
         "workflow" => workflow_command(&store, &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
@@ -902,6 +903,3279 @@ fn retired_surface_error(command: &str) -> CliError {
     CliError::Usage(format!(
         "`harness {command}` was retired with the Goal/GoalPhase/Task Graph coordination stack; use Mission/Wave plus agent-team, dynamic-workflow, or host execution. Historical data remains available only through `harness legacy-goal-task export|verify`."
     ))
+}
+
+fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report")?;
+    match args[0].as_str() {
+        "docs" => company_docs_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown company command: {other}; usage: harness company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report"
+        ))),
+    }
+}
+
+fn company_docs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report")?;
+    match args[0].as_str() {
+        "query" => company_docs_query_command(store, &args[1..]),
+        "search" => company_docs_search_command(store, &args[1..]),
+        "traverse" => company_docs_traverse_command(store, &args[1..]),
+        "refs" => company_docs_refs_command(store, &args[1..]),
+        "related" => company_docs_related_command(store, &args[1..]),
+        "health" => company_docs_health_command(store, &args[1..]),
+        "module" => {
+            require_subcommand(&args[1..], "company docs module create")?;
+            match args[1].as_str() {
+                "create" => company_docs_module_create_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs module command: {other}; usage: harness company docs module create"
+                ))),
+            }
+        }
+        "page-definition" => {
+            require_subcommand(&args[1..], "company docs page-definition create")?;
+            match args[1].as_str() {
+                "create" => company_docs_page_definition_create_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs page-definition command: {other}; usage: harness company docs page-definition create"
+                ))),
+            }
+        }
+        "page" => {
+            require_subcommand(&args[1..], "company docs page scaffold|verify|publish")?;
+            match args[1].as_str() {
+                "scaffold" => company_docs_page_scaffold_command(store, &args[2..]),
+                "verify" => company_docs_page_verify_command(store, &args[2..]),
+                "publish" => company_docs_page_publish_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs page command: {other}; usage: harness company docs page scaffold|verify|publish"
+                ))),
+            }
+        }
+        "document" => {
+            require_subcommand(&args[1..], "company docs document create|rename|move|archive")?;
+            match args[1].as_str() {
+                "create" => company_docs_document_create_command(store, &args[2..]),
+                "rename" => company_docs_document_rename_command(store, &args[2..]),
+                "move" => company_docs_document_move_command(store, &args[2..]),
+                "archive" => company_docs_document_archive_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs document command: {other}; usage: harness company docs document create|rename|move|archive"
+                ))),
+            }
+        }
+        "template" => {
+            require_subcommand(&args[1..], "company docs template create|status")?;
+            match args[1].as_str() {
+                "create" => company_docs_template_create_command(store, &args[2..]),
+                "status" => company_docs_template_status_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs template command: {other}; usage: harness company docs template create|status"
+                ))),
+            }
+        }
+        "block" => {
+            require_subcommand(&args[1..], "company docs block append|update|archive|remove|reorder")?;
+            match args[1].as_str() {
+                "append" => company_docs_block_append_command(store, &args[2..]),
+                "update" => company_docs_block_update_command(store, &args[2..]),
+                "archive" => company_docs_block_archive_command(store, &args[2..]),
+                "remove" => company_docs_block_remove_command(store, &args[2..]),
+                "reorder" => company_docs_block_reorder_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs block command: {other}; usage: harness company docs block append|update|archive|remove|reorder"
+                ))),
+            }
+        }
+        "typed-record" => {
+            require_subcommand(&args[1..], "company docs typed-record append|update|validate")?;
+            match args[1].as_str() {
+                "append" => company_docs_typed_record_append_command(store, &args[2..]),
+                "update" => company_docs_typed_record_update_command(store, &args[2..]),
+                "validate" => company_docs_typed_record_validate_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs typed-record command: {other}; usage: harness company docs typed-record append|update|validate"
+                ))),
+            }
+        }
+        "view" => {
+            require_subcommand(&args[1..], "company docs view create|update")?;
+            match args[1].as_str() {
+                "create" => company_docs_view_create_command(store, &args[2..]),
+                "update" => company_docs_view_update_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs view command: {other}; usage: harness company docs view create|update"
+                ))),
+            }
+        }
+        "relation" => {
+            require_subcommand(&args[1..], "company docs relation link|unlink|relink")?;
+            match args[1].as_str() {
+                "link" => company_docs_relation_link_command(store, &args[2..]),
+                "unlink" => company_docs_relation_unlink_command(store, &args[2..]),
+                "relink" => company_docs_relation_relink_command(store, &args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company docs relation command: {other}; usage: harness company docs relation link|unlink|relink"
+                ))),
+            }
+        }
+        "diff" => company_docs_diff_command(store, &args[1..]),
+        "snapshot" => company_docs_snapshot_command(store, &args[1..]),
+        "change-report" => company_docs_change_report_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown company docs command: {other}; usage: harness company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report"
+        ))),
+    }
+}
+
+fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let document_id = value(args, "--document");
+    let module_id = value(args, "--module");
+    if document_id.is_none() && module_id.is_none() {
+        return Err(CliError::Usage(
+            "usage: harness company docs query --document <document-id> | --module <business-module-id>".into(),
+        ));
+    }
+    if document_id.is_some() && module_id.is_some() {
+        return Err(CliError::Usage(
+            "choose either --document or --module, not both".into(),
+        ));
+    }
+    let snapshot = company_os_api::snapshot(store)?;
+    let documents = json_array(&snapshot, "documents");
+    let blocks = json_array(&snapshot, "blocks");
+    let typed_records = json_array(&snapshot, "typed_records");
+    let relations = json_array(&snapshot, "relations");
+    let views = json_array(&snapshot, "views");
+    let business_modules = json_array(&snapshot, "business_modules");
+    let custom_page_definitions = json_array(&snapshot, "custom_page_definitions");
+    let action_policy_definitions = json_array(&snapshot, "action_policy_definitions");
+    let health_findings = company_docs_health_findings(&snapshot);
+
+    let selected_module = module_id.as_deref().and_then(|id| {
+        business_modules
+            .iter()
+            .find(|module| json_str(module, "id").as_deref() == Some(id))
+    });
+    let selected_document = if let Some(id) = document_id.as_deref() {
+        documents
+            .iter()
+            .find(|document| json_str(document, "id").as_deref() == Some(id))
+    } else {
+        selected_module
+            .and_then(|module| json_str(module, "root_document_ref"))
+            .as_deref()
+            .and_then(|root_id| {
+                documents
+                    .iter()
+                    .find(|document| json_str(document, "id").as_deref() == Some(root_id))
+            })
+    };
+    if let Some(id) = document_id.as_deref() {
+        if selected_document.is_none() {
+            return Err(CliError::Usage(format!("Document not found: {id}")));
+        }
+    }
+    if let Some(id) = module_id.as_deref() {
+        if selected_module.is_none() {
+            return Err(CliError::Usage(format!("BusinessModule not found: {id}")));
+        }
+    }
+
+    let selected_document_id = selected_document.and_then(|document| json_str(document, "id"));
+    let selected_module_id = selected_module
+        .and_then(|module| json_str(module, "id"))
+        .or_else(|| {
+            selected_document_id.as_deref().and_then(|doc_id| {
+                business_modules
+                    .iter()
+                    .find(|module| json_str(module, "root_document_ref").as_deref() == Some(doc_id))
+                    .and_then(|module| json_str(module, "id"))
+            })
+        });
+    let mut relevant_document_ids = BTreeSet::new();
+    if let Some(id) = selected_document_id.as_deref() {
+        relevant_document_ids.insert(id.to_string());
+        for child in documents {
+            if json_str(child, "parent_document_id").as_deref() == Some(id) {
+                if let Some(child_id) = json_str(child, "id") {
+                    relevant_document_ids.insert(child_id);
+                }
+            }
+        }
+    }
+    if let Some(module) = selected_module {
+        if let Some(root_id) = json_str(module, "root_document_ref") {
+            relevant_document_ids.insert(root_id.clone());
+            for child in documents {
+                if json_str(child, "parent_document_id").as_deref() == Some(root_id.as_str()) {
+                    if let Some(child_id) = json_str(child, "id") {
+                        relevant_document_ids.insert(child_id);
+                    }
+                }
+            }
+        }
+    }
+
+    let related_typed_records = typed_records
+        .iter()
+        .filter(|record| {
+            let record_id = json_str(record, "id");
+            let source_document_ref = json_str(record, "source_document_ref")
+                .or_else(|| json_field_str(record, "source_document_ref"));
+            let module_match = selected_module_id.as_deref().is_some_and(|module_id| {
+                json_str(record, "module_id").as_deref() == Some(module_id)
+            });
+            let source_match = source_document_ref
+                .as_deref()
+                .is_some_and(|doc_id| relevant_document_ids.contains(doc_id));
+            let relation_match = record_id.as_deref().is_some_and(|record_id| {
+                relevant_document_ids
+                    .iter()
+                    .any(|doc_id| json_has_relation_between(relations, doc_id, record_id))
+            });
+            module_match || source_match || relation_match
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let related_record_ids = related_typed_records
+        .iter()
+        .filter_map(|record| json_str(record, "id"))
+        .collect::<BTreeSet<_>>();
+    let related_relations = relations
+        .iter()
+        .filter(|relation| {
+            if !json_relation_is_active(relation) {
+                return false;
+            }
+            let endpoints = [
+                json_entity_id(relation, "from_ref"),
+                json_entity_id(relation, "to_ref"),
+            ];
+            endpoints
+                .iter()
+                .flatten()
+                .any(|id| relevant_document_ids.contains(id) || related_record_ids.contains(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let ordered_blocks = selected_document
+        .map(|document| company_docs_ordered_blocks(document, blocks))
+        .unwrap_or_default();
+    let child_documents = documents
+        .iter()
+        .filter(|document| {
+            selected_document_id
+                .as_deref()
+                .is_some_and(|id| json_str(document, "parent_document_id").as_deref() == Some(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let templates = documents
+        .iter()
+        .filter(|document| {
+            json_str(document, "kind").as_deref() == Some("template")
+                && (selected_document_id.as_deref().is_some_and(|id| {
+                    json_str(document, "parent_document_id").as_deref() == Some(id)
+                }) || selected_module
+                    .and_then(|module| json_str(module, "root_document_ref"))
+                    .as_deref()
+                    .is_some_and(|root_id| {
+                        json_str(document, "parent_document_id").as_deref() == Some(root_id)
+                    }))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let module_views = views
+        .iter()
+        .filter(|view| {
+            selected_module_id
+                .as_deref()
+                .is_some_and(|module_id| json_str(view, "module_id").as_deref() == Some(module_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let definitions = custom_page_definitions
+        .iter()
+        .filter(|definition| {
+            selected_module_id.as_deref().is_some_and(|module_id| {
+                json_str(definition, "module_id").as_deref() == Some(module_id)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let scoped_health_findings = health_findings
+        .into_iter()
+        .filter(|finding| {
+            json_entity_id(finding, "subject")
+                .as_deref()
+                .is_some_and(|id| {
+                    relevant_document_ids.contains(id) || related_record_ids.contains(id)
+                })
+                || json_entity_id(finding, "related")
+                    .as_deref()
+                    .is_some_and(|id| {
+                        relevant_document_ids.contains(id) || related_record_ids.contains(id)
+                    })
+        })
+        .collect::<Vec<_>>();
+    let available_commands = company_docs_available_commands(
+        selected_document_id.as_deref(),
+        selected_module_id.as_deref(),
+        definitions
+            .first()
+            .and_then(|definition| json_str(definition, "id"))
+            .as_deref(),
+        !action_policy_definitions.is_empty(),
+    );
+    print_json(&serde_json::json!({
+        "command": "harness company docs query",
+        "source": "latest_projection",
+        "query": {
+            "document_id": document_id,
+            "module_id": module_id
+        },
+        "document": selected_document.cloned(),
+        "blocks": ordered_blocks,
+        "children": child_documents,
+        "templates": templates,
+        "typed_records": related_typed_records,
+        "relations": related_relations,
+        "views": module_views,
+        "business_module": selected_module.cloned(),
+        "custom_page_definitions": definitions,
+        "health_findings": scoped_health_findings,
+        "available_commands": available_commands,
+        "boundaries": {
+            "docs_only": true,
+            "canonical_write_store": "append_only_jsonl_ledgers",
+            "read_model": "latest_projection",
+            "future_sql_role": "derived_read_query_index_layer",
+            "work_side_effects": false,
+            "finance_side_effects": false,
+            "organization_side_effects": false,
+            "execution_side_effects": false,
+            "ui_is_review_surface": true
+        }
+    }))
+}
+
+fn company_docs_search_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let query = required(args, "--query")?.to_lowercase();
+    let module_filter = value(args, "--module");
+    let limit = value(args, "--limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(50);
+    let snapshot = company_os_api::snapshot(store)?;
+    let mut matches = Vec::new();
+    for (kind, key) in [
+        ("document", "documents"),
+        ("block", "blocks"),
+        ("typed_record", "typed_records"),
+        ("view", "views"),
+        ("business_module", "business_modules"),
+        ("custom_page_definition", "custom_page_definitions"),
+    ] {
+        for entry in json_array(&snapshot, key) {
+            if module_filter
+                .as_deref()
+                .is_some_and(|module| !json_entry_matches_module(&snapshot, entry, module))
+            {
+                continue;
+            }
+            let haystack = serde_json::to_string(entry)?.to_lowercase();
+            if haystack.contains(&query) {
+                matches.push(serde_json::json!({
+                    "kind": kind,
+                    "id": json_str(entry, "id").unwrap_or_default(),
+                    "title": json_str(entry, "title").or_else(|| json_str(entry, "name")),
+                    "module_id": json_str(entry, "module_id"),
+                    "source": "latest_projection"
+                }));
+                if matches.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if matches.len() >= limit {
+            break;
+        }
+    }
+    print_json(&serde_json::json!({
+        "command": "harness company docs search",
+        "query": query,
+        "module_id": module_filter,
+        "matches": matches,
+        "boundaries": company_docs_read_boundaries()
+    }))
+}
+
+fn company_docs_traverse_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let document_id = required(args, "--document")?;
+    let depth = value(args, "--depth")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2);
+    let snapshot = company_os_api::snapshot(store)?;
+    let documents = json_array(&snapshot, "documents");
+    let blocks = json_array(&snapshot, "blocks");
+    let root = documents
+        .iter()
+        .find(|document| json_str(document, "id").as_deref() == Some(document_id.as_str()))
+        .ok_or_else(|| CliError::Usage(format!("Document not found: {document_id}")))?;
+    let tree = company_docs_document_tree(documents, blocks, root, depth);
+    print_json(&serde_json::json!({
+        "command": "harness company docs traverse",
+        "document_id": document_id,
+        "depth": depth,
+        "tree": tree,
+        "boundaries": company_docs_read_boundaries()
+    }))
+}
+
+fn company_docs_refs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let reference = company_docs_ref_from_args(args)?;
+    let snapshot = company_os_api::snapshot(store)?;
+    let refs = company_docs_refs_for(&snapshot, &reference);
+    print_json(&serde_json::json!({
+        "command": "harness company docs refs",
+        "ref": reference,
+        "refs": refs,
+        "boundaries": company_docs_read_boundaries()
+    }))
+}
+
+fn company_docs_related_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let reference = company_docs_ref_from_args(args)?;
+    let snapshot = company_os_api::snapshot(store)?;
+    let refs = company_docs_refs_for(&snapshot, &reference);
+    let mut related = Vec::new();
+    for relation in refs
+        .get("relations")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
+        for key in ["from_ref", "to_ref"] {
+            if let Some(endpoint) = relation.get(key) {
+                if endpoint != &reference {
+                    related.push(endpoint.clone());
+                }
+            }
+        }
+    }
+    print_json(&serde_json::json!({
+        "command": "harness company docs related",
+        "ref": reference,
+        "related_refs": related,
+        "refs": refs,
+        "boundaries": company_docs_read_boundaries()
+    }))
+}
+
+fn company_docs_snapshot_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let reference = company_docs_ref_from_args(args)?;
+    let snapshot = company_os_api::snapshot(store)?;
+    let refs = company_docs_refs_for(&snapshot, &reference);
+    let primary = company_docs_find_ref(&snapshot, &reference);
+    print_json(&serde_json::json!({
+        "command": "harness company docs snapshot",
+        "ref": reference,
+        "primary": primary,
+        "refs": refs,
+        "boundaries": company_docs_read_boundaries()
+    }))
+}
+
+fn company_docs_diff_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let reference = company_docs_ref_from_args(args)?;
+    let proposed = required(args, "--proposed-json")?;
+    let proposed = serde_json::from_str::<serde_json::Value>(&proposed)?;
+    let snapshot = company_os_api::snapshot(store)?;
+    let before = company_docs_find_ref(&snapshot, &reference)
+        .ok_or_else(|| CliError::Usage(format!("ref not found: {}", reference)))?;
+    let changed_fields = company_docs_changed_fields(&before, &proposed);
+    print_json(&serde_json::json!({
+        "command": "harness company docs diff",
+        "ref": reference,
+        "before": before,
+        "after": proposed,
+        "changed_fields": changed_fields,
+        "boundaries": {
+            "docs_only": true,
+            "read_only": true,
+            "diff_does_not_dispatch": true,
+            "rollback_evidence_only": true,
+            "canonical_write_store": "append_only_jsonl_ledgers",
+            "work_side_effects": false,
+            "finance_side_effects": false,
+            "organization_side_effects": false,
+            "execution_side_effects": false,
+            "ui_is_review_surface": true
+        }
+    }))
+}
+
+fn company_docs_change_report_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let action = if let Some(raw) = value(args, "--action-json") {
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else if let Some(action_id) = value(args, "--action") {
+        let snapshot = company_os_api::snapshot(store)?;
+        json_array(&snapshot, "action_commands")
+            .iter()
+            .find(|entry| json_str(entry, "id").as_deref() == Some(action_id.as_str()))
+            .cloned()
+            .ok_or_else(|| CliError::Usage(format!("ActionCommand not found: {action_id}")))?
+    } else {
+        return Err(CliError::Usage(
+            "usage: harness company docs change-report --action-json <json> | --action <action-command-id>".into(),
+        ));
+    };
+    let snapshot = company_os_api::snapshot(store)?;
+    let subject_ref = action
+        .get("subject_ref")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let before = if subject_ref.is_object() {
+        company_docs_find_ref(&snapshot, &subject_ref)
+    } else {
+        None
+    };
+    let after = action
+        .get("payload")
+        .and_then(|payload| payload.get("record"))
+        .cloned();
+    let changed_fields = before
+        .as_ref()
+        .zip(after.as_ref())
+        .map(|(before, after)| company_docs_changed_fields(before, after))
+        .unwrap_or_default();
+    print_json(&serde_json::json!({
+        "command": "harness company docs change-report",
+        "action": action,
+        "subject_ref": subject_ref,
+        "before": before,
+        "after": after,
+        "changed_fields": changed_fields,
+        "review_boundary": "report_only_no_dispatch",
+        "boundaries": company_docs_read_boundaries()
+    }))
+}
+
+fn company_docs_health_command(store: &HarnessStore, _args: &[String]) -> CliResult<()> {
+    let snapshot = company_os_api::snapshot(store)?;
+    let documents = json_array(&snapshot, "documents");
+    let typed_records = json_array(&snapshot, "typed_records");
+    let relations = json_array(&snapshot, "relations");
+    let business_modules = json_array(&snapshot, "business_modules");
+    let blocks = json_array(&snapshot, "blocks");
+    let findings = company_docs_health_findings(&snapshot);
+    let critical = findings
+        .iter()
+        .filter(|finding| finding.get("severity").and_then(|v| v.as_str()) == Some("critical"))
+        .count();
+    let warning = findings
+        .iter()
+        .filter(|finding| finding.get("severity").and_then(|v| v.as_str()) == Some("warning"))
+        .count();
+    print_json(&serde_json::json!({
+        "command": "harness company docs health",
+        "status": if findings.is_empty() { "pass" } else { "issues" },
+        "counts": {
+            "documents": documents.len(),
+            "blocks": blocks.len(),
+            "typed_records": typed_records.len(),
+            "relations": relations.len(),
+            "business_modules": business_modules.len(),
+            "findings": findings.len(),
+            "critical": critical,
+            "warning": warning
+        },
+        "findings": findings,
+        "action_hints": [
+            {"command": "harness company docs module create --root-document <doc-id> --name <module-name> --purpose <purpose> --authority <human-admin-id> [--record-type <type> --relation-rule-json '{\"relation_type\":\"source_for\",\"from_kind\":\"document\",\"to_kind\":\"typed_record\",\"required\":true,\"cross_module\":false}']"},
+            {"command": "harness company docs page-definition create --module <module-id> --fallback-view <view-id> --purpose <purpose> --authority <human-admin-id>"},
+            {"command": "harness company docs document create --definition <id> --parent-document <doc-id> --title <title> [--template <template-document-id> --instantiate-template] --actor <agent-or-human-id>"},
+            {"command": "harness company docs template create --definition <id> --parent-document <doc-id> --title <title> [--from-document <source-doc-id>] --actor <agent-or-human-id>"},
+            {"command": "harness company docs template status --definition <id> --template <template-document-id> --status active|paused|archived --actor <agent-or-human-id>"},
+            {"command": "harness company docs block append --definition <id> --document <doc-id> --text <body> --actor <agent-or-human-id>"},
+            {"command": "harness company docs block reorder --definition <id> --document <doc-id> --block-order <block-a,block-b> --actor <agent-or-human-id>"},
+            {"command": "harness company docs typed-record append --definition <id> --module <module-id> --source-document <doc-id> --record-type <type> --title <title> --actor <agent-or-human-id>"},
+            {"command": "harness company docs view create --definition <id> --module <module-id> --title <title> --source-kind typed_record --actor <agent-or-human-id>"},
+            {"command": "harness company docs relation link --definition <id> --from-document <doc-id> --to-record <typed-record-id> --actor <agent-or-human-id>"},
+            {"capability": "WorkItem intake from a source Document", "state": "planned_cli"}
+        ]
+    }))
+}
+
+fn company_docs_module_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let root_document = required(args, "--root-document")?;
+    let name = required(args, "--name")?;
+    let purpose = required(args, "--purpose")?;
+    let authority = required(args, "--authority")?;
+    let module_id =
+        value(args, "--id").unwrap_or_else(|| format!("module-cli-{}", relation_slug(&name)));
+    let owner_id = value(args, "--owner").unwrap_or_else(|| authority.clone());
+    let owner_kind = value(args, "--owner-kind").unwrap_or_else(|| "human".to_string());
+    let record_types = many(args, "--record-type");
+    let record_types = if record_types.is_empty() {
+        vec!["record".to_string()]
+    } else {
+        record_types
+    };
+    let relation_rules = many(args, "--relation-rule-json")
+        .into_iter()
+        .map(|raw| serde_json::from_str::<serde_json::Value>(&raw))
+        .collect::<Result<Vec<_>, _>>()?;
+    for rule in &relation_rules {
+        if !rule.is_object() {
+            return Err(CliError::Usage(
+                "--relation-rule-json must parse to a JSON object".into(),
+            ));
+        }
+    }
+    let policies = many(args, "--policy-ref");
+    let policies = if policies.is_empty() {
+        vec!["company.records.write".to_string()]
+    } else {
+        policies
+    };
+    let view_id = value(args, "--default-view-id")
+        .unwrap_or_else(|| format!("view-cli-{}", relation_slug(&name)));
+    let view_title =
+        value(args, "--default-view-title").unwrap_or_else(|| format!("{name} records"));
+    let now = now_string();
+    let owner_ref = serde_json::json!({"actor_type": owner_kind, "actor_id": owner_id});
+    let authority_ref = serde_json::json!({"actor_type": "human", "actor_id": authority});
+    let module_record = serde_json::json!({
+        "id": module_id,
+        "name": name,
+        "purpose": purpose,
+        "root_document_ref": root_document,
+        "record_types": record_types,
+        "relation_rules": relation_rules,
+        "default_view_refs": [],
+        "policy_refs": policies,
+        "lifecycle_rules": [],
+        "metric_definition_refs": [],
+        "custom_page_definition_refs": [],
+        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
+        "owner": owner_ref,
+        "created_at": now,
+        "updated_at": now
+    });
+    let module_result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/business-modules",
+        authority_ref.clone(),
+        module_record.clone(),
+    )?;
+    let view_record = serde_json::json!({
+        "id": view_id,
+        "module_id": module_id,
+        "title": view_title,
+        "mode": value(args, "--default-view-mode").unwrap_or_else(|| "table".to_string()),
+        "source_kinds": ["typed_record"],
+        "query": {},
+        "owner": owner_ref,
+        "policy_refs": ["company.records.write"],
+        "created_at": now,
+        "updated_at": now
+    });
+    let view_result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/views",
+        authority_ref.clone(),
+        view_record.clone(),
+    )?;
+    let mut module_update = module_record;
+    module_update["default_view_refs"] = serde_json::json!([view_record["id"].clone()]);
+    let module_update_result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/business-modules",
+        authority_ref,
+        module_update,
+    )?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "module": module_result,
+            "default_view": view_result,
+            "module_update": module_update_result,
+            "module_id": module_result["id"],
+            "default_view_id": view_result["id"]
+        }
+    }))
+}
+
+fn company_docs_page_definition_create_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let module_id = required(args, "--module")?;
+    let fallback_view = required(args, "--fallback-view")?;
+    let purpose = required(args, "--purpose")?;
+    let authority = required(args, "--authority")?;
+    let definition_id =
+        value(args, "--id").unwrap_or_else(|| format!("page-cli-{}", relation_slug(&module_id)));
+    let owner_id = value(args, "--owner").unwrap_or_else(|| authority.clone());
+    let owner_kind = value(args, "--owner-kind").unwrap_or_else(|| "human".to_string());
+    let package_version = value(args, "--package-version").unwrap_or_else(|| "1.0.0".to_string());
+    let package_id =
+        value(args, "--package-id").unwrap_or_else(|| format!("package-cli-{definition_id}"));
+    let now = now_string();
+    let authority_ref = serde_json::json!({"actor_type": "human", "actor_id": authority});
+    let owner_ref = serde_json::json!({"actor_type": owner_kind, "actor_id": owner_id});
+    let package_record = serde_json::json!({
+        "id": package_id,
+        "definition_id": definition_id,
+        "version": package_version,
+        "kind": value(args, "--package-kind").unwrap_or_else(|| "html".to_string()),
+        "artifact_ref": value(args, "--artifact-ref").unwrap_or_else(|| "inline://docs-governance-page".to_string()),
+        "entrypoint": value(args, "--entrypoint").unwrap_or_else(|| "index.html".to_string()),
+        "integrity_digest": value(args, "--integrity-digest").unwrap_or_else(|| format!("sha256:{}", relation_slug(&definition_id))),
+        "built_at": now
+    });
+    let package_result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/custom-page-packages",
+        authority_ref.clone(),
+        package_record.clone(),
+    )?;
+    let action_command_refs = many(args, "--action");
+    let action_command_refs = if action_command_refs.is_empty() {
+        vec![
+            "document.append".to_string(),
+            "block.append".to_string(),
+            "typed_record.append".to_string(),
+            "view.append".to_string(),
+            "relation.append".to_string(),
+        ]
+    } else {
+        action_command_refs
+    };
+    let policy_refs = action_command_refs
+        .iter()
+        .map(|command| format!("{definition_id}:{command}"))
+        .collect::<Vec<_>>();
+    let components = many(args, "--component");
+    let components = if components.is_empty() {
+        vec!["DocumentEditor".to_string(), "StructuredView".to_string()]
+    } else {
+        components
+    };
+    let query_source_kind =
+        value(args, "--query-source-kind").unwrap_or_else(|| "document".to_string());
+    let definition_record = serde_json::json!({
+        "id": definition_id,
+        "module_id": module_id,
+        "purpose": purpose,
+        "allowed_data_queries": [{
+            "id": value(args, "--query-id").unwrap_or_else(|| format!("query-cli-{definition_id}")),
+            "source_kind": query_source_kind,
+            "source_scope": module_id,
+            "permission_policy_ref": "company.records.write"
+        }],
+        "approved_ui_components": components,
+        "action_command_refs": action_command_refs,
+        "standard_view_fallback_ref": fallback_view,
+        "owner": owner_ref,
+        "package_ref": package_record["id"].clone(),
+        "package_version": package_record["version"].clone(),
+        "fixture_ref": value(args, "--fixture-ref").unwrap_or_else(|| format!("{definition_id}:fixture")),
+        "visual_contract_ref": value(args, "--visual-contract-ref").unwrap_or_else(|| format!("{definition_id}:visual-contract")),
+        "policy_refs": policy_refs,
+        "created_at": now,
+        "updated_at": now
+    });
+    let definition_result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/custom-page-definitions",
+        authority_ref.clone(),
+        definition_record.clone(),
+    )?;
+    let module_update_result = if let Some(mut module_record) = store
+        .latest_business_modules()?
+        .into_iter()
+        .find(|module| module.id == module_id)
+        .map(serde_json::to_value)
+        .transpose()?
+    {
+        let mut refs = module_record
+            .get("custom_page_definition_refs")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if !refs
+            .iter()
+            .any(|value| value.as_str() == Some(definition_id.as_str()))
+        {
+            refs.push(serde_json::json!(definition_id));
+        }
+        module_record["custom_page_definition_refs"] = serde_json::json!(refs);
+        module_record["updated_at"] = serde_json::json!(now);
+        Some(dispatch_company_docs_admin_append_value(
+            store,
+            "/v1/company-os/business-modules",
+            authority_ref,
+            module_record,
+        )?)
+    } else {
+        None
+    };
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "package": package_result,
+            "definition": definition_result,
+            "module_update": module_update_result,
+            "definition_id": definition_record["id"],
+            "package_id": package_record["id"]
+        }
+    }))
+}
+
+fn company_docs_page_scaffold_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let module_id = required(args, "--module")?;
+    let fallback_view = required(args, "--fallback-view")?;
+    let title = required(args, "--title")?;
+    let authority = required(args, "--authority")?;
+    let definition_id =
+        value(args, "--id").unwrap_or_else(|| format!("page-cli-{}", relation_slug(&title)));
+    let purpose = value(args, "--purpose").unwrap_or_else(|| {
+        format!(
+            "Code-declared custom business page for {title}; consumes native Company OS objects and never becomes a second data truth."
+        )
+    });
+    let mut forwarded = vec![
+        "--module".to_string(),
+        module_id.clone(),
+        "--fallback-view".to_string(),
+        fallback_view.clone(),
+        "--purpose".to_string(),
+        purpose,
+        "--authority".to_string(),
+        authority.clone(),
+        "--id".to_string(),
+        definition_id.clone(),
+        "--package-kind".to_string(),
+        value(args, "--package-kind").unwrap_or_else(|| "react".to_string()),
+        "--artifact-ref".to_string(),
+        value(args, "--artifact-ref").unwrap_or_else(|| {
+            format!(
+                "apps/agent-dashboard/src/company-os/modules/{}/{}Page.tsx",
+                relation_slug(&module_id),
+                relation_slug(&title)
+            )
+        }),
+        "--entrypoint".to_string(),
+        value(args, "--entrypoint").unwrap_or_else(|| "index.tsx".to_string()),
+        "--fixture-ref".to_string(),
+        value(args, "--fixture-ref").unwrap_or_else(|| {
+            format!(
+                "docs/design/company-os/custom-pages/{}/fixture.json",
+                relation_slug(&title)
+            )
+        }),
+        "--visual-contract-ref".to_string(),
+        value(args, "--visual-contract-ref").unwrap_or_else(|| {
+            format!(
+                "docs/design/company-os/custom-pages/{}/review.html",
+                relation_slug(&title)
+            )
+        }),
+    ];
+    for component in many(args, "--component").into_iter().chain([
+        "CodeDeclaredPage".to_string(),
+        "VisualContractReview".to_string(),
+    ]) {
+        forwarded.push("--component".to_string());
+        forwarded.push(component);
+    }
+    let actions = many(args, "--action");
+    let actions = if actions.is_empty() {
+        vec![
+            "document.append".to_string(),
+            "block.append".to_string(),
+            "typed_record.append".to_string(),
+            "view.append".to_string(),
+            "relation.append".to_string(),
+        ]
+    } else {
+        actions
+    };
+    for action in actions {
+        forwarded.push("--action".to_string());
+        forwarded.push(action);
+    }
+    company_docs_page_definition_create_command(store, &forwarded)
+}
+
+fn company_docs_page_verify_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let definitions = store.latest_custom_page_definitions()?;
+    let packages = store.latest_custom_page_packages()?;
+    let modules = store.latest_business_modules()?;
+    let views = store.latest_views()?;
+    let definition = definitions
+        .into_iter()
+        .find(|definition| definition.id == definition_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!("CustomPageDefinition:{definition_id} not found"))
+        })?;
+    let package = packages
+        .iter()
+        .find(|package| package.id == definition.package_ref)
+        .cloned();
+    let module_exists = modules
+        .iter()
+        .any(|module| module.id == definition.module_id);
+    let fallback_view_exists = views
+        .iter()
+        .any(|view| view.id == definition.standard_view_fallback_ref);
+    let missing_policy_refs = definition
+        .action_command_refs
+        .iter()
+        .map(|command| format!("{definition_id}:{command}"))
+        .filter(|policy| !definition.policy_refs.contains(policy))
+        .collect::<Vec<_>>();
+    let ok = package.is_some()
+        && module_exists
+        && fallback_view_exists
+        && !definition.allowed_data_queries.is_empty()
+        && !definition.approved_ui_components.is_empty()
+        && !definition.action_command_refs.is_empty()
+        && !definition.visual_contract_ref.is_empty()
+        && missing_policy_refs.is_empty();
+    print_json(&serde_json::json!({
+        "ok": ok,
+        "command": "harness company docs page verify",
+        "definition_id": definition_id,
+        "definition": definition,
+        "package": package,
+        "checks": {
+            "module_exists": module_exists,
+            "fallback_view_exists": fallback_view_exists,
+            "package_exists": package.is_some(),
+            "allowed_data_queries_declared": !definition.allowed_data_queries.is_empty(),
+            "approved_ui_components_declared": !definition.approved_ui_components.is_empty(),
+            "action_command_refs_declared": !definition.action_command_refs.is_empty(),
+            "visual_contract_ref_declared": !definition.visual_contract_ref.is_empty(),
+            "missing_policy_refs": missing_policy_refs
+        },
+        "boundaries": {
+            "code_declared_page": true,
+            "consumes_native_objects_only": true,
+            "page_is_not_second_truth": true,
+            "verify_does_not_dispatch": true,
+            "ui_is_review_surface": true
+        }
+    }))
+}
+
+fn company_docs_page_publish_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let authority = required(args, "--authority")?;
+    let version = required(args, "--version")?;
+    let artifact_ref = required(args, "--artifact-ref")?;
+    let entrypoint = value(args, "--entrypoint").unwrap_or_else(|| "index.tsx".to_string());
+    let integrity_digest = value(args, "--integrity-digest").unwrap_or_else(|| {
+        format!(
+            "sha256:{}",
+            content_hash_hex16(&format!(
+                "{definition_id}:{version}:{artifact_ref}:{entrypoint}"
+            ))
+        )
+    });
+    let definition = store
+        .latest_custom_page_definitions()?
+        .into_iter()
+        .find(|definition| definition.id == definition_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!("CustomPageDefinition:{definition_id} not found"))
+        })?;
+    let now = now_string();
+    let package_id = value(args, "--package-id")
+        .unwrap_or_else(|| format!("package-cli-{definition_id}-{}", relation_slug(&version)));
+    let package_record = serde_json::json!({
+        "id": package_id,
+        "definition_id": definition_id,
+        "version": version,
+        "kind": value(args, "--package-kind").unwrap_or_else(|| "react".to_string()),
+        "artifact_ref": artifact_ref,
+        "entrypoint": entrypoint,
+        "integrity_digest": integrity_digest,
+        "built_at": now
+    });
+    let authority_ref = serde_json::json!({"actor_type": "human", "actor_id": authority});
+    let package_result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/custom-page-packages",
+        authority_ref.clone(),
+        package_record.clone(),
+    )?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company docs page publish",
+        "result": {
+            "package": package_result,
+            "active_definition_package_ref": definition.package_ref,
+            "active_definition_package_version": definition.package_version,
+            "definition_id": definition_id,
+            "package_id": package_record["id"],
+            "package_version": package_record["version"],
+            "activation_state": "candidate_package_recorded"
+        },
+        "boundaries": {
+            "code_declared_page": true,
+            "page_is_not_second_truth": true,
+            "publishes_package_metadata_only": true,
+            "does_not_switch_active_definition_pointer": true
+        }
+    }))
+}
+
+fn company_docs_document_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let parent_document = required(args, "--parent-document")?;
+    let title = required(args, "--title")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let space_id = value(args, "--space").unwrap_or_else(|| "company".to_string());
+    let document_id =
+        value(args, "--id").unwrap_or_else(|| format!("document-cli-{}", relation_slug(&title)));
+    let document_kind = value(args, "--kind").unwrap_or_else(|| "page".to_string());
+    let template_ref = value(args, "--template");
+    let instantiate_template = has_flag(args, "--instantiate-template");
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let record = serde_json::json!({
+        "id": document_id,
+        "space_id": space_id,
+        "parent_document_id": parent_document,
+        "title": title,
+        "kind": document_kind,
+        "lifecycle_status": "draft",
+        "block_ids": [],
+        "template_ref": template_ref,
+        "permission_policy_refs": ["company.records.write"],
+        "reference_refs": [],
+        "created_by": actor_ref,
+        "updated_by": actor_ref,
+        "created_at": now,
+        "updated_at": now
+    });
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-document")),
+        "document.append",
+        serde_json::json!({"kind": "document", "id": parent_document}),
+        actor_ref.clone(),
+        record,
+        now,
+    );
+    let document_result = dispatch_company_docs_action_value(store, &body)?;
+    let template_result = if instantiate_template {
+        let template_id = template_ref.as_deref().ok_or_else(|| {
+            CliError::Usage(
+                "--instantiate-template requires --template <template-document-id>".into(),
+            )
+        })?;
+        Some(company_docs_instantiate_template_blocks(
+            store,
+            &definition_id,
+            &document_id,
+            template_id,
+            actor_ref,
+            value(args, "--block-policy")
+                .unwrap_or_else(|| format!("{definition_id}:block.append")),
+            value(args, "--document-policy")
+                .unwrap_or_else(|| format!("{definition_id}:document.append")),
+        )?)
+    } else {
+        None
+    };
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "document_action": document_result,
+            "document_id": document_id,
+            "template_ref": template_ref,
+            "template_instantiation": template_result
+        }
+    }))
+}
+
+fn company_docs_document_rename_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let title = required(args, "--title")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    company_docs_document_update_command(
+        store,
+        &definition_id,
+        &document_id,
+        &actor_id,
+        &actor_kind,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-rename")),
+        has_flag(args, "--dry-run"),
+        "rename",
+        |record| {
+            record["title"] = serde_json::json!(title);
+            Ok(())
+        },
+    )
+}
+
+fn company_docs_document_move_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let move_to_root = has_flag(args, "--root");
+    let parent_document = value(args, "--parent-document");
+    if move_to_root == parent_document.is_some() {
+        return Err(CliError::Usage(
+            "usage: harness company docs document move --definition <id> --document <id> (--parent-document <id> | --root) --actor <actor-id> [--dry-run]".into(),
+        ));
+    }
+    if parent_document.as_deref() == Some(document_id.as_str()) {
+        return Err(CliError::Usage(
+            "document move cannot set --parent-document to the same Document".into(),
+        ));
+    }
+    if let Some(parent_id) = parent_document.as_deref() {
+        let exists = store
+            .latest_documents()?
+            .iter()
+            .any(|document| document.id == parent_id);
+        if !exists {
+            return Err(CliError::Usage(format!(
+                "Parent Document:{parent_id} not found"
+            )));
+        }
+    }
+    company_docs_document_update_command(
+        store,
+        &definition_id,
+        &document_id,
+        &actor_id,
+        &actor_kind,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-move")),
+        has_flag(args, "--dry-run"),
+        "move",
+        |record| {
+            record["parent_document_id"] = match parent_document {
+                Some(parent_id) => serde_json::json!(parent_id),
+                None => serde_json::Value::Null,
+            };
+            Ok(())
+        },
+    )
+}
+
+fn company_docs_document_archive_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run && !has_flag(args, "--confirm") {
+        return Err(CliError::Usage(
+            "document archive requires --confirm unless --dry-run is supplied".into(),
+        ));
+    }
+    company_docs_document_update_command(
+        store,
+        &definition_id,
+        &document_id,
+        &actor_id,
+        &actor_kind,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-archive")),
+        dry_run,
+        "archive",
+        |record| {
+            record["lifecycle_status"] = serde_json::json!("archived");
+            Ok(())
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn company_docs_document_update_command<F>(
+    store: &HarnessStore,
+    definition_id: &str,
+    document_id: &str,
+    actor_id: &str,
+    actor_kind: &str,
+    policy_ref: String,
+    command_id: String,
+    dry_run: bool,
+    operation: &str,
+    mutate: F,
+) -> CliResult<()>
+where
+    F: FnOnce(&mut serde_json::Value) -> CliResult<()>,
+{
+    let document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == document_id)
+        .ok_or_else(|| CliError::Usage(format!("Document:{document_id} not found")))?;
+    let before = serde_json::to_value(&document).map_err(CliError::Json)?;
+    let mut record = before.clone();
+    mutate(&mut record)?;
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    record["updated_by"] = actor_ref.clone();
+    record["updated_at"] = serde_json::json!(now.clone());
+    let body = docs_action_body(
+        definition_id,
+        policy_ref,
+        command_id,
+        "document.append",
+        serde_json::json!({"kind": "document", "id": document_id}),
+        actor_ref,
+        record.clone(),
+        now,
+    );
+    if dry_run {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "operation": operation,
+            "command": "harness company docs document",
+            "effect": "document.append",
+            "before": {
+                "document_id": document_id,
+                "title": before.get("title"),
+                "parent_document_id": before.get("parent_document_id"),
+                "lifecycle_status": before.get("lifecycle_status"),
+                "block_ids": before.get("block_ids"),
+                "reference_refs": before.get("reference_refs")
+            },
+            "after": {
+                "document_id": document_id,
+                "title": record.get("title"),
+                "parent_document_id": record.get("parent_document_id"),
+                "lifecycle_status": record.get("lifecycle_status"),
+                "block_ids": record.get("block_ids"),
+                "reference_refs": record.get("reference_refs")
+            },
+            "boundaries": {
+                "docs_only": true,
+                "dry_run_does_not_dispatch": true,
+                "canonical_write_store": "append_only_jsonl_ledgers",
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false,
+                "ui_is_review_surface": true
+            },
+            "action": body
+        }));
+    }
+    let result = dispatch_company_docs_action_value(store, &body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "operation": operation,
+            "document_action": result,
+            "document_id": document_id,
+            "title": record.get("title"),
+            "parent_document_id": record.get("parent_document_id"),
+            "lifecycle_status": record.get("lifecycle_status")
+        }
+    }))
+}
+
+fn company_docs_template_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let parent_document = required(args, "--parent-document")?;
+    let title = required(args, "--title")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let space_id = value(args, "--space").unwrap_or_else(|| "company".to_string());
+    let template_id =
+        value(args, "--id").unwrap_or_else(|| format!("template-cli-{}", relation_slug(&title)));
+    let source_document = value(args, "--from-document");
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let record = serde_json::json!({
+        "id": template_id,
+        "space_id": space_id,
+        "parent_document_id": parent_document,
+        "title": title,
+        "kind": "template",
+        "lifecycle_status": "draft",
+        "block_ids": [],
+        "template_ref": null,
+        "permission_policy_refs": ["company.records.write"],
+        "reference_refs": [],
+        "created_by": actor_ref,
+        "updated_by": actor_ref,
+        "created_at": now,
+        "updated_at": now
+    });
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-template")),
+        "document.append",
+        serde_json::json!({"kind": "document", "id": parent_document}),
+        actor_ref.clone(),
+        record,
+        now,
+    );
+    let template_result = dispatch_company_docs_action_value(store, &body)?;
+    let block_copy = if let Some(source_document_id) = source_document.as_deref() {
+        Some(company_docs_copy_document_blocks(
+            store,
+            &definition_id,
+            &template_id,
+            source_document_id,
+            actor_ref,
+            value(args, "--block-policy")
+                .unwrap_or_else(|| format!("{definition_id}:block.append")),
+            value(args, "--document-policy")
+                .unwrap_or_else(|| format!("{definition_id}:document.append")),
+            "template_source_document_id",
+        )?)
+    } else {
+        None
+    };
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "template_action": template_result,
+            "template_id": template_id,
+            "source_document_ref": source_document,
+            "block_copy": block_copy
+        }
+    }))
+}
+
+fn company_docs_template_status_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let template_id = required(args, "--template")?;
+    let status = required(args, "--status")?;
+    if !matches!(status.as_str(), "draft" | "active" | "paused" | "archived") {
+        return Err(CliError::Usage(
+            "--status must be one of draft|active|paused|archived for template lifecycle updates"
+                .into(),
+        ));
+    }
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let template_document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == template_id)
+        .ok_or_else(|| CliError::Usage(format!("Template Document:{template_id} not found")))?;
+    if template_document.kind != harness_core::DocumentKind::Template {
+        return Err(CliError::Usage(
+            "template status requires --template to reference a Document with kind=template".into(),
+        ));
+    }
+    let now = now_string();
+    let mut record = serde_json::to_value(template_document).map_err(CliError::Json)?;
+    record["lifecycle_status"] = serde_json::json!(status);
+    record["updated_by"] = actor_ref.clone();
+    record["updated_at"] = serde_json::json!(now.clone());
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-template-status")),
+        "document.append",
+        serde_json::json!({"kind": "document", "id": template_id}),
+        actor_ref,
+        record,
+        now,
+    );
+    let result = dispatch_company_docs_action_value(store, &body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "template_action": result,
+            "template_id": template_id,
+            "lifecycle_status": status
+        }
+    }))
+}
+
+fn company_docs_instantiate_template_blocks(
+    store: &HarnessStore,
+    definition_id: &str,
+    document_id: &str,
+    template_id: &str,
+    actor_ref: serde_json::Value,
+    block_policy_ref: String,
+    document_policy_ref: String,
+) -> CliResult<serde_json::Value> {
+    let template_document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == template_id)
+        .ok_or_else(|| CliError::Usage(format!("Template Document:{template_id} not found")))?;
+    if template_document.kind != harness_core::DocumentKind::Template {
+        return Err(CliError::Usage(
+            "--instantiate-template requires --template to reference a Document with kind=template"
+                .into(),
+        ));
+    }
+    let copy_result = company_docs_copy_document_blocks(
+        store,
+        definition_id,
+        document_id,
+        template_id,
+        actor_ref,
+        block_policy_ref,
+        document_policy_ref,
+        "template_id",
+    )?;
+    Ok(serde_json::json!({
+        "template_id": template_id,
+        "copied_block_ids": copy_result["copied_block_ids"],
+        "copied_block_count": copy_result["copied_block_count"],
+        "actions": copy_result["actions"]
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn company_docs_copy_document_blocks(
+    store: &HarnessStore,
+    definition_id: &str,
+    document_id: &str,
+    source_document_id: &str,
+    actor_ref: serde_json::Value,
+    block_policy_ref: String,
+    document_policy_ref: String,
+    source_result_key: &str,
+) -> CliResult<serde_json::Value> {
+    let source_document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == source_document_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!("Source Document:{source_document_id} not found"))
+        })?;
+    let blocks = store.latest_blocks()?;
+    let mut ordered_source_blocks = Vec::new();
+    for block_id in &source_document.block_ids {
+        let block = blocks
+            .iter()
+            .find(|block| &block.id == block_id)
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "Source Document {source_document_id} references missing Block {block_id}"
+                ))
+            })?;
+        ordered_source_blocks.push(block.clone());
+    }
+    let mut copied_block_ids = Vec::new();
+    let mut action_results = Vec::new();
+    for (index, source_block) in ordered_source_blocks.into_iter().enumerate() {
+        let now = now_string();
+        let block_id = format!(
+            "block-cli-template-{}-{}-{}",
+            relation_slug(document_id),
+            index + 1,
+            relation_slug(&source_block.id)
+        );
+        let mut block_record = serde_json::to_value(&source_block).map_err(CliError::Json)?;
+        block_record["id"] = serde_json::json!(block_id);
+        block_record["document_id"] = serde_json::json!(document_id);
+        block_record["position"] = serde_json::json!(index as u32);
+        block_record["created_by"] = actor_ref.clone();
+        block_record["updated_by"] = actor_ref.clone();
+        block_record["created_at"] = serde_json::json!(now.clone());
+        block_record["updated_at"] = serde_json::json!(now.clone());
+        let block_command_id = generated_id("action-cli-docs-template-block");
+        let block_body = docs_action_body(
+            definition_id,
+            block_policy_ref.clone(),
+            block_command_id,
+            "block.append",
+            serde_json::json!({"kind": "document", "id": document_id}),
+            actor_ref.clone(),
+            block_record,
+            now.clone(),
+        );
+        let block_result = dispatch_company_docs_action_value(store, &block_body)?;
+        copied_block_ids.push(
+            block_body["payload"]["record"]["id"]
+                .as_str()
+                .unwrap_or("block")
+                .to_string(),
+        );
+        let document = store
+            .latest_documents()?
+            .into_iter()
+            .find(|row| row.id == document_id)
+            .ok_or_else(|| CliError::Usage(format!("Document:{document_id} not found")))?;
+        let mut next_block_ids = document.block_ids.clone();
+        next_block_ids.push(
+            block_body["payload"]["record"]["id"]
+                .as_str()
+                .unwrap_or("block")
+                .to_string(),
+        );
+        let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
+        document_record["block_ids"] = serde_json::json!(next_block_ids);
+        document_record["updated_by"] = actor_ref.clone();
+        document_record["updated_at"] = serde_json::json!(now.clone());
+        let document_command_id = generated_id("action-cli-docs-template-document");
+        let document_body = docs_action_body(
+            definition_id,
+            document_policy_ref.clone(),
+            document_command_id,
+            "document.append",
+            serde_json::json!({"kind": "document", "id": document_id}),
+            actor_ref.clone(),
+            document_record,
+            now,
+        );
+        let document_result = dispatch_company_docs_action_value(store, &document_body)?;
+        action_results.push(serde_json::json!({
+            "source_block_id": source_block.id,
+            "block_id": block_body["payload"]["record"]["id"],
+            "block_action": block_result,
+            "document_action": document_result
+        }));
+    }
+    let copied_block_count = copied_block_ids.len();
+    let mut result = serde_json::json!({
+        "copied_block_ids": copied_block_ids,
+        "copied_block_count": copied_block_count,
+        "actions": action_results
+    });
+    result[source_result_key] = serde_json::json!(source_document_id);
+    Ok(result)
+}
+
+fn company_docs_block_append_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let block_kind = value(args, "--kind").unwrap_or_else(|| "rich_text".to_string());
+    let block_id = value(args, "--id").unwrap_or_else(|| generated_id("block-cli-docs"));
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == document_id)
+        .ok_or_else(|| CliError::Usage(format!("Document:{document_id} not found")))?;
+    let mut block_ids = document.block_ids.clone();
+    if block_ids.iter().any(|id| id == &block_id) {
+        return Err(CliError::Usage(format!(
+            "Document {document_id} already references Block {block_id}"
+        )));
+    }
+    let position = value(args, "--position")
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| CliError::Usage("--position must be a non-negative integer".into()))
+        })
+        .transpose()?
+        .unwrap_or(block_ids.len() as u32);
+    let content = if let Some(raw) = value(args, "--content-json") {
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else {
+        serde_json::json!({"text": required(args, "--text")?})
+    };
+    if !content.is_object() {
+        return Err(CliError::Usage(
+            "--content-json must parse to a JSON object".into(),
+        ));
+    }
+    let block_record = serde_json::json!({
+        "id": block_id,
+        "document_id": document_id,
+        "kind": block_kind,
+        "position": position,
+        "content": content,
+        "referenced_entities": [],
+        "created_by": actor_ref,
+        "updated_by": actor_ref,
+        "created_at": now,
+        "updated_at": now
+    });
+    let block_body = docs_action_body(
+        &definition_id,
+        value(args, "--block-policy").unwrap_or_else(|| format!("{definition_id}:block.append")),
+        value(args, "--block-command-id").unwrap_or_else(|| generated_id("action-cli-docs-block")),
+        "block.append",
+        serde_json::json!({"kind": "document", "id": document_id}),
+        actor_ref.clone(),
+        block_record,
+        now.clone(),
+    );
+    let block_result = dispatch_company_docs_action_value(store, &block_body)?;
+    block_ids.push(
+        block_body
+            .get("payload")
+            .and_then(|payload| payload.get("record"))
+            .and_then(|record| record.get("id"))
+            .and_then(|id| id.as_str())
+            .unwrap_or("block")
+            .to_string(),
+    );
+    let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
+    document_record["block_ids"] = serde_json::json!(block_ids);
+    document_record["updated_by"] = actor_ref.clone();
+    document_record["updated_at"] = serde_json::json!(now);
+    let document_body = docs_action_body(
+        &definition_id,
+        value(args, "--document-policy")
+            .unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--document-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-update")),
+        "document.append",
+        serde_json::json!({"kind": "document", "id": document_id}),
+        actor_ref,
+        document_record,
+        now,
+    );
+    let document_result = dispatch_company_docs_action_value(store, &document_body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "block_action": block_result,
+            "document_action": document_result,
+            "block_id": block_body["payload"]["record"]["id"],
+            "document_id": document_id
+        }
+    }))
+}
+
+fn company_docs_block_update_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let block_id = required(args, "--block")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let has_content = value(args, "--content-json").is_some() || value(args, "--text").is_some();
+    let has_kind = value(args, "--kind").is_some();
+    let has_position = value(args, "--position").is_some();
+    if !has_content && !has_kind && !has_position {
+        return Err(CliError::Usage(
+            "block update requires at least one of --content-json, --text, --kind, or --position"
+                .into(),
+        ));
+    }
+    company_docs_block_mutation_command(
+        store,
+        &definition_id,
+        &document_id,
+        &block_id,
+        &actor_id,
+        &actor_kind,
+        value(args, "--block-policy").unwrap_or_else(|| format!("{definition_id}:block.append")),
+        value(args, "--document-policy")
+            .unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--block-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-block-update")),
+        value(args, "--document-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-block-update")),
+        has_flag(args, "--dry-run"),
+        "update",
+        |record, now, actor_ref| {
+            if let Some(kind) = value(args, "--kind") {
+                record["kind"] = serde_json::json!(kind);
+            }
+            if has_content {
+                record["content"] = company_docs_block_content(args)?;
+            }
+            if let Some(position) = value(args, "--position") {
+                record["position"] = serde_json::json!(position.parse::<u32>().map_err(|_| {
+                    CliError::Usage("--position must be a non-negative integer".into())
+                })?);
+            }
+            record["updated_by"] = actor_ref.clone();
+            record["updated_at"] = serde_json::json!(now);
+            Ok(None)
+        },
+    )
+}
+
+fn company_docs_block_archive_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let block_id = required(args, "--block")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run && !has_flag(args, "--confirm") {
+        return Err(CliError::Usage(
+            "block archive requires --confirm unless --dry-run is supplied".into(),
+        ));
+    }
+    company_docs_block_mutation_command(
+        store,
+        &definition_id,
+        &document_id,
+        &block_id,
+        &actor_id,
+        &actor_kind,
+        value(args, "--block-policy").unwrap_or_else(|| format!("{definition_id}:block.append")),
+        value(args, "--document-policy")
+            .unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--block-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-block-archive")),
+        value(args, "--document-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-block-archive")),
+        dry_run,
+        "archive",
+        |record, now, actor_ref| {
+            let mut content = record
+                .get("content")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if !content.is_object() {
+                return Err(CliError::Usage(
+                    "existing Block.content must be an object to archive".into(),
+                ));
+            }
+            content["_archived"] = serde_json::json!(true);
+            content["_archived_at"] = serde_json::json!(now.clone());
+            content["_archived_by"] = actor_ref.clone();
+            record["content"] = content;
+            record["updated_by"] = actor_ref.clone();
+            record["updated_at"] = serde_json::json!(now);
+            Ok(Some(Vec::new()))
+        },
+    )
+}
+
+fn company_docs_block_remove_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let block_id = required(args, "--block")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run && !has_flag(args, "--confirm") {
+        return Err(CliError::Usage(
+            "block remove requires --confirm unless --dry-run is supplied".into(),
+        ));
+    }
+    company_docs_block_mutation_command(
+        store,
+        &definition_id,
+        &document_id,
+        &block_id,
+        &actor_id,
+        &actor_kind,
+        value(args, "--block-policy").unwrap_or_else(|| format!("{definition_id}:block.append")),
+        value(args, "--document-policy")
+            .unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--block-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-block-remove")),
+        value(args, "--document-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-block-remove")),
+        dry_run,
+        "remove",
+        |_record, _now, _actor_ref| Ok(Some(Vec::new())),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn company_docs_block_mutation_command<F>(
+    store: &HarnessStore,
+    definition_id: &str,
+    document_id: &str,
+    block_id: &str,
+    actor_id: &str,
+    actor_kind: &str,
+    block_policy_ref: String,
+    document_policy_ref: String,
+    block_command_id: String,
+    document_command_id: String,
+    dry_run: bool,
+    operation: &str,
+    mutate_block: F,
+) -> CliResult<()>
+where
+    F: FnOnce(&mut serde_json::Value, String, &serde_json::Value) -> CliResult<Option<Vec<String>>>,
+{
+    let document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == document_id)
+        .ok_or_else(|| CliError::Usage(format!("Document:{document_id} not found")))?;
+    if !document.block_ids.iter().any(|id| id == block_id) {
+        return Err(CliError::Usage(format!(
+            "Document {document_id} does not reference Block {block_id}"
+        )));
+    }
+    let block = store
+        .latest_blocks()?
+        .into_iter()
+        .find(|row| row.id == block_id)
+        .ok_or_else(|| CliError::Usage(format!("Block:{block_id} not found")))?;
+    if block.document_id != document_id {
+        return Err(CliError::Usage(format!(
+            "Block {block_id} belongs to Document {}, not {document_id}",
+            block.document_id
+        )));
+    }
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let before_block = serde_json::to_value(&block).map_err(CliError::Json)?;
+    let before_document = serde_json::to_value(&document).map_err(CliError::Json)?;
+    let mut block_record = before_block.clone();
+    let document_order_override = mutate_block(&mut block_record, now.clone(), &actor_ref)?;
+    let next_block_ids = match document_order_override {
+        Some(order) if order.is_empty() => document
+            .block_ids
+            .iter()
+            .filter(|id| id.as_str() != block_id)
+            .cloned()
+            .collect::<Vec<_>>(),
+        Some(order) => order,
+        None => document.block_ids.clone(),
+    };
+    let block_body = docs_action_body(
+        definition_id,
+        block_policy_ref,
+        block_command_id,
+        "block.append",
+        serde_json::json!({"kind": "document", "id": document_id}),
+        actor_ref.clone(),
+        block_record.clone(),
+        now.clone(),
+    );
+    let document_body = if next_block_ids != document.block_ids {
+        let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
+        document_record["block_ids"] = serde_json::json!(next_block_ids.clone());
+        document_record["updated_by"] = actor_ref.clone();
+        document_record["updated_at"] = serde_json::json!(now.clone());
+        Some(docs_action_body(
+            definition_id,
+            document_policy_ref,
+            document_command_id,
+            "document.append",
+            serde_json::json!({"kind": "document", "id": document_id}),
+            actor_ref,
+            document_record,
+            now,
+        ))
+    } else {
+        None
+    };
+    if dry_run {
+        let effects = if operation == "remove" {
+            serde_json::json!(["document.append"])
+        } else if document_body.is_some() {
+            serde_json::json!(["block.append", "document.append"])
+        } else {
+            serde_json::json!(["block.append"])
+        };
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "operation": operation,
+            "command": "harness company docs block",
+            "effects": effects,
+            "before": {
+                "block": before_block,
+                "document": {
+                    "document_id": document_id,
+                    "block_ids": before_document.get("block_ids")
+                }
+            },
+            "after": {
+                "block": block_record,
+                "document": {
+                    "document_id": document_id,
+                    "block_ids": next_block_ids
+                }
+            },
+            "boundaries": {
+                "docs_only": true,
+                "dry_run_does_not_dispatch": true,
+                "canonical_write_store": "append_only_jsonl_ledgers",
+                "physical_delete": false,
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false,
+                "ui_is_review_surface": true
+            },
+            "actions": {
+                "block": block_body,
+                "document": document_body
+            }
+        }));
+    }
+    let block_result = if operation == "remove" {
+        None
+    } else {
+        Some(dispatch_company_docs_action_value(store, &block_body)?)
+    };
+    let document_result = document_body
+        .as_ref()
+        .map(|body| dispatch_company_docs_action_value(store, body))
+        .transpose()?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "operation": operation,
+            "block_action": block_result,
+            "document_action": document_result,
+            "block_id": block_id,
+            "document_id": document_id,
+            "block_ids": next_block_ids
+        }
+    }))
+}
+
+fn company_docs_block_content(args: &[String]) -> CliResult<serde_json::Value> {
+    let content = if let Some(raw) = value(args, "--content-json") {
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else {
+        serde_json::json!({"text": required(args, "--text")?})
+    };
+    if !content.is_object() {
+        return Err(CliError::Usage(
+            "--content-json must parse to a JSON object".into(),
+        ));
+    }
+    Ok(content)
+}
+
+fn company_docs_block_reorder_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let document_id = required(args, "--document")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let raw_order = required(args, "--block-order")?;
+    let block_ids: Vec<String> = raw_order
+        .split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if block_ids.is_empty() {
+        return Err(CliError::Usage(
+            "--block-order must contain one or more comma-separated block ids".into(),
+        ));
+    }
+    let document = store
+        .latest_documents()?
+        .into_iter()
+        .find(|row| row.id == document_id)
+        .ok_or_else(|| CliError::Usage(format!("Document:{document_id} not found")))?;
+    let existing = document.block_ids.clone();
+    let unique: std::collections::BTreeSet<_> = block_ids.iter().cloned().collect();
+    let existing_unique: std::collections::BTreeSet<_> = existing.iter().cloned().collect();
+    if unique.len() != block_ids.len() || unique != existing_unique {
+        return Err(CliError::Usage(
+            "--block-order must preserve exactly the existing Document.block_ids set".into(),
+        ));
+    }
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
+    document_record["block_ids"] = serde_json::json!(block_ids);
+    document_record["updated_by"] = actor_ref.clone();
+    document_record["updated_at"] = serde_json::json!(now);
+    let document_body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-block-reorder")),
+        "document.append",
+        serde_json::json!({"kind": "document", "id": document_id}),
+        actor_ref,
+        document_record,
+        now,
+    );
+    let document_result = dispatch_company_docs_action_value(store, &document_body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "document_action": document_result,
+            "document_id": document_id,
+            "block_ids": document_body["payload"]["record"]["block_ids"]
+        }
+    }))
+}
+
+fn company_docs_typed_record_append_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let module_id = required(args, "--module")?;
+    let source_document = required(args, "--source-document")?;
+    let record_type = required(args, "--record-type")?;
+    let title = required(args, "--title")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let record_id = value(args, "--id")
+        .unwrap_or_else(|| format!("typed-record-cli-{}", relation_slug(&title)));
+    let fields = if let Some(raw) = value(args, "--fields-json") {
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else {
+        serde_json::json!({})
+    };
+    if !fields.is_object() {
+        return Err(CliError::Usage(
+            "--fields-json must parse to a JSON object".into(),
+        ));
+    }
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let record = serde_json::json!({
+        "id": record_id,
+        "module_id": module_id,
+        "record_type": record_type,
+        "title": title,
+        "fields": fields,
+        "lifecycle_status": value(args, "--status").unwrap_or_else(|| "draft".to_string()),
+        "source_document_ref": source_document,
+        "created_by": actor_ref,
+        "updated_by": actor_ref,
+        "created_at": now,
+        "updated_at": now
+    });
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:typed_record.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-typed-record")),
+        "typed_record.append",
+        serde_json::json!({"kind": "document", "id": source_document}),
+        actor_ref,
+        record,
+        now,
+    );
+    dispatch_company_docs_action(store, &body)
+}
+
+fn company_docs_typed_record_update_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let record_id = required(args, "--record")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let has_title = value(args, "--title").is_some();
+    let has_fields = value(args, "--fields-json").is_some();
+    let has_status = value(args, "--status").is_some();
+    if !has_title && !has_fields && !has_status {
+        return Err(CliError::Usage(
+            "typed-record update requires at least one of --title, --fields-json, or --status"
+                .into(),
+        ));
+    }
+    let typed_record = store
+        .latest_typed_records()?
+        .into_iter()
+        .find(|row| row.id == record_id)
+        .ok_or_else(|| CliError::Usage(format!("TypedRecord:{record_id} not found")))?;
+    let before = serde_json::to_value(&typed_record).map_err(CliError::Json)?;
+    let mut record = before.clone();
+    if let Some(title) = value(args, "--title") {
+        record["title"] = serde_json::json!(title);
+    }
+    if let Some(raw) = value(args, "--fields-json") {
+        let fields = serde_json::from_str::<serde_json::Value>(&raw)?;
+        if !fields.is_object() {
+            return Err(CliError::Usage(
+                "--fields-json must parse to a JSON object".into(),
+            ));
+        }
+        record["fields"] = if has_flag(args, "--merge-fields") {
+            let mut merged = before
+                .get("fields")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if !merged.is_object() {
+                return Err(CliError::Usage(
+                    "existing TypedRecord.fields must be an object to merge".into(),
+                ));
+            }
+            if let (Some(target), Some(source)) = (merged.as_object_mut(), fields.as_object()) {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            merged
+        } else {
+            fields
+        };
+    }
+    if let Some(status) = value(args, "--status") {
+        record["lifecycle_status"] = serde_json::json!(status);
+    }
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    record["updated_by"] = actor_ref.clone();
+    record["updated_at"] = serde_json::json!(now.clone());
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:typed_record.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-typed-record-update")),
+        "typed_record.append",
+        serde_json::json!({"kind": "typed_record", "id": record_id}),
+        actor_ref,
+        record.clone(),
+        now,
+    );
+    if has_flag(args, "--dry-run") {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "operation": "update",
+            "command": "harness company docs typed-record update",
+            "effect": "typed_record.append",
+            "before": before,
+            "after": record,
+            "boundaries": {
+                "docs_only": true,
+                "dry_run_does_not_dispatch": true,
+                "canonical_write_store": "append_only_jsonl_ledgers",
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false,
+                "ui_is_review_surface": true
+            },
+            "action": body
+        }));
+    }
+    let result = dispatch_company_docs_action_value(store, &body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "operation": "update",
+            "typed_record_action": result,
+            "typed_record_id": record_id,
+            "title": record.get("title"),
+            "lifecycle_status": record.get("lifecycle_status"),
+            "fields": record.get("fields")
+        }
+    }))
+}
+
+fn company_docs_typed_record_validate_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let record_id = required(args, "--record")?;
+    let schema = if let Some(raw) = value(args, "--schema-json") {
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else {
+        serde_json::json!({})
+    };
+    if !schema.is_object() {
+        return Err(CliError::Usage(
+            "--schema-json must parse to a JSON object".into(),
+        ));
+    }
+    let record = store
+        .latest_typed_records()?
+        .into_iter()
+        .find(|row| row.id == record_id)
+        .ok_or_else(|| CliError::Usage(format!("TypedRecord:{record_id} not found")))?;
+    let record_json = serde_json::to_value(&record).map_err(CliError::Json)?;
+    let fields = record_json
+        .get("fields")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| CliError::Usage("TypedRecord.fields must be an object".into()))?;
+    let mut findings = Vec::new();
+    if let Some(required_fields) = schema.get("required").and_then(|value| value.as_array()) {
+        for field in required_fields.iter().filter_map(|value| value.as_str()) {
+            if !fields.contains_key(field) {
+                findings.push(serde_json::json!({
+                    "kind": "missing_required_field",
+                    "field": field,
+                    "severity": "error"
+                }));
+            }
+        }
+    }
+    if let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) {
+        for (field, rule) in properties {
+            let Some(value) = fields.get(field) else {
+                continue;
+            };
+            let Some(expected_type) = rule.get("type").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let actual_ok = match expected_type {
+                "string" => value.is_string(),
+                "number" => value.is_number(),
+                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+                "boolean" => value.is_boolean(),
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                _ => true,
+            };
+            if !actual_ok {
+                findings.push(serde_json::json!({
+                    "kind": "field_type_mismatch",
+                    "field": field,
+                    "expected": expected_type,
+                    "actual": value,
+                    "severity": "error"
+                }));
+            }
+        }
+    }
+    print_json(&serde_json::json!({
+        "ok": findings.is_empty(),
+        "command": "harness company docs typed-record validate",
+        "record_id": record_id,
+        "record_type": record.record_type,
+        "module_id": record.module_id,
+        "schema": schema,
+        "findings": findings,
+        "boundaries": {
+            "read_only": true,
+            "validate_does_not_dispatch": true,
+            "module_schema_persistence": "planned",
+            "work_side_effects": false,
+            "finance_side_effects": false,
+            "organization_side_effects": false,
+            "execution_side_effects": false
+        }
+    }))
+}
+
+fn company_docs_view_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let module_id = required(args, "--module")?;
+    let title = required(args, "--title")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let view_id =
+        value(args, "--id").unwrap_or_else(|| format!("view-cli-{}", relation_slug(&title)));
+    let query = if let Some(raw) = value(args, "--query-json") {
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else {
+        serde_json::json!({})
+    };
+    if !query.is_object() {
+        return Err(CliError::Usage(
+            "--query-json must parse to a JSON object".into(),
+        ));
+    }
+    let source_kinds = many(args, "--source-kind");
+    let source_kinds = if source_kinds.is_empty() {
+        vec!["typed_record".to_string()]
+    } else {
+        source_kinds
+    };
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let record = serde_json::json!({
+        "id": view_id,
+        "module_id": module_id,
+        "title": title,
+        "mode": value(args, "--mode").unwrap_or_else(|| "table".to_string()),
+        "source_kinds": source_kinds,
+        "query": query,
+        "owner": actor_ref,
+        "policy_refs": ["company.records.write"],
+        "created_at": now,
+        "updated_at": now
+    });
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:view.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-view")),
+        "view.append",
+        serde_json::json!({"kind": "business_module", "id": module_id}),
+        actor_ref,
+        record,
+        now,
+    );
+    dispatch_company_docs_action(store, &body)
+}
+
+fn company_docs_view_update_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let view_id = required(args, "--view")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let has_title = value(args, "--title").is_some();
+    let has_mode = value(args, "--mode").is_some();
+    let has_query = value(args, "--query-json").is_some();
+    let source_kinds = many(args, "--source-kind");
+    if !has_title && !has_mode && !has_query && source_kinds.is_empty() {
+        return Err(CliError::Usage(
+            "view update requires at least one of --title, --mode, --query-json, or --source-kind"
+                .into(),
+        ));
+    }
+    let view = store
+        .latest_views()?
+        .into_iter()
+        .find(|row| row.id == view_id)
+        .ok_or_else(|| CliError::Usage(format!("View:{view_id} not found")))?;
+    let before = serde_json::to_value(&view).map_err(CliError::Json)?;
+    let mut record = before.clone();
+    if let Some(title) = value(args, "--title") {
+        record["title"] = serde_json::json!(title);
+    }
+    if let Some(mode) = value(args, "--mode") {
+        record["mode"] = serde_json::json!(mode);
+    }
+    if let Some(raw) = value(args, "--query-json") {
+        let query = serde_json::from_str::<serde_json::Value>(&raw)?;
+        if !query.is_object() {
+            return Err(CliError::Usage(
+                "--query-json must parse to a JSON object".into(),
+            ));
+        }
+        record["query"] = query;
+    }
+    if !source_kinds.is_empty() {
+        record["source_kinds"] = serde_json::json!(source_kinds);
+    }
+    let now = now_string();
+    record["updated_at"] = serde_json::json!(now.clone());
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let module_id = record
+        .get("module_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| CliError::Usage("view update requires View.module_id".into()))?
+        .to_string();
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:view.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-view-update")),
+        "view.append",
+        serde_json::json!({"kind": "business_module", "id": module_id}),
+        actor_ref,
+        record.clone(),
+        now,
+    );
+    if has_flag(args, "--dry-run") {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "operation": "update",
+            "command": "harness company docs view update",
+            "effect": "view.append",
+            "before": before,
+            "after": record,
+            "boundaries": {
+                "docs_only": true,
+                "view_is_presentation_truth_not_record_store": true,
+                "dry_run_does_not_dispatch": true,
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false
+            },
+            "action": body
+        }));
+    }
+    let result = dispatch_company_docs_action_value(store, &body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "operation": "update",
+            "view_action": result,
+            "view_id": view_id,
+            "title": record.get("title"),
+            "mode": record.get("mode"),
+            "query": record.get("query")
+        }
+    }))
+}
+
+fn company_docs_relation_link_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let from_document = required(args, "--from-document")?;
+    let to_record = required(args, "--to-record")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let relation_type = value(args, "--relation-type").unwrap_or_else(|| "source_for".to_string());
+    let command_id =
+        value(args, "--id").unwrap_or_else(|| generated_id("action-cli-docs-relation"));
+    let relation_id = value(args, "--relation-id").unwrap_or_else(|| {
+        format!(
+            "relation-cli-docs-{}-{}",
+            relation_slug(&from_document),
+            relation_slug(&to_record)
+        )
+    });
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let record = serde_json::json!({
+        "id": relation_id,
+        "from_ref": {"kind": "document", "id": from_document},
+        "relation_type": relation_type,
+        "to_ref": {"kind": "typed_record", "id": to_record},
+        "provenance_ref": {"kind": "document", "id": from_document},
+        "lifecycle_status": "active",
+        "created_by": actor_ref,
+        "created_at": now
+    });
+    let body = serde_json::json!({
+        "id": command_id,
+        "command_name": "relation.append",
+        "subject_ref": {"kind": "document", "id": from_document},
+        "requested_by": actor_ref,
+        "payload": {
+            "definition_id": definition_id,
+            "record": record
+        },
+        "required_permission": "company.records.write",
+        "policy_ref": value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        "risk_tier": "r1",
+        "requires_human_approval": false,
+        "approval_refs": [],
+        "status": "requested",
+        "audit_event_refs": [format!("{command_id}:policy-authorized")],
+        "requested_at": now,
+        "completed_at": null
+    });
+    dispatch_company_docs_action(store, &body)
+}
+
+fn company_docs_relation_unlink_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let relation_id = required(args, "--relation")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run && !has_flag(args, "--confirm") {
+        return Err(CliError::Usage(
+            "relation unlink requires --confirm unless --dry-run is supplied".into(),
+        ));
+    }
+    let relation = store
+        .latest_relations()?
+        .into_iter()
+        .find(|row| row.id == relation_id)
+        .ok_or_else(|| CliError::Usage(format!("Relation:{relation_id} not found")))?;
+    if relation.lifecycle_status.as_deref() == Some("archived") {
+        return Err(CliError::Usage(format!(
+            "Relation:{relation_id} is already archived"
+        )));
+    }
+    let before = serde_json::to_value(&relation).map_err(CliError::Json)?;
+    let mut record = before.clone();
+    record["lifecycle_status"] = serde_json::json!("archived");
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let subject_ref = record
+        .get("from_ref")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"kind": "relation", "id": relation_id}));
+    let body = docs_action_body(
+        &definition_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-relation-unlink")),
+        "relation.append",
+        subject_ref,
+        actor_ref,
+        record.clone(),
+        now,
+    );
+    if dry_run {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "operation": "unlink",
+            "command": "harness company docs relation unlink",
+            "effect": "relation.append",
+            "before": before,
+            "after": record,
+            "boundaries": {
+                "docs_only": true,
+                "dry_run_does_not_dispatch": true,
+                "canonical_write_store": "append_only_jsonl_ledgers",
+                "physical_delete": false,
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false,
+                "ui_is_review_surface": true
+            },
+            "action": body
+        }));
+    }
+    let result = dispatch_company_docs_action_value(store, &body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "operation": "unlink",
+            "relation_action": result,
+            "relation_id": relation_id,
+            "lifecycle_status": "archived"
+        }
+    }))
+}
+
+fn company_docs_relation_relink_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let relation_id = required(args, "--relation")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let new_from_document = value(args, "--from-document");
+    let new_to_record = value(args, "--to-record");
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run && !has_flag(args, "--confirm") {
+        return Err(CliError::Usage(
+            "relation relink requires --confirm unless --dry-run is supplied".into(),
+        ));
+    }
+    let relation = store
+        .latest_relations()?
+        .into_iter()
+        .find(|row| row.id == relation_id)
+        .ok_or_else(|| CliError::Usage(format!("Relation:{relation_id} not found")))?;
+    if relation.lifecycle_status.as_deref() == Some("archived") {
+        return Err(CliError::Usage(format!(
+            "Relation:{relation_id} is already archived; create a new link instead"
+        )));
+    }
+    let before = serde_json::to_value(&relation).map_err(CliError::Json)?;
+    let from_document = new_from_document
+        .or_else(|| json_entity_id(&before, "from_ref"))
+        .ok_or_else(|| {
+            CliError::Usage("relation relink needs --from-document or an existing from_ref".into())
+        })?;
+    let to_record = new_to_record
+        .or_else(|| json_entity_id(&before, "to_ref"))
+        .ok_or_else(|| {
+            CliError::Usage("relation relink needs --to-record or an existing to_ref".into())
+        })?;
+    let relation_type =
+        json_str(&before, "relation_type").unwrap_or_else(|| "source_for".to_string());
+    let unlink_preview = serde_json::json!({
+        "relation": relation_id,
+        "after": {
+            "id": relation_id,
+            "lifecycle_status": "archived"
+        }
+    });
+    let link_preview = serde_json::json!({
+        "from_document": from_document,
+        "to_record": to_record,
+        "relation_type": relation_type
+    });
+    if dry_run {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "operation": "relink",
+            "command": "harness company docs relation relink",
+            "plan": {
+                "archive_existing_relation": unlink_preview,
+                "create_replacement_relation": link_preview
+            },
+            "boundaries": {
+                "docs_only": true,
+                "dry_run_does_not_dispatch": true,
+                "physical_delete": false,
+                "requires_confirm_for_dispatch": true,
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false
+            }
+        }));
+    }
+    let now = now_string();
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let mut archived_record = before.clone();
+    archived_record["lifecycle_status"] = serde_json::json!("archived");
+    let unlink_body = docs_action_body(
+        &definition_id,
+        value(args, "--unlink-policy")
+            .unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        value(args, "--unlink-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-unlink")),
+        "relation.append",
+        before
+            .get("from_ref")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"kind": "document", "id": from_document})),
+        actor_ref.clone(),
+        archived_record,
+        now.clone(),
+    );
+    let replacement_relation_id = value(args, "--new-relation-id").unwrap_or_else(|| {
+        format!(
+            "relation-cli-docs-{}-{}",
+            relation_slug(&from_document),
+            relation_slug(&to_record)
+        )
+    });
+    let link_record = serde_json::json!({
+        "id": replacement_relation_id,
+        "from_ref": {"kind": "document", "id": from_document.clone()},
+        "relation_type": relation_type,
+        "to_ref": {"kind": "typed_record", "id": to_record},
+        "provenance_ref": {"kind": "document", "id": from_document.clone()},
+        "lifecycle_status": "active",
+        "created_by": actor_ref.clone(),
+        "created_at": now
+    });
+    let link_body = docs_action_body(
+        &definition_id,
+        value(args, "--link-policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        value(args, "--link-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-link")),
+        "relation.append",
+        serde_json::json!({"kind": "document", "id": from_document}),
+        actor_ref,
+        link_record.clone(),
+        now,
+    );
+    let unlink_result = dispatch_company_docs_action_value(store, &unlink_body)?;
+    let link_result = dispatch_company_docs_action_value(store, &link_body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "operation": "relink",
+            "archived_relation_action": unlink_result,
+            "replacement_relation_action": link_result,
+            "archived_relation_id": relation_id,
+            "replacement_relation_id": link_record["id"]
+        },
+        "boundaries": {
+            "physical_delete": false,
+            "two_governed_relation_append_actions": true
+        }
+    }))
+}
+
+fn docs_actor_kind(args: &[String]) -> CliResult<String> {
+    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
+    if !matches!(actor_kind.as_str(), "agent" | "human") {
+        return Err(CliError::Usage(
+            "--actor-kind must be agent or human for Docs authoring commands".into(),
+        ));
+    }
+    Ok(actor_kind)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn docs_action_body(
+    definition_id: &str,
+    policy_ref: String,
+    command_id: String,
+    command_name: &str,
+    subject_ref: serde_json::Value,
+    actor_ref: serde_json::Value,
+    record: serde_json::Value,
+    requested_at: String,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": command_id,
+        "command_name": command_name,
+        "subject_ref": subject_ref,
+        "requested_by": actor_ref,
+        "payload": {
+            "definition_id": definition_id,
+            "record": record
+        },
+        "required_permission": "company.records.write",
+        "policy_ref": policy_ref,
+        "risk_tier": "r1",
+        "requires_human_approval": false,
+        "approval_refs": [],
+        "status": "requested",
+        "audit_event_refs": [format!("{command_id}:policy-authorized")],
+        "requested_at": requested_at,
+        "completed_at": null
+    })
+}
+
+fn dispatch_company_docs_action(store: &HarnessStore, body: &serde_json::Value) -> CliResult<()> {
+    print_json(&dispatch_company_docs_action_value(store, body)?)
+}
+
+fn dispatch_company_docs_action_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let token = env::var("HARNESS_COMPANY_OS_TOKEN").ok();
+    let response = company_os_api::handle_post(
+        store,
+        "/v1/company-os/actions/dispatch",
+        body,
+        token.as_deref(),
+    )
+    .ok_or_else(|| CliError::Usage("Company OS action dispatcher is unavailable".into()))?;
+    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        let detail = response
+            .body
+            .get("detail")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Company OS docs relation link failed");
+        return Err(CliError::Usage(detail.to_string()));
+    }
+    Ok(response.body)
+}
+
+fn dispatch_company_docs_admin_append_value(
+    store: &HarnessStore,
+    path: &str,
+    authority_ref: serde_json::Value,
+    record: serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let body = serde_json::json!({
+        "mode": "administrative",
+        "authority": authority_ref,
+        "record": record
+    });
+    let token = env::var("HARNESS_COMPANY_OS_TOKEN").ok();
+    let response =
+        company_os_api::handle_post(store, path, &body, token.as_deref()).ok_or_else(|| {
+            CliError::Usage(format!(
+                "Company OS administrative append is unavailable for {path}"
+            ))
+        })?;
+    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        let detail = response
+            .body
+            .get("detail")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Company OS docs administrative append failed");
+        return Err(CliError::Usage(detail.to_string()));
+    }
+    Ok(response
+        .body
+        .get("result")
+        .cloned()
+        .unwrap_or(response.body))
+}
+
+fn json_array<'a>(root: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
+    static EMPTY: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
+    root.get(key)
+        .and_then(|value| value.as_array())
+        .unwrap_or_else(|| EMPTY.get_or_init(Vec::new))
+}
+
+fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json::Value> {
+    let documents = json_array(snapshot, "documents");
+    let typed_records = json_array(snapshot, "typed_records");
+    let relations = json_array(snapshot, "relations");
+    let document_ids = documents
+        .iter()
+        .filter_map(|entry| json_str(entry, "id"))
+        .collect::<BTreeSet<_>>();
+    let mut findings = Vec::new();
+    for record in typed_records {
+        let Some(record_id) = json_str(record, "id") else {
+            continue;
+        };
+        let source_document_ref = json_str(record, "source_document_ref")
+            .or_else(|| json_field_str(record, "source_document_ref"));
+        match source_document_ref {
+            None => findings.push(serde_json::json!({
+                "id": format!("missing-source:{record_id}"),
+                "kind": "typed_record_missing_source",
+                "severity": "warning",
+                "subject": {"kind": "typed_record", "id": record_id},
+                "recommended_action": "Link the TypedRecord to its originating Document or document the source-less policy."
+            })),
+            Some(document_id) if !document_ids.contains(&document_id) => {
+                findings.push(serde_json::json!({
+                    "id": format!("missing-source-document:{record_id}"),
+                    "kind": "typed_record_source_document_missing",
+                    "severity": "critical",
+                    "subject": {"kind": "typed_record", "id": record_id},
+                    "related": {"kind": "document", "id": document_id},
+                    "recommended_action": "Restore the source Document or migrate this record through a governed Docs action."
+                }));
+            }
+            Some(document_id) if !json_has_relation_between(relations, &document_id, &record_id) => {
+                findings.push(serde_json::json!({
+                    "id": format!("missing-doc-record-relation:{record_id}"),
+                    "kind": "missing_document_record_relation",
+                    "severity": "warning",
+                    "subject": {"kind": "typed_record", "id": record_id},
+                    "related": {"kind": "document", "id": document_id},
+                    "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
+                }));
+            }
+            Some(_) => {}
+        }
+    }
+    findings
+}
+
+fn company_docs_ordered_blocks(
+    document: &serde_json::Value,
+    blocks: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut by_id = blocks
+        .iter()
+        .filter_map(|block| json_str(block, "id").map(|id| (id, block)))
+        .collect::<BTreeMap<_, _>>();
+    let mut ordered = Vec::new();
+    if let Some(block_ids) = document.get("block_ids").and_then(|value| value.as_array()) {
+        for block_id in block_ids.iter().filter_map(|value| value.as_str()) {
+            if let Some(block) = by_id.remove(block_id) {
+                ordered.push(block.clone());
+            }
+        }
+    }
+    ordered
+}
+
+fn company_docs_available_commands(
+    document_id: Option<&str>,
+    module_id: Option<&str>,
+    definition_id: Option<&str>,
+    has_action_policies: bool,
+) -> Vec<serde_json::Value> {
+    let definition = definition_id.unwrap_or("<custom-page-definition-id>");
+    let document = document_id.unwrap_or("<document-id>");
+    let module = module_id.unwrap_or("<business-module-id>");
+    vec![
+        serde_json::json!({
+            "command": format!("harness company docs query --document {document}"),
+            "effect": "read_only",
+            "available": document_id.is_some()
+        }),
+        serde_json::json!({
+            "command": "harness company docs health",
+            "effect": "read_only",
+            "available": true
+        }),
+        serde_json::json!({
+            "command": "harness company docs search --query <text>",
+            "effect": "read_only",
+            "available": true
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs traverse --document {document} --depth 2"),
+            "effect": "read_only",
+            "available": document_id.is_some()
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs refs --document {document}"),
+            "effect": "read_only",
+            "available": document_id.is_some()
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs snapshot --document {document}"),
+            "effect": "read_only",
+            "available": document_id.is_some()
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs page scaffold --module {module} --fallback-view <view-id> --title <title> --authority <human-id>"),
+            "effect": "custom_page_definition + custom_page_package",
+            "available": module_id.is_some()
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs page verify --definition {definition}"),
+            "effect": "read_only",
+            "available": definition_id.is_some()
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs page publish --definition {definition} --version <semver> --artifact-ref <path> --authority <human-id>"),
+            "effect": "custom_page_package + custom_page_definition",
+            "available": definition_id.is_some()
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs document create --definition {definition} --parent-document {document} --title <title> --actor <actor-id>"),
+            "effect": "document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs document rename --definition {definition} --document {document} --title <title> --actor <actor-id> --dry-run"),
+            "effect": "document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs document move --definition {definition} --document {document} --parent-document <parent-document-id> --actor <actor-id> --dry-run"),
+            "effect": "document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs document archive --definition {definition} --document {document} --actor <actor-id> --dry-run"),
+            "effect": "document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs block append --definition {definition} --document {document} --kind callout --content-json <json> --actor <actor-id>"),
+            "effect": "block.append + document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs block update --definition {definition} --document {document} --block <block-id> --content-json <json> --actor <actor-id> --dry-run"),
+            "effect": "block.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs block archive --definition {definition} --document {document} --block <block-id> --actor <actor-id> --dry-run"),
+            "effect": "block.append + document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs block remove --definition {definition} --document {document} --block <block-id> --actor <actor-id> --dry-run"),
+            "effect": "document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs block reorder --definition {definition} --document {document} --block-order <block-id-list> --actor <actor-id>"),
+            "effect": "document.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs typed-record append --definition {definition} --module {module} --source-document {document} --record-type <type> --title <title> --actor <actor-id>"),
+            "effect": "typed_record.append",
+            "available": document_id.is_some() && module_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs typed-record update --definition {definition} --record <typed-record-id> --fields-json <json> --actor <actor-id> --dry-run"),
+            "effect": "typed_record.append",
+            "available": definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": "harness company docs typed-record validate --record <typed-record-id> --schema-json <json>",
+            "effect": "read_only",
+            "available": true
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs view create --definition {definition} --module {module} --title <title> --source-kind typed_record --actor <actor-id>"),
+            "effect": "view.append",
+            "available": module_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs view update --definition {definition} --view <view-id> --query-json <json> --actor <actor-id> --dry-run"),
+            "effect": "view.append",
+            "available": definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs relation link --definition {definition} --from-document {document} --to-record <typed-record-id> --actor <actor-id>"),
+            "effect": "relation.append",
+            "available": document_id.is_some() && definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs relation unlink --definition {definition} --relation <relation-id> --actor <actor-id> --dry-run"),
+            "effect": "relation.append",
+            "available": definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs relation relink --definition {definition} --relation <relation-id> --to-record <typed-record-id> --actor <actor-id> --dry-run"),
+            "effect": "relation.append + relation.append",
+            "available": definition_id.is_some() && has_action_policies
+        }),
+        serde_json::json!({
+            "command": format!("harness company docs diff --document {document} --proposed-json <json>"),
+            "effect": "read_only",
+            "available": document_id.is_some()
+        }),
+        serde_json::json!({
+            "command": "harness company docs change-report --action-json <json>",
+            "effect": "read_only",
+            "available": true
+        }),
+    ]
+}
+
+fn company_docs_read_boundaries() -> serde_json::Value {
+    serde_json::json!({
+        "read_only": true,
+        "source": "latest_projection",
+        "canonical_write_store": "append_only_jsonl_ledgers",
+        "future_sql_role": "derived_read_query_index_layer",
+        "work_side_effects": false,
+        "finance_side_effects": false,
+        "organization_side_effects": false,
+        "execution_side_effects": false,
+        "ui_is_review_surface": true
+    })
+}
+
+fn company_docs_ref_from_args(args: &[String]) -> CliResult<serde_json::Value> {
+    if let Some(raw) = value(args, "--ref") {
+        let (kind, id) = raw.split_once(':').ok_or_else(|| {
+            CliError::Usage("--ref must use <kind>:<id>, for example document:doc-1".into())
+        })?;
+        return Ok(serde_json::json!({"kind": kind, "id": id}));
+    }
+    if let Some(id) = value(args, "--document") {
+        return Ok(serde_json::json!({"kind": "document", "id": id}));
+    }
+    if let Some(id) = value(args, "--record") {
+        return Ok(serde_json::json!({"kind": "typed_record", "id": id}));
+    }
+    if let Some(id) = value(args, "--module") {
+        return Ok(serde_json::json!({"kind": "business_module", "id": id}));
+    }
+    Err(CliError::Usage(
+        "expected --ref <kind:id>, --document <id>, --record <id>, or --module <id>".into(),
+    ))
+}
+
+fn company_docs_find_ref(
+    snapshot: &serde_json::Value,
+    reference: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let kind = reference.get("kind").and_then(|value| value.as_str())?;
+    let id = reference.get("id").and_then(|value| value.as_str())?;
+    let key = match kind {
+        "document" => "documents",
+        "block" => "blocks",
+        "typed_record" => "typed_records",
+        "business_module" => "business_modules",
+        "view" => "views",
+        "relation" => "relations",
+        "custom_page_definition" => "custom_page_definitions",
+        "custom_page_package" => "custom_page_packages",
+        "work_item" => "work_items",
+        "approval" => "approvals",
+        "financial_record" => "financial_records",
+        _ => return None,
+    };
+    json_array(snapshot, key)
+        .iter()
+        .find(|entry| json_str(entry, "id").as_deref() == Some(id))
+        .cloned()
+}
+
+fn company_docs_refs_for(
+    snapshot: &serde_json::Value,
+    reference: &serde_json::Value,
+) -> serde_json::Value {
+    let id = reference
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let kind = reference
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let relations = json_array(snapshot, "relations")
+        .iter()
+        .filter(|relation| {
+            json_relation_is_active(relation)
+                && [
+                    json_entity_id(relation, "from_ref"),
+                    json_entity_id(relation, "to_ref"),
+                ]
+                .iter()
+                .flatten()
+                .any(|endpoint| endpoint == id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let children = if kind == "document" {
+        json_array(snapshot, "documents")
+            .iter()
+            .filter(|document| json_str(document, "parent_document_id").as_deref() == Some(id))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let source_records = if kind == "document" {
+        json_array(snapshot, "typed_records")
+            .iter()
+            .filter(|record| {
+                json_str(record, "source_document_ref")
+                    .or_else(|| json_field_str(record, "source_document_ref"))
+                    .as_deref()
+                    == Some(id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let work_items = json_array(snapshot, "work_items")
+        .iter()
+        .filter(|item| {
+            (kind == "document" && json_str(item, "source_document_ref").as_deref() == Some(id))
+                || (kind == "business_module"
+                    && json_str(item, "business_module_ref").as_deref() == Some(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let approvals = json_array(snapshot, "approvals")
+        .iter()
+        .filter(|approval| serde_json::to_string(approval).is_ok_and(|text| text.contains(id)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let financial_records = json_array(snapshot, "financial_records")
+        .iter()
+        .filter(|record| serde_json::to_string(record).is_ok_and(|text| text.contains(id)))
+        .cloned()
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "relations": relations,
+        "child_documents": children,
+        "source_records": source_records,
+        "work_items": work_items,
+        "approvals": approvals,
+        "financial_records": financial_records
+    })
+}
+
+fn company_docs_document_tree(
+    documents: &[serde_json::Value],
+    blocks: &[serde_json::Value],
+    document: &serde_json::Value,
+    depth: usize,
+) -> serde_json::Value {
+    let id = json_str(document, "id").unwrap_or_default();
+    let children = if depth == 0 {
+        Vec::new()
+    } else {
+        documents
+            .iter()
+            .filter(|child| json_str(child, "parent_document_id").as_deref() == Some(id.as_str()))
+            .map(|child| company_docs_document_tree(documents, blocks, child, depth - 1))
+            .collect::<Vec<_>>()
+    };
+    serde_json::json!({
+        "document": document,
+        "blocks": company_docs_ordered_blocks(document, blocks),
+        "children": children
+    })
+}
+
+fn company_docs_changed_fields(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) -> Vec<serde_json::Value> {
+    let mut keys = BTreeSet::new();
+    if let Some(object) = before.as_object() {
+        keys.extend(object.keys().cloned());
+    }
+    if let Some(object) = after.as_object() {
+        keys.extend(object.keys().cloned());
+    }
+    keys.into_iter()
+        .filter(|key| before.get(key) != after.get(key))
+        .map(|key| {
+            serde_json::json!({
+                "field": key,
+                "before": before.get(&key),
+                "after": after.get(&key)
+            })
+        })
+        .collect()
+}
+
+fn json_entry_matches_module(
+    snapshot: &serde_json::Value,
+    entry: &serde_json::Value,
+    module_id: &str,
+) -> bool {
+    if json_str(entry, "module_id").as_deref() == Some(module_id) {
+        return true;
+    }
+    if json_str(entry, "id").as_deref() == Some(module_id) {
+        return true;
+    }
+    let Some(document_id) = json_str(entry, "id")
+        .filter(|_| entry.get("space_id").is_some() || entry.get("parent_document_id").is_some())
+        .or_else(|| json_str(entry, "source_document_ref"))
+        .or_else(|| json_field_str(entry, "source_document_ref"))
+    else {
+        return false;
+    };
+    let Some(module) = json_array(snapshot, "business_modules")
+        .iter()
+        .find(|module| json_str(module, "id").as_deref() == Some(module_id))
+    else {
+        return false;
+    };
+    let Some(root_id) = json_str(module, "root_document_ref") else {
+        return false;
+    };
+    let documents = json_array(snapshot, "documents");
+    let mut current = Some(document_id);
+    for _ in 0..64 {
+        let Some(id) = current.as_deref() else {
+            return false;
+        };
+        if id == root_id {
+            return true;
+        }
+        current = documents
+            .iter()
+            .find(|document| json_str(document, "id").as_deref() == Some(id))
+            .and_then(|document| json_str(document, "parent_document_id"));
+    }
+    false
+}
+
+fn json_field_str(root: &serde_json::Value, key: &str) -> Option<String> {
+    root.get("fields")
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn json_entity_id(root: &serde_json::Value, key: &str) -> Option<String> {
+    root.get(key)
+        .and_then(|value| value.get("id"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn json_has_relation_between(relations: &[serde_json::Value], left: &str, right: &str) -> bool {
+    relations.iter().any(|relation| {
+        if !json_relation_is_active(relation) {
+            return false;
+        }
+        let from = json_entity_id(relation, "from_ref");
+        let to = json_entity_id(relation, "to_ref");
+        matches!((from.as_deref(), to.as_deref()), (Some(a), Some(b)) if (a == left && b == right) || (a == right && b == left))
+    })
+}
+
+fn json_relation_is_active(relation: &serde_json::Value) -> bool {
+    relation
+        .get("lifecycle_status")
+        .and_then(|value| value.as_str())
+        .is_none_or(|status| status != "archived")
+}
+
+fn relation_slug(value: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "ref".to_string()
+    } else {
+        slug.chars().take(48).collect()
+    }
 }
 
 /// Read-only export/verification boundary for the retired Goal/Task ledgers.
@@ -17281,6 +20555,11 @@ fn print_help() {
   team-run create|list|status|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
+  company docs query|search|traverse|refs|related|health|snapshot|diff|change-report
+  company docs module create | page scaffold|verify|publish | page-definition create
+  company docs document create|rename|move|archive | template create|status
+  company docs block append|update|archive|remove|reorder
+  company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
   agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot

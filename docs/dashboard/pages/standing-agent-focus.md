@@ -87,9 +87,10 @@ Projection rules:
 ## Layout contract
 
 Use the shared `FocusShell`: continuous activity/conversation in the center,
-sticky composer, and a composed Context Rail. The expected visual direction is
-the candidate under
-`docs/design/workbench-layout-v2/expected/standing-agent-focus/`.
+sticky composer, and a composed Context Rail. The active execution-workbench
+visual contract is `docs/design/execution-workbench-v3/visual-contract.json`;
+the retired `workbench-layout-v2` concept package is no longer an active
+design source.
 
 Center reading order:
 

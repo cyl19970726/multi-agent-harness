@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Docs Operator"
+  short_description: "Operate Company OS Docs through governed CLI and Action contracts"
+  default_prompt: "Use $company-docs-operator to audit or mutate Company OS Docs through the governed CLI/API path while preserving system truth boundaries."

@@ -1817,6 +1817,58 @@
    "truthRefs": []
   },
   {
+   "path": "docs/company-os/docs-operating-surface-matrix.md",
+   "ownerRole": "docs-governance",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Docs operating surface implementation audit",
+    "Docs UI, CLI, skill, visual evidence, and remaining gap matrix"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/skill-contracts.md",
+    "docs/company-os/implementation-truth-matrix.md",
+    "docs/decisions/0035-company-os-sql-read-model.md",
+    "skills/company-docs-operator/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "check:company-os"
+   ],
+   "reviewAfter": "2026-08-23",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:company-os",
+    "cargo run -q -p harness-cli -- governance check"
+   ],
+   "reorgTrigger": "Docs UI, CLI, skill coverage, Store-live evidence, SQL read model, or planned gap status changes.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/company-os/docs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-live.mjs"
+    },
+    {
+     "kind": "test",
+     "ref": "apps/agent-dashboard/tests/company-os-docs-check.mjs"
+    }
+   ]
+  },
+  {
    "path": "docs/company-os/organization-and-actors.md",
    "ownerRole": "product-architecture",
    "status": "stable",
@@ -2101,9 +2153,7 @@
    ],
    "dependsOn": [
     "docs/company-os/README.md",
-    "docs/company-os/core-page-matrix.md",
-    "docs/design/company-os-v1/README.md",
-    "docs/design/company-os-v1/page-matrix.md"
+    "docs/company-os/core-page-matrix.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2129,9 +2179,7 @@
    ],
    "dependsOn": [
     "docs/company-os/frontend-information-architecture.md",
-    "docs/company-os/concept-model.md",
-    "docs/design/company-os-v1/page-matrix.md",
-    "docs/design/company-os-v1/visual-contract.json"
+    "docs/company-os/concept-model.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2210,6 +2258,114 @@
     {
      "kind": "decision",
      "ref": "docs/decisions/0029-agent-programmable-document-runtime.md"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
+    }
+   ]
+  },
+  {
+   "path": "skills/company-docs-operator/SKILL.md",
+   "ownerRole": "docs-governance",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "optional Company Docs Operator procedural skill",
+    "governed Docs CLI operation procedure and truth boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/skill-contracts.md",
+    "docs/company-os/docs-operating-surface-matrix.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "check:company-os"
+   ],
+   "reviewAfter": "2026-08-23",
+   "lastVerifiedWith": [
+    "node scripts/check-company-os-docs-cli-smoke.mjs",
+    "cargo run -q -p harness-cli -- governance check"
+   ],
+   "reorgTrigger": "Docs CLI commands, Docs object boundaries, or Agent-operated/Human-reviewed operating rules change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
+    }
+   ]
+  },
+  {
+   "path": "skills/company-module-designer/SKILL.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "optional Company Module Designer procedural skill",
+    "BusinessModule design proposal procedure"
+   ],
+   "dependsOn": [
+    "docs/company-os/module-design.md",
+    "docs/company-os/document-system.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/financial-relations.md",
+    "docs/company-os/governance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-23",
+   "lastVerifiedWith": [
+    "cargo run -q -p harness-cli -- governance check"
+   ],
+   "reorgTrigger": "BusinessModule design contract, module approval, relation, Work, Organization, Finance, or governance policy changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "skills/company-module-designer/scripts/validate_module_design.py"
+    }
+   ]
+  },
+  {
+   "path": "skills/company-page-builder/SKILL.md",
+   "ownerRole": "product-platform",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "optional Company Page Builder procedural skill",
+    "screenshot-first custom page package procedure"
+   ],
+   "dependsOn": [
+    "docs/company-os/agent-programmable-pages.md",
+    "docs/company-os/frontend-information-architecture.md",
+    "docs/company-os/skill-contracts.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-23",
+   "lastVerifiedWith": [
+    "cargo run -q -p harness-cli -- governance check"
+   ],
+   "reorgTrigger": "CustomPageDefinition, CustomPagePackage, visual contract, page runtime, or governed page Action boundary changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "skills/company-page-builder/scripts/validate_page_package.py"
     }
    ]
   },
@@ -2275,89 +2431,6 @@
    ]
   },
   {
-   "path": "docs/design/company-os-v1/README.md",
-   "ownerRole": "product-design",
-   "status": "stable",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Company OS V1 twelve-page visual contract",
-    "Company OS visual grammar, twelve-page coverage, and evidence lifecycle"
-   ],
-   "dependsOn": [
-    "docs/company-os/frontend-information-architecture.md",
-    "docs/company-os/core-page-matrix.md",
-    "docs/design/company-os-v1/page-matrix.md",
-    "docs/design/company-os-v1/visual-contract.json"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-20",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "Company OS visual grammar, truth constraints, evidence lifecycle, or visual-contract scope changes.",
-   "authorityClass": "design_intent",
-   "implementationState": "design_only",
-   "truthRefs": []
-  },
-  {
-   "path": "docs/design/company-os-v1/page-matrix.md",
-   "ownerRole": "product-design",
-   "status": "stable",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "Company OS V1 twelve-page visual matrix",
-    "shared cross-module fixture and twelve-page coverage map"
-   ],
-   "dependsOn": [
-    "docs/company-os/core-page-matrix.md",
-    "docs/design/company-os-v1/README.md",
-    "docs/design/company-os-v1/visual-contract.json",
-    "docs/company-os/examples/trademark-registration.md"
-   ],
-   "machineConsumers": [
-    "check-doc-links",
-    "check-doc-governance"
-   ],
-   "reviewAfter": "2026-08-20",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
-   ],
-   "reorgTrigger": "Required page coverage, shared fixture, representative states, or expected-image mapping changes.",
-   "authorityClass": "design_intent",
-   "implementationState": "design_only",
-   "truthRefs": []
-  },
-  {
-   "path": "docs/design/company-os-v1/visual-contract.json",
-   "ownerRole": "product-design",
-   "status": "stable",
-   "lifecycle": "volatile",
-   "canonicalFor": [
-    "machine-readable Company OS V1 twelve-page visual contract",
-    "twelve expected-image statuses and acceptance metadata"
-   ],
-   "dependsOn": [
-    "docs/design/company-os-v1/README.md",
-    "docs/design/company-os-v1/page-matrix.md",
-    "docs/company-os/core-page-matrix.md"
-   ],
-   "machineConsumers": [
-    "check-doc-governance",
-    "visual-contract tooling"
-   ],
-   "reviewAfter": "2026-08-20",
-   "lastVerifiedWith": [
-    "npx pnpm@9.15.4 validate:json"
-   ],
-   "reorgTrigger": "Expected-image paths, visual truth rules, page status, or visual acceptance metadata changes.",
-   "authorityClass": "design_intent",
-   "implementationState": "design_only",
-   "truthRefs": []
-  },
-  {
    "path": "docs/dashboard/pages/member-run-focus.md",
    "ownerRole": "product-design",
    "status": "planned",
@@ -2369,8 +2442,7 @@
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
-    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-    "docs/design/workbench-layout-v2/README.md"
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2467,9 +2539,7 @@
    "dependsOn": [
     "docs/company-os/organization-and-actors.md",
     "docs/company-os/work-items-and-approvals.md",
-    "docs/company-os/execution-foundation.md",
-    "docs/design/company-os-v1/page-matrix.md",
-    "docs/design/workbench-layout-v2/README.md"
+    "docs/company-os/execution-foundation.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2596,12 +2666,86 @@
    "truthRefs": []
   },
   {
-   "path": "docs/design/company-os-v1/fixture-contract.md",
-   "ownerRole": "product-design",
+   "path": "docs/decisions/0035-company-os-sql-read-model.md",
+   "ownerRole": "product-platform",
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "supporting shared-fixture truth contract for Company OS V1 visual and implementation work"
+    "Company OS SQL read model decision",
+    "canonical Store versus derived read/query/index layer boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/docs-operating-surface-matrix.md",
+    "docs/company-os/implementation-truth-matrix.md",
+    "docs/decisions/0004-file-store-before-database.md",
+    "docs/decisions/0010-harness-store-is-canonical.md",
+    "docs/decisions/0027-company-os-primary-model.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "check:company-os"
+   ],
+   "reviewAfter": "2026-10-23",
+   "lastVerifiedWith": [
+    "node scripts/check-company-os-docs-cli-smoke.mjs",
+    "cargo run -q -p harness-cli -- governance check"
+   ],
+   "reorgTrigger": "Company OS Store, Docs query/search/View/health/diff/export read model, SQLite/PostgreSQL adapter, or canonical write path changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md",
+   "ownerRole": "product-platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Agent-operated Docs product stance",
+    "code-declared custom business page contract"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/docs-operating-surface-matrix.md",
+    "docs/company-os/implementation-truth-matrix.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md",
+    "docs/decisions/0035-company-os-sql-read-model.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "check:company-os"
+   ],
+   "reviewAfter": "2026-10-24",
+   "lastVerifiedWith": [
+    "node scripts/check-company-os-docs-cli-smoke.mjs",
+    "cargo run -q -p harness-cli -- governance check"
+   ],
+   "reorgTrigger": "Docs becomes Human-editor-first, PageDefinition/PagePackage source-of-truth boundaries change, or code-declared page publish gates change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
+    }
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v1/fixture-contract.md",
+   "ownerRole": "product-design",
+   "status": "archival",
+   "lifecycle": "archival",
+   "canonicalFor": [
+    "legacy Company OS v1 fixture rules retained only for deterministic baseline compatibility"
    ],
    "dependsOn": [
     "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
@@ -2617,8 +2761,8 @@
    "lastVerifiedWith": [
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
-   "reorgTrigger": "Fixture identifiers, visible truth rules, required page slices, or financial/approval constraints change.",
-   "authorityClass": "actual_evidence",
+   "reorgTrigger": "Remove when Company OS v2/v3 Store-live fixtures no longer depend on the v1 trademark fixture.",
+   "authorityClass": "historical_evidence",
    "implementationState": "verified",
    "truthRefs": [
     {
@@ -2630,15 +2774,14 @@
   {
    "path": "docs/design/company-os-v1/implementation-acceptance.md",
    "ownerRole": "frontend-quality",
-   "status": "stable",
-   "lifecycle": "stable",
+   "status": "archival",
+   "lifecycle": "archival",
    "canonicalFor": [
-    "supporting Company OS V1 browser and data acceptance evidence contract"
+    "legacy Company OS v1 actual screenshot acceptance evidence retained as baseline context"
    ],
    "dependsOn": [
     "docs/design/company-os-v1/fixture-contract.md",
-    "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
-    "docs/design/company-os-v1/visual-contract.json"
+    "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2649,8 +2792,8 @@
    "lastVerifiedWith": [
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
-   "reorgTrigger": "Fixture loading, browser route evidence, visual comparison policy, or acceptance evidence requirements change.",
-   "authorityClass": "actual_evidence",
+   "reorgTrigger": "Remove when no active visual comparison or live PRD references v1 actual screenshots.",
+   "authorityClass": "historical_evidence",
    "implementationState": "verified",
    "truthRefs": [
     {
@@ -2956,10 +3099,10 @@
   {
    "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
    "ownerRole": "product-architecture",
-   "status": "stable",
-   "lifecycle": "stable",
+   "status": "archival",
+   "lifecycle": "archival",
    "canonicalFor": [
-    "supporting authoritative Company OS V1 deterministic trademark fixture"
+    "legacy deterministic Company OS trademark fixture used by current Store-live seeding and browser checks"
    ],
    "dependsOn": [
     "docs/company-os/examples/trademark-registration.md",
@@ -2974,8 +3117,8 @@
    "lastVerifiedWith": [
     "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
    ],
-   "reorgTrigger": "The shared Company OS V1 scenario facts, record IDs, actor roles, financial state, or page slices change.",
-   "authorityClass": "actual_evidence",
+   "reorgTrigger": "Move to schemas/fixtures/company-os once tests and scripts no longer import from the legacy design path.",
+   "authorityClass": "historical_evidence",
    "implementationState": "verified",
    "truthRefs": [
     {

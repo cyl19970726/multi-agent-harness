@@ -109,8 +109,8 @@ export interface FinancialRecordView {
   amount: string;
   status: "pending_approval" | "approved" | "settled";
   sourceDocument: RelatedLink;
-  /** Optional accounting/project context; absence is rendered as unknown, never guessed. */
-  project?: RelatedLink;
+  /** Optional business/cost context; absence is rendered as unknown, never guessed. */
+  costContext?: RelatedLink;
   accountableOwner: ActorSummary;
 }
 

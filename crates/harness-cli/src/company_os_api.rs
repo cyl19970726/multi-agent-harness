@@ -4,6 +4,7 @@
 //! projection and dispatch declared ActionCommands, but never receive a generic
 //! store-write primitive.
 
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -623,6 +624,9 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
     if command.command_name == "block.append" {
         validate_block_append(store, &command, &record)?;
     }
+    if command.command_name == "relation.append" {
+        validate_relation_append(store, &command, &record)?;
+    }
     ensure_authorization_audit_ids_available(store, &command, &record)?;
     let audit_reservations = action_audit_reservation_ids(&command);
     match store.claim_action_command_with_audit_reservations(&command, &audit_reservations)? {
@@ -1043,14 +1047,22 @@ fn validate_definition_scope(
                     && document_in_module(store, definition, id)
             }),
         "typed_record.append" => {
-            record
+            let module_matches = record
                 .get("module_id")
                 .and_then(Value::as_str)
-                .is_some_and(|id| id == definition.module_id)
-                && value_id(record).is_some_and(|id| {
-                    command.subject_ref.kind == EntityKind::TypedRecord
+                .is_some_and(|id| id == definition.module_id);
+            let updates_scoped_record = value_id(record).is_some_and(|id| {
+                command.subject_ref.kind == EntityKind::TypedRecord && command.subject_ref.id == id
+            });
+            let creates_from_scoped_document = record
+                .get("source_document_ref")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    command.subject_ref.kind == EntityKind::Document
                         && command.subject_ref.id == id
-                })
+                        && document_in_module(store, definition, id)
+                });
+            module_matches && (updates_scoped_record || creates_from_scoped_document)
         }
         "view.append" => record
             .get("module_id")
@@ -1382,26 +1394,64 @@ fn validate_document_append(
 ) -> Result<(), ApiError> {
     let target: Document = parse(record)?;
     if command.subject_ref.kind == EntityKind::Document && command.subject_ref.id == target.id {
-        let previous = store
-            .latest_documents()?
-            .into_iter()
+        let documents = store.latest_documents()?;
+        let previous = documents
+            .iter()
             .find(|row| row.id == target.id)
             .ok_or_else(|| ApiError::not_found(format!("Document:{}", target.id)))?;
         let immutable_changed = previous.space_id != target.space_id
-            || previous.parent_document_id != target.parent_document_id
             || previous.kind != target.kind
             || previous.created_by != target.created_by
             || previous.created_at != target.created_at;
-        let preserves = |old: &[String], next: &[String]| old.iter().all(|id| next.contains(id));
+        if target.parent_document_id.as_deref() == Some(target.id.as_str()) {
+            return Err(ApiError::conflict(
+                "document.append update cannot move a Document under itself",
+            ));
+        }
+        let mut seen_parent_ids = BTreeSet::new();
+        let mut parent_cursor = target.parent_document_id.as_deref();
+        while let Some(parent_id) = parent_cursor {
+            if parent_id == target.id {
+                return Err(ApiError::conflict(
+                    "document.append update cannot create a parent cycle",
+                ));
+            }
+            if !seen_parent_ids.insert(parent_id.to_string()) {
+                return Err(ApiError::conflict(
+                    "document.append update cannot preserve an existing parent cycle",
+                ));
+            }
+            parent_cursor = documents
+                .iter()
+                .find(|row| row.id == parent_id)
+                .and_then(|row| row.parent_document_id.as_deref());
+        }
+        let latest_blocks = store.latest_blocks()?;
+        let block_ids: BTreeSet<_> = target.block_ids.iter().collect();
+        if block_ids.len() != target.block_ids.len() {
+            return Err(ApiError::conflict(
+                "document.append update cannot duplicate block references",
+            ));
+        }
+        for block_id in &target.block_ids {
+            let block = latest_blocks
+                .iter()
+                .find(|row| row.id == *block_id)
+                .ok_or_else(|| ApiError::not_found(format!("Block:{block_id}")))?;
+            if block.document_id != target.id {
+                return Err(ApiError::conflict(
+                    "document.append update cannot reference a Block owned by another Document",
+                ));
+            }
+        }
         if immutable_changed
-            || !preserves(&previous.block_ids, &target.block_ids)
             || !previous
                 .reference_refs
                 .iter()
                 .all(|reference| target.reference_refs.contains(reference))
         {
             return Err(ApiError::conflict(
-                "document.append update cannot change identity or remove blocks/relations",
+                "document.append update cannot change identity or remove relations",
             ));
         }
         if target.updated_by != command.requested_by {
@@ -1422,16 +1472,28 @@ fn validate_typed_record_append(
     let previous = store
         .latest_typed_records()?
         .into_iter()
-        .find(|row| row.id == target.id)
-        .ok_or_else(|| ApiError::not_found(format!("TypedRecord:{}", target.id)))?;
-    if previous.module_id != target.module_id
-        || previous.record_type != target.record_type
-        || previous.source_document_ref != target.source_document_ref
-        || previous.created_by != target.created_by
-        || previous.created_at != target.created_at
-    {
-        return Err(ApiError::conflict(
-            "typed_record.append update cannot change record identity or source",
+        .find(|row| row.id == target.id);
+    if let Some(previous) = previous {
+        if previous.module_id != target.module_id
+            || previous.record_type != target.record_type
+            || previous.source_document_ref != target.source_document_ref
+            || previous.created_by != target.created_by
+            || previous.created_at != target.created_at
+        {
+            return Err(ApiError::conflict(
+                "typed_record.append update cannot change record identity or source",
+            ));
+        }
+        if command.subject_ref.kind != EntityKind::TypedRecord
+            || command.subject_ref.id != target.id
+        {
+            return Err(ApiError::forbidden(
+                "typed_record.append update subject must be the existing TypedRecord",
+            ));
+        }
+    } else if target.created_by != command.requested_by {
+        return Err(ApiError::forbidden(
+            "TypedRecord creator must be the Action requester",
         ));
     }
     if target.updated_by != command.requested_by {
@@ -1448,15 +1510,71 @@ fn validate_block_append(
     record: &Value,
 ) -> Result<(), ApiError> {
     let block: Block = parse(record)?;
-    if store.latest_blocks()?.iter().any(|row| row.id == block.id) {
-        return Err(ApiError::conflict(format!(
-            "Block {} already exists",
-            block.id
-        )));
+    if command.subject_ref.kind != EntityKind::Document
+        || command.subject_ref.id != block.document_id
+    {
+        return Err(ApiError::forbidden(
+            "block.append subject must be the owning Document",
+        ));
+    }
+    let existing = store
+        .latest_blocks()?
+        .into_iter()
+        .find(|row| row.id == block.id);
+    if let Some(previous) = existing {
+        if previous.document_id != block.document_id
+            || previous.created_by != block.created_by
+            || previous.created_at != block.created_at
+        {
+            return Err(ApiError::conflict(
+                "block.append update cannot change Block identity, owning Document, or creation metadata",
+            ));
+        }
+        if block.updated_by != command.requested_by {
+            return Err(ApiError::forbidden(
+                "Block.updated_by must be the Action requester",
+            ));
+        }
+        return Ok(());
     }
     if block.created_by != command.requested_by || block.updated_by != command.requested_by {
         return Err(ApiError::forbidden(
             "Block creator/updater must be the Action requester",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relation_append(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let target: Relation = parse(record)?;
+    let previous = store
+        .latest_relations()?
+        .into_iter()
+        .find(|row| row.id == target.id);
+    if let Some(previous) = previous {
+        if previous.from_ref != target.from_ref
+            || previous.to_ref != target.to_ref
+            || previous.relation_type != target.relation_type
+            || previous.provenance_ref != target.provenance_ref
+            || previous.created_by != target.created_by
+            || previous.created_at != target.created_at
+        {
+            return Err(ApiError::conflict(
+                "relation.append update cannot change relation identity, endpoints, type, provenance, or creation metadata",
+            ));
+        }
+        if command.subject_ref != target.from_ref && command.subject_ref != target.to_ref {
+            return Err(ApiError::forbidden(
+                "relation.append update subject must be one relation endpoint",
+            ));
+        }
+    } else if target.lifecycle_status.as_deref() == Some("archived") {
+        return Err(ApiError::conflict(
+            "relation.append cannot create an already archived relation",
         ));
     }
     Ok(())
