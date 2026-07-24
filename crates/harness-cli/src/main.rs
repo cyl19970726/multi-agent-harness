@@ -1122,11 +1122,11 @@ fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResul
         .iter()
         .filter(|record| {
             let record_id = json_str(record, "id");
-            let source_document_ref =
-                json_str(record, "source_document_ref").or_else(|| json_field_str(record, "source_document_ref"));
-            let module_match = selected_module_id
-                .as_deref()
-                .is_some_and(|module_id| json_str(record, "module_id").as_deref() == Some(module_id));
+            let source_document_ref = json_str(record, "source_document_ref")
+                .or_else(|| json_field_str(record, "source_document_ref"));
+            let module_match = selected_module_id.as_deref().is_some_and(|module_id| {
+                json_str(record, "module_id").as_deref() == Some(module_id)
+            });
             let source_match = source_document_ref
                 .as_deref()
                 .is_some_and(|doc_id| relevant_document_ids.contains(doc_id));
@@ -1149,10 +1149,14 @@ fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResul
             if !json_relation_is_active(relation) {
                 return false;
             }
-            let endpoints = [json_entity_id(relation, "from_ref"), json_entity_id(relation, "to_ref")];
-            endpoints.iter().flatten().any(|id| {
-                relevant_document_ids.contains(id) || related_record_ids.contains(id)
-            })
+            let endpoints = [
+                json_entity_id(relation, "from_ref"),
+                json_entity_id(relation, "to_ref"),
+            ];
+            endpoints
+                .iter()
+                .flatten()
+                .any(|id| relevant_document_ids.contains(id) || related_record_ids.contains(id))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1172,15 +1176,14 @@ fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResul
         .iter()
         .filter(|document| {
             json_str(document, "kind").as_deref() == Some("template")
-                && (selected_document_id
+                && (selected_document_id.as_deref().is_some_and(|id| {
+                    json_str(document, "parent_document_id").as_deref() == Some(id)
+                }) || selected_module
+                    .and_then(|module| json_str(module, "root_document_ref"))
                     .as_deref()
-                    .is_some_and(|id| json_str(document, "parent_document_id").as_deref() == Some(id))
-                    || selected_module
-                        .and_then(|module| json_str(module, "root_document_ref"))
-                        .as_deref()
-                        .is_some_and(|root_id| {
-                            json_str(document, "parent_document_id").as_deref() == Some(root_id)
-                        }))
+                    .is_some_and(|root_id| {
+                        json_str(document, "parent_document_id").as_deref() == Some(root_id)
+                    }))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1196,9 +1199,9 @@ fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResul
     let definitions = custom_page_definitions
         .iter()
         .filter(|definition| {
-            selected_module_id
-                .as_deref()
-                .is_some_and(|module_id| json_str(definition, "module_id").as_deref() == Some(module_id))
+            selected_module_id.as_deref().is_some_and(|module_id| {
+                json_str(definition, "module_id").as_deref() == Some(module_id)
+            })
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1207,16 +1210,23 @@ fn company_docs_query_command(store: &HarnessStore, args: &[String]) -> CliResul
         .filter(|finding| {
             json_entity_id(finding, "subject")
                 .as_deref()
-                .is_some_and(|id| relevant_document_ids.contains(id) || related_record_ids.contains(id))
+                .is_some_and(|id| {
+                    relevant_document_ids.contains(id) || related_record_ids.contains(id)
+                })
                 || json_entity_id(finding, "related")
                     .as_deref()
-                    .is_some_and(|id| relevant_document_ids.contains(id) || related_record_ids.contains(id))
+                    .is_some_and(|id| {
+                        relevant_document_ids.contains(id) || related_record_ids.contains(id)
+                    })
         })
         .collect::<Vec<_>>();
     let available_commands = company_docs_available_commands(
         selected_document_id.as_deref(),
         selected_module_id.as_deref(),
-        definitions.first().and_then(|definition| json_str(definition, "id")).as_deref(),
+        definitions
+            .first()
+            .and_then(|definition| json_str(definition, "id"))
+            .as_deref(),
         !action_policy_definitions.is_empty(),
     );
     print_json(&serde_json::json!({
@@ -1425,7 +1435,7 @@ fn company_docs_change_report_command(store: &HarnessStore, args: &[String]) -> 
     let subject_ref = action
         .get("subject_ref")
         .cloned()
-        .unwrap_or_else(|| serde_json::json!(null));
+        .unwrap_or(serde_json::Value::Null);
     let before = if subject_ref.is_object() {
         company_docs_find_ref(&snapshot, &subject_ref)
     } else {
@@ -1762,17 +1772,23 @@ fn company_docs_page_scaffold_command(store: &HarnessStore, args: &[String]) -> 
         value(args, "--entrypoint").unwrap_or_else(|| "index.tsx".to_string()),
         "--fixture-ref".to_string(),
         value(args, "--fixture-ref").unwrap_or_else(|| {
-            format!("docs/design/company-os/custom-pages/{}/fixture.json", relation_slug(&title))
+            format!(
+                "docs/design/company-os/custom-pages/{}/fixture.json",
+                relation_slug(&title)
+            )
         }),
         "--visual-contract-ref".to_string(),
         value(args, "--visual-contract-ref").unwrap_or_else(|| {
-            format!("docs/design/company-os/custom-pages/{}/review.html", relation_slug(&title))
+            format!(
+                "docs/design/company-os/custom-pages/{}/review.html",
+                relation_slug(&title)
+            )
         }),
     ];
-    for component in many(args, "--component")
-        .into_iter()
-        .chain(["CodeDeclaredPage".to_string(), "VisualContractReview".to_string()])
-    {
+    for component in many(args, "--component").into_iter().chain([
+        "CodeDeclaredPage".to_string(),
+        "VisualContractReview".to_string(),
+    ]) {
         forwarded.push("--component".to_string());
         forwarded.push(component);
     }
@@ -1804,12 +1820,16 @@ fn company_docs_page_verify_command(store: &HarnessStore, args: &[String]) -> Cl
     let definition = definitions
         .into_iter()
         .find(|definition| definition.id == definition_id)
-        .ok_or_else(|| CliError::Usage(format!("CustomPageDefinition:{definition_id} not found")))?;
+        .ok_or_else(|| {
+            CliError::Usage(format!("CustomPageDefinition:{definition_id} not found"))
+        })?;
     let package = packages
         .iter()
         .find(|package| package.id == definition.package_ref)
         .cloned();
-    let module_exists = modules.iter().any(|module| module.id == definition.module_id);
+    let module_exists = modules
+        .iter()
+        .any(|module| module.id == definition.module_id);
     let fallback_view_exists = views
         .iter()
         .any(|view| view.id == definition.standard_view_fallback_ref);
@@ -1862,14 +1882,18 @@ fn company_docs_page_publish_command(store: &HarnessStore, args: &[String]) -> C
     let integrity_digest = value(args, "--integrity-digest").unwrap_or_else(|| {
         format!(
             "sha256:{}",
-            content_hash_hex16(&format!("{definition_id}:{version}:{artifact_ref}:{entrypoint}"))
+            content_hash_hex16(&format!(
+                "{definition_id}:{version}:{artifact_ref}:{entrypoint}"
+            ))
         )
     });
     let definition = store
         .latest_custom_page_definitions()?
         .into_iter()
         .find(|definition| definition.id == definition_id)
-        .ok_or_else(|| CliError::Usage(format!("CustomPageDefinition:{definition_id} not found")))?;
+        .ok_or_else(|| {
+            CliError::Usage(format!("CustomPageDefinition:{definition_id} not found"))
+        })?;
     let now = now_string();
     let package_id = value(args, "--package-id")
         .unwrap_or_else(|| format!("package-cli-{definition_id}-{}", relation_slug(&version)));
@@ -1954,7 +1978,9 @@ fn company_docs_document_create_command(store: &HarnessStore, args: &[String]) -
     let document_result = dispatch_company_docs_action_value(store, &body)?;
     let template_result = if instantiate_template {
         let template_id = template_ref.as_deref().ok_or_else(|| {
-            CliError::Usage("--instantiate-template requires --template <template-document-id>".into())
+            CliError::Usage(
+                "--instantiate-template requires --template <template-document-id>".into(),
+            )
         })?;
         Some(company_docs_instantiate_template_blocks(
             store,
@@ -1962,7 +1988,8 @@ fn company_docs_document_create_command(store: &HarnessStore, args: &[String]) -
             &document_id,
             template_id,
             actor_ref,
-            value(args, "--block-policy").unwrap_or_else(|| format!("{definition_id}:block.append")),
+            value(args, "--block-policy")
+                .unwrap_or_else(|| format!("{definition_id}:block.append")),
             value(args, "--document-policy")
                 .unwrap_or_else(|| format!("{definition_id}:document.append")),
         )?)
@@ -1993,7 +2020,8 @@ fn company_docs_document_rename_command(store: &HarnessStore, args: &[String]) -
         &actor_id,
         &actor_kind,
         value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-document-rename")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-rename")),
         has_flag(args, "--dry-run"),
         "rename",
         |record| {
@@ -2038,7 +2066,8 @@ fn company_docs_document_move_command(store: &HarnessStore, args: &[String]) -> 
         &actor_id,
         &actor_kind,
         value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-document-move")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-move")),
         has_flag(args, "--dry-run"),
         "move",
         |record| {
@@ -2069,7 +2098,8 @@ fn company_docs_document_archive_command(store: &HarnessStore, args: &[String]) 
         &actor_id,
         &actor_kind,
         value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-document-archive")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-document-archive")),
         dry_run,
         "archive",
         |record| {
@@ -2079,6 +2109,7 @@ fn company_docs_document_archive_command(store: &HarnessStore, args: &[String]) 
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn company_docs_document_update_command<F>(
     store: &HarnessStore,
     definition_id: &str,
@@ -2212,7 +2243,8 @@ fn company_docs_template_create_command(store: &HarnessStore, args: &[String]) -
             &template_id,
             source_document_id,
             actor_ref,
-            value(args, "--block-policy").unwrap_or_else(|| format!("{definition_id}:block.append")),
+            value(args, "--block-policy")
+                .unwrap_or_else(|| format!("{definition_id}:block.append")),
             value(args, "--document-policy")
                 .unwrap_or_else(|| format!("{definition_id}:document.append")),
             "template_source_document_id",
@@ -2251,20 +2283,19 @@ fn company_docs_template_status_command(store: &HarnessStore, args: &[String]) -
         .ok_or_else(|| CliError::Usage(format!("Template Document:{template_id} not found")))?;
     if template_document.kind != harness_core::DocumentKind::Template {
         return Err(CliError::Usage(
-            "template status requires --template to reference a Document with kind=template"
-                .into(),
+            "template status requires --template to reference a Document with kind=template".into(),
         ));
     }
     let now = now_string();
-    let mut record =
-        serde_json::to_value(template_document).map_err(|error| CliError::Json(error))?;
+    let mut record = serde_json::to_value(template_document).map_err(CliError::Json)?;
     record["lifecycle_status"] = serde_json::json!(status);
     record["updated_by"] = actor_ref.clone();
     record["updated_at"] = serde_json::json!(now.clone());
     let body = docs_action_body(
         &definition_id,
         value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-template-status")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-template-status")),
         "document.append",
         serde_json::json!({"kind": "document", "id": template_id}),
         actor_ref,
@@ -2320,6 +2351,7 @@ fn company_docs_instantiate_template_blocks(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn company_docs_copy_document_blocks(
     store: &HarnessStore,
     definition_id: &str,
@@ -2334,7 +2366,9 @@ fn company_docs_copy_document_blocks(
         .latest_documents()?
         .into_iter()
         .find(|row| row.id == source_document_id)
-        .ok_or_else(|| CliError::Usage(format!("Source Document:{source_document_id} not found")))?;
+        .ok_or_else(|| {
+            CliError::Usage(format!("Source Document:{source_document_id} not found"))
+        })?;
     let blocks = store.latest_blocks()?;
     let mut ordered_source_blocks = Vec::new();
     for block_id in &source_document.block_ids {
@@ -2358,8 +2392,7 @@ fn company_docs_copy_document_blocks(
             index + 1,
             relation_slug(&source_block.id)
         );
-        let mut block_record =
-            serde_json::to_value(&source_block).map_err(|error| CliError::Json(error))?;
+        let mut block_record = serde_json::to_value(&source_block).map_err(CliError::Json)?;
         block_record["id"] = serde_json::json!(block_id);
         block_record["document_id"] = serde_json::json!(document_id);
         block_record["position"] = serde_json::json!(index as u32);
@@ -2397,8 +2430,7 @@ fn company_docs_copy_document_blocks(
                 .unwrap_or("block")
                 .to_string(),
         );
-        let mut document_record =
-            serde_json::to_value(document).map_err(|error| CliError::Json(error))?;
+        let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
         document_record["block_ids"] = serde_json::json!(next_block_ids);
         document_record["updated_by"] = actor_ref.clone();
         document_record["updated_at"] = serde_json::json!(now.clone());
@@ -2501,8 +2533,7 @@ fn company_docs_block_append_command(store: &HarnessStore, args: &[String]) -> C
             .unwrap_or("block")
             .to_string(),
     );
-    let mut document_record =
-        serde_json::to_value(document).map_err(|error| CliError::Json(error))?;
+    let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
     document_record["block_ids"] = serde_json::json!(block_ids);
     document_record["updated_by"] = actor_ref.clone();
     document_record["updated_at"] = serde_json::json!(now);
@@ -2661,6 +2692,7 @@ fn company_docs_block_remove_command(store: &HarnessStore, args: &[String]) -> C
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn company_docs_block_mutation_command<F>(
     store: &HarnessStore,
     definition_id: &str,
@@ -2727,8 +2759,7 @@ where
         now.clone(),
     );
     let document_body = if next_block_ids != document.block_ids {
-        let mut document_record =
-            serde_json::to_value(document).map_err(|error| CliError::Json(error))?;
+        let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
         document_record["block_ids"] = serde_json::json!(next_block_ids.clone());
         document_record["updated_by"] = actor_ref.clone();
         document_record["updated_at"] = serde_json::json!(now.clone());
@@ -2857,8 +2888,7 @@ fn company_docs_block_reorder_command(store: &HarnessStore, args: &[String]) -> 
     }
     let now = now_string();
     let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
-    let mut document_record =
-        serde_json::to_value(document).map_err(|error| CliError::Json(error))?;
+    let mut document_record = serde_json::to_value(document).map_err(CliError::Json)?;
     document_record["block_ids"] = serde_json::json!(block_ids);
     document_record["updated_by"] = actor_ref.clone();
     document_record["updated_at"] = serde_json::json!(now);
@@ -3082,7 +3112,9 @@ fn company_docs_typed_record_validate_command(
     }
     if let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) {
         for (field, rule) in properties {
-            let Some(value) = fields.get(field) else { continue };
+            let Some(value) = fields.get(field) else {
+                continue;
+            };
             let Some(expected_type) = rule.get("type").and_then(|value| value.as_str()) else {
                 continue;
             };
@@ -3188,7 +3220,8 @@ fn company_docs_view_update_command(store: &HarnessStore, args: &[String]) -> Cl
     let source_kinds = many(args, "--source-kind");
     if !has_title && !has_mode && !has_query && source_kinds.is_empty() {
         return Err(CliError::Usage(
-            "view update requires at least one of --title, --mode, --query-json, or --source-kind".into(),
+            "view update requires at least one of --title, --mode, --query-json, or --source-kind"
+                .into(),
         ));
     }
     let view = store
@@ -3352,7 +3385,8 @@ fn company_docs_relation_unlink_command(store: &HarnessStore, args: &[String]) -
     let body = docs_action_body(
         &definition_id,
         value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-relation-unlink")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-relation-unlink")),
         "relation.append",
         subject_ref,
         actor_ref,
@@ -3420,11 +3454,16 @@ fn company_docs_relation_relink_command(store: &HarnessStore, args: &[String]) -
     let before = serde_json::to_value(&relation).map_err(CliError::Json)?;
     let from_document = new_from_document
         .or_else(|| json_entity_id(&before, "from_ref"))
-        .ok_or_else(|| CliError::Usage("relation relink needs --from-document or an existing from_ref".into()))?;
+        .ok_or_else(|| {
+            CliError::Usage("relation relink needs --from-document or an existing from_ref".into())
+        })?;
     let to_record = new_to_record
         .or_else(|| json_entity_id(&before, "to_ref"))
-        .ok_or_else(|| CliError::Usage("relation relink needs --to-record or an existing to_ref".into()))?;
-    let relation_type = json_str(&before, "relation_type").unwrap_or_else(|| "source_for".to_string());
+        .ok_or_else(|| {
+            CliError::Usage("relation relink needs --to-record or an existing to_ref".into())
+        })?;
+    let relation_type =
+        json_str(&before, "relation_type").unwrap_or_else(|| "source_for".to_string());
     let unlink_preview = serde_json::json!({
         "relation": relation_id,
         "after": {
@@ -3465,8 +3504,10 @@ fn company_docs_relation_relink_command(store: &HarnessStore, args: &[String]) -
     archived_record["lifecycle_status"] = serde_json::json!("archived");
     let unlink_body = docs_action_body(
         &definition_id,
-        value(args, "--unlink-policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        value(args, "--unlink-command-id").unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-unlink")),
+        value(args, "--unlink-policy")
+            .unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        value(args, "--unlink-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-unlink")),
         "relation.append",
         before
             .get("from_ref")
@@ -3496,7 +3537,8 @@ fn company_docs_relation_relink_command(store: &HarnessStore, args: &[String]) -
     let link_body = docs_action_body(
         &definition_id,
         value(args, "--link-policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
-        value(args, "--link-command-id").unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-link")),
+        value(args, "--link-command-id")
+            .unwrap_or_else(|| generated_id("action-cli-docs-relation-relink-link")),
         "relation.append",
         serde_json::json!({"kind": "document", "id": from_document}),
         actor_ref,
@@ -3531,6 +3573,7 @@ fn docs_actor_kind(args: &[String]) -> CliResult<String> {
     Ok(actor_kind)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn docs_action_body(
     definition_id: &str,
     policy_ref: String,
@@ -3574,7 +3617,7 @@ fn dispatch_company_docs_action_value(
     let response = company_os_api::handle_post(
         store,
         "/v1/company-os/actions/dispatch",
-        &body,
+        body,
         token.as_deref(),
     )
     .ok_or_else(|| CliError::Usage("Company OS action dispatcher is unavailable".into()))?;
@@ -3642,8 +3685,8 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
         let Some(record_id) = json_str(record, "id") else {
             continue;
         };
-        let source_document_ref =
-            json_str(record, "source_document_ref").or_else(|| json_field_str(record, "source_document_ref"));
+        let source_document_ref = json_str(record, "source_document_ref")
+            .or_else(|| json_field_str(record, "source_document_ref"));
         match source_document_ref {
             None => findings.push(serde_json::json!({
                 "id": format!("missing-source:{record_id}"),
@@ -3927,10 +3970,13 @@ fn company_docs_refs_for(
         .iter()
         .filter(|relation| {
             json_relation_is_active(relation)
-                && [json_entity_id(relation, "from_ref"), json_entity_id(relation, "to_ref")]
-                    .iter()
-                    .flatten()
-                    .any(|endpoint| endpoint == id)
+                && [
+                    json_entity_id(relation, "from_ref"),
+                    json_entity_id(relation, "to_ref"),
+                ]
+                .iter()
+                .flatten()
+                .any(|endpoint| endpoint == id)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -4062,7 +4108,9 @@ fn json_entry_matches_module(
     let documents = json_array(snapshot, "documents");
     let mut current = Some(document_id);
     for _ in 0..64 {
-        let Some(id) = current.as_deref() else { return false };
+        let Some(id) = current.as_deref() else {
+            return false;
+        };
         if id == root_id {
             return true;
         }

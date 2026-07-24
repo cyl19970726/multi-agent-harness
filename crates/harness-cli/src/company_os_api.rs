@@ -1510,7 +1510,9 @@ fn validate_block_append(
     record: &Value,
 ) -> Result<(), ApiError> {
     let block: Block = parse(record)?;
-    if command.subject_ref.kind != EntityKind::Document || command.subject_ref.id != block.document_id {
+    if command.subject_ref.kind != EntityKind::Document
+        || command.subject_ref.id != block.document_id
+    {
         return Err(ApiError::forbidden(
             "block.append subject must be the owning Document",
         ));

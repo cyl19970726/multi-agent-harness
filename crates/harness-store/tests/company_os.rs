@@ -415,6 +415,7 @@ fn append_only_ledgers_project_latest_rows_and_preserve_company_links() {
             kind: EntityKind::Document,
             id: document_id.clone(),
         }),
+        lifecycle_status: None,
         created_by: agent_ref.clone(),
         created_at: NOW.into(),
     };
