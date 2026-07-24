@@ -51,6 +51,8 @@ pub(crate) struct CodexAppServerClient {
     reader: Option<JoinHandle<()>>,
     stderr_tail: Arc<Mutex<String>>,
     thread_id: String,
+    model: String,
+    collaboration_mode: &'static str,
 }
 
 impl CodexAppServerClient {
@@ -60,6 +62,7 @@ impl CodexAppServerClient {
         _workspace_write: bool,
         resume_thread_id: Option<&str>,
         collaboration_env: &[(String, String)],
+        plan_mode: bool,
     ) -> CliResult<Self> {
         let mut command = Command::new("codex");
         command
@@ -133,6 +136,8 @@ impl CodexAppServerClient {
             reader: Some(reader),
             stderr_tail,
             thread_id: String::new(),
+            model: String::new(),
+            collaboration_mode: if plan_mode { "plan" } else { "default" },
         };
         client.request_blocking(
             "initialize",
@@ -164,6 +169,17 @@ impl CodexAppServerClient {
                 CliError::Usage(format!("codex {method} omitted thread id: {response}"))
             })?
             .to_string();
+        client.model = response
+            .pointer("/result/thread/model")
+            .and_then(|value| value.as_str())
+            .or(model)
+            .filter(|model| !model.trim().is_empty())
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "codex {method} omitted the effective thread model required for collaborationMode: {response}"
+                ))
+            })?
+            .to_string();
         Ok(client)
     }
 
@@ -171,12 +187,40 @@ impl CodexAppServerClient {
         &self.thread_id
     }
 
+    /// Bind the durable Harness Assignment objective to Codex's native thread
+    /// Goal. Harness still owns assignment correlation; the provider Goal is
+    /// session-local execution state and is never promoted into a second
+    /// product Goal object.
+    pub(crate) fn set_goal(&mut self, objective: &str, status: &str) -> CliResult<()> {
+        self.request_blocking(
+            "thread/goal/set",
+            serde_json::json!({
+                "threadId": self.thread_id,
+                "objective": objective,
+                "status": status
+            }),
+            HANDSHAKE_TIMEOUT,
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn start_turn(&mut self, text: &str) -> CliResult<String> {
         let response = self.request_blocking(
             "turn/start",
             serde_json::json!({
                 "threadId": self.thread_id,
-                "input": [{"type": "text", "text": text}]
+                "input": [{"type": "text", "text": text}],
+                // app-server collaboration modes are a per-turn experimental
+                // protocol field, not a `codex -c` configuration key. Send a
+                // complete preset so the provider's native turn_context
+                // records the requested Plan/default boundary.
+                "collaborationMode": {
+                    "mode": self.collaboration_mode,
+                    "settings": {
+                        "model": self.model,
+                        "developer_instructions": null
+                    }
+                }
             }),
             HANDSHAKE_TIMEOUT,
         )?;

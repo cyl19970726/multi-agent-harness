@@ -1802,6 +1802,13 @@ pub struct ProviderIntegrationProfile {
     #[serde(default)]
     pub compatibility_note: Option<String>,
     pub interaction_mode: ProviderInteractionMode,
+    /// How this exact execution mode implements Member plan negotiation.
+    #[serde(default)]
+    pub plan_mode: ProviderFeatureMode,
+    /// Whether the provider exposes a native session Goal that can mirror the
+    /// Harness Assignment objective. Assignment remains canonical either way.
+    #[serde(default)]
+    pub goal_mode: ProviderFeatureMode,
     pub tool_event_fidelity: ProviderEventFidelity,
     pub artifact_event_fidelity: ProviderEventFidelity,
     pub supports_cancel: bool,
@@ -1811,6 +1818,16 @@ pub struct ProviderIntegrationProfile {
     /// Product policy, not a provider claim. Thinking may only appear through
     /// the sanitized transient live channel and is never durable or replayed.
     pub thinking_transient_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFeatureMode {
+    Native,
+    Emulated,
+    Unsupported,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1916,6 +1933,15 @@ pub enum PendingInteractionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum TeamMessageKind {
     Assignment,
+    /// Host asks the assignment owner to plan before execution. The matching
+    /// Assignment remains the durable work/goal anchor.
+    PlanRequest,
+    /// Member submits one sanitized Markdown plan revision to the Host.
+    PlanProposal,
+    /// Host challenges or requests changes to the latest plan revision.
+    PlanFeedback,
+    /// Host accepts the latest plan revision and releases execution.
+    PlanApproval,
     Question,
     Answer,
     Progress,

@@ -1361,6 +1361,294 @@ fn codex_app_server_member_can_be_steered_in_place() {
 }
 
 #[test]
+fn kimi_member_plan_is_revised_and_approved_before_execution() {
+    let home = TempHome::new("team-run-kimi-plan-review");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise native Kimi plan negotiation",
+            "members": [{
+                "name": "kimi-planner",
+                "role": "implementer",
+                "provider": "kimi",
+                "execution_mode": "kimi_acp"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let assignment = &created["result"]["assignment_messages"][0];
+    let assignment_id = assignment["id"].as_str().expect("assignment id");
+    let correlation = assignment["correlation_id"].as_str().expect("correlation");
+
+    let (status, requested) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "plan_request",
+            "body": "Plan the lane before implementation",
+            "correlation_id": correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {requested}");
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let proposal_one = wait_for_team_message(&serve, &run_id, "plan_proposal", 1);
+    assert_eq!(
+        proposal_one["from_member_id"].as_str(),
+        Some(member_id.as_str())
+    );
+    let (status, feedback) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "plan_feedback",
+            "body": "Add an explicit integration check",
+            "correlation_id": correlation,
+            "causation_id": proposal_one["id"],
+        }),
+    );
+    assert_eq!(status, 200, "body: {feedback}");
+
+    let proposal_two = wait_for_team_message(&serve, &run_id, "plan_proposal", 2);
+    assert_ne!(proposal_one["id"], proposal_two["id"]);
+    let (status, approved) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "plan_approval",
+            "body": "Approved; execute in the same session",
+            "correlation_id": correlation,
+            "causation_id": proposal_two["id"],
+        }),
+    );
+    assert_eq!(status, 200, "body: {approved}");
+
+    let handoff = wait_for_team_message(&serve, &run_id, "handoff", 1);
+    assert_eq!(handoff["from_member_id"].as_str(), Some(member_id.as_str()));
+    let mut completed_member = None;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        completed_member = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("completed")
+            })
+            .cloned();
+        if completed_member.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let member = completed_member.expect("member completed after handoff");
+    assert_eq!(member["status"].as_str(), Some("completed"));
+    assert!(
+        member["native_session"]["native_session_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("session_fake_")),
+        "same Kimi native session remains bound: {member}"
+    );
+}
+
+#[test]
+fn codex_app_server_projects_goal_and_executes_only_after_plan_approval() {
+    let home = TempHome::new("team-run-codex-plan-review");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-plan"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let marker = home.base().join("codex-plan.marker");
+    let marker_value = marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_AUTO_COMPLETE", "1"),
+            ("FAKE_CODEX_PLAN_MARKER", marker_value.as_str()),
+            ("FAKE_CODEX_STALE_COMPLETION_ON_SECOND_PLAN", "1"),
+            ("FAKE_CODEX_REBIND_EVENT_TURN", "1"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise native Codex Goal and Plan",
+            "members": [{
+                "name": "codex-planner",
+                "role": "implementer",
+                "provider": "codex",
+                "execution_mode": "codex_app_server"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let assignment = &created["result"]["assignment_messages"][0];
+    let assignment_id = assignment["id"].as_str().expect("assignment id");
+    let correlation = assignment["correlation_id"].as_str().expect("correlation");
+    let (status, requested) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "plan_request",
+            "body": "Use native Codex Plan before editing",
+            "correlation_id": correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {requested}");
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let proposal_one = wait_for_team_message(&serve, &run_id, "plan_proposal", 1);
+    let mut waiting_snapshot = serde_json::Value::Null;
+    let mut member_is_waiting = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        member_is_waiting = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("waiting")
+            });
+        waiting_snapshot = snapshot;
+        if member_is_waiting {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        member_is_waiting,
+        "Codex must wait for Host approval after proposal: {waiting_snapshot}"
+    );
+    let (status, feedback) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "plan_feedback",
+            "body": "Add exact checks and revise the plan",
+            "correlation_id": correlation,
+            "causation_id": proposal_one["id"],
+        }),
+    );
+    assert_eq!(status, 200, "body: {feedback}");
+    let proposal = wait_for_team_message(&serve, &run_id, "plan_proposal", 2);
+    assert!(
+        proposal["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("Revision 2") && !body.contains("STALE PLAN")),
+        "second proposal must come from the active revision turn, not a stale completion: {proposal}"
+    );
+    let (status, approved) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "plan_approval",
+            "body": "Approved",
+            "correlation_id": correlation,
+            "causation_id": proposal["id"],
+        }),
+    );
+    assert_eq!(status, 200, "body: {approved}");
+    let _handoff = wait_for_team_message(&serve, &run_id, "handoff", 1);
+
+    let marker_text = std::fs::read_to_string(&marker).expect("Codex mode/goal marker");
+    assert!(
+        marker_text.contains("turn plan_mode=1")
+            && marker_text.contains("turn plan_mode=0")
+            && marker_text.contains("\"collaborationMode\":{\"mode\":\"plan\"")
+            && marker_text.contains("\"collaborationMode\":{\"mode\":\"default\"")
+            && marker_text.contains("\"status\":\"paused\"")
+            && marker_text.contains("\"status\":\"active\""),
+        "native Plan/default modes and Goal projection were not observed: {marker_text}"
+    );
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let native_ids = snapshot["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|member| member["id"].as_str() == Some(member_id.as_str()))
+        .filter_map(|member| member["native_session"]["native_session_id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(native_ids, vec!["thread_fake_codex_app_server"]);
+}
+
+fn wait_for_team_message(
+    serve: &ServeHandle,
+    run_id: &str,
+    kind: &str,
+    expected_count: usize,
+) -> serde_json::Value {
+    for _ in 0..200 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let matching = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["team_run_id"].as_str() == Some(run_id)
+                    && message["kind"].as_str() == Some(kind)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() >= expected_count {
+            return matching[expected_count - 1].clone();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {expected_count} {kind} message(s) in {run_id}");
+}
+
+#[test]
 fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     let home = TempHome::new("team-run-codex-interrupt");
     let _project_id = init_project(&home, "alpha");
@@ -1483,6 +1771,7 @@ fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
     assert_eq!(status, 202);
 
     let mut final_snapshot = serde_json::Value::Null;
+    let mut interruption_summary = String::new();
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         let stopped = snapshot["member_runs"]
@@ -1493,7 +1782,15 @@ fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("stopped")
             });
-        if stopped {
+        interruption_summary = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|action| action["member_run_id"].as_str() == Some(member_id.as_str()))
+            .filter_map(|action| action["summary"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if stopped && interruption_summary.contains("without a Harness control request") {
             final_snapshot = snapshot;
             break;
         }
@@ -1502,23 +1799,15 @@ fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
     assert_ne!(
         final_snapshot,
         serde_json::Value::Null,
-        "provider-reported interruption did not become terminal"
-    );
-    let summary = final_snapshot["member_actions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|action| action["member_run_id"].as_str() == Some(member_id.as_str()))
-        .filter_map(|action| action["summary"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        summary.contains("without a Harness control request"),
-        "missing honest provider interruption attribution: {summary}"
+        "provider-reported interruption did not become terminal with its attribution"
     );
     assert!(
-        !summary.contains("operator or Lead interrupted"),
-        "provider interruption was falsely attributed to Harness: {summary}"
+        interruption_summary.contains("without a Harness control request"),
+        "missing honest provider interruption attribution: {interruption_summary}"
+    );
+    assert!(
+        !interruption_summary.contains("operator or Lead interrupted"),
+        "provider interruption was falsely attributed to Harness: {interruption_summary}"
     );
 }
 

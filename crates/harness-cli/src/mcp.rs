@@ -1101,7 +1101,7 @@ fn tool_definitions() -> Value {
                     "team_run_id": {"type": "string"},
                     "from_member_id": {"type": "string", "description": "Sender: a member run id, or `host`."},
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
-                    "kind": {"type": "string", "enum": ["assignment", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]},
+                    "kind": {"type": "string", "enum": ["assignment", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]},
                     "body": {"type": "string"},
                     "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}

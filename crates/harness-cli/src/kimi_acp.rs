@@ -193,6 +193,32 @@ impl KimiAcpClient {
         self.provider_version.as_deref()
     }
 
+    /// Select Kimi's native ACP mode for this session. Current reviewed Kimi
+    /// exposes `default` and `plan` through the stable config-option path; Plan
+    /// mode constrains the provider before it submits a plan for Host review.
+    pub(crate) fn set_mode(&mut self, mode: &str) -> CliResult<()> {
+        let session_id = self
+            .session_id
+            .as_deref()
+            .ok_or_else(|| CliError::Usage("kimi ACP session is not initialized".to_string()))?
+            .to_string();
+        let response = self.request(
+            "session/set_config_option",
+            serde_json::json!({
+                "sessionId": session_id,
+                "configId": "mode",
+                "value": mode
+            }),
+        )?;
+        let frame = await_response(response, HANDSHAKE_TIMEOUT, "session/set_config_option")?;
+        if let Some(error) = frame.get("error") {
+            return Err(CliError::Usage(format!(
+                "kimi ACP rejected mode {mode}: {error}"
+            )));
+        }
+        Ok(())
+    }
+
     /// `initialize` + `session/new`, each with a 10s response timeout.
     fn handshake(&mut self, cwd: &Path, resume_session_id: Option<&str>) -> CliResult<()> {
         let initialize = self.request(
