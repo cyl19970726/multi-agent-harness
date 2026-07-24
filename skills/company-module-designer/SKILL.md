@@ -7,6 +7,7 @@ description: Design or revise a governed Company OS business module from a new o
 
 Turn an unfamiliar business process into a reviewable `ModuleDesign`. Do not
 create UI code or mutate live company records while designing the module.
+This skill is a procedural capability, not product authority.
 
 ## Load the product contracts
 
