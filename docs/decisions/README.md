@@ -28,6 +28,8 @@ consequences, affected modules, and validation path.
 | [0027](0027-company-os-primary-model.md) | active | Docs + mixed Organization product cores and WorkItem/Approval bridge |
 | [0028](0028-retire-goal-phase-task-graph.md) | active | Retire the superseded coordination stack |
 | [0029](0029-agent-programmable-document-runtime.md) | active, staged | Basic docs, structured views and governed custom pages |
+| [0030](0030-company-os-sql-read-model.md) | active | SQL is a derived Company OS read/query/index layer, not the current canonical Store |
+| [0031](0031-agent-operated-docs-and-code-declared-pages.md) | active | Docs is an Agent-operated substrate with code-declared custom business pages |
 
 ## Split Rule
 

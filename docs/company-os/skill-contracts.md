@@ -1,18 +1,25 @@
-# Future Skill Contracts: Modules and Custom Pages
+# Skill and CLI Contracts: Docs, Modules, and Custom Pages
 
 ```text
-status: proposed capability contracts — no SKILL.md or runtime implementation yet
+status: mixed — Docs Governance CLI primitives and operator skill implemented; module/page skills proposed
 owner_role: product + platform
 canonical_for: optional Agent capability inputs, outputs, and governance boundaries
 ```
 
 ## Purpose and non-authority
 
-The future `company-module-designer` and `company-page-builder` skills reduce
-variance when an Agent helps design a business module or creates an approved
-custom page. They are procedural capabilities, not part of the Company OS data
-model and not an authority for product, organization, security, finance, or
-legal decisions.
+The `company-docs-operator`, `company-module-designer`, and
+`company-page-builder` skills reduce variance when an Agent operates document
+truth, designs a business module, or creates an approved custom page. They are
+procedural capabilities, not part of the Company OS data model and not an
+authority for product, organization, security, finance, or legal decisions.
+
+Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
+Agent interface for reading, editing, governing, and verifying document truth.
+The UI is primarily for Humans to inspect, review, approve, and supervise what
+Agents maintain. UI editing can exist for necessary low-risk actions, but it is
+secondary to the CLI/API command surface and cannot be the only proof that a
+Docs capability is implemented.
 
 They may inspect permitted context, draft specifications, prepare artifacts,
 and implement within an approved boundary. They must not create durable
@@ -33,10 +40,220 @@ responsibility, prompt, tools/Skills, permissions, maintained Docs, and
 escalation. A Skill is never installed or invoked merely because an Agent has a
 governance title, and it never expands that Agent's permission policy.
 
+The first implemented Docs Governance primitives are CLI-backed and exposed
+through the optional [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md)
+skill:
+
+```bash
+harness company docs query --document <document-id>
+harness company docs query --module <business-module-id>
+harness company docs health
+harness company docs module create \
+  --root-document <document-id> \
+  --name <module-name> \
+  --purpose <purpose> \
+  --authority <human-admin-id> \
+  --record-type <type> \
+  --relation-rule-json '{"relation_type":"source_for","from_kind":"document","to_kind":"typed_record","required":true,"cross_module":false}'
+harness company docs page-definition create \
+  --module <business-module-id> \
+  --fallback-view <view-id> \
+  --purpose <purpose> \
+  --authority <human-admin-id>
+harness company docs document create \
+  --definition <custom-page-definition-id> \
+  --parent-document <document-id> \
+  --title <title> \
+  [--template <template-document-id> --instantiate-template] \
+  --actor <human-or-agent-id>
+harness company docs document rename \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --title <new-title> \
+  --actor <human-or-agent-id> \
+  [--dry-run]
+harness company docs document move \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  (--parent-document <new-parent-document-id> | --root) \
+  --actor <human-or-agent-id> \
+  [--dry-run]
+harness company docs document archive \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --actor <human-or-agent-id> \
+  (--dry-run | --confirm)
+harness company docs template create \
+  --definition <custom-page-definition-id> \
+  --parent-document <document-id> \
+  --title <template-title> \
+  [--from-document <source-document-id>] \
+  --actor <human-or-agent-id>
+harness company docs template status \
+  --definition <custom-page-definition-id> \
+  --template <template-document-id> \
+  --status active|paused|archived \
+  --actor <human-or-agent-id>
+harness company docs block append \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --kind <rich_text|heading|callout|table> \
+  --text <body> \
+  --actor <human-or-agent-id>
+harness company docs block update \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --block <block-id> \
+  [--kind <rich_text|heading|callout|table>] \
+  [--content-json '{"text":"updated"}' | --text <body>] \
+  --actor <human-or-agent-id> \
+  [--dry-run]
+harness company docs block archive \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --block <block-id> \
+  --actor <human-or-agent-id> \
+  (--dry-run | --confirm)
+harness company docs block remove \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --block <block-id> \
+  --actor <human-or-agent-id> \
+  (--dry-run | --confirm)
+harness company docs block reorder \
+  --definition <custom-page-definition-id> \
+  --document <document-id> \
+  --block-order <block-id-2,block-id-1> \
+  --actor <human-or-agent-id>
+harness company docs typed-record append \
+  --definition <custom-page-definition-id> \
+  --module <business-module-id> \
+  --source-document <document-id> \
+  --record-type <type> \
+  --title <title> \
+  --actor <human-or-agent-id>
+harness company docs typed-record update \
+  --definition <custom-page-definition-id> \
+  --record <typed-record-id> \
+  [--title <title>] \
+  [--fields-json '{"status":"accepted"}' --merge-fields] \
+  [--status <lifecycle-status>] \
+  --actor <human-or-agent-id> \
+  [--dry-run]
+harness company docs view create \
+  --definition <custom-page-definition-id> \
+  --module <business-module-id> \
+  --title <title> \
+  [--mode table|board|timeline] \
+  --source-kind typed_record \
+  [--query-json '{"filters":[{"field":"record_type","value":"trademark_application"}],"group_by":"lifecycle_status","sort_by":"updated_at"}'] \
+  --actor <human-or-agent-id>
+harness company docs relation link \
+  --definition <custom-page-definition-id> \
+  --from-document <document-id> \
+  --to-record <typed-record-id> \
+  --actor <human-or-agent-id>
+harness company docs relation unlink \
+  --definition <custom-page-definition-id> \
+  --relation <relation-id> \
+  --actor <human-or-agent-id> \
+  (--dry-run | --confirm)
+```
+
+`docs query` is the first read command Agents should run before mutation. It is
+read-only over the current latest Company OS projection and returns the selected
+Document or module root, ordered Blocks, child Documents, templates,
+source-linked TypedRecords, Relations, Views, BusinessModule, page-definition
+and policy context, scoped health findings, available commands, and explicit
+side-effect boundaries. It does not create WorkItems, Approvals, Finance
+records, Organization changes, execution runs, or UI-only state.
+`docs health` remains the broader read-only structural audit over the current
+Company OS projection.
+`docs document rename`, `docs document move`, and `docs document archive` are
+governed structure-maintenance commands. They update the latest Document row
+through `document.append`, preserve existing blocks and references, keep
+identity fields immutable, and support dry-run before dispatch. `move` may
+change `parent_document_id` inside the same DocumentSpace but cannot move a
+Document under itself or create a parent cycle. `archive` requires `--confirm`
+unless it is a dry-run. These commands are Docs-only; they do not create Work,
+Approval, Finance, Organization, Execution, or UI-only state.
+`docs block update`, `docs block archive`, and `docs block remove` are governed
+content-maintenance commands. `block update` writes a new latest Block row
+through `block.append` while preserving Block identity and keeping
+`Document.block_ids` unchanged. `block remove` writes only a Document update to
+remove the Block from visible order while preserving the Block row. `block
+archive` writes archived metadata into `Block.content` and removes the Block
+from visible order. Archive/remove require `--confirm` unless they are
+dry-runs. None of these commands physically delete records or imply Work,
+Approval, Finance, Organization, Execution, or UI-only state.
+`docs module create` and `docs page-definition create` are governance-level
+authoring commands: they use the administrative Company OS API envelope, require
+a Human `company_os.admin` authority, create the BusinessModule/fallback View
+and CustomPageDefinition/package/policy bundle, and do not authorize Work,
+Finance, Organization, or Execution effects. `docs module create` may also
+preserve explicit BusinessModule relation rules such as Document →
+TypedRecord `source_for`; this declares a policy but does not create any
+TypedRecord or Relation by itself.
+`docs template create` constructs an explicit reusable
+`Document(kind=template)` instead of mutating an existing page's identity. With
+`--from-document`, it copies the source Document's ordered native Blocks into
+the new template through governed `block.append` plus `document.append`
+updates. The source Document keeps its original kind, block list, references
+and relations. `docs template status` updates only that template Document's
+`lifecycle_status` through governed `document.append`; it refuses non-template
+Documents and does not change existing child Documents that already recorded
+the template through `template_ref`. `docs document create` constructs a scoped child
+`document.append` command and can preserve a `template_ref` provenance pointer
+when `--template` is supplied. By default it records provenance only. With
+`--instantiate-template`, it also copies the template Document's ordered native
+Blocks into the child Document through governed `block.append` plus
+`document.append` updates. These template commands still do not create
+TypedRecords, WorkItems, Relations, Approvals, or Finance effects.
+When a module declares a Document → TypedRecord relation rule, agents still
+create the TypedRecord and concrete Relation through `typed-record append` and
+`relation link` as separate governed actions after the child Document exists.
+Later structured truth maintenance uses `typed-record update` and `relation
+unlink`; it must not rewrite source Documents, create WorkItems, or physically
+delete Relation rows.
+`docs block append` creates a Block and then appends the updated source
+Document so `Document.block_ids` stays navigable. It supports text shorthand
+and structured `--kind`/`--content-json` content for `rich_text`, `heading`,
+`callout`, and simple `table` Blocks. The Document Focus UI may expose slash
+commands for selecting those Block kinds, but the durable effect is still the
+same governed `block.append` plus `document.append` pair. Block reorder remains
+a governed `document.append` wrapper: it may change only `Document.block_ids`
+order and must preserve exactly the existing Block set. Drag/drop UI is still a
+presentation layer over that command, not a separate truth. `docs typed-record append`
+creates a source-linked TypedRecord inside a declared BusinessModule.
+`docs typed-record update` writes a new latest TypedRecord row through
+`typed_record.append`; it may change title, fields, and lifecycle status, but
+must preserve the record id, module id, record type, source Document ref,
+creator, and creation time. With `--merge-fields`, incoming JSON object keys
+overlay existing fields; without it, `--fields-json` replaces the full fields
+object. Dry-run returns the before/after record without dispatching a write.
+`docs view create` creates a standard View under a BusinessModule and may
+persist table/board/timeline mode plus source-kind and JSON query configuration
+for simple filter, grouping, and sorting. That configuration is presentation
+truth in the native `View`; it does not create a second record store or mutate
+the underlying TypedRecords. `docs
+relation link` constructs a standard `relation.append` ActionCommand with an
+active lifecycle state. `docs relation unlink` writes a new latest Relation row
+through `relation.append` with `lifecycle_status=archived`; it preserves the
+Relation id, endpoints, relation type, provenance, creator, and creation time,
+requires `--confirm` unless dry-run, and never physically deletes history.
+Active `docs query` and health projections ignore archived Relations, so a
+previously satisfied Document → TypedRecord policy may correctly resurface as a
+missing-relation finding after unlink. These
+ordinary write commands all dispatch through the same governed Action transport
+used by Store-live UI. They do not receive a general store-write client and
+require the normal `HARNESS_COMPANY_OS_TOKEN` write capability plus a matching
+`CustomPageDefinition` policy.
+
 ## Shared operating rules
 
-Both skills must:
+These skills must:
 
+- treat CLI/API as the primary Agent interface and UI as Human review context;
 - identify assumptions, unknowns, affected owners, risk, and permissions
   before proposing a durable change;
 - treat Documents, TypedRecords, Relations, Views, WorkItems, Approvals,
@@ -52,9 +269,55 @@ Both skills must:
 - make no claim that a proposal, code change, or visual comparison has passed
   policy approval unless the relevant review and Approval records prove it.
 
-Neither skill gets a general store-write client. Any write it initiates uses
+No skill gets a general store-write client. Any write it initiates uses
 declared, policy-checked commands, and any required Approval remains a real
 first-class decision.
+
+## `company-docs-operator`
+
+### Job
+
+Use this skill when a Governance Agent or business Agent needs to inspect or
+operate Docs through the implemented CLI/API path: structure health, child
+Document creation, structured Block append, TypedRecord append, View creation,
+and Document ↔ TypedRecord Relation linking.
+
+Do not use it to design a new recurring business module, grant authority,
+approve spending, file legal submissions, create custom UI code, or silently
+rewrite company memory. Those cases escalate to module design, Organization,
+Finance, Work Approval, or page-builder contracts as appropriate.
+
+### Required input
+
+| Input | Requirement |
+| --- | --- |
+| Operating intent | What document truth needs to change and why. |
+| Source context | Current Document, module, record, relation, health finding, or projection evidence. |
+| Actor | Human or Agent responsible for the change. |
+| Policy context | CustomPageDefinition, capability token, or Human admin authority when required. |
+| Boundary | Confirmation that Work, Organization, Finance, and Execution side effects are not being implied unless explicitly routed through their own commands. |
+
+### Required output
+
+The skill produces a short operation note:
+
+```text
+selected command
+source and target native object refs
+actor and permission assumption
+idempotency / capability requirement
+expected native effects
+negative side-effect assertions
+verification command and result
+remaining planned/gated gaps
+```
+
+### Completion rule
+
+The skill is complete only when the relevant native rows and invariants can be
+verified. For example, a Block append is incomplete if the Block row exists but
+the owning Document's `block_ids` does not reference it. A visual page or
+fixture is not sufficient evidence by itself.
 
 ## `company-module-designer`
 

@@ -20,6 +20,17 @@ Agent Team, provider sessions, plugins, and host execution remain the execution
 substrate used by the organization. They do not replace the document system or
 become the company’s primary information architecture.
 
+Docs are **Agent-operated and Human-reviewed**. Agents primarily use CLI/API
+and skills to read, edit, govern, and verify company memory. Humans primarily
+use the UI to inspect, review, supervise, and occasionally trigger safe
+low-risk actions. The UI should make structure, relations, state, and risk
+clear to people; the authoritative machine interface is CLI/API.
+
+Current Company OS storage remains append-only JSONL ledgers plus latest
+projections. SQL is planned as a derived read/query/index layer for Docs query,
+search, Views, health, diff, and export; it is not the current canonical write
+Store. See [ADR 0030](../decisions/0030-company-os-sql-read-model.md).
+
 ## Canonical loop
 
 ```text
@@ -74,7 +85,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Scope | Canonical contract |
 | --- | --- |
 | Product thesis and whole-system orientation | [Vision](vision.md), [Product system map](product-system-map.md), [Concept model](concept-model.md) |
-| Docs and business modules | [Document system](document-system.md), [Module design](module-design.md) |
+| Docs and business modules | [Document system](document-system.md), [Docs operating surface matrix](docs-operating-surface-matrix.md), [Module design](module-design.md) |
 | Organization and collaboration | [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md) |
 | Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
 | Finance | [Financial relations](financial-relations.md) |
@@ -82,12 +93,16 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
 | Execution boundary | [Execution foundation](execution-foundation.md) |
 | Product experience | [Frontend information architecture](frontend-information-architecture.md) |
+| Store/read model direction | [ADR 0030](../decisions/0030-company-os-sql-read-model.md) |
 
 ## Supporting references
 
 - [Agent-programmable pages](agent-programmable-pages.md) and
-  [Skill contracts](skill-contracts.md): planned governed capabilities, not
-  product authority or implementation claims.
+  [Skill contracts](skill-contracts.md): CLI-backed Docs Governance primitives
+  plus optional governed Docs/module/page skills; none is product authority by
+  itself.
+- [Docs operating surface matrix](docs-operating-surface-matrix.md): current
+  Docs UI, CLI/skill, visual, Store-live evidence, and planned gaps.
 - [Browser Action transport](browser-action-transport.md) and
   [WorkItem lifecycle actions](work-item-lifecycle-actions.md): implemented
   technical slices.

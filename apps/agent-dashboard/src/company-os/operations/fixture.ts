@@ -200,7 +200,7 @@ export const trademarkCommitment: FinancialRecordView = {
   amount: "¥3,000",
   status: "pending_approval",
   sourceDocument: trademarkSource,
-  project: { id: "brand-brand-a", label: "Brand A" },
+  costContext: { id: "brand-brand-a", label: "Brand A" },
   accountableOwner: companyOsActors.brandOwner,
 };
 
@@ -360,8 +360,13 @@ export function adaptTrademarkOperationsProjection(projection: unknown): Tradema
     amount: text(commitmentRecord.display_amount, "—"),
     status: financialStatus(commitmentRecord.status),
     sourceDocument: source,
-    project: commitmentRecord.project_ref
-      ? asRef(commitmentRecord.project_ref, find(typedRecords, text(commitmentRecord.project_ref))?.display_name ?? find(typedRecords, text(commitmentRecord.project_ref))?.title ?? commitmentRecord.project_ref)
+    costContext: commitmentRecord.cost_context_ref ?? commitmentRecord.milestone_ref ?? commitmentRecord.project_ref
+      ? asRef(
+        text(commitmentRecord.cost_context_ref ?? commitmentRecord.milestone_ref ?? commitmentRecord.project_ref),
+        find(typedRecords, text(commitmentRecord.cost_context_ref ?? commitmentRecord.milestone_ref ?? commitmentRecord.project_ref))?.display_name
+          ?? find(typedRecords, text(commitmentRecord.cost_context_ref ?? commitmentRecord.milestone_ref ?? commitmentRecord.project_ref))?.title
+          ?? text(commitmentRecord.cost_context_ref ?? commitmentRecord.milestone_ref ?? commitmentRecord.project_ref),
+      )
       : text(field(application, "brand"))
         ? asRef(text(application.id), text(field(application, "brand")), "Business context from the linked application")
         : undefined,

@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixturePath = join(repoRoot, "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json");
-const defaultRunId = "company-os-v1-live-acceptance";
+const defaultRunId = "company-os-v2-live-acceptance";
 const ADMIN_ID = "actor-human-brand-owner";
 const NOW = "2026-07-20T09:30:00+08:00";
 
@@ -286,7 +286,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     purpose: "Govern trademark applications, responsibilities, approval, finance, and evidence as one linked truth.",
     root_document_ref: "document-trademark-application-cn-2026-018",
     record_types: ["TrademarkApplication", "Brand", "Governance_Proposal", "Metric_Observation"],
-    relation_rules: [],
+    relation_rules: [{ relation_type: "source_for", from_kind: "document", to_kind: "typed_record", required: true, cross_module: false }],
     default_view_refs: [],
     policy_refs: ["company.records.write", "policy-human-approval-financial-and-legal-submission"],
     lifecycle_rules: ["human_approval_before_financial_or_legal_effect"],
@@ -331,7 +331,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     }],
     approved_ui_components: ["DocumentCard", "WorkItemCard", "ApprovalCard", "FinancialRecordCard"],
     action_command_refs: [
-      "document.append", "block.append", "typed_record.append",
+      "document.append", "block.append", "typed_record.append", "view.append", "relation.append",
       "work_item.append", "work_item.transition", "assignment.append",
       "commitment.propose", "commitment.append",
       "approval.request", "approval.decide", "payment.append",
@@ -341,11 +341,13 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     package_ref: "package-trademark",
     package_version: "1.0.0",
     fixture_ref: "company-os-trademark-v1",
-    visual_contract_ref: "docs/design/company-os-v1/visual-contract.json",
+    visual_contract_ref: "docs/design/company-os-v2/visual-contract.json",
     policy_refs: [
       "page-trademark:document.append",
       "page-trademark:block.append",
       "page-trademark:typed_record.append",
+      "page-trademark:view.append",
+      "page-trademark:relation.append",
       "page-trademark:work_item.append",
       "page-trademark:assignment.append",
       "page-trademark:commitment.propose",
@@ -734,10 +736,10 @@ async function main() {
   const runId = argument("--run-id", defaultRunId);
   const captureContract = argument("--capture-contract", "v1");
   if (!new Set(["v1", "v2.2"]).has(captureContract)) throw new Error("--capture-contract must be v1 or v2.2");
-  const evidenceWorkstream = captureContract === "v2.2" ? "company-os-v2" : "company-os-v1";
+  const evidenceWorkstream = "company-os-v2";
   const evidenceRoot = resolve(argument("--output", join(repoRoot, `.visual-evidence/${evidenceWorkstream}`, runId)));
   const token = `company-os-live-seed-${process.pid}`;
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "company-os-v1-live-"));
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "company-os-v2-live-"));
   const home = join(temporaryRoot, "home");
   const harnessHome = join(home, ".harness");
   const projectRoot = join(temporaryRoot, "company");
@@ -800,9 +802,10 @@ async function main() {
       await rm(join(evidenceRoot, "implemented"), { recursive: true, force: true });
       await rm(join(evidenceRoot, "store-live-actual"), { recursive: true, force: true });
       await rm(join(evidenceRoot, "capture-run.json"), { force: true });
-      const captureScript = captureContract === "v2.2"
-        ? "scripts/capture-company-os-v2.mjs"
-        : "scripts/capture-company-os-v1.mjs";
+      if (captureContract !== "v2.2") {
+        throw new Error("Only Company OS v2.2 capture is supported; v1 capture was retired as a legacy baseline.");
+      }
+      const captureScript = "scripts/capture-company-os-v2.mjs";
       const captureArgs = [
         join(repoRoot, captureScript),
         "--data-mode", "live",
@@ -818,6 +821,15 @@ async function main() {
       }
       if (captureContract === "v2.2" && flag("--capture-workitem-action")) {
         captureArgs.push("--workitem-action-token", token);
+      }
+      if (captureContract === "v2.2" && flag("--capture-docs-health-action")) {
+        captureArgs.push("--docs-health-action-token", token);
+      }
+      if (captureContract === "v2.2" && flag("--capture-docs-health-relation")) {
+        captureArgs.push("--docs-health-relation-token", token);
+      }
+      if (captureContract === "v2.2" && flag("--capture-docs-module-action")) {
+        captureArgs.push("--docs-module-action-token", token);
       }
       if (captureContract === "v2.2" && flag("--capture-work-views")) {
         captureArgs.push("--capture-work-views");
