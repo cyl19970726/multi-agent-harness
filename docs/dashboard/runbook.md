@@ -43,8 +43,12 @@ The execution Workbench uses these native safe-action families:
 
 ```text
 POST /v1/missions
+POST /v1/missions/{id}/context
+POST /v1/missions/{id}/teams/link
 POST /v1/missions/{id}/close
 POST /v1/waves
+POST /v1/waves/{id}/context
+POST /v1/waves/{id}/advance
 POST /v1/waves/{id}/gate
 POST /v1/team-runs
 POST /v1/team-runs/{id}/start
@@ -76,8 +80,10 @@ empty offline workspace (write actions disabled).
 
 The current execution surfaces show:
 
-- Missions: ordered Waves, executor attempts, gate, retry, and closeout;
-- Agent Teams: only Mission/Wave-linked runs;
+- Missions: durable Markdown context, linked Teams, ordered Host-plan Wave
+  revisions, explicit judgments, and closeout;
+- Agent Teams: independent and Mission-scoped long-lived runs, including
+  historical direct-Wave compatibility rows;
 - Team War Room: member presence, assignments, unified activity, messages,
   ACK, start, and attempt lifecycle;
 - MemberRuns: run-scoped member detail;

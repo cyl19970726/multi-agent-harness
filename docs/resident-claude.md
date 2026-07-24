@@ -80,11 +80,9 @@ HARNESS_CLAUDE_RESIDENT=1 harness agent deliver --agent <id>
 ```
 
 When set, `run_claude_delivery` routes through `run_claude_resident_delivery_real`
-instead of `run_claude_exec_delivery_real`. Both return the identical
-`(success, events, session_id, stderr)` tuple, so NDJSON recording, status
-inference, `Evidence`, and `ProviderSession` are untouched. The recorded
-`ProviderSession.args` honestly reflect `--input-format stream-json` (via
-`resident::resident_recorded_args`) instead of `-p`.
+instead of `run_claude_exec_delivery_real`. Both return the same in-memory
+delivery outcome and Claude native session id. Harness binds a
+`NativeSessionRef`; it does not retain a second NDJSON/stdout transcript.
 
 This mirrors the documented `HARNESS_*_DELIVERY` selector convention: the feature
 ships dark and opt-in, the default path is byte-for-byte unchanged, and the

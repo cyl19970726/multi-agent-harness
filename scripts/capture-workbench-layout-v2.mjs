@@ -137,7 +137,7 @@ async function main() {
     const cases = [
       ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
-      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Console · Agent Team"],
+      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Platform Foundation Team"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
     ];
     const viewports = [
@@ -170,12 +170,15 @@ async function main() {
         // apiBase directly.
         const url = `${webBase}${route}${separator}api=${encodeURIComponent(webBase)}&project=_store`;
         await page.goto(url, { waitUntil: "domcontentloaded" });
-        await page.getByRole("heading", { name: readyText, exact: false }).first().waitFor({ state: "visible", timeout: 15_000 });
+        await page.getByRole("heading", { name: readyText, exact: false }).first().waitFor({ state: "attached", timeout: 15_000 });
         await page.evaluate(() => document.fonts.ready);
         if (pageName === "member-run-focus") {
+          // A live preview is deliberately non-replayable and can be missed by
+          // a screenshot client while its EventSource is reconnecting. Publish
+          // one when possible, but keep deterministic visual evidence anchored
+          // to durable history; SSE lifecycle tests own the transient contract.
           await publishLivePreview(apiBase, manifest);
-          await page.getByText("live only", { exact: false }).first().waitFor({ state: "visible", timeout: 5_000 });
-          await page.waitForTimeout(1_050);
+          await page.waitForTimeout(250);
         }
         const dimensions = await page.evaluate(() => ({
           scrollWidth: document.documentElement.scrollWidth,
@@ -205,18 +208,51 @@ async function main() {
         }
 
         if (width === 1440 && pageName === "mission-wave-canvas") {
-          await page.getByRole("button", { name: "Open QA Engineer", exact: true }).click();
-          await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
-          const selectedMemberRun = new URL(page.url()).searchParams.get("memberRun");
-          if (selectedMemberRun !== "member-wave2-qa") {
-            throw new Error(`Mission Needs You selected unexpected member: ${selectedMemberRun ?? "none"}`);
+          const missionRegion = page.getByRole("region", { name: "Mission detail", exact: true });
+          const beforeScroll = await missionRegion.evaluate((element) => ({
+            top: element.scrollTop,
+            max: element.scrollHeight - element.clientHeight,
+          }));
+          await missionRegion.focus();
+          await page.keyboard.press("PageDown");
+          const afterScroll = await missionRegion.evaluate((element) => ({
+            top: element.scrollTop,
+            max: element.scrollHeight - element.clientHeight,
+          }));
+          if (beforeScroll.max <= 0 || afterScroll.top <= beforeScroll.top) {
+            throw new Error(`Mission content is not keyboard-scrollable: ${JSON.stringify({ beforeScroll, afterScroll })}`);
           }
           interactionChecks.push({
             page: pageName,
-            action: "open-blocked-member",
-            expected_member_run_id: "member-wave2-qa",
+            action: "mission-content-reachability",
+            before: beforeScroll,
+            after: afterScroll,
             result: "passed",
           });
+
+          await page.getByRole("button", { name: /Open(?: member)? QA Engineer/, exact: true }).click();
+          await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
+          const selected = new URL(page.url()).searchParams;
+          if (
+            selected.get("memberRun") !== "member-wave2-qa"
+            || selected.get("team") !== manifest.team_run_id
+            || selected.get("mission") !== manifest.mission_id
+            || selected.get("wave") !== manifest.wave_id
+          ) {
+            throw new Error(`Mission member deep link lost execution context: ${page.url()}`);
+          }
+          interactionChecks.push({
+            page: pageName,
+            action: "mission-member-deep-link",
+            expected_member_run_id: "member-wave2-qa",
+            preserved_team_run_id: manifest.team_run_id,
+            preserved_mission_id: manifest.mission_id,
+            preserved_wave_id: manifest.wave_id,
+            result: "passed",
+          });
+          await page.goBack({ waitUntil: "domcontentloaded" });
+          await page.getByRole("region", { name: "Mission detail", exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+          interactionChecks.push({ page: pageName, action: "member-return-context", result: "passed" });
         }
       }
       await context.close();

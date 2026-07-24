@@ -2,16 +2,20 @@
 
 | Priority | Page | Representative state | User question | Primary action | Expected |
 | --- | --- | --- | --- | --- | --- |
-| P0 | Mission Wave canvas | running, gate pending | What is running now, what is complete, and what blocks the next Wave? | Review gate | approved 2026-07-21, implemented |
-| P0 | Agent Team war room | running, member blocked | Who is doing what, where did work hand off, and why is QA blocked? | Review request | approved 2026-07-21, implemented |
+| P0 | Mission Wave canvas | active Host-plan revision | What is the Mission, what changed in this Wave, and which long-lived Team/member owns each responsibility? | Advance/revise plan | approved visual language, Host-plan truth implemented 2026-07-23 |
+| P0 | Agent Team war room | Mission-scoped Team, member blocked | Who is doing what, which assignment came from the selected Wave, and why is QA blocked? | Review request | approved visual language, Mission-scoped truth implemented 2026-07-23 |
 | P0 | Mission Wave canvas | responsive implementation | Can the ordered journey and gate remain legible without the right rail? | Open context | captured at tablet and mobile |
 | P0 | Agent Team war room | responsive implementation | Can presence, activity, pressure, and composer remain one usable flow? | Message/review | captured at tablet and mobile |
-| P1 | MemberRun focus | active assignment, transient preview, review pressure | What has this member done and what does it need? | Message member | V3 implementation and exact-viewport evidence complete; candidate approval pending |
+| P1 | MemberRun focus | completed native work history and handoff | What did this member do, what did it produce, and how can I inspect the execution? | Inspect history / follow up | V4 desktop warm-editorial implementation approved 2026-07-22 |
 
 ## Fidelity v2 · approved and implemented
 
-- Mission Wave canvas: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, final browser evidence, comparison, and Overlay are complete.
-- Agent Team war room: approved `1440×1000` expected, design spec, prompt provenance, asset inventory, corrected node-first Team Activity timeline, two retained correction captures, comparison, and overlay are complete.
+- Mission Wave canvas: approved `1440×1000` expected, design spec, prompt
+  provenance, asset inventory, and the new `host-plan-final` browser evidence,
+  comparison, and overlay are complete.
+- Agent Team war room: approved `1440×1000` expected, design spec, prompt
+  provenance, corrected node-first Team Activity timeline, and the new
+  `host-plan-final` browser evidence, comparison, and overlay are complete.
 - Product-truth and visual-fidelity gates pass independently for both P0 cases.
 
 ## Responsive contract
@@ -22,14 +26,19 @@
 - The composer remains reachable and never covers the most recent event.
 - Motion is disabled or reduced under `prefers-reduced-motion`.
 
-## MemberRun V3 candidate implementation
+## MemberRun V4 approved direction
 
 - Desktop preserves the shared Company OS shell while making one continuous
   member narrative the primary surface.
-- Default activity selects at most six high-value nodes so assignment,
-  evidence, handoff, and latest review pressure fit in the first viewport;
-  `Full record` exposes the complete history without deleting evidence.
+- Complete chronological history is the default; `Focus key activity` offers a
+  compact lens without deleting evidence.
+- The readable projection groups native work into Briefing, Exploration,
+  Implementation, Verification, and Handoff without persisting a second plan.
+- Tool invocation and result render as one compact execution step while both
+  native records remain inspectable.
+- The generated eight-portrait execution identity set is shared by Agent Team
+  and Organization surfaces; text identity remains authoritative.
 - Tablet Context is a right sheet and mobile Context is a bottom sheet. Both
   preserve the member workspace behind the control surface.
-- Exact expected/actual comparisons and 50% overlays are retained under
+- V4 expected/actual comparison and 50% overlay are stored under
   `comparisons/member-run-focus/` and `overlays/member-run-focus/`.

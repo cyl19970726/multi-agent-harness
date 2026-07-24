@@ -29,7 +29,7 @@ clear to people; the authoritative machine interface is CLI/API.
 Current Company OS storage remains append-only JSONL ledgers plus latest
 projections. SQL is planned as a derived read/query/index layer for Docs query,
 search, Views, health, diff, and export; it is not the current canonical write
-Store. See [ADR 0030](../decisions/0030-company-os-sql-read-model.md).
+Store. See [ADR 0035](../decisions/0035-company-os-sql-read-model.md).
 
 ## Canonical loop
 
@@ -93,7 +93,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
 | Execution boundary | [Execution foundation](execution-foundation.md) |
 | Product experience | [Frontend information architecture](frontend-information-architecture.md) |
-| Store/read model direction | [ADR 0030](../decisions/0030-company-os-sql-read-model.md) |
+| Store/read model direction | [ADR 0035](../decisions/0035-company-os-sql-read-model.md) |
 
 ## Supporting references
 

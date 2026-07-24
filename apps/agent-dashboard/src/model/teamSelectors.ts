@@ -5,6 +5,7 @@ import type {
   MemberAction,
   MemberRun,
   Mission,
+  PendingInteraction,
   TeamMessage,
   TeamMessageDelivery,
   TeamRun,
@@ -13,7 +14,8 @@ import type {
 } from "../types";
 
 /**
- * Read-model selectors for the native Mission → Wave → AgentTeamRun hierarchy.
+ * Read-model selectors for Mission-linked independent Agent Teams, TeamRuns,
+ * versioned Host-plan Waves, and provider-native MemberRun bindings.
  *
  * These selectors intentionally do not project a MemberRun into a standing
  * AgentMember. A MemberRun is one participation in one TeamRun attempt, and
@@ -26,6 +28,7 @@ export interface TeamRunNeedsYou {
   approvals: TeamMessage[];
   waitingMembers: MemberRun[];
   blockedMembers: MemberRun[];
+  pendingInteractions: PendingInteraction[];
   unacknowledgedDeliveries: Array<{
     message: TeamMessage;
     delivery: TeamMessageDelivery;
@@ -82,12 +85,13 @@ export interface TeamRunContext {
   run: TeamRun;
   mission?: Mission;
   wave?: Wave;
-  /** All attempts attached to the parent Wave, in retry/history order. */
+  /** Direct-Wave compatibility attempts, or this Mission-scoped run alone. */
   attempts: TeamRun[];
   members: MemberRun[];
   memberById: Map<string, MemberRun>;
   messages: TeamMessage[];
   actions: MemberAction[];
+  interactions: PendingInteraction[];
   delegations: DelegationRun[];
   events: TeamRunEvent[];
   liveActivityByMember: Map<string, LiveMemberActivity>;
@@ -124,7 +128,7 @@ export function selectMission(snapshot: DashboardSnapshot, missionId?: string): 
   return (snapshot.missions ?? []).find((mission) => mission.id === missionId);
 }
 
-/** Ordered Waves are the Mission execution plan. */
+/** Ordered Waves are versioned Host plan and judgment records for a Mission. */
 export function selectOrderedWaves(snapshot: DashboardSnapshot, missionId?: string): Wave[] {
   if (!missionId) return [];
   return [...(snapshot.waves ?? [])]
@@ -133,8 +137,9 @@ export function selectOrderedWaves(snapshot: DashboardSnapshot, missionId?: stri
 }
 
 /**
- * AgentTeamRun attempts for one Wave. Explicit `executor_run_ids` order wins;
- * older snapshots without it fall back to creation time, then id.
+ * Compatibility lookup for AgentTeamRun attempts directly owned by one Wave.
+ * New Mission-scoped Teams are intentionally absent: their lifecycle can span
+ * Waves, while assignment messages carry the current Host-plan context.
  */
 export function selectWaveAttempts(snapshot: DashboardSnapshot, wave: Wave | string | undefined): TeamRun[] {
   const resolvedWave = typeof wave === "string" ? (snapshot.waves ?? []).find((item) => item.id === wave) : wave;
@@ -196,6 +201,7 @@ export function selectTeamRunContext(
   const memberById = new Map(members.map((member) => [member.id, member]));
   const messages = (snapshot.team_messages ?? []).filter((message) => message.team_run_id === run.id);
   const actions = (snapshot.member_actions ?? []).filter((action) => action.team_run_id === run.id);
+  const interactions = (snapshot.pending_interactions ?? []).filter((interaction) => interaction.team_run_id === run.id);
   const delegations = (snapshot.delegation_runs ?? []).filter((delegation) => delegation.team_run_id === run.id);
   const events = (snapshot.team_run_events ?? []).filter((event) => event.team_run_id === run.id);
   const liveActivityByMember = new Map(
@@ -211,10 +217,11 @@ export function selectTeamRunContext(
     memberById,
     messages,
     actions,
+    interactions,
     delegations,
     events,
     liveActivityByMember,
-    needsYou: selectTeamRunNeedsYou(members, messages),
+    needsYou: selectTeamRunNeedsYou(members, messages, interactions),
     activity: selectStableTeamActivity({ messages, actions, events }),
   };
 }
@@ -305,6 +312,7 @@ export function selectMessageAssignmentLineage(
 export function selectTeamRunNeedsYou(
   members: MemberRun[],
   messages: TeamMessage[],
+  interactions: PendingInteraction[] = [],
 ): TeamRunNeedsYou {
   const approvals = sortMessages(
     messages.filter((message) => ["blocker", "review_request"].includes(message.kind ?? "")),
@@ -313,6 +321,8 @@ export function selectTeamRunNeedsYou(
   const blockedMembers = members.filter(
     (member) => member.status === "blocked" || member.status === "failed",
   );
+  const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
+  const interactionMemberIds = new Set(pendingInteractions.map((interaction) => interaction.member_run_id));
   const unacknowledgedDeliveries = messages.flatMap((message) =>
     (message.deliveries ?? [])
       .filter((delivery) => isUnacknowledgedDelivery(delivery.status))
@@ -322,8 +332,13 @@ export function selectTeamRunNeedsYou(
     approvals,
     waitingMembers,
     blockedMembers,
+    pendingInteractions,
     unacknowledgedDeliveries,
-    total: approvals.length + waitingMembers.length + blockedMembers.length + unacknowledgedDeliveries.length,
+    total: approvals.length
+      + pendingInteractions.length
+      + waitingMembers.filter((member) => !interactionMemberIds.has(member.id)).length
+      + blockedMembers.length
+      + unacknowledgedDeliveries.length,
   };
 }
 

@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import type { MemberRun, TeamRun, Wave } from "../types";
+import type { AgentTeam, MemberRun, Mission, TeamRun, Wave } from "../types";
 
 interface AgentTeamsHomeProps {
   model: WorkbenchModel;
@@ -21,25 +21,32 @@ interface AgentTeamsHomeProps {
 
 interface NativeAttempt {
   run: TeamRun;
-  wave: Wave;
+  team?: AgentTeam;
+  mission?: Mission;
+  legacyWave?: Wave;
   members: MemberRun[];
 }
 
 /**
- * Native Agent Team entry point. Only Mission/Wave-linked attempts belong in
- * the active product surface; deliberately unlinked historical rows are not a
- * compatibility UI and remain visible only through raw diagnostics/export.
+ * Native Agent Team entry point. Agent Teams are independent: runs may be
+ * standalone or Mission-scoped. A wave_id is rendered only as legacy
+ * direct-executor context.
  */
 export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps) {
   const snapshot = model.snapshot;
   const waves = new Map((snapshot.waves ?? []).map((wave) => [wave.id, wave]));
+  const missions = new Map((snapshot.missions ?? []).map((mission) => [mission.id, mission]));
+  const teams = new Map((snapshot.teams ?? []).map((team) => [team.id, team]));
   const membersByRun = groupBy(snapshot.member_runs ?? [], (member) => member.team_run_id);
   const attempts = (snapshot.team_runs ?? [])
     .flatMap((run): NativeAttempt[] => {
-      if (!run.mission_id || !run.wave_id) return [];
-      const wave = waves.get(run.wave_id);
-      if (!wave || wave.mission_id !== run.mission_id) return [];
-      return [{ run, wave, members: membersByRun.get(run.id) ?? [] }];
+      const mission = run.mission_id ? missions.get(run.mission_id) : undefined;
+      const teamId = run.agent_team_id ?? run.definition_id ?? undefined;
+      const team = teamId ? teams.get(teamId) : undefined;
+      const legacyWave = run.wave_id ? waves.get(run.wave_id) : undefined;
+      if (run.mission_id && !mission) return [];
+      if (run.wave_id && (!legacyWave || legacyWave.mission_id !== run.mission_id)) return [];
+      return [{ run, team, mission, legacyWave, members: membersByRun.get(run.id) ?? [] }];
     })
     .sort((left, right) => timestamp(right.run.updated_at ?? right.run.created_at) - timestamp(left.run.updated_at ?? left.run.created_at));
 
@@ -52,8 +59,8 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
           </p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Agent Teams</h1>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Mission/Wave-linked team attempts. Open a team to inspect members, assignments,
-            durable activity, current pressure, and operator controls.
+            Independent teams and their standalone or Mission-scoped runs. Open a run to
+            inspect members, assignments, native sessions, pressure, and controls.
           </p>
         </div>
         <button
@@ -69,14 +76,14 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
         <div className="pt-6">
           <EmptyState
             icon={Users}
-            title="No native Agent Team attempts"
-            description="Create an Agent Team executor from a Mission Wave. Unlinked compatibility runs are not shown in the active product UI."
+            title="No Agent Team runs"
+            description="Create an independent Agent Team, then use it standalone or link it to a Mission."
           />
         </div>
       ) : (
         <section className="pt-5" aria-label="Agent Team attempts">
           <div className="grid gap-3 lg:grid-cols-2">
-            {attempts.map(({ run, wave, members }) => {
+            {attempts.map(({ run, team, mission, legacyWave, members }) => {
               const tone = runTone(run.status);
               const pressure = members.filter((member) => ["blocked", "failed", "waiting", "reviewing"].includes(member.status ?? ""));
               return (
@@ -96,11 +103,17 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-2">
-                        <span className="truncate text-sm font-semibold text-foreground">{run.objective ?? wave.title}</span>
+                        <span className="truncate text-sm font-semibold text-foreground">{team?.name ?? run.objective}</span>
                         <Badge tone={tone}>{run.status ?? "unknown"}</Badge>
                       </span>
                       <span className="mt-1 block truncate text-xs text-muted-foreground">
-                        Wave {wave.index} · {wave.title}
+                        {mission
+                          ? `${mission.title} · Mission-scoped`
+                          : "Standalone team run"}
+                        {legacyWave ? ` · Legacy Wave ${legacyWave.index}` : ""}
+                      </span>
+                      <span className="mt-1 block truncate text-[11px] text-muted-foreground">
+                        Team Lead · {teamLeadLabel(team?.owner_agent_id)}
                       </span>
                     </span>
                     <ArrowRight className="mt-2 size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
@@ -166,6 +179,11 @@ function timestamp(value?: string | null): number {
   if (!value) return 0;
   if (value.startsWith("unix-ms:")) return Number(value.slice(8)) || 0;
   return Date.parse(value) || 0;
+}
+
+function teamLeadLabel(leadAgentId?: string | null): string {
+  if (!leadAgentId || leadAgentId === "host") return "Current Host Agent";
+  return leadAgentId;
 }
 
 function formatRelative(value?: string | null): string {

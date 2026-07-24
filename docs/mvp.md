@@ -2,167 +2,104 @@
 
 ## Purpose
 
-The next MVP proves the accepted product hierarchy in running software:
+The active execution MVP proves:
 
 ```text
-Mission -> ordered Wave -> executor
+Mission -> ordered Host-plan Wave
+Mission <-> independent AgentTeam -> Mission-scoped TeamRun -> MemberRun
 ```
 
-It is the smallest native Mission/Wave slice needed to run real Agent Team and
-Dynamic Workflow Waves without preserving the superseded coordination model as
-an active dependency.
-
-The retired `acceptance:mvp*` and `acceptance:autonomous-team` names belonged
-to the superseded coordination stack. The active executable gate is
-`acceptance:mission-wave`.
+Mission/Wave gives the Host durable external memory while leaving real
+execution with Agent Teams, Dynamic Workflows, Host work, and provider-native
+sessions. The retired Goal/GoalPhase/task-graph stack is not an active
+dependency.
 
 ## MVP Slice
 
-### 1. Native Mission/Wave Contracts
+### 1. Mission And Wave
 
-- JSON schemas and Rust types for Mission, Wave, Wave attempt refs, and the
-  lightweight gate;
-- native store ledgers and projections with no retired-object dual read;
-- explicit `executor_kind = agent_team | dynamic_workflow | host`;
-- `executor_run_ids[]` and `accepted_run_id` for retry lineage.
+- Mission stores durable Markdown context, linked `agent_team_ids`, status, and
+  closeout.
+- Wave stores ordered Markdown context, revision, updated actor, outcome,
+  artifacts, and explicit Host advance.
+- Wave is not an executor container, task graph, barrier, or session boundary.
+- Append-only history reconstructs how Host judgment changed.
 
-### 2. Agent Team Wave
+### 2. Independent Agent Team
 
-- create an AgentTeamRun linked to `mission_id` and `wave_id`;
-- create assignments before lane execution;
-- allow manual messages to reuse assignment `correlation_id` and set
-  `causation_id`;
-- correlate actions, blockers, handoffs, reviews, and delegation when the
-  runtime actually has the reference;
-- complete a Wave through a lightweight gate and record the accepted run;
-- treat residual v0 task-named fields as removal debt, never ownership proof.
+- Stable AgentTeam definition can exist without a Mission and can link to more
+  than one Mission over time.
+- A Mission may link multiple teams.
+- Primary TeamRun creation uses `mission_id + agent_team_id` and no Wave id.
+- MemberRuns and provider-native sessions may continue across Wave advance.
+- Assignment ownership uses `TeamMessage(kind=assignment)` and
+  `correlation_id`; optional `origin_wave_id` is navigation metadata.
+- Host can add a repair member while the run is active without erasing prior
+  assignments or attempts.
 
-### 3. Dynamic Workflow Wave
+### 3. Other Execution
 
-- attach one or more WorkflowRun attempts to a Wave;
-- use WorkflowRun/WorkflowStep/artifacts/result as executor truth;
-- accept or revise the Wave without creating a duplicate legacy dependency graph;
-- preserve standalone workflow patch/apply/reject behavior.
+- Dynamic Workflow owns its run/step/result/artifact truth.
+- Host work records observable outcomes/artifacts without invented children.
+- A Wave may explain either capability but does not absorb its runtime model.
 
-### 4. Host Wave
+### 4. Provider Truth
 
-- represent direct Host execution and its outcome/artifacts;
-- permit provider-native subagents as Host implementation detail;
-- record only honestly observable delegation facts;
-- never require a fake Task, child MemberRun, or legacy dependency graph.
+- Harness persists coordination, session locators, messages, pending
+  interactions, controls, outcomes, and artifact/check references.
+- Provider-native storage remains sole transcript, tool/command/file/turn, and
+  resume truth.
+- Thinking is sanitized transient live state only and never evidence.
+- Provider questions and plan reviews become PendingInteractions; a provider
+  `completed` frame is not a semantic answer or approval.
 
-### 5. Thinking Migration
+### 5. Host And Dashboard
 
-- provide a sanitized, truncated, rate-limited transient channel when the
-  provider exposes thinking;
-- exclude new thinking from JSONL, snapshots, replay, evidence, and peer
-  messages;
-- remove old durable thinking rows from active stores.
+- CLI is the complete control surface and shares application logic with HTTP.
+- MCP is an optional thin adapter with no independent lifecycle or storage.
+- The thin `orchestrate-mission-waves` skill teaches Host procedure, not schema.
+- Mission Canvas renders long Markdown context, linked teams, ordered Wave
+  history, responsibility tables, carry-over, advance, and closeout.
+- Team and Member pages provide honest activity, navigation, chat, pending
+  interaction, steer, interrupt, and resume according to adapter capability.
 
-### 6. Host And Dashboard Surfaces
+## Deterministic Acceptance Journey
 
-- CLI/API/MCP create/read/update Mission and Wave;
-- executor launch attaches the correct run kind;
-- Mission page shows ordered Waves, attempts, artifacts, and gate state;
-- Agent Team page shows assignment ownership, member state, messages, actions,
-  approvals, and Wave context;
-- host plugins use the same read model and do not invent unsupported fields.
+1. Create a Mission with Markdown context.
+2. Create/link an independent AgentTeam with at least three members.
+3. Create Wave 1 with a responsibility table in Markdown.
+4. Start a Mission-scoped TeamRun without `wave_id`.
+5. Assign correlated lanes and bind provider-native sessions.
+6. Advance Wave 1 while one member remains active.
+7. Create Wave 2, continue the same MemberRun/session, and add a repair member.
+8. Verify Mission, Wave history, linked team, messages, origin metadata,
+   pending interactions, artifacts, and native-session resolution in CLI/API
+   and Dashboard.
+9. Close the Mission without deleting, archiving, or silently completing the
+   team.
+10. Prove the optional MCP adapter delegates to the same behavior.
 
-## Primary Acceptance Journey
-
-```mermaid
-flowchart TD
-  U[User intent] --> M[Create Mission]
-  M --> W1[Wave 1: agent_team]
-  W1 --> A[Assignment messages]
-  A --> C[Member collaboration]
-  C --> H[Handoff and optional review]
-  H --> G1{Wave gate}
-  G1 -->|accepted| W2[Wave 2: dynamic_workflow]
-  G1 -->|revise| R1[New AgentTeamRun attempt]
-  W2 --> WR[WorkflowRun result and artifacts]
-  WR --> G2{Wave gate}
-  G2 --> O[Mission outcome]
-```
-
-The accepted journey must prove:
-
-- no Wave has or needs a legacy dependency graph;
-- assignment ownership is structurally correlated, not inferred only from body
-  prose or `task_id`;
-- a retry is a new run attempt and the gate identifies the accepted attempt;
-- both executor kinds appear in one Mission read model;
-- artifacts and gate notes explain why each Wave was accepted;
-- retired coordination data is absent from active reads and navigation.
-
-## Acceptance Gates
-
-| Gate | Accepted when | Does not pass |
-| --- | --- | --- |
-| Contracts | Rust, schema, fixtures, store, CLI/API, and docs agree on Mission/Wave. | Future-state prose only. |
-| Retirement | Active reads, commands, docs, and UI do not depend on the superseded coordination stack. | A compatibility surface or dual-read path remains product-visible. |
-| Wave minimalism | Wave fields are objective/executor/attempt/outcome/artifact/gate focused. | Task DAG embedded in Wave. |
-| Agent Team joins | New runs/messages/actions can join Mission, Wave, and assignment correlation without Task. | A `task_id` is still required or manual sends always fork correlation. |
-| Team execution | A real provider-backed team completes an assignment/handoff/review path. | Create/start smoke with no accepted outcome. |
-| Workflow execution | A WorkflowRun attaches to a Wave and its result/artifacts drive the gate. | Workflow rebuilt as tasks. |
-| Host execution | A direct Host outcome can close a Wave without fake child ownership. | Provider-native subagent is claimed as harness-controlled. |
-| Retry lineage | A revised Wave creates a second run and records one accepted attempt. | In-place run mutation hides the failed attempt. |
-| Thinking | New thinking is live-only and absent from durable snapshots/ledgers. | Durable `MemberAction(type=thinking)` writes continue. |
-| Dashboard/plugin truth | UI, CLI, MCP, and plugins render supported fields and capability gaps honestly. | Product UI fabricates Mission/Wave/correlation state. |
-| Self-hosting | This repository executes one real migration Wave through the new path. | Only fixtures or chat narrative. |
-
-## Required Tests
-
-Run the current product gates:
+Run:
 
 ```bash
-npx pnpm@9.15.4 check
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
-Add focused Mission/Wave acceptance covering:
+Deterministic acceptance proves contracts, not a live-provider claim. A live
+claim additionally needs resolvable provider-native records.
 
-1. schema/fixture validation;
-2. retired coordination objects absent from active projections;
-3. Agent Team Wave with assignment correlation and accepted attempt;
-4. Dynamic Workflow Wave with artifacts/result;
-5. retry/revise lineage;
-6. no new durable thinking rows;
-7. CLI/API/MCP/Dashboard projection parity.
+## Compatibility Boundary
 
-Live-provider acceptance must use only the minimum expensive calls needed to
-prove the cross-provider contract. Deterministic tests own state transitions,
-retirement, failure paths, and read-model parity.
+Existing direct-Wave-executor fields and rows remain readable as legacy data.
+New authoring, fixtures, tests, Dashboard copy, and Host examples do not create
+them. Retry history is preserved; migration never mutates an old attempt into
+the new model.
 
-## Build Order
+## Explicit Non-Goals
 
-```text
-native schemas/types
-  -> store projection
-  -> assignment correlation inputs
-  -> Agent Team Wave routing
-  -> Dynamic Workflow Wave attachment
-  -> Host Wave outcome path
-  -> transient thinking channel / stop durable writes
-  -> CLI + API + MCP
-  -> Mission/Agent Team Dashboard surfaces
-  -> plugin migration
-  -> live acceptance
-```
-
-## Non-Goals For This MVP
-
-- Reintroducing or maintaining the superseded coordination stack.
-- Standing Agents + Docs business operation.
-- A portfolio/project-management suite.
-- A mandatory legacy dependency graph, Proposal, Critic, or Decision object for every Wave.
-- Full control of provider-native subagent lifecycles.
-- Rebuilding Dynamic Workflow around Agent Team semantics.
-- Project-specific strategy or commerce logic in the core.
-
-## Completion Criteria
-
-The MVP is complete when one real Mission uses at least two Waves with distinct
-executor semantics, including a live Agent Team Wave, and the store/UI can
-explain objective, attempts, accepted run, assignment ownership, artifacts,
-gate result, and Mission outcome without a legacy dependency graph or persisted thinking.
+- task graph or universal executor object;
+- Harness transcript/tool/thinking ledger;
+- Wave-owned TeamRun lifecycle;
+- automatic team deletion at Mission closeout;
+- mandatory MCP or plugin installation;
+- treating Company OS WorkItem approval as equivalent to Wave advance.

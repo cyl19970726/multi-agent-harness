@@ -20,4 +20,3 @@ Constraints: Approval is not a Wave gate; Finance owns money state; Organization
              Work owns task state; Docs owns source/result knowledge; no Project; no task graph;
              no raw thinking; no logo; no watermark
 ```
-

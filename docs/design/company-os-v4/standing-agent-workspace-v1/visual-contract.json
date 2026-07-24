@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "workstream": "standing-agent-workspace-v1",
+  "artifact_policy": {
+    "expected": "durable",
+    "selected_comparisons": "durable",
+    "raw_browser_runs": ".visual-evidence/company-os-v4-standing-agent-workspace-v1/standing-agent-workspace-v1"
+  },
+  "fidelity_policy": {
+    "required_for_p0": true,
+    "expected_viewport_must_match": true,
+    "minimum_implementation_iterations": 2
+  },
+  "cases": [
+    {
+      "id": "standing-agent-focus--available--desktop-1536x1024",
+      "priority": "P0",
+      "page": "standing-agent-focus",
+      "state": "available",
+      "route": "/?surface=organization&agent=actor-agent-document-architecture",
+      "fixture": "company-os-trademark-v1 + standing-agent-workspace overlay",
+      "viewport": {"width": 1536, "height": 1024, "device_scale_factor": 1},
+      "baseline": "baseline/standing-agent-focus/document-architecture-agent--available--desktop-1440x1000.png",
+      "expected": "expected/standing-agent-focus/document-architecture-agent--available--desktop-1536x1024.png",
+      "implemented": "implemented/standing-agent-focus/document-architecture-agent--available--desktop-1536x1024.png",
+      "comparison": "comparisons/standing-agent-focus--available--desktop-1536x1024.png",
+      "overlay": "overlays/standing-agent-focus--available--desktop-1536x1024.png",
+      "prompt": "prompts/standing-agent-focus--available.md",
+      "design_spec": "specs/standing-agent-focus/available--desktop-1536x1024.json",
+      "asset_inventory": "assets/standing-agent-focus/available--asset-inventory.md",
+      "ux_contract": "ux/standing-agent-workspace-interaction-contract.md",
+      "baseline_revision": "e25f54b",
+      "implementation_iterations": [
+        {
+          "revision": "e25f54b-dirty",
+          "implemented": "implemented/iterations/standing-agent-focus--iteration-1--desktop-1536x1024.png",
+          "stage": "workspace-structure",
+          "verdict": "revise: Organization showed an execution-only Mission hint, reporting was unresolved, and configuration references read as raw ids."
+        },
+        {
+          "revision": "e25f54b-dirty",
+          "implemented": "implemented/standing-agent-focus/document-architecture-agent--available--desktop-1536x1024.png",
+          "stage": "truth-and-fidelity",
+          "verdict": "pass: company context, native reporting, readable traceable configuration, linked work, activity, and responsive context are coherent."
+        }
+      ],
+      "expected_approval": {"status": "approved", "approver": "Human Owner", "decided_at": "2026-07-22"},
+      "gates": {
+        "product_truth": {"status": "pass", "evidence": "Native StandingAgent configuration refs, Organization membership, WorkItems and Assignments are projection-backed; no MemberRun, Wave, provider state or private thinking is invented."},
+        "visual_fidelity": {"status": "pass", "evidence": "Exact 1536x1024 expected/actual comparison preserves the Codex-like activity-first center, composable right context rail, warm paper palette, portrait identity and restrained card hierarchy."}
+      },
+      "review": {
+        "status": "pass_with_deviations",
+        "defects": [],
+        "intentional_deviations": [
+          "The actual product keeps the global Company OS top bar and prototype truth banner rather than copying the concept shell literally.",
+          "The actual center renders only native WorkItems, Assignments, Documents and proposal records, so it is less illustratively dense than the expected image.",
+          "Configuration entries retain their raw reference below a human-readable label for auditability."
+        ],
+        "follow_ups": ["Connect the disabled composer only after a governed Standing Agent command transport exists."]
+      }
+    }
+  ]
+}

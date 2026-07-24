@@ -1,5 +1,4 @@
-import { Activity, Bot, ChevronRight, Inbox, Send, TerminalSquare, Users } from "lucide-react";
-import type { HarnessTurnEvent, ProviderSession } from "../types";
+import { Activity, Bot, Inbox, Send, TerminalSquare, Users } from "lucide-react";
 
 import { Avatar } from "@/components/workbench/Avatar";
 import { Badge } from "@/components/ui/badge";
@@ -87,7 +86,7 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
   if (!member) return <AgentsList model={model} onSelectionChange={onSelectionChange} />;
 
   const status = member.runtime_status ?? member.status;
-  const sessions = (model.snapshot.provider_sessions ?? []).filter((session) => session.agent_member_id === member.id);
+  const nativeSession = member.native_session;
   const messages = (model.snapshot.messages ?? []).filter(
     (message) => message.from_agent_id === member.id || message.to_agent_id === member.id,
   );
@@ -143,20 +142,20 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
         <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Runtime context</h2>
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Metric icon={<Inbox className="size-3.5" />} label="Inbox" value={member.inbox_count ?? 0} />
-          <Metric icon={<Activity className="size-3.5" />} label="Sessions" value={sessions.length} />
+          <Metric icon={<Activity className="size-3.5" />} label="Native session" value={nativeSession ? 1 : 0} />
         </div>
         <div className="mt-5 space-y-2">
-          {sessions.slice(0, 8).map((session) => (
-            <div key={session.id} className="rounded-lg border border-border bg-background/70 p-3">
+          {nativeSession && (
+            <div className="rounded-lg border border-border bg-background/70 p-3">
               <div className="flex items-center gap-2">
                 <TerminalSquare className="size-3.5 text-muted-foreground" />
-                <p className="min-w-0 flex-1 truncate text-xs font-medium">{session.provider ?? "Provider session"}</p>
-                <Badge tone={runtimeTone(session.status)}>{session.status}</Badge>
+                <p className="min-w-0 flex-1 truncate text-xs font-medium">{nativeSession.provider} native session</p>
+                <Badge tone={nativeSession.availability === "available" ? "good" : "warn"}>{nativeSession.availability}</Badge>
               </div>
-              <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{session.id}</p>
+              <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{nativeSession.native_session_id}</p>
             </div>
-          ))}
-          {!sessions.length && <p className="text-xs text-muted-foreground">No provider sessions recorded.</p>}
+          )}
+          {!nativeSession && <p className="text-xs text-muted-foreground">No provider-native session is bound yet.</p>}
         </div>
       </aside>
     </div>
@@ -181,7 +180,7 @@ export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; so
     ["Waves", String(snapshot.waves?.length ?? 0)],
     ["Agent team runs", String(snapshot.team_runs?.length ?? 0)],
     ["Workflow runs", String(snapshot.workflow_runs?.length ?? 0)],
-    ["Provider sessions", String(snapshot.provider_sessions?.length ?? 0)],
+    ["Bound native sessions", String(snapshot.members?.filter((member) => member.native_session).length ?? 0)],
   ];
   return (
     <section className="space-y-5">
@@ -196,33 +195,5 @@ export function DebugSurface({ model, sourceLabel }: { model: WorkbenchModel; so
         </CardContent>
       </Card>
     </section>
-  );
-}
-
-/** Compact provider-turn disclosure used by the Workflow run surface. */
-export function TurnDrillIn({
-  session,
-  liveNormalizedEvents = [],
-  historical = false,
-  defaultOpen = false,
-}: {
-  session: ProviderSession;
-  apiUrl?: string;
-  liveNormalizedEvents?: HarnessTurnEvent[];
-  historical?: boolean;
-  defaultOpen?: boolean;
-}) {
-  return (
-    <details open={defaultOpen} className="min-w-0 flex-1 rounded-md border border-border bg-background/50">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-2 text-[10px] text-muted-foreground">
-        <ChevronRight className="size-3" />
-        <span>{historical ? "Recorded provider turn" : "Live provider turn"}</span>
-        <span className="ml-auto font-mono">{liveNormalizedEvents.length} events</span>
-      </summary>
-      <div className="border-t border-border px-2.5 py-2 text-[11px] text-muted-foreground">
-        <p className="font-mono">{session.id}</p>
-        <p className="mt-1">{session.status} · {session.provider ?? "provider"}</p>
-      </div>
-    </details>
   );
 }

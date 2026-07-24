@@ -22,11 +22,12 @@
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/mission-wave-canvas--workbench-v2--desktop-1440x1000.png",
       "expected": "expected/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2-1440x1000.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
-      "comparison": "comparisons/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
-      "overlay": "overlays/mission-wave-canvas/running-gate-pending--desktop-fidelity-v2.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+      "comparison": "comparisons/mission-wave-canvas/host-plan-final.png",
+      "overlay": "overlays/mission-wave-canvas/host-plan-final.png",
       "prompt": "prompts/mission-wave-canvas/running-gate-pending--fidelity-v2.md",
       "design_spec": "specs/mission-wave-canvas--running-gate-pending--desktop-1440x1000.json",
+      "ux_contract": "ux/execution-workbench-interaction-contract.md",
       "asset_inventory": "assets/mission-wave-canvas--running-gate-pending--asset-inventory.md",
       "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
       "implementation_iterations": [
@@ -41,15 +42,23 @@
           "implemented": "../../../.visual-evidence/execution-workbench-v3/fidelity-v2-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
           "stage": "final-responsive",
           "verdict": "pass: shell, Wave journey, attached pressure, evidence, and Gate priority match approved intent"
+        },
+        {
+          "revision": "9d17053-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/mission-wave-canvas--running-gate-pending--desktop-1440x1000.png",
+          "stage": "host-plan-product-truth",
+          "verdict": "pass: the approved visual language now presents durable Mission Markdown, versioned Host-plan Wave context, a readable responsibility table, and Mission-linked long-lived Teams"
         }
       ],
       "gates": {
-        "product_truth": { "status": "pass", "note": "Mission, ordered Waves, executor attempts, aggregate readiness, and explicit host Gate remain canonical." },
+        "product_truth": { "status": "pass", "note": "Mission holds durable context and linked Teams; ordered Waves are versioned Host plan and judgment records rather than executor containers." },
         "visual_fidelity": { "status": "pass", "note": "Exact viewport geometry, continuous journey, portraits, semantic status, context priority, and responsive transformation are accepted." }
       },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
+          "The approved image remains the visual-language reference, while the implemented product removes the obsolete Wave-owned executor card in favor of full Mission/Wave Markdown context and a responsibility table.",
+          "A Mission can link multiple independent long-lived Agent Teams; the New Team action and linked-team count make this relation explicit.",
           "The right rail prioritizes the actionable Needs you state over the design candidate's passive Now module.",
           "The implementation renders the fixture's four linked members rather than the generated candidate's extra portrait.",
           "Real Mission objective, exit criteria, artifact references, and re-plan text replace abbreviated generated copy."
@@ -68,11 +77,12 @@
       "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/baseline/team-war-room--workbench-v2--desktop-1440x1000.png",
       "expected": "expected/team-war-room/running-needs-you--desktop-fidelity-v2-1440x1000.png",
-      "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-final/team-war-room--running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/team-war-room/running-needs-you--team-activity-correction.png",
-      "overlay": "overlays/team-war-room/running-needs-you--team-activity-correction.png",
+      "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/team-war-room/host-plan-final.png",
+      "overlay": "overlays/team-war-room/host-plan-final.png",
       "prompt": "prompts/team-war-room/running-needs-you--fidelity-v2.md",
       "design_spec": "specs/team-war-room--running-needs-you--desktop-1440x1000.json",
+      "ux_contract": "ux/execution-workbench-interaction-contract.md",
       "asset_inventory": "assets/team-war-room--running-needs-you--asset-inventory.md",
       "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-21" },
       "implementation_iterations": [
@@ -105,15 +115,23 @@
           "implemented": "../../../.visual-evidence/execution-workbench-v3/team-activity-final/team-war-room--running-needs-you--desktop-1440x1000.png",
           "stage": "activity-final",
           "verdict": "pass: node/spine, timestamp, durable content, and optional pressure action now use the approved independent-column structure on desktop and collapse honestly on mobile"
+        },
+        {
+          "revision": "9d17053-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "mission-scoped-team-truth",
+          "verdict": "pass: the stable Team identity, Mission relation, current Host-plan navigation context, cross-Wave lifecycle, assignments, and member activity are explicit without pretending the Wave owns this runtime"
         }
       ],
       "gates": {
-        "product_truth": { "status": "pass", "note": "MemberRuns, assignment correlations, explicit actions, pressure, attempt state, Wave Gate, and transient-thinking policy remain honest." },
+        "product_truth": { "status": "pass", "note": "Stable AgentTeam, Mission-scoped TeamRun, MemberRuns, assignment correlations with origin Wave, explicit actions, pressure, and transient-thinking policy remain honest." },
         "visual_fidelity": { "status": "pass", "note": "Compact presence, semantic node-first timeline, independent desktop timestamps, key/full activity projection, attached review action, context rail, and responsive composer match approved intent." }
       },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
+          "The right rail names the stable Team and Mission relation first. A selected Wave is labeled navigation context because assignments/messages, not Wave ownership, direct the long-lived Team.",
+          "The obsolete parent-Wave gate module is absent for Mission-scoped runs; legacy directly owned attempts retain their compatibility gate view.",
           "The default All projection shows attempt creation, assignments, and the latest pressure record; the filter control exposes every remaining durable message, action, and event without deleting or rewriting evidence.",
           "The selected QA provider/model and assignment come from the fixture rather than generated text.",
           "The mobile header omits the redundant member-count label because Team presence immediately states membership."
@@ -123,39 +141,56 @@
       }
     },
     {
-      "id": "member-run-focus--running-needs-you--desktop",
+      "id": "member-run-focus--completed-history--desktop",
       "priority": "P1",
       "page": "member-run-focus",
-      "state": "running-needs-you",
+      "state": "completed-history",
       "route": "/?surface=team&team=<team-run-id>&memberRun=<member-run-id>",
       "fixture": "workbench-layout-v2-native-v1",
-      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+      "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/workbench-layout-v2/implemented/member-run-focus--running-needs-you--desktop-1440x1000.png",
-      "expected": "expected/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "implemented": "implemented/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "comparison": "comparisons/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "overlay": "overlays/member-run-focus/running-needs-you--desktop-1440x1000.png",
-      "prompt": "prompts/member-run-focus/running-needs-you--v3.md",
+      "expected": "expected/member-run-focus/completed-history--desktop-concept-v4.png",
+      "implemented": "implemented/member-run-focus/member-run-focus--completed-history--desktop-1536x1024.png",
+      "comparison": "comparisons/member-run-focus/completed-history--desktop-1536x1024.png",
+      "overlay": "overlays/member-run-focus/completed-history--desktop-1536x1024.png",
+      "prompt": "prompts/member-run-focus/completed-history--v4.md",
+      "design_spec": "specs/member-run-focus--completed-history--desktop-1536x1024.json",
       "asset_inventory": "assets/member-run-focus--asset-inventory.md",
-      "expected_approval": { "status": "pending" },
+      "ux_contract": "ux/execution-workbench-interaction-contract.md",
+      "expected_approval": { "status": "approved", "approved_by": "human", "approved_at": "2026-07-22" },
       "implementation_iterations": [
-        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-iteration-1/member-run-focus--running-needs-you--desktop-1440x1000.png",
-        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-iteration-2/member-run-focus--running-needs-you--desktop-1440x1000.png",
-        "../../../.visual-evidence/execution-workbench-v3/member-run-v3-final/member-run-focus--running-needs-you--desktop-1440x1000.png"
+        {
+          "revision": "b763530-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v4/baseline/member-run-focus--completed-history--desktop-1536x1024.png",
+          "stage": "baseline",
+          "verdict": "revise: wide product rail, global top bar, and log-shaped history did not match the approved focus composition"
+        },
+        {
+          "revision": "b763530-dirty",
+          "implemented": "implemented/member-run-focus/member-run-focus--completed-history--desktop-1536x1024.png",
+          "stage": "warm-editorial-candidate",
+          "verdict": "candidate: focus geometry, warm visual theme, phase rail, compact native tool families, and static context cards are implemented; human visual approval remains pending"
+        }
       ],
       "gates": {
         "product_truth": { "status": "pass", "note": "Native MemberRun selectors, assignment correlation, evidence, review pressure, composer action, and transient-only thinking remain intact." },
-        "visual_fidelity": { "status": "pass_internal", "note": "Exact-viewport browser evidence matches the V3 information hierarchy; expected-image user approval remains pending." }
+        "visual_fidelity": { "status": "pass", "note": "The user approved the exact 1536×1024 warm-editorial implementation on 2026-07-22; actual, comparison, and overlay are durable." }
       },
       "review": {
-        "status": "candidate_ready",
+        "status": "pass_with_deviations",
+        "approved_by": "user",
+        "approved_at": "2026-07-22",
         "intentional_deviations": [
-          "The browser implementation keeps the shared live connection and search chrome, which the concept image simplified.",
-          "Key activity is a six-node projection so the latest review pressure stays in the first viewport; Full record exposes all ten durable/transient entries.",
-          "Fixture-native timestamps, provider identity, correlations, artifacts, and Team state replace generated placeholder content."
+          "Generated placeholder content must be replaced with fixture-native timestamps, provider identity, correlations, artifacts, and Team state.",
+          "Phase grouping is a read-time projection and must never become duplicated persisted truth.",
+          "The completed real MemberRun keeps a read-only composer instead of depicting an active send control.",
+          "The actual rail reports zero linked artifacts and the real two-member Team instead of inventing the generated design's three artifacts and placeholder collaborator.",
+          "Tool rows use provider-native tool families and source-record counts because the native session does not expose the generated design's fabricated filenames, durations, or token totals."
         ],
-        "defects": [],
-        "follow_ups": ["Validate the sticky composer with a software keyboard and long drafted message on a real mobile browser."]
+        "defects": [
+          "The generated expected image remains more illustrative in its handoff artifact/check grid than the current truthful zero-artifact run can support."
+        ],
+        "follow_ups": ["Carry the approved warm-editorial language into new tablet and mobile V4 expected designs before changing those responsive implementations."]
       }
     },
     {

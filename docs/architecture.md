@@ -7,12 +7,12 @@ environment connected through an adapter.
 
 ```text
 Star Harness
-  Mission / Wave / executor selection
+  Mission intent / Host-plan Waves / team relations
   Agent Team control plane
   Dynamic Workflow runtime
   Host-facing plugins, MCP tools, skills, CLI
   Provider-neutral execution substrate
-  Artifact refs / outcomes / lightweight Wave gate
+  Artifact refs / outcomes / explicit Host advance
   Agent Dashboard
 
 Project Adapter
@@ -32,7 +32,7 @@ The canonical diagrams for the current product direction live in
 see:
 
 - the product capability stack;
-- the Mission -> Wave -> executor hierarchy;
+- the Mission -> Host-plan Wave and Mission <-> AgentTeam relations;
 - the shared runtime and dashboard infrastructure;
 - what is implemented, planned, or transitional.
 
@@ -43,24 +43,27 @@ This file is the compact narrative that explains the same boundary in prose.
 The product direction is:
 
 ```text
-Mission -> Wave -> executor
+Mission -> ordered Host-plan Wave
+Mission <-> independent AgentTeam -> AgentTeamRun -> MemberRun
 ```
 
 - A `Mission` is the durable objective and outcome container.
-- A `Wave` is a lightweight ordered unit inside a Mission. It has objective,
-  exit criteria, status, executor reference, outcome, and a lightweight gate.
-- An executor is one of `agent_team`, `dynamic_workflow`, or `host`.
+- A `Wave` is a lightweight, versioned Markdown record of the Host's current
+  plan, changed facts, judgment, and advance outcome.
+- Agent Team, Dynamic Workflow, and Host work keep distinct runtime truth. A
+  Wave may explain their use but does not own their lifecycle.
 
-A Wave is intentionally small. It does not own or require a legacy dependency graph.
+A Wave is intentionally small. It does not own or require a task graph,
+executor attempt, synchronization barrier, or provider session.
 Dependencies, branches, worktrees, or workflow fan-out may still exist inside
 current implementations, but they are internal execution mechanics, not the
 product concept a future operator should start from.
 
 ## Active Coordination Contract
 
-Mission/Wave is the only active coordination vocabulary. Native ledgers,
-schemas, authoring, Agent Team linkage, retry lineage, Wave gates, and Mission
-closeout are implemented. The superseded stack is removed from active reads,
+Mission/Wave is the only active plan vocabulary. Native ledgers, schemas,
+authoring, Mission-Team linkage, assignment correlation, Wave history/advance,
+and Mission closeout are implemented. The superseded stack is removed from active reads,
 commands, and UI under [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md).
 Optional evaluation remains governance layered on an outcome, not a second
 closeout model.
@@ -69,32 +72,34 @@ closeout model.
 
 ### `agent_team`
 
-Use Agent Team when the Wave needs living collaborators with persistent session
-state, explicit assignment, handoff, review, and role ownership inside the Wave.
+Use Agent Team when the Mission needs living collaborators with persistent
+session state, explicit assignment, handoff, review, and role ownership across
+one or more Waves.
 
 The canonical execution proof is message-driven:
 
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / blocker / handoff / review_result / delegation
-  -> artifacts, checks, and explicit outcomes
+  -> Harness blocker / handoff / review / PendingInteraction
+  -> explicit outcomes and artifact/check refs
+  -> NativeSessionRef for member execution detail
 ```
 
 Assignment-message correlation replaces legacy dependency graph semantics as the primary
-explanation of who owns what inside a Wave. Automatic handoff preserves the
+explanation of who owns what. Automatic handoff preserves the
 assignment correlation; manual CLI, HTTP, and MCP sends can reuse it directly
 or inherit it from a validated same-run causation message.
 
 ### `dynamic_workflow`
 
-Use Dynamic Workflow when the Wave is a one-shot structured execution problem:
+Use Dynamic Workflow for a one-shot structured execution problem:
 plan, compile, run, collect artifacts, and exit. It shares the same provider
 runtime substrate, but it is not an Agent Team and does not pretend to be one.
 
 ### `host`
 
-Use `host` when the resident Host Agent does the Wave directly. The host may use
+Use Host execution when the resident Host Agent does work directly. The host may use
 its provider's native subagents internally. Those subagents are host/provider
 implementation detail unless optional hooks expose observable delegation facts.
 
@@ -113,12 +118,12 @@ infrastructure contracts where possible.
 | Capability snapshot and adapter metadata | host plugins, workflow leaves, Agent Team member provisioning |
 | Permission and budget ceiling | all executor kinds |
 | Artifact references and explicit outcome summaries | all executor kinds |
-| Durable event stream and dashboard read model | Agent Team, Workflow runs, Host-observable execution |
-| Artifact references, outcome summaries, and lightweight Wave gate | all executor kinds |
+| Harness coordination stream + ephemeral native activity projection | Agent Team and Host-observable execution; Workflow keeps its own run/step truth |
+| Artifact references, outcome summaries, and Host Wave decisions | all execution kinds |
 
-Shared infrastructure does not collapse distinct product objects into one. A
-Wave executed by Agent Team is still different from a Wave executed by Dynamic
-Workflow or directly by the host.
+Shared infrastructure does not collapse distinct product objects into one.
+Agent Team, Dynamic Workflow, and Host work stay distinct even when one Wave
+context refers to several of them.
 
 The repository currently applies a stricter Evidence -> Proposal -> Review ->
 Decision -> outcome evaluation chain while self-hosting changes. That is repository
@@ -135,7 +140,9 @@ The target contract makes thinking transient live-only state.
 - It is never execution evidence.
 - It is never forwarded into another member's context.
 
-Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
+Persist Harness-owned coordination, artifact/check references, blockers,
+handoffs, control acknowledgements, and explicit outcomes instead. Provider
+chat/tool/command/file/turn history remains in the native session.
 
 New Kimi execution does not persist `thinking` actions, and active stores do
 not retain historical thinking rows. The Console has a

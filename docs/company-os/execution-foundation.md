@@ -15,7 +15,7 @@ Document / TypedRecord
 
 The execution foundation is essential infrastructure, but it is not the
 product homepage, company hierarchy, primary documentation tree, or financial
-system. A Mission, Wave, AgentTeamRun, WorkflowRun, ProviderSession, or runtime
+system. A Mission, Wave, AgentTeamRun, WorkflowRun, native session reference, or runtime
 does not own a company business domain merely because it executed some work for
 it.
 
@@ -23,10 +23,10 @@ it.
 
 ### Mission and Wave
 
-`Mission -> ordered Wave -> executor` remains the native hierarchy for durable
-multi-stage execution. A Mission captures durable execution intent; a Wave is
-a lightweight ordered unit with an objective, selected executor, outcome, and
-gate. Executor-internal planning remains inside the selected executor.
+A Mission captures durable execution intent and may relate to multiple
+independent Agent Teams. Its ordered Waves are lightweight, versioned Markdown
+records of the Host's plan and judgment. A Wave is not a task graph, executor
+container, synchronization barrier, or provider-session boundary.
 
 In the Company OS, a WorkItem may initiate or reference a Mission/Wave when its
 business outcome needs staged execution. The WorkItem remains the document- and
@@ -34,15 +34,18 @@ responsibility-facing record; Mission/Wave remains the execution-facing record.
 
 ### AgentTeamRun and MemberRun
 
-An `AgentTeamRun` is one Agent Team execution attempt for a Wave. A `MemberRun`
-is one participant instance inside that attempt. Assignment-message correlation
-continues to prove lane ownership inside the TeamRun:
+An `AgentTeamRun` is a standalone or Mission-scoped use of an independent
+AgentTeam. It may remain active across multiple Waves. A `MemberRun` is one
+participant instance inside that run; its provider-native session may continue
+while the Host advances the plan. Assignment-message correlation proves lane
+ownership:
 
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / handoff / blocker / review result
-  -> artifacts and outcome
+  -> Harness handoff / blocker / review / PendingInteraction
+  -> explicit outcome and artifact/check references
+  -> provider-native session reference for member execution detail
 ```
 
 Neither object is an OrgUnit, a standing organization member, or a business
@@ -52,9 +55,29 @@ when an explicit stable link exists (for example,
 its displayed name, provider, model, role, or timestamps resemble a standing
 Agent.
 
+A foreground `team-run start` normally owns provider orchestration until every
+member reaches a terminal state. Status-only cancellation deliberately refuses
+`running -> cancelled`, because changing a row cannot stop provider work. If
+the foreground Host disappears *after the operator has independently confirmed
+that every provider process stopped*, the CLI recovery path is explicit and
+audited:
+
+```bash
+harness team-run cancel --id <run> --confirm-provider-stopped \
+  --reason <why-the-host-disappeared> --cancelled-by <actor>
+```
+
+Recovery marks unfinished members `stopped`, records cancelled `interrupted`
+actions, and preserves the run. The Host records the recovery and retry
+decision in the current or next Wave.
+The flag is an operator attestation, not a claim of cooperative interruption.
+The first real Codex/Kimi evidence for this path and its successful retry is
+recorded in
+[the live Agent Team acceptance](../integration/live-agent-team-acceptance-2026-07-21.md).
+
 ### Dynamic Workflow
 
-Dynamic Workflow remains the executor for one-shot structured work. A
+Dynamic Workflow remains the engine for one-shot structured work. A
 `WorkflowRun` and its `WorkflowStep`s own the workflow's internal steps,
 fan-out, retries, results, and artifacts. They do not become a TeamRun and do
 not acquire organizational identity.
@@ -65,19 +88,22 @@ durable Agent/session link.
 
 ### Host execution
 
-Host execution means a resident Host Agent performs a Wave directly. The Host
+Host execution means a resident Host Agent performs work directly. The Host
 may use provider-native subagents as an implementation detail. The Harness
 records observable outcomes, artifacts, and optional honest attribution; it
 must not invent lifecycle control over provider children it does not control.
 
 ### Provider foundation
 
-`AgentMember`, `AgentRuntime`, `ProviderSession`, provider child threads,
-capability snapshots, permission/budget ceilings, hooks/plugins, and durable
-events remain shared infrastructure. Provider transcript detail does not become
-the source of truth for assignment, organization responsibility, approval, or
-business result. Private thinking remains sanitized, transient live state only:
-it is not stored, replayed, forwarded to peers, or used as evidence.
+`AgentMember`, `AgentRuntime`, native provider-session bindings, provider child
+threads, capability snapshots, permission/budget ceilings, hooks, and plugins
+remain shared infrastructure. The provider-native store is the sole truth for
+one agent's transcript, tool/command/file events, turn lifecycle, and resume
+state. Harness references that session and owns assignment, organization
+responsibility, interaction routing, explicit outcomes, artifact/check refs,
+and gates. It does not keep a second provider event history. Private thinking
+remains sanitized, transient live state only: it is not stored, replayed,
+forwarded to peers, or used as evidence.
 
 ## Selection from a WorkItem
 
@@ -88,9 +114,9 @@ accountable owner chooses proportionate execution:
 | --- | --- |
 | Small document update or human follow-up | direct human/Agent action recorded on the WorkItem |
 | One-shot, structured, bounded work | Dynamic Workflow |
-| Collaborative work needing messages, handoffs, or review | Agent Team via Mission/Wave |
+| Collaborative work needing messages, handoffs, or review | standalone or Mission-linked Agent Team |
 | Durable, staged outcome with several gates | Mission with ordered Waves |
-| Direct resident-agent operation | Host executor, with observable outcome |
+| Direct resident-agent operation | Host action, with observable outcome |
 
 The chosen run is recorded as `WorkItem.execution_ref`; the result must update
 the WorkItem's result document/records and attach useful evidence. This closes
@@ -99,13 +125,16 @@ company knowledge base.
 
 ## Boundaries preserved by existing ADRs
 
-ADR 0025 and ADR 0026 remain valid.
+ADR 0025 and ADR 0026 are partially superseded by ADR 0034.
 
-- **ADR 0025 — Agent Team Run Control Plane:** AgentTeamRun is a Wave-scoped
-  attempt; MemberRun and TeamMessage own run-scoped collaboration. This remains
-  separate from standing organization and company documents.
-- **ADR 0026 — Mission/Wave Product Architecture:** Mission/Wave is the native
-  execution hierarchy and remains the only live orchestration model.
+- **ADR 0025 — Agent Team Run Control Plane:** MemberRun, TeamMessage,
+  PendingInteraction, and provider-native session boundaries remain valid.
+  Wave-scoped attempt ownership is superseded.
+- **ADR 0026 — Mission/Wave Product Architecture:** Mission/Wave names and
+  transient-thinking policy remain valid. Wave-as-executor is superseded.
+- **ADR 0034 — Host Plan Waves And Mission-Scoped Agent Teams:** Mission links
+  reusable teams; Waves preserve Host judgment; TeamRuns and native sessions
+  may span Waves.
 
 The Company OS model changes their placement, not their execution semantics:
 
@@ -113,7 +142,9 @@ The Company OS model changes their placement, not their execution semantics:
 Company OS business layer
   Documents / Modules / Records / Relations / Org / WorkItems / Approvals
     -> execution foundation selected by WorkItem
-      Mission -> Wave -> Agent Team | Dynamic Workflow | Host
+      Mission -> ordered Host-plan Wave
+      Mission <-> Agent Team -> TeamRun -> MemberRun
+      Dynamic Workflow | Host action
 ```
 
 ## Retirement boundary
@@ -135,6 +166,11 @@ Mission, WorkItem, Approval, or organization membership.
    materialized through a truthful observation or promotion contract.
 6. Workflow and Host execution preserve their own semantics; shared sessions,
    artifacts, and events do not collapse them into one universal run object.
-7. Execution outcomes are returned as explicit summaries, artifacts, evidence,
-   metric observations, and result-document/record updates—not raw transcripts
-   or thinking.
+7. Execution outcomes are returned as explicit summaries, artifact/check
+   references, metric observations, and result-document/record updates. Native
+   transcripts remain provider-owned and referenced; thinking is never durable.
+8. Dashboard activity joins durable Harness coordination with an ephemeral,
+   rebuildable provider-native projection. That projection is not a second
+   ledger and cannot make the Host's Wave decision.
+9. Advancing a Wave never implicitly stops a TeamRun, MemberRun, assignment, or
+   native session. Closing a Mission never deletes or archives a linked team.

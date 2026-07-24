@@ -64,7 +64,8 @@ business context, organizational accountability, or company knowledge model.
 
 - A `Mission` and its ordered `Wave`s can be an execution reference for a
   WorkItem.
-- An `AgentTeamRun` is an attempt within a Wave, not a standing department.
+- An `AgentTeamRun` is an independent or Mission-scoped execution that may span
+  Host-plan Waves; it is not a standing department.
 - A `MemberRun` is a participation in that attempt, not a durable employee or
   Standing Agent identity.
 - A Standing Agent can have explicit assignments across documents and execution

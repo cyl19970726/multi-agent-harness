@@ -89,7 +89,7 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Organization | ActorRef, HumanMember, AgentMember, external/service actors, OrgUnit | identity, reporting, permission, authority and explicit availability/capacity |
 | Work | WorkItem, Milestone, WorkType, Assignment, Approval links, execution/delivery refs | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
-| Execution | Mission, ordered Wave, AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work ran |
+| Execution | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run |
 
 There is no native `Project`, Task Graph, GoalPhase, or universal Agent object.
 Mission/Wave is the only new long-task coordination model. Temporary Agent Team

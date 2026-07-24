@@ -1,0 +1,28 @@
+{
+  "page": "member-run-focus",
+  "state": "completed-history",
+  "source": "named live store snapshot plus provider-native session",
+  "project": "multi-agent-harness",
+  "member_run_id": "member-run-1784706739191-p29869-85",
+  "team_run_id": "team-run-1784706739191-p29869-83",
+  "mission_id": "mission-1784705173148-p29869-0",
+  "wave_id": "wave-1784705190397-p29869-1",
+  "url": "http://127.0.0.1:5173/?project=multi-agent-harness&api=http%3A%2F%2F127.0.0.1%3A5173&surface=team&memberRun=member-run-1784706739191-p29869-85&team=team-run-1784706739191-p29869-83&mission=mission-1784705173148-p29869-0&wave=wave-1784705190397-p29869-1",
+  "viewport": {
+    "width": 1536,
+    "height": 1024,
+    "device_scale_factor": 1
+  },
+  "browser": "149.0.7827.55",
+  "reduced_motion": "reduce",
+  "git_revision": "b7635306cc13dc988320ec83f56f4c1d137c3fd8",
+  "git_dirty": true,
+  "screenshot": "/Users/hhh0x/.codex/worktrees/b99c/multi-agent-harness/docs/design/execution-workbench-v3/implemented/member-run-focus/member-run-focus--completed-history--desktop-1536x1024.png",
+  "journeys": [
+    "member-history-content-reachability",
+    "member-history-focus-toggle",
+    "member-history-tool-disclosure",
+    "member-history-return-context"
+  ],
+  "console_errors": []
+}

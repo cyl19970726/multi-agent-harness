@@ -17,4 +17,3 @@ Constraints: make ownership boundaries visually stronger than arrows; no univers
              no Project; no task graph; Mission/Wave appears only as execution reference;
              Approval is a governed bridge; no tiny paragraphs; no logo; no watermark
 ```
-

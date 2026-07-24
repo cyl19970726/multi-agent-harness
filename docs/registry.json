@@ -68,7 +68,8 @@
     "docs/architecture.md",
     "docs/concept-model.md",
     "docs/decisions/0026-mission-wave-architecture.md",
-    "docs/decisions/0027-company-os-primary-model.md"
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -438,8 +439,9 @@
    "canonicalFor": [
     "data model relationships",
     "source-of-truth rules",
+    "provider-native execution versus Harness coordination truth",
     "projection semantics",
-    "Mission/Wave and executor attempt edges",
+    "Mission/Wave Host-plan, Mission-Team relation, and independent runtime edges",
     "optional governance object edges",
     "retired-field removal boundary"
    ],
@@ -448,7 +450,8 @@
     "docs/concept-model.md",
     "docs/architecture.md",
     "docs/schemas.md",
-    "docs/company-os/governance.md"
+    "docs/company-os/governance.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -459,7 +462,7 @@
     "npx pnpm@9.15.4 check",
     "cargo test"
    ],
-   "reorgTrigger": "Mission/Wave relationships, executor attempt edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
+   "reorgTrigger": "Mission/Wave Host-plan relationships, Mission-Team/runtime edges, optional governance edges, projections, source-of-truth rules, or schema responsibilities change.",
    "authorityClass": "canonical_contract",
    "implementationState": "partial",
    "truthRefs": []
@@ -697,8 +700,8 @@
    "canonicalFor": [
     "Git worktree workflow",
     "PR integration",
-    "executor-aware change attribution and review flow",
-    "Wave-scoped concurrency rules"
+    "execution-aware change attribution and review flow",
+    "Host-plan coordination for concurrent changes"
    ],
    "dependsOn": [
     "docs/concept-model.md",
@@ -717,7 +720,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Wave executor concurrency, worktree, WorkflowPatch, PR, review, or gate workflow changes.",
+   "reorgTrigger": "Host-plan coordination, execution concurrency, worktree, WorkflowPatch, PR, review, or Wave-decision workflow changes.",
    "authorityClass": "implementation_reference",
    "implementationState": "partial",
    "truthRefs": [
@@ -932,7 +935,8 @@
    ],
    "dependsOn": [
     "schemas/README.md",
-    "crates/harness-core/src/lib.rs"
+    "crates/harness-core/src/lib.rs",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -1091,11 +1095,13 @@
     "SSE event stream contract",
     "runtime health signal model"
    ],
-   "dependsOn": [
-    "docs/agent-runtime.md",
-    "docs/concept-model.md",
-    "docs/data-model.md",
-    "docs/integration/codex.md",
+    "dependsOn": [
+      "docs/agent-runtime.md",
+      "docs/concept-model.md",
+      "docs/data-model.md",
+      "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+      "docs/decisions/0033-agent-team-workspace-contract.md",
+      "docs/integration/codex.md",
     "docs/integration/claude.md",
     "docs/decisions/0008-persistent-codex-agent-runtime.md",
     "docs/decisions/0011-provider-neutral-runtime.md",
@@ -1248,7 +1254,7 @@
    "canonicalFor": [
     "Agent Team run control plane v0 decision",
     "function-call vs living-collaborator boundary",
-    "Mission -> Wave(executor_kind=agent_team) -> AgentTeamRun -> MemberRun -> DelegationRun layering",
+    "historical Wave-owned TeamRun layering plus retained AgentTeamRun, MemberRun, message, and delegation control-plane boundaries",
     "the six v0 Agent Team objects (AgentTeamRun, MemberRun, TeamMessage, MemberAction, DelegationRun, TeamRunEvent)",
     "capture vs orchestrate delegation guardrails",
     "plugin packaging and call-surface split (Plugin distributes, MCP calls, Skill teaches, CLI pipes, Hook injects)",
@@ -1273,7 +1279,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Agent Team object set, Mission/Wave agent_team layering, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes.",
+   "reorgTrigger": "The Agent Team object set, Mission-Team relations, TeamRun lifecycle, delegation guardrails, plugin call-surface split, or the non-durable thinking policy changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "partial",
    "truthRefs": [
@@ -1302,7 +1308,7 @@
    "lifecycle": "stable",
    "canonicalFor": [
     "Mission/Wave architecture decision",
-    "Mission -> Wave -> executor hierarchy",
+    "historical Mission -> Wave -> executor hierarchy superseded by ADR 0034",
     "executor kinds (agent_team, dynamic_workflow, host)",
     "shared runtime contracts and transient-thinking policy",
     "non-destructive Goal/historical phase compatibility migration"
@@ -1321,7 +1327,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave hierarchy, executor kinds, shared runtime contracts, transient-thinking policy, or compatibility migration plan change.",
+   "reorgTrigger": "The retained Mission/Wave vocabulary, historical executor fields, shared runtime contracts, transient-thinking policy, or compatibility migration plan change.",
    "authorityClass": "canonical_contract",
    "implementationState": "partial",
    "truthRefs": [
@@ -1365,16 +1371,18 @@
    "ownerRole": "operations",
    "status": "stable",
    "lifecycle": "volatile",
-   "canonicalFor": [
-    "multi-project store_root vs project_root model",
-    "central store layout and project identity",
-    "project resolution precedence + project commands",
-    "GLOBAL _global policy + migration path",
+    "canonicalFor": [
+      "multi-project store_root vs project_root model",
+      "central store layout and project identity",
+      "project resolution precedence + project commands",
+      "Agent Team execution root and member worktree relationship",
+      "GLOBAL _global policy + migration path",
     "multi-project live acceptance"
    ],
-   "dependsOn": [
-    "README.md",
-    "crates/harness-core/src/lib.rs",
+    "dependsOn": [
+      "README.md",
+      "docs/decisions/0033-agent-team-workspace-contract.md",
+      "crates/harness-core/src/lib.rs",
     "crates/harness-cli/src/main.rs"
    ],
    "machineConsumers": [
@@ -1388,9 +1396,13 @@
    "reorgTrigger": "The store_root/project_root split, project identity rules, resolution precedence, project commands, GLOBAL policy, or migration flow change.",
    "authorityClass": "implementation_reference",
    "implementationState": "implemented",
-   "truthRefs": [
-    {
-     "kind": "api",
+    "truthRefs": [
+      {
+        "kind": "decision",
+        "ref": "docs/decisions/0033-agent-team-workspace-contract.md"
+      },
+      {
+        "kind": "api",
      "ref": "crates/harness-cli/src/main.rs"
     }
    ]
@@ -1571,7 +1583,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The Mission/Wave IA, Wave executor model, member page structure, active-navigation policy, or transient-thinking policy changes.",
+   "reorgTrigger": "The Mission/Wave Host-plan IA, Mission-Team relation, member page structure, active-navigation policy, or transient-thinking policy changes.",
    "authorityClass": "design_intent",
    "implementationState": "design_only",
    "truthRefs": [
@@ -1817,7 +1829,7 @@
     "docs/company-os/document-system.md",
     "docs/company-os/skill-contracts.md",
     "docs/company-os/implementation-truth-matrix.md",
-    "docs/decisions/0030-company-os-sql-read-model.md",
+    "docs/decisions/0035-company-os-sql-read-model.md",
     "skills/company-docs-operator/SKILL.md"
    ],
    "machineConsumers": [
@@ -2050,8 +2062,21 @@
    ],
    "reorgTrigger": "Governance role responsibilities, Agent configuration, Skill authority, or Agent workspace implementation priority changes.",
    "authorityClass": "design_intent",
-   "implementationState": "design_only",
-   "truthRefs": []
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/company-os/actors.schema.json"
+    },
+    {
+     "kind": "ui",
+     "ref": "apps/agent-dashboard/src/company-os/operations/pages.tsx"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_os_api.rs"
+    }
+   ]
   },
   {
    "path": "docs/company-os/work-operating-system.md",
@@ -2412,11 +2437,12 @@
    "lifecycle": "volatile",
    "canonicalFor": [
     "MemberRun execution focus page",
-    "run-scoped assignment, activity, and evidence UI contract"
+    "run-scoped assignment, native activity projection, and evidence UI contract"
    ],
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
-    "docs/decisions/0025-agent-team-run-control-plane.md"
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2475,11 +2501,12 @@
    "lifecycle": "volatile",
    "canonicalFor": [
     "AgentTeamRun execution war room",
-    "run-scoped collaboration and correlation-proof UI contract"
+    "run-scoped collaboration, native activity projection, and correlation-proof UI contract"
    ],
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
     "docs/design/execution-workbench-v3/README.md"
    ],
    "machineConsumers": [
@@ -2639,7 +2666,7 @@
    "truthRefs": []
   },
   {
-   "path": "docs/decisions/0030-company-os-sql-read-model.md",
+   "path": "docs/decisions/0035-company-os-sql-read-model.md",
    "ownerRole": "product-platform",
    "status": "stable",
    "lifecycle": "stable",
@@ -2676,7 +2703,7 @@
    ]
   },
   {
-   "path": "docs/decisions/0031-agent-operated-docs-and-code-declared-pages.md",
+   "path": "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md",
    "ownerRole": "product-platform",
    "status": "stable",
    "lifecycle": "stable",
@@ -2690,7 +2717,7 @@
     "docs/company-os/implementation-truth-matrix.md",
     "docs/decisions/0027-company-os-primary-model.md",
     "docs/decisions/0029-agent-programmable-document-runtime.md",
-    "docs/decisions/0030-company-os-sql-read-model.md"
+    "docs/decisions/0035-company-os-sql-read-model.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2801,6 +2828,273 @@
    "authorityClass": "entry",
    "implementationState": "partial",
    "truthRefs": []
+  },
+  {
+   "path": "docs/integration/native-session-storage.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "NativeSessionAdapter V1 behavior and extension contract",
+    "NativeSessionRef field contract",
+    "provider-native activity read and Dashboard join",
+    "provider-specific resume and availability",
+    "completed provider mirror removal sequence"
+   ],
+    "dependsOn": [
+      "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+      "docs/decisions/0033-agent-team-workspace-contract.md",
+      "docs/agent-integration-model.md",
+    "docs/integration/codex.md",
+    "docs/integration/kimi.md",
+    "docs/integration/claude.md",
+    "docs/dashboard/pages/member-run-focus.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Native session binding fields, provider reader/resume interfaces, activity projection, or migration order changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/native-session-ref.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/native_session.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-native-session-boundary.mjs"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0030-provider-interaction-contract.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "execution-mode ProviderIntegrationProfile contract",
+    "PendingInteraction routing and semantic resolution",
+    "provider lifecycle versus semantic outcome boundary"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/agent-integration-model.md",
+    "docs/integration/kimi.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Provider interaction routing, semantic outcome, authorization, or execution-mode profile semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/pending-interaction.schema.json"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "mode-specific chat steer interrupt and stop semantics",
+    "provider version drift review contract",
+    "daily provider release-check cadence and Human upgrade authorization",
+    "Codex and Kimi interactive mode selection"
+   ],
+   "dependsOn": [
+    "docs/decisions/0030-provider-interaction-contract.md",
+    "docs/agent-integration-model.md",
+    "docs/integration/codex.md",
+    "docs/integration/kimi.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Provider control protocol, execution modes, update cadence, upgrade authorization, reviewed versions, or adapter compatibility policy changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "provider-native session as per-agent execution truth",
+    "Harness coordination-only persistence boundary",
+    "NativeSessionRef and provider-specific resume contract",
+    "ephemeral native activity projection",
+    "provider-event mirror removal migration"
+   ],
+   "dependsOn": [
+    "docs/decisions/0010-harness-store-is-canonical.md",
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0030-provider-interaction-contract.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/data-model.md",
+    "docs/company-os/execution-foundation.md",
+    "docs/agent-integration-model.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check"
+   ],
+   "reorgTrigger": "Per-agent native storage, Harness coordination persistence, native activity projection, provider resume, export, or migration policy changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/native-session-ref.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/native_session.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-native-session-boundary.mjs"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0033-agent-team-workspace-contract.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Agent Team store, project, run execution, and member worktree root separation",
+    "Agent Team provider cwd precedence and same-repository worktree validation",
+    "non-secret MemberRun workspace snapshot contract"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/multi-project.md",
+    "docs/member-runtime-observability.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check",
+    "cargo test -p harness-cli --test team_run_api --test team_run_start --test mcp_stdio"
+   ],
+   "reorgTrigger": "Agent Team execution-root precedence, worktree identity validation, provider cwd selection, or workspace snapshot privacy fields change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/agent-team-run.schema.json"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/member-run.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_start.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/integration/live-agent-team-acceptance-2026-07-21.md",
+   "ownerRole": "execution-foundation",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "first native Codex and Kimi Agent Team live-provider acceptance",
+    "interrupted foreground TeamRun recovery evidence"
+   ],
+   "dependsOn": [
+    "docs/company-os/execution-foundation.md",
+    "docs/integration/codex.md",
+    "docs/integration/kimi.md",
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0026-mission-wave-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "live Agent Team acceptance"
+   ],
+   "reviewAfter": "2026-08-21",
+   "lastVerifiedWith": [
+    "harness dashboard snapshot",
+    "cargo test -p harness-cli --test team_run_api"
+   ],
+   "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change.",
+  "authorityClass": "actual_evidence",
+  "implementationState": "verified",
+  "truthRefs": [
+   {
+    "kind": "runtime_evidence",
+    "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+   },
+   {
+    "kind": "test",
+    "ref": "crates/harness-cli/tests/team_run_api.rs"
+   }
+  ]
   },
   {
    "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
@@ -2956,6 +3250,87 @@
     {
      "kind": "api",
      "ref": "crates/harness-cli/src/mcp.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Mission durable context and Mission-AgentTeam relation",
+    "versioned Host-plan Wave semantics",
+    "Mission-scoped AgentTeamRun and cross-Wave member lifecycle",
+    "CLI-primary and optional thin MCP integration boundary"
+   ],
+   "dependsOn": [
+    "docs/decisions/0025-agent-team-run-control-plane.md",
+    "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/product/mission-wave-host-plan.md",
+    "docs/architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 acceptance:mission-wave"
+   ],
+   "reorgTrigger": "Mission context, Host-plan Wave semantics, Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP authority boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/mission.schema.json"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/wave.schema.json"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/product/mission-wave-host-plan.md",
+   "ownerRole": "product",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Host user journey for Mission context, Wave revisions, and long-lived Agent Teams",
+    "product acceptance and explicit non-goals for Host orchestration"
+   ],
+   "dependsOn": [
+    "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+    "docs/dashboard/pages/mission-wave-canvas.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check",
+    "npx pnpm@9.15.4 acceptance:mission-wave"
+   ],
+   "reorgTrigger": "Host orchestration journey, Wave context shape, Team membership evolution, or Dashboard relation UX changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0034-host-plan-waves-and-mission-teams.md"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/mission_wave_api.rs"
     }
    ]
   }

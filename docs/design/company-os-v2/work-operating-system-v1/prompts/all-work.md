@@ -18,4 +18,3 @@ Right rail: compact selected-row context for "Submit CN trademark filing" with s
 Constraints: ledger is the center; no graphs; no large card grid; precise fine row dividers;
              completed items remain present but quiet
 ```
-

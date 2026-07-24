@@ -1,37 +1,54 @@
-# MemberRun Focus V3 implementation review
+# MemberRun Focus V4 implementation review
 
-Status: candidate ready; explicit expected-image approval pending.
+Status: approved by the user on 2026-07-22; product truth and visual fidelity
+pass with the documented data-truth deviations below.
 
-## What passes
+## What now passes
 
-- The center is one continuous MemberRun work surface, not an overview card grid.
-- Assignment, live-only provider preview, evidence, handoff, and review pressure
-  use distinct semantic nodes and remain tied to native fixture records.
-- The default six-node projection keeps the latest review request in the first
-  desktop viewport; `Full record` reveals all records without rewriting history.
-- The right rail composes Wave, Team, Assignment, outputs, runtime, and observed
-  delegation context without treating a MemberRun as a Standing Agent.
-- Tablet Context opens as a right sheet; mobile Context opens as a bottom sheet.
-- Thinking remains a sanitized transient preview and is absent from durable
-  selectors, replay evidence, and acceptance truth.
+- The desktop page uses an 80px focus rail and removes the global TopBar from
+  Member Focus, matching the approved single-member composition.
+- The hero uses a stable generated portrait, large identity treatment, real
+  provider/model, run status, and an explicit return to the parent Team.
+- Complete history is the default. Harness coordination and the provider-native
+  session are joined only on read; 49 real source records are available in the
+  captured run.
+- Briefing, Exploration, Implementation, Verification, and Handoff are a
+  read-time editorial projection. They are never stored as coordination truth.
+- Repeated tool start/result records are grouped by native tool family. Every
+  underlying message and tool record remains reachable from the phase
+  disclosure.
+- The right rail is a stable set of Team, Wave, Runtime, and artifact/evidence
+  summaries rather than another activity log.
+- The completed run truthfully renders a read-only composer; active runs retain
+  real message/steer/interrupt behavior.
+- No thinking is persisted or replayed. Native transcript and tool truth remain
+  in the provider session.
 
-## Intentional deviations from the generated candidate
+## Intentional deviations from the generated expected
 
-- The implemented shell retains live connection controls and search because
-  they are shared operator functions, while the generated concept simplified
-  them.
-- Fixture-native content replaces generated names, times, paths, artifacts, and
-  status values.
-- The actual activity rows are denser than the concept so the operator can see
-  the complete causal path through review pressure without scrolling.
+- The expected image contains illustrative filenames, durations, token totals,
+  three artifacts, and a placeholder collaborator. The actual page does not
+  invent those facts: this run has two real members and no linked artifact
+  references at MemberRun scope.
+- The expected depicts an active send control. The captured real MemberRun is
+  completed, so its composer is read-only.
+- Native Codex records expose tool families such as `spawn_agent`,
+  `send_message`, and `wait`; they do not expose the expected image's fabricated
+  file-operation rows. The implementation groups what the provider actually
+  recorded.
+- The portrait comes from the approved reusable eight-avatar product set, not a
+  crop copied from the generated page image.
 
 ## Evidence
 
-- Final captures: `.visual-evidence/execution-workbench-v3/member-run-v3-final/`
-- Durable actuals: `../implemented/member-run-focus/`
-- Expected/actual: `../comparisons/member-run-focus/`
-- 50% overlays: `../overlays/member-run-focus/`
+- Expected: `../expected/member-run-focus/completed-history--desktop-concept-v4.png`
+- Actual: `../implemented/member-run-focus/member-run-focus--completed-history--desktop-1536x1024.png`
+- Capture manifest: `../implemented/member-run-focus/capture-run.json`
+- Three-way comparison: `../comparisons/member-run-focus/completed-history--desktop-1536x1024.png`
+- Exact-size overlay: `../overlays/member-run-focus/completed-history--desktop-1536x1024.png`
 - Automated contract: `npx pnpm@9.15.4 check:dashboard`
 
-No remaining product-truth or responsive-layout defect blocks candidate review.
-Real-device software-keyboard behavior remains a follow-up, not a fixture claim.
+The product-truth and desktop visual-fidelity gates pass. Responsive V4
+expected designs should now inherit this approved warm-editorial language;
+tablet/mobile implementation should still wait for those responsive references
+rather than extrapolating silently.

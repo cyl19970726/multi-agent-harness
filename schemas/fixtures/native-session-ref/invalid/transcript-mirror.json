@@ -1,0 +1,10 @@
+{
+  "provider": "codex",
+  "execution_mode": "codex_app_server",
+  "native_session_id": "thread-1",
+  "native_locator_kind": "codex_rollout",
+  "adapter_contract_version": "1",
+  "availability": "available",
+  "supports_resume": true,
+  "transcript": [{"role": "assistant", "text": "must remain provider-owned"}]
+}

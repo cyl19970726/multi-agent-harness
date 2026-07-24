@@ -48,19 +48,25 @@ open_questions:
 
 ## Core Page Specs
 
-The current product direction is Mission -> ordered Wave -> executor, owned by
-[the architecture map](../../architecture-map.md) and
-[ADR 0026](../../decisions/0026-mission-wave-architecture.md). The implemented
-primary pages are the Mission/Wave Canvas and Agent Team War Room. Historical
+The current product direction is Mission context -> ordered Host-plan Waves,
+with independent Agent Teams linked at Mission scope, owned by
+[ADR 0034](../../decisions/0034-host-plan-waves-and-mission-teams.md). The
+implemented primary pages are the Mission/Wave Canvas and Agent Team War Room. Historical
 Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
 define the new information architecture.
 
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | ordered execution and gate contract |
-| [Agent Team War Room](team-run-war-room.md) | implemented | one linked AgentTeamRun attempt |
-| [MemberRun Focus](member-run-focus.md) | planned | run-scoped member detail |
-| [Debug](debug.md) | planned | page-local contract |
+| [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | durable context, linked Teams, ordered Host-plan revisions |
+| [Agent Team War Room](team-run-war-room.md) | implemented | one independent or Mission-scoped long-lived TeamRun |
+| [MemberRun Focus](member-run-focus.md) | implemented candidate | run-scoped member detail |
+| [Standing Agent Focus](standing-agent-focus.md) | proposed | durable organization identity and collaboration |
+| [Debug](debug.md) | planned secondary surface | current raw objects and source diagnosis |
+
+The deleted Team workspace, AgentMember workbench, Evidence/Review/Decision,
+and Warnings/repair specs described the retired Goal/Task/Proposal/Gap stack.
+Git history is sufficient provenance; those files must not be used as active
+product input or recreated as compatibility pages.
 
 ## Boundary
 

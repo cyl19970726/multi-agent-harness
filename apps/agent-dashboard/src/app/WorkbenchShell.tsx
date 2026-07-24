@@ -19,6 +19,7 @@ import {
   Search,
   Settings2,
   ShieldAlert,
+  Sparkles,
   Target,
   Users,
   Workflow,
@@ -139,6 +140,7 @@ export function WorkbenchShell({
   canPoll,
   onTogglePoll,
 }: WorkbenchShellProps) {
+  const memberFocusMode = selection.surface === "team" && Boolean(selection.memberRunId);
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
   }
@@ -149,9 +151,10 @@ export function WorkbenchShell({
         model={model}
         selection={selection}
         onSelectionChange={updateSelection}
+        compact={memberFocusMode}
       />
       <div className="flex min-w-0 flex-1 flex-col pb-14 sm:pb-0">
-        <TopBar
+        {!memberFocusMode && <TopBar
           apiUrl={apiUrl}
           currentSurface={surfaceLabel(selection.surface)}
           contextLabel={nativeContextLabel(model, selection)}
@@ -172,7 +175,7 @@ export function WorkbenchShell({
           pollEnabled={pollEnabled}
           canPoll={canPoll}
           onTogglePoll={onTogglePoll}
-        />
+        />}
         <ActionErrorBanner error={sourceError} />
         <main className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {(() => {
@@ -185,6 +188,7 @@ export function WorkbenchShell({
                 actionsEnabled={actionsEnabled}
                 onAction={onAction}
                 apiUrl={apiUrl}
+                isLoading={isLoading}
               />
             );
             // The agent detail is a full-bleed two-pane shell that fills the
@@ -385,10 +389,10 @@ function TopBar({
 /**
  * Compact project picker in the TopBar (goal-multi-project P6). A native
  * `<select>` styled to match the other TopBar controls — switching re-points the
- * scoped snapshot + SSE stream (handled by the App). Renders nothing when there
- * are 0–1 projects (a single-store / pre-multi-project backend), so the picker
- * never appears where it would be meaningless. The `_global` (`kind: "global"`)
- * project gets a globe icon; repo projects a git-folder icon.
+ * scoped snapshot + SSE stream (handled by the App). It remains visible but
+ * disabled for one registered project so the root tooltip still distinguishes
+ * project_root from store_root. The `_global` (`kind: "global") project gets a
+ * globe icon; repo projects a git-folder icon.
  */
 function ProjectPicker({
   projects,
@@ -399,28 +403,37 @@ function ProjectPicker({
   selectedProjectId: string;
   onSelectProject: (projectId: string) => void;
 }) {
-  if (projects.length <= 1) return null;
   const selected = projects.find((p) => p.id === selectedProjectId);
+  if (!selected) return null;
   const isGlobal = selected?.kind === "global";
   return (
-    <label className="relative ml-1 hidden items-center sm:flex" title="Active project">
-      <span className="pointer-events-none absolute left-2 text-muted-foreground">
-        {isGlobal ? <Globe className="size-3.5" /> : <FolderGit2 className="size-3.5" />}
-      </span>
-      <select
-        aria-label="Active project"
-        value={selectedProjectId}
-        onChange={(event) => onSelectProject(event.target.value)}
-        className="h-8 max-w-[180px] appearance-none truncate rounded-md border border-border bg-background/50 pl-7 pr-7 text-[11px] text-foreground outline-none transition-colors hover:border-input focus:border-ring"
-      >
-        {projects.map((project) => (
-          <option key={project.id} value={project.id}>
-            {projectLabel(project)}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
-    </label>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <label className="relative ml-1 hidden items-center sm:flex" aria-label="Workspace roots">
+          <span className="pointer-events-none absolute left-2 text-muted-foreground">
+            {isGlobal ? <Globe className="size-3.5" /> : <FolderGit2 className="size-3.5" />}
+          </span>
+          <select
+            aria-label="Active project"
+            value={selectedProjectId}
+            disabled={projects.length === 1}
+            onChange={(event) => onSelectProject(event.target.value)}
+            className="h-8 max-w-[180px] appearance-none truncate rounded-md border border-border bg-background/50 pl-7 pr-7 text-[11px] text-foreground outline-none transition-colors hover:border-input focus:border-ring disabled:opacity-100"
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {projectLabel(project)}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
+        </label>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[36rem] space-y-1">
+        <p><span className="text-muted-foreground">Registered project root:</span> <span className="font-mono">{selected.project_root}</span></p>
+        <p><span className="text-muted-foreground">Central store root:</span> <span className="font-mono">{selected.store_root}</span></p>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -489,10 +502,12 @@ function AppRail({
   model,
   selection,
   onSelectionChange,
+  compact = false,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
+  compact?: boolean;
 }) {
   const selectedRun = (model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId);
   const missionId = selection.missionId ?? selectedRun?.mission_id;
@@ -505,6 +520,8 @@ function AppRail({
   const contextMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id === contextRun?.id,
   );
+  const companyContext = isCompanyOsSurface(selection.surface);
+  const selectedCompanySurface = navItems.find((item) => item.id === selection.surface);
 
   function navigate(id: SurfaceId) {
     onSelectionChange({
@@ -524,7 +541,7 @@ function AppRail({
 
   return (
     <>
-      <aside className="hidden h-full w-[14.5rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar xl:flex">
+      <aside className={cn("hidden h-full w-[14.5rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar xl:flex", compact && "xl:hidden")}>
         <div className="flex h-[58px] shrink-0 items-center gap-2.5 border-b border-border px-4">
           <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
             <Building2 className="size-4" />
@@ -569,9 +586,18 @@ function AppRail({
 
             <section className="space-y-1.5">
               <p className="px-2.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Active context
+                {companyContext ? "Company context" : "Active context"}
               </p>
-              {mission ? (
+              {companyContext ? (
+                <div className="rounded-lg border border-border/70 bg-background/55 px-3 py-3">
+                  <p className="text-[11px] font-semibold text-foreground">
+                    {selectedCompanySurface?.label ?? "Company OS"}
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                    Docs holds context, Organization holds authority, Work holds commitments, and Finance records monetary effects.
+                  </p>
+                </div>
+              ) : mission ? (
                 <div className="space-y-0.5">
                   <ContextTreeButton
                     depth={0}
@@ -620,9 +646,12 @@ function AppRail({
         </ScrollArea>
       </aside>
 
-      <aside className="hidden h-full w-16 shrink-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-3 sm:flex xl:hidden">
-        <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm" aria-label="Company OS">
-          <Building2 className="size-4" />
+      <aside className={cn(
+        "hidden h-full shrink-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-3 sm:flex",
+        compact ? "member-focus-rail w-20 xl:flex" : "w-16 xl:hidden",
+      )}>
+        <div className={cn("grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm", compact && "member-focus-brand")} aria-label="Company OS">
+          {compact ? <Sparkles className="size-[19px]" /> : <Building2 className="size-4" />}
         </div>
         <nav aria-label="Compact product navigation" className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-2">
           {navigationGroups.map((group, index) => (
@@ -739,6 +768,7 @@ function SurfaceSwitch({
   actionsEnabled,
   onAction,
   apiUrl,
+  isLoading,
 }: {
   model: WorkbenchModel;
   selection: SelectionState;
@@ -747,10 +777,11 @@ function SurfaceSwitch({
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
   apiUrl: string;
+  isLoading: boolean;
 }) {
   const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
   if (isCompanyOsSurface(selection.surface)) {
-    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} />;
+    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} onSelectionChange={onSelectionChange} />;
   }
   switch (selection.surface) {
     case "missions":
@@ -770,9 +801,20 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.memberRunId ? (
-        <MemberRunFocus {...shared} memberRunId={selection.memberRunId} />
+        <MemberRunFocus
+          {...shared}
+          memberRunId={selection.memberRunId}
+          missionId={selection.missionId}
+          waveId={selection.waveId}
+          isLoading={isLoading}
+        />
       ) : selection.teamId ? (
-        <TeamWarRoom {...shared} teamRunId={selection.teamId} />
+        <TeamWarRoom
+          {...shared}
+          teamRunId={selection.teamId}
+          missionId={selection.missionId}
+          waveId={selection.waveId}
+        />
       ) : (
         <AgentTeamsHome {...shared} />
       );

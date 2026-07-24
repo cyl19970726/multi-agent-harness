@@ -32,4 +32,3 @@
 
 Human review is required before these expected images become implementation
 acceptance baselines.
-

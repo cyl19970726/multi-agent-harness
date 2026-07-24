@@ -1,43 +1,49 @@
 # Multi-Project Harness
 
-One operator (and one `serve` / dashboard) can manage **many** projects — each
-with its own goals/tasks/members/runs — plus a reserved **GLOBAL** project rooted
-at `~/`. This is the operator-facing reference for the layout, the project
-commands, the GLOBAL policy, migration, and the live acceptance command.
+One operator (and one `serve` / dashboard) can manage **many** Workspaces — each
+with its own Mission/Wave coordination and execution records — plus a reserved
+**GLOBAL** Workspace rooted at `~/`. This is the operator-facing reference for
+the layout, Workspace commands, GLOBAL policy, migration, and live acceptance.
+The architectural rationale for Agent Team execution paths is durable in
+[ADR 0033](decisions/0033-agent-team-workspace-contract.md), not in a retired
+Goal ledger.
 
-For the problems-first design rationale (P1–P7), see the `goal-multi-project`
-goal `design_md` in the harness store.
+## Workspace contract: four distinct paths
 
-## Two roots per project: `store_root` vs `project_root`
-
-The core conceptual change is that a project has **two decoupled roots**:
+Project selection and Agent Team execution use four deliberately distinct
+values (ADR 0033):
 
 - **`store_root`** = `~/.harness/projects/<id>/` — the centralized, repo-independent
-  JSONL ledgers, provider sessions, and locks. Sibling `harness` processes (a
+  JSONL coordination ledgers and locks. Sibling `harness` processes (a
   `serve` and a `run-script` from different cwds) converge here via the registry's
   `current_project_id`, preserving the issue #89 single-store invariant.
 - **`project_root`** = the git repo (or `~/` for GLOBAL) — where `CLAUDE.md`,
-  `AGENTS.md`, `.claude/`, and **worktrees** live. A spawned worker's cwd derives
-  from `project_root`, so Claude Code / Codex read the *selected* project's memory
-  even when the long-running `serve` never `cd`s after a switch.
+  `AGENTS.md`, and project configuration live. It is the registered Workspace
+  identity, not necessarily every member's cwd.
+- **`AgentTeamRun.execution_root`** = the run-level provider cwd, defaulting to
+  `project_root`. An explicit override must be `project_root` or a Git worktree
+  sharing its Git common directory.
+- **`MemberRun.worktree_ref`** = an optional member-specific override with the
+  same validation. Provider spawn precedence is `worktree_ref` >
+  `execution_root` > `project_root`; `store_root` is never a provider cwd.
 
 These are bundled into a `ProjectContext { id, project_root, store_root, kind,
 is_git_repo }` (in `harness-core`) that is threaded through every spawn site
 instead of reading the harness process `env::current_dir()`.
 
-### Worktrees stay repo-local
+### Worktrees share repository identity, not path containment
 
-Git requires a worktree to live inside the repo's tree, so worktrees are **not**
-centralized with the store. A writable / `isolation="worktree"` workflow leaf
-creates its throwaway checkout under the **project_root**, not the store:
+Harness-created Dynamic Workflow worktrees remain under `project_root` by
+convention:
 
 ```
 <project_root>/.harness/worktrees/<run_id>-<slug>-<unique>
 ```
 
-The worker is spawned with that worktree as its cwd; the step diff is collected
-from it. Read-only (`isolation="none"`) nodes need no worktree and run in the
-shared `project_root`.
+Git itself also permits linked worktrees elsewhere. Agent Team overrides may
+therefore point to external Codex worktrees; Harness validates the candidate is
+the worktree top level and shares the selected project's canonical Git common
+directory. A simple `starts_with(project_root)` check is incorrect.
 
 ### Layout
 
@@ -45,8 +51,8 @@ shared `project_root`.
 ~/.harness/
   projects/
     _global/                  # reserved id for ~ (HOME); usually NOT a git repo
-      goals.jsonl members.jsonl tasks.jsonl provider_turn_events.jsonl ...
-      provider-sessions/  metadata.json
+      missions.jsonl waves.jsonl members.jsonl messages.jsonl ...
+      runtimes/  metadata.json
     ai-luodi-jyx3d/           # under $HOME → slug = relpath with '/'→'-'
     proj-<sha256[:16]>/       # outside $HOME → content-addressed
     registry.json             # {current_project_id, projects:[...]}
@@ -105,10 +111,11 @@ scoped read model + SSE stream on switch and persists the choice to
 ## Migration path (repo-local `.harness` → central store)
 
 Existing repos have a repo-local `.harness/` store. `harness project migrate`
-(run from the repo) **copies** (never moves) every JSONL ledger +
-`provider-sessions/` into `~/.harness/projects/<id>/`, writes `metadata.json` with
+(run from the repo) **copies** (never moves) active JSONL ledgers plus
+`prompts/` and `runtimes/` into `~/.harness/projects/<id>/`, writes `metadata.json` with
 `migrated_from`, and drops a `.harness/MIGRATED_TO_CENTRAL` marker in the old
 store (tooling then reads the central store and ignores the marked local one).
+The retired provider-session mirror ledger/directory is intentionally omitted.
 
 - **No data loss**: it is a copy; `records_after == records_before`, and the old
   store is left intact (only marked).
@@ -134,13 +141,11 @@ the choice (`--store-source`).
   git-backed project).
 - **Diff evidence is unavailable** for `_global` (no worktree to diff) — accepted.
 
-## Risk: per-project `provider_turn_events.jsonl` truncation on serve restart
+## Provider activity
 
-`serve` truncates each project's `provider_turn_events.jsonl` on startup to drop
-stale live frames. With multiple projects this happens **per project on restart**,
-which can drop in-flight events for *all* projects at once. Pass `serve
---no-truncate` (used by the tests and the verify demo) to preserve pre-seeded /
-in-flight rows across a restart.
+Provider activity is read from each provider's native session and is not a
+per-project Harness ledger. Restarting `serve` therefore cannot truncate or
+silently rewrite provider history; only ephemeral UI projections reconnect.
 
 ## Live acceptance
 

@@ -21,8 +21,8 @@ Leader / AgentMember / API
   -> record or probe the member's exec-stream runtime
   -> spawn `codex exec --json` with the harness message envelope
      (`codex exec resume --json <provider_thread_id> ...` when known)
-  -> NDJSON events (thread.started / turn.started / item/* / turn.completed)
-  -> ProviderSession + AgentEvent + Evidence candidates
+  -> provider-native events reduced in memory
+  -> NativeSessionRef + explicit outcome/evidence candidates
   -> Message delivery update + provider-report Message
   -> AgentMember runtime/status projections
   -> Agent Dashboard read model
@@ -48,7 +48,7 @@ Implemented slices:
 - Delivery queue selection has a latest-message projection test so stale
   historical `queued` rows are not selected after a newer terminal row exists.
 - Delivery claim now happens under the store write lock: latest queued message
-  selection, unresolved-session blocking, running `ProviderSession` creation,
+  selection, unresolved-delivery blocking, delivery-attempt creation,
   and `Message.delivery_status=acknowledged` are recorded together.
 - Normal `agent send`, `agent deliver`, and runtime start reject closed,
   closing, or retired members.
@@ -104,8 +104,8 @@ agent deliver --agent <member> [--start-runtime]
   -> blocks if a previous provider session is unresolved
   -> spawns codex exec --json (null stdin)
   -> reuses provider_thread_id via codex exec resume when known
-  -> parses the NDJSON event stream
-  -> records ProviderSession and Message.delivery
+  -> reduces the native event stream in memory
+  -> records NativeSessionRef and Message.delivery
 
 agent gateway [--once] [--start-runtime] [--dry-run] [--claim-ttl-ms <ms>]
   -> expires safe pre-provider claims by policy
@@ -158,7 +158,7 @@ The minimal safe order is:
 ```text
 latest queued Message selected
   -> atomic claim or lease recorded
-  -> ProviderSession recorded as running or accepted
+  -> MessageDelivery recorded as running or terminal
   -> runtime/protocol side effects
   -> terminal Message update: delivered, failed, stale, canceled
 ```

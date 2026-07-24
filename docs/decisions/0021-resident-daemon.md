@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. **Amends [0018 (Headless exec-stream as primary provider substrate)](0018-exec-stream-primary-substrate.md)** — it does not reverse it.
+Accepted for resident process reuse. Its former mirrored-session/NDJSON storage
+claims are superseded by ADR 0032.
 
 (0020 is the latest prior ADR; 0021 is the next free number.)
 
@@ -62,9 +63,9 @@ protocol:**
   FFI to set an `AtomicBool`; a hard `SIGKILL` cannot run it, but daemon death
   closes the children's stdin pipes and `claude` exits on EOF (the load-bearing
   safety net).
-- **Unchanged seams:** the neutral object model, `ProviderSession`, NDJSON
-  ingest, status inference, and the `(success, events, session_id, stderr)`
-  delivery tuple are reused verbatim — `run_claude_delivery` is untouched.
+- **Execution seam:** resident and one-shot modes return the same in-memory
+  outcome and Claude native session id; neither mode retains a Harness copy of
+  the provider stream.
 - **Conservative concurrency:** the global pool `Mutex` serializes turns across
   all members in v1 (delivery is already serial per agent). Per-member lock
   sharding is future work.

@@ -1,11 +1,11 @@
 {
-  "name": "agent-team",
-  "version": "0.1.0",
-  "description": "Mission/Wave and Agent Team orchestration for a Kimi Code Host, backed by Star Harness.",
+  "name": "star-harness",
+  "version": "0.2.0",
+  "description": "Thin Star Harness Mission/Wave and Agent Team integration for a Kimi Code Host.",
   "interface": {
-    "displayName": "Agent Team",
-    "shortDescription": "Form, drive, and observe Mission/Wave Agent Teams from a Kimi Code session.",
-    "longDescription": "Gives the host Kimi Code session Star Harness Mission/Wave and Agent Team capabilities (ADR 0025): create and asynchronously start Kimi ACP MemberRuns, exchange explicitly acknowledged messages, gate Waves, and inspect exact Dashboard deep links. Codex and Claude Member adapters remain planned and are not claimed by this package.",
+    "displayName": "Star Harness",
+    "shortDescription": "Plan Missions and coordinate long-lived Agent Teams.",
+    "longDescription": "Adds a thin Host orchestration skill, CLI shortcuts, optional Harness MCP registration, status hooks, and Dashboard deep links. Mission/Wave semantics and runtime behavior remain in the shared Harness core.",
     "developerName": "Multi-Agent Harness",
     "websiteURL": "https://github.com/cyl19970726/multi-agent-harness"
   },
@@ -16,7 +16,7 @@
   "sessionStart": {
     "skill": "agent-team-orchestrator"
   },
-  "skillInstructions": "Prefer the harness MCP tools for Mission/Wave/TeamRun calls; CLI commands are a fallback. Agent Team is for work whose result should stay with a living executor while you keep a pointer; use a sub-agent when the result must come back into your own context. The executable member adapter in this version is Kimi ACP only. Never let a member deploy, delete remote resources, or make payment choices on its own — escalate to the user. Every status output must include the exact Workspace-scoped TeamRun Dashboard URL returned by MCP.",
+  "skillInstructions": "Use the canonical Harness CLI as the complete path; MCP is an optional thin adapter. Mission stores durable intent, Wave stores Host plan and judgment, and an independent AgentTeamRun may span Waves. The current Host that creates and coordinates an Agent Team is its Team Lead, not an implicit MemberRun. Assignment messages own work and provider-native sessions own execution history. Never let a member perform sensitive external actions without the applicable Human approval.",
   "mcpServers": {
     "harness": {
       "command": "harness",

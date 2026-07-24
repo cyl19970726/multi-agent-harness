@@ -18,12 +18,14 @@ export function ContextRail({
   className,
   contentClassName,
   quiet = false,
+  hideHeader = false,
 }: {
   children: ReactNode;
   label?: string;
   className?: string;
   contentClassName?: string;
   quiet?: boolean;
+  hideHeader?: boolean;
 }) {
   return (
     <aside
@@ -34,7 +36,7 @@ export function ContextRail({
       )}
     >
       <div className="flex h-full min-h-0 flex-col">
-        <div className="border-b border-border px-4 py-3 xl:px-4">
+        <div className={cn("border-b border-border px-4 py-3 xl:px-4", hideHeader && "sr-only")}>
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             {label}
           </p>

@@ -23,13 +23,18 @@ consequences, affected modules, and validation path.
 | [0021](0021-resident-daemon.md) | active | Resident-daemon warm-child host |
 | [0022](0022-dynamic-workflow-runtime-json-ir.md) | partially superseded | Dynamic Workflow runtime; authoring details refined by 0023 |
 | [0023](0023-starlark-workflow-frontend.md) | partially superseded | Hermetic Starlark authoring and later convergence notes |
-| [0025](0025-agent-team-run-control-plane.md) | active, scoped | Agent Team executor substrate, scoped by Mission/Wave and Company OS boundaries |
-| [0026](0026-mission-wave-architecture.md) | active | Mission → ordered Wave → executor and transient-thinking policy |
+| [0025](0025-agent-team-run-control-plane.md) | partially superseded | Agent Team runtime substrate remains; Wave attempt ownership is superseded by 0034 |
+| [0026](0026-mission-wave-architecture.md) | partially superseded | Mission/Wave names and transient-thinking policy remain; Wave-as-executor hierarchy is superseded by 0034 |
 | [0027](0027-company-os-primary-model.md) | active | Docs + mixed Organization product cores and WorkItem/Approval bridge |
 | [0028](0028-retire-goal-phase-task-graph.md) | active | Retire the superseded coordination stack |
 | [0029](0029-agent-programmable-document-runtime.md) | active, staged | Basic docs, structured views and governed custom pages |
-| [0030](0030-company-os-sql-read-model.md) | active | SQL is a derived Company OS read/query/index layer, not the current canonical Store |
-| [0031](0031-agent-operated-docs-and-code-declared-pages.md) | active | Docs is an Agent-operated substrate with code-declared custom business pages |
+| [0030](0030-provider-interaction-contract.md) | active | Execution-mode profiles, durable PendingInteraction routing, and provider-versus-semantic truth |
+| [0031](0031-interactive-provider-modes-and-version-drift.md) | active | Chat/steer/interrupt semantics and adapter version review gates |
+| [0032](0032-provider-native-session-is-execution-truth.md) | active, implemented | Provider-native session owns transcript/tool activity/resume; Harness owns coordination, outcomes, refs and gates |
+| [0033](0033-agent-team-workspace-contract.md) | active, implemented | Agent Team store, project, run execution, and member worktree roots are distinct and observable |
+| [0034](0034-host-plan-waves-and-mission-teams.md) | active | Wave is the Host's versioned operational memo; Missions link independent long-lived Agent Teams |
+| [0035](0035-company-os-sql-read-model.md) | active | SQL is a derived Company OS read/query/index layer, not the current canonical Store |
+| [0036](0036-agent-operated-docs-and-code-declared-pages.md) | active | Docs is an Agent-operated substrate with code-declared custom business pages |
 
 ## Split Rule
 

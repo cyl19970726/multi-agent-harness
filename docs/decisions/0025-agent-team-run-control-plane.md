@@ -5,9 +5,18 @@
 Accepted as the v0 Agent Team substrate.
 
 Superseded in part by ADR
+[0034](0034-host-plan-waves-and-mission-teams.md): AgentTeamRun is no longer
+owned by one Wave on the primary path, and a Mission-scoped run may span Waves.
+This ADR remains historical context and canonical only for retained MemberRun,
+TeamMessage, PendingInteraction, correlation, and control-plane boundaries.
+
+Superseded in part by ADR
 [0026](0026-mission-wave-architecture.md) for top-level product hierarchy,
 Mission/Wave terminology, and thinking policy. This ADR remains canonical for
 the v0 Agent Team object set, delegation guardrails, and host/tooling split.
+ADR [0032](0032-provider-native-session-is-execution-truth.md) supersedes its
+durable provider-activity mirroring: provider transcript/tool/command/file
+events stay in the native session, while Harness keeps coordination facts.
 
 ## Context
 
@@ -58,7 +67,7 @@ AgentTeamRun    id, mission_id?, wave_id?, objective, status, budget_limit_usd?,
 MemberRun       id, team_run_id, name, role, provider, model?,
                 status(starting|idle|queued|running|waiting|reviewing|
                        blocked|completed|failed|stopped),
-                provider_session_id?, acp_session_id?, current_task_id?,
+                native_session?, current_task_id?,
                 worktree_ref?, owned_paths[], created_at / ended_at
 
 TeamMessage     id, team_run_id, task_id?, from, to[], kind,
@@ -66,15 +75,9 @@ TeamMessage     id, team_run_id, task_id?, from, to[], kind,
                 deliveries[{ member_id, policy, status, attempt, updated_at }]
 
 MemberAction    id, seq, team_run_id, member_run_id, task_id?,
-                type(plan_updated|message_sent|message_received|
-                     tool_started|tool_completed|file_changed|
-                     command_started|command_completed|test_started|
-                     test_completed|delegation_started|
-                     delegation_completed|review_started|
-                     review_completed|waiting_for_input|
-                     waiting_for_approval|blocked|error|completed),
+                action_type(free-form Harness coordination/control/outcome fact),
                 status(started|progress|succeeded|failed|cancelled),
-                title, summary, evidence_refs[],
+                provider_status?, semantic_status?, title, summary, evidence_refs[],
                 started_at / ended_at
 
 DelegationRun   id, team_run_id, parent_member_run_id, parent_task_id?,
@@ -96,9 +99,10 @@ Rules:
   gate identifies the accepted attempt.
 - `MemberRun` is an execution instance, not a standing durable employee record.
 - `TeamMessage` separates message semantics from per-recipient delivery state.
-- `MemberAction` stores explicit work facts. It does not store private
-  reasoning.
-- `TeamRunEvent` is a single ordered durable event log with sanitized payloads.
+- `MemberAction` and `TeamRunEvent` are transitional ordered rows for
+  Harness-owned coordination, control requests/acknowledgements, explicit
+  outcomes, and lifecycle facts. They never mirror provider-native work
+  activity.
 - A native attempt links both `mission_id` and `wave_id`. Optional identifiers
   remain at the Store/API boundary only for reading imported records; unlinked
   runs are excluded from active Agent Team product navigation and authoring.
@@ -113,8 +117,9 @@ an exposed legacy dependency graph:
 ```text
 TeamMessage(kind=assignment)
   -> correlation_id
-  -> MemberAction / blocker / handoff / review_result / delegation
-  -> artifacts, checks, summaries, explicit outcome
+  -> Harness blocker / handoff / review / PendingInteraction
+  -> explicit outcome + artifacts/check refs
+  -> NativeSessionRef for member execution detail
 ```
 
 This is the target proof chain for lane ownership inside the run.
@@ -168,7 +173,9 @@ object model.
   evidence.
 - It is never replayed or forwarded to other members.
 
-Persist explicit actions, artifacts, summaries, blockers, and outcomes instead.
+Persist Harness-owned control and coordination facts, artifact/check
+references, blockers, handoffs, and explicit outcomes instead. Provider-native
+activity remains readable through the member's native session binding.
 
 New Kimi adapter writes do not append provider reasoning as durable
 `MemberAction(type=thinking)` rows. Active stores are cleaned rather than
@@ -176,13 +183,10 @@ retaining those rows as a compatibility contract. The Console receives a sanitiz
 only through project-scoped SSE: it carries an expiry, is never tailed from a
 ledger, never appears in a snapshot, and is not replayed after reconnect.
 
-The Codex Team Member adapter follows the same boundary through a dedicated
-`codex exec --json` path. It consumes provider events in memory, forwards only
-a sanitized reasoning preview to the volatile SSE sink, and persists the final
-agent message as the member handoff. It does not reuse the persistent delivery
-path that stores raw provider event streams. Codex Team Member turns are
-read-only in this first slice; writable isolation and diff acceptance remain a
-separate capability.
+Provider adapters may normalize native events in memory for live display, but
+must not persist a second event stream. A member handoff is durable only when
+it is explicitly promoted into a Harness `TeamMessage`/outcome; ordinary final
+assistant text remains part of the native session.
 
 Provider model names are execution constraints, not cosmetic metadata. Codex
 maps a requested member model to `codex exec -m`; Kimi maps it after

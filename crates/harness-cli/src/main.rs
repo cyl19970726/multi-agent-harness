@@ -1,36 +1,43 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+#![recursion_limit = "256"]
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
     AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
-    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, HarnessTokenUsage, HarnessToolCall,
-    HarnessToolResult, HarnessTurnEvent, HarnessTurnEventKind, LaunchMcp, LaunchPermission,
-    LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionStatus, ProjectContext, ProjectKind, Proposal, ProposalStatus, ProviderCapabilities,
-    ProviderChildThread, ProviderChildThreadStatus, ProviderSession, ProviderSessionStatus,
-    SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery,
-    TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, LaunchMcp, LaunchPermission,
+    LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus,
+    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
+    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderInteractionMode, SenderKind, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
 
+mod codex_app_server;
 mod company_os_api;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
+mod native_session;
 mod project;
 mod resident;
 #[cfg(unix)]
@@ -629,7 +636,7 @@ fn project_show(harness_home: &Path, args: &[String]) -> CliResult<()> {
 
 /// Subdirectories of a store that hold non-JSONL payloads and must be copied
 /// wholesale during migration (provider session logs, prompts, runtime files).
-const STORE_PAYLOAD_DIRS: &[&str] = &["provider-sessions", "prompts", "runtimes"];
+const STORE_PAYLOAD_DIRS: &[&str] = &["prompts", "runtimes"];
 
 /// `harness project migrate [<local-store>] [--switch]` — move an existing
 /// repo-local `.harness/` store into the centralized per-project store
@@ -761,8 +768,8 @@ fn count_store_records(store_root: &Path) -> CliResult<u64> {
     Ok(total)
 }
 
-/// Copy every `*.jsonl` ledger and each payload dir (`provider-sessions/`,
-/// `prompts/`, `runtimes/`) from `src` into `dst`, preserving filenames. Returns the
+/// Copy active `*.jsonl` ledgers and the `prompts/` / `runtimes/` payload dirs
+/// from `src` into `dst`, preserving filenames. Returns the
 /// number of top-level entries copied. Existing destination files are overwritten
 /// (merge-copy under `--force`); missing source payload dirs are skipped.
 fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
@@ -772,6 +779,9 @@ fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             if let Some(name) = path.file_name() {
+                if name == "provider_sessions.jsonl" {
+                    continue;
+                }
                 std::fs::copy(&path, dst.join(name))?;
                 copied += 1;
             }
@@ -4284,16 +4294,35 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         // declares (streaming / resume / schema / cost / …). Derived from the
         // registry — adding a provider surfaces here for free.
         "providers" => {
+            let fail_on_review = args.iter().any(|arg| arg == "--fail-on-review");
+            let mut needs_review = false;
             let providers: Vec<serde_json::Value> = provider_registry()
                 .iter()
                 .map(|adapter| {
+                    let detected = provider_version_output(adapter.name());
+                    let mut profile = team_member_provider_profile(adapter.name());
+                    apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
+                    needs_review |= matches!(
+                        profile.compatibility_status,
+                        ProviderCompatibilityStatus::ReviewRequired
+                            | ProviderCompatibilityStatus::Incompatible
+                            | ProviderCompatibilityStatus::Unavailable
+                    );
                     serde_json::json!({
                         "provider": adapter.name(),
                         "capabilities": adapter.capabilities(),
+                        "team_member_profile": profile,
+                        "version_probe_error": detected.err(),
                     })
                 })
                 .collect();
             print_json(&providers)?;
+            if fail_on_review && needs_review {
+                return Err(CliError::Usage(
+                    "one or more provider adapters require review; inspect the JSON report"
+                        .to_string(),
+                ));
+            }
         }
         other => return Err(CliError::Usage(format!("unknown member command: {other}"))),
     }
@@ -4303,7 +4332,7 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close",
+        "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-delivery|gateway|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -4440,18 +4469,18 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 store,
                 &required(args, "--agent").or_else(|_| required(args, "--id"))?,
                 &required(args, "--message")?,
-                value(args, "--session").as_deref(),
+                value(args, "--delivery").as_deref(),
                 &value(args, "--reason").unwrap_or_else(|| "operator requested retry".into()),
                 has_flag(args, "--force"),
             )?;
             print_json(&result)?;
         }
-        "reconcile-session" => {
-            let result = reconcile_provider_session_value(
+        "reconcile-delivery" => {
+            let result = reconcile_delivery_value(
                 store,
                 &required(args, "--agent").or_else(|_| required(args, "--id"))?,
-                &required(args, "--session")?,
-                parse_provider_session_status(&required(args, "--status")?)?,
+                &required(args, "--delivery")?,
+                parse_provider_execution_status(&required(args, "--status")?)?,
                 parse_terminal_source(
                     value(args, "--terminal-source")
                         .as_deref()
@@ -4462,22 +4491,6 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&result)?;
         }
         "gateway" => run_provider_gateway(store, args)?,
-        "ingest" => {
-            let agent_id = required(args, "--agent")?;
-            let before_events = store.events()?.len();
-            ingest_provider_output(
-                store,
-                &agent_id,
-                value(args, "--runtime").as_deref(),
-                value(args, "--task").as_deref(),
-                &required(args, "--source")?,
-            )?;
-            let after_events = store.events()?.len();
-            print_json(&serde_json::json!({
-                "agent_member_id": agent_id,
-                "events_ingested": after_events.saturating_sub(before_events)
-            }))?;
-        }
         "close" => {
             let id = required(args, "--id")?;
             print_json(&close_agent_member_value(store, &id)?)?;
@@ -4488,14 +4501,17 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 }
 
 fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "team create|list|show|close")?;
+    require_subcommand(
+        args,
+        "team create|list|show|rename|add-member|remove-member|close|archive",
+    )?;
     match args[0].as_str() {
         "create" => {
             let team = AgentTeam {
                 id: value(args, "--id").unwrap_or_else(|| generated_id("team")),
                 name: required(args, "--name")?,
                 description: required(args, "--description")?,
-                owner_agent_id: required(args, "--owner")?,
+                owner_agent_id: required(args, "--lead").or_else(|_| required(args, "--owner"))?,
                 status: AgentTeamStatus::Active,
                 member_ids: many(args, "--member"),
                 created_at: now_string(),
@@ -4518,12 +4534,57 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
             print_json(&team)?;
         }
+        "rename" => {
+            let id = required(args, "--id")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            team.name = required(args, "--name")?;
+            if let Some(description) = value(args, "--description") {
+                team.description = description;
+            }
+            team.updated_at = now_string();
+            store.append_team(&team)?;
+            print_json(&team)?;
+        }
+        "add-member" | "remove-member" => {
+            let id = required(args, "--id")?;
+            let member_id = required(args, "--member")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            if args[0] == "add-member" {
+                if !latest_members(store)?.contains_key(&member_id) {
+                    return Err(CliError::Usage(format!(
+                        "agent member not found: {member_id}"
+                    )));
+                }
+                if !team.member_ids.iter().any(|id| id == &member_id) {
+                    team.member_ids.push(member_id);
+                }
+            } else {
+                team.member_ids.retain(|id| id != &member_id);
+            }
+            team.updated_at = now_string();
+            store.append_team(&team)?;
+            print_json(&team)?;
+        }
         "close" => {
             let id = required(args, "--id")?;
             let mut team = latest_teams(store)?
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
             team.status = AgentTeamStatus::Closed;
+            team.updated_at = now_string();
+            store.append_team(&team)?;
+            print_json(&team)?;
+        }
+        "archive" => {
+            let id = required(args, "--id")?;
+            let mut team = latest_teams(store)?
+                .remove(&id)
+                .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
+            team.status = AgentTeamStatus::Archived;
             team.updated_at = now_string();
             store.append_team(&team)?;
             print_json(&team)?;
@@ -4538,7 +4599,10 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 // ---------------------------------------------------------------------------
 
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "mission create|list|show|close")?;
+    require_subcommand(
+        args,
+        "mission create|list|show|update-context|create-team|link-team|unlink-team|close",
+    )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
@@ -4548,6 +4612,7 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 &required(args, "--title")?,
                 &required(args, "--objective")?,
                 value(args, "--desired-outcome"),
+                value(args, "--context"),
             )?;
             if json {
                 print_json(&mission)?;
@@ -4565,6 +4630,41 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .ok_or_else(|| CliError::Usage(format!("mission not found: {id}")))?;
             print_json(&mission)?;
         }
+        "update-context" => print_json(&revise_mission_context(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--context")?,
+        )?)?,
+        "link-team" => print_json(&revise_mission_team_link(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--team-id")?,
+            true,
+        )?)?,
+        "create-team" => {
+            let team = AgentTeam {
+                id: value(args, "--team-id").unwrap_or_else(|| generated_id("team")),
+                name: required(args, "--name")?,
+                description: required(args, "--description")?,
+                owner_agent_id: value(args, "--lead")
+                    .or_else(|| value(args, "--owner"))
+                    .unwrap_or_else(|| "host".to_string()),
+                status: AgentTeamStatus::Active,
+                member_ids: many(args, "--member"),
+                created_at: now_string(),
+                updated_at: now_string(),
+            };
+            persist_new_team(store, &team)?;
+            let mission =
+                revise_mission_team_link(store, &required(args, "--id")?, &team.id, true)?;
+            print_json(&serde_json::json!({"mission": mission, "team": team}))?;
+        }
+        "unlink-team" => print_json(&revise_mission_team_link(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--team-id")?,
+            false,
+        )?)?,
         "close" => {
             let mission = close_mission(
                 store,
@@ -4583,9 +4683,10 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Complete durable Mission intent only after every ordered Wave has settled
-/// through an accepted gate. Closeout is idempotent for the same outcome and
-/// immutable for a conflicting second outcome.
+/// Complete durable Mission intent only after every ordered Wave has an
+/// explicit Host advance outcome (stored in the compatible accepted-gate
+/// fields). Closeout is idempotent for the same outcome and immutable for a
+/// conflicting second outcome. It never changes linked Team lifecycle.
 pub(crate) fn close_mission(
     store: &HarnessStore,
     mission_id: &str,
@@ -4630,7 +4731,7 @@ pub(crate) fn close_mission(
 }
 
 fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "wave create|list|show|gate")?;
+    require_subcommand(args, "wave create|list|show|history|update|advance|gate")?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
@@ -4647,9 +4748,13 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     .transpose()?,
                 &required(args, "--title")?,
                 &required(args, "--objective")?,
-                parse_wave_executor_kind(&required(args, "--executor-kind")?)?,
+                parse_wave_executor_kind(
+                    &value(args, "--executor-kind").unwrap_or_else(|| "host".to_string()),
+                )?,
                 value(args, "--exit-criteria"),
                 value(args, "--plan-note"),
+                value(args, "--context"),
+                value(args, "--updated-by"),
             )?;
             if json {
                 print_json(&wave)?;
@@ -4671,6 +4776,31 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&waves)?;
         }
         "show" => print_json(&latest_wave(store, &required(args, "--id")?)?)?,
+        "history" => {
+            let id = required(args, "--id")?;
+            let history = store
+                .waves()?
+                .into_iter()
+                .filter(|wave| wave.id == id)
+                .collect::<Vec<_>>();
+            if history.is_empty() {
+                return Err(CliError::Usage(format!("wave not found: {id}")));
+            }
+            print_json(&history)?;
+        }
+        "update" => print_json(&revise_wave(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--context")?,
+            &value(args, "--updated-by").unwrap_or_else(|| "host".to_string()),
+        )?)?,
+        "advance" => print_json(&advance_wave(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--outcome")?,
+            &value(args, "--advanced-by").unwrap_or_else(|| "host".to_string()),
+            many(args, "--artifact"),
+        )?)?,
         "gate" => {
             let wave = gate_wave(
                 store,
@@ -4701,6 +4831,7 @@ pub(crate) fn create_mission(
     title: &str,
     objective: &str,
     desired_outcome: Option<String>,
+    context: Option<String>,
 ) -> CliResult<Mission> {
     let id = id.unwrap_or_else(|| generated_id("mission"));
     if id.trim().is_empty() {
@@ -4729,9 +4860,11 @@ pub(crate) fn create_mission(
         id,
         title: title.to_string(),
         objective: objective.to_string(),
+        context: context.unwrap_or_default(),
         desired_outcome,
         status: MissionStatus::Planned,
         wave_ids: Vec::new(),
+        agent_team_ids: Vec::new(),
         outcome_summary: None,
         completed_by: None,
         created_at: now_string(),
@@ -4739,6 +4872,74 @@ pub(crate) fn create_mission(
         completed_at: None,
     };
     store_conflict_as_usage(store.insert_mission(&mission))?;
+    Ok(mission)
+}
+
+pub(crate) fn revise_mission_context(
+    store: &HarnessStore,
+    mission_id: &str,
+    context: &str,
+) -> CliResult<Mission> {
+    if context.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission context must not be empty".to_string(),
+        ));
+    }
+    let mut mission = store
+        .latest_missions()?
+        .into_iter()
+        .find(|mission| mission.id == mission_id)
+        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+    if matches!(
+        mission.status,
+        MissionStatus::Completed | MissionStatus::Cancelled
+    ) {
+        return Err(CliError::Usage(format!(
+            "mission {mission_id} is terminal and cannot be revised"
+        )));
+    }
+    let expected = mission.clone();
+    mission.context = context.to_string();
+    mission.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_mission(&expected, &mission))?;
+    Ok(mission)
+}
+
+pub(crate) fn revise_mission_team_link(
+    store: &HarnessStore,
+    mission_id: &str,
+    team_id: &str,
+    link: bool,
+) -> CliResult<Mission> {
+    if team_id.trim().is_empty() {
+        return Err(CliError::Usage("team id must not be empty".to_string()));
+    }
+    let mut mission = store
+        .latest_missions()?
+        .into_iter()
+        .find(|mission| mission.id == mission_id)
+        .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+    if matches!(
+        mission.status,
+        MissionStatus::Completed | MissionStatus::Cancelled
+    ) {
+        return Err(CliError::Usage(format!(
+            "mission {mission_id} is terminal and its team relations are immutable"
+        )));
+    }
+    let expected = mission.clone();
+    if link {
+        if !latest_teams(store)?.contains_key(team_id) {
+            return Err(CliError::Usage(format!("team not found: {team_id}")));
+        }
+        if !mission.agent_team_ids.iter().any(|id| id == team_id) {
+            mission.agent_team_ids.push(team_id.to_string());
+        }
+    } else {
+        mission.agent_team_ids.retain(|id| id != team_id);
+    }
+    mission.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_mission(&expected, &mission))?;
     Ok(mission)
 }
 
@@ -4756,6 +4957,8 @@ pub(crate) fn create_wave(
     executor_kind: WaveExecutorKind,
     exit_criteria: Option<String>,
     plan_note: Option<String>,
+    context: Option<String>,
+    updated_by: Option<String>,
 ) -> CliResult<Wave> {
     if mission_id.trim().is_empty() || title.trim().is_empty() || objective.trim().is_empty() {
         return Err(CliError::Usage(
@@ -4787,6 +4990,9 @@ pub(crate) fn create_wave(
         index: index.unwrap_or(0),
         title: title.to_string(),
         objective: objective.to_string(),
+        context: context.unwrap_or_default(),
+        revision: 1,
+        updated_by: Some(updated_by.unwrap_or_else(|| "host".to_string())),
         exit_criteria,
         status: WaveStatus::Planned,
         executor_kind,
@@ -4803,6 +5009,71 @@ pub(crate) fn create_wave(
         updated_at: now,
     };
     store_conflict_as_usage(store.insert_wave_and_update_mission(wave, index, &now_string()))
+}
+
+pub(crate) fn revise_wave(
+    store: &HarnessStore,
+    wave_id: &str,
+    context: &str,
+    updated_by: &str,
+) -> CliResult<Wave> {
+    if context.trim().is_empty() || updated_by.trim().is_empty() {
+        return Err(CliError::Usage(
+            "wave context and updated-by actor must not be empty".to_string(),
+        ));
+    }
+    let mut wave = latest_wave(store, wave_id)?;
+    if matches!(
+        wave.status,
+        WaveStatus::Completed | WaveStatus::Cancelled | WaveStatus::Failed
+    ) {
+        return Err(CliError::Usage(format!(
+            "wave {wave_id} is terminal and cannot be revised"
+        )));
+    }
+    let expected = wave.clone();
+    wave.context = context.to_string();
+    wave.revision = wave.revision.max(1).saturating_add(1);
+    wave.updated_by = Some(updated_by.to_string());
+    wave.status = WaveStatus::Running;
+    wave.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
+    Ok(wave)
+}
+
+/// Record the Host's decision to advance its operational plan. Active members,
+/// assignments, and provider sessions intentionally remain untouched.
+pub(crate) fn advance_wave(
+    store: &HarnessStore,
+    wave_id: &str,
+    outcome: &str,
+    advanced_by: &str,
+    artifact_refs: Vec<String>,
+) -> CliResult<Wave> {
+    if outcome.trim().is_empty()
+        || advanced_by.trim().is_empty()
+        || artifact_refs.iter().any(|value| value.trim().is_empty())
+    {
+        return Err(CliError::Usage(
+            "wave advance outcome, actor, and artifact refs must not be empty".to_string(),
+        ));
+    }
+    let mut wave = latest_wave(store, wave_id)?;
+    if wave.status == WaveStatus::Completed && wave.gate_status == WaveGateStatus::Accepted {
+        return Ok(wave);
+    }
+    let expected = wave.clone();
+    let now = now_string();
+    wave.status = WaveStatus::Completed;
+    wave.gate_status = WaveGateStatus::Accepted;
+    wave.outcome_summary = Some(outcome.to_string());
+    wave.artifact_refs = artifact_refs;
+    wave.accepted_by = Some(advanced_by.to_string());
+    wave.accepted_at = Some(now.clone());
+    wave.updated_by = Some(advanced_by.to_string());
+    wave.updated_at = now;
+    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
+    Ok(wave)
 }
 
 /// Apply the lightweight Wave gate. This is deliberately separate from the
@@ -5037,8 +5308,268 @@ struct TeamMemberSpec {
     name: String,
     role: String,
     provider: String,
+    execution_mode: Option<String>,
     model: Option<String>,
+    worktree_ref: Option<String>,
     owned_paths: Vec<String>,
+    resume_native_session_id: Option<String>,
+}
+
+fn team_member_specs_from_definition(
+    store: &HarnessStore,
+    team_id: &str,
+) -> CliResult<Vec<TeamMemberSpec>> {
+    let team = latest_teams(store)?
+        .remove(team_id)
+        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+    let members = latest_members(store)?;
+    team.member_ids
+        .iter()
+        .map(|member_id| {
+            let member = members.get(member_id).ok_or_else(|| {
+                CliError::Usage(format!(
+                    "team {team_id} references missing agent member {member_id}"
+                ))
+            })?;
+            Ok(TeamMemberSpec {
+                name: member.name.clone(),
+                role: member.role.clone(),
+                provider: member.provider.clone(),
+                execution_mode: None,
+                model: member.model.clone(),
+                worktree_ref: member.worktree_ref.clone(),
+                owned_paths: Vec::new(),
+                resume_native_session_id: member
+                    .native_session
+                    .as_ref()
+                    .map(|session| session.native_session_id.clone()),
+            })
+        })
+        .collect()
+}
+
+fn team_member_provider_profile(provider: &str) -> ProviderIntegrationProfile {
+    team_member_provider_profile_for_mode(provider, None)
+}
+
+fn team_member_provider_profile_for_mode(
+    provider: &str,
+    requested_mode: Option<&str>,
+) -> ProviderIntegrationProfile {
+    if provider == "codex" && requested_mode == Some("codex_app_server") {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "codex_app_server".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("codex-app-server-v1".to_string()),
+            reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-22".to_string()),
+            compatibility_note: Some(
+                "Interactive contract reviewed against generated app-server schemas.".to_string(),
+            ),
+            interaction_mode: ProviderInteractionMode::PauseAndResume,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
+    match provider {
+        "kimi" => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "kimi_acp".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("kimi-acp-v1".to_string()),
+            reviewed_provider_versions: vec!["0.27.0".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-21".to_string()),
+            compatibility_note: Some("Version is checked again after the ACP initialize handshake.".to_string()),
+            interaction_mode: ProviderInteractionMode::PauseAndResume,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Summary,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+        "codex" => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "codex_exec".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("codex-exec-v1".to_string()),
+            reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-21".to_string()),
+            compatibility_note: Some("Codex rollout storage is the execution history; Harness keeps only its NativeSessionRef and coordination outcome. App-server is the interactive mode.".to_string()),
+            // codex exec --json is non-interactive in this adapter. A future
+            // follow-up contract must first turn an end-of-round blocker into
+            // a PendingInteraction; do not claim it before that exists.
+            interaction_mode: ProviderInteractionMode::Unsupported,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: false,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+        "claude" => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "claude_cli".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("claude-cli-native-v1".to_string()),
+            reviewed_provider_versions: vec!["2.1.181".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-07-22".to_string()),
+            compatibility_note: Some(
+                "Native stream-json identity, local project session storage, and --resume reviewed."
+                    .to_string(),
+            ),
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: false,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+        _ => ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "unsupported_team_member".to_string(),
+            provider_version: None,
+            adapter_contract_version: None,
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: None,
+            compatibility_note: Some("No Agent Team Member adapter contract is registered.".to_string()),
+            interaction_mode: ProviderInteractionMode::Unsupported,
+            tool_event_fidelity: ProviderEventFidelity::None,
+            artifact_event_fidelity: ProviderEventFidelity::None,
+            supports_cancel: false,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        },
+    }
+}
+
+fn apply_provider_version(
+    profile: &mut ProviderIntegrationProfile,
+    provider_version: Option<String>,
+) {
+    profile.provider_version = provider_version;
+    profile.compatibility_status = match profile.provider_version.as_deref() {
+        None => ProviderCompatibilityStatus::Unavailable,
+        Some(version)
+            if profile
+                .reviewed_provider_versions
+                .iter()
+                .any(|known| known == version) =>
+        {
+            ProviderCompatibilityStatus::Current
+        }
+        Some(_) if profile.reviewed_provider_versions.is_empty() => {
+            ProviderCompatibilityStatus::Unknown
+        }
+        Some(_) => ProviderCompatibilityStatus::ReviewRequired,
+    };
+    profile.compatibility_note = Some(match profile.compatibility_status {
+        ProviderCompatibilityStatus::Current => "Installed provider version matches an adapter-reviewed version.".to_string(),
+        ProviderCompatibilityStatus::ReviewRequired => "Installed provider version has not been reviewed against this adapter contract; regenerate protocol schemas and run provider acceptance before promotion.".to_string(),
+        ProviderCompatibilityStatus::Unavailable => "Provider version could not be detected.".to_string(),
+        ProviderCompatibilityStatus::Incompatible => "Provider version is known to be incompatible with this adapter contract.".to_string(),
+        ProviderCompatibilityStatus::Unknown => "No reviewed provider version is registered for this execution mode.".to_string(),
+    });
+}
+
+fn native_session_ref(
+    member: &MemberRun,
+    native_session_id: impl Into<String>,
+    native_locator_kind: &str,
+) -> NativeSessionRef {
+    let profile = member.provider_profile.as_ref();
+    NativeSessionRef {
+        provider: member.provider.clone(),
+        execution_mode: profile
+            .map(|value| value.execution_mode.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        native_session_id: native_session_id.into(),
+        native_locator_kind: native_locator_kind.to_string(),
+        provider_version: profile.and_then(|value| value.provider_version.clone()),
+        adapter_contract_version: profile
+            .and_then(|value| value.adapter_contract_version.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: profile.is_some_and(|value| value.supports_resume),
+        last_verified_at: Some(now_string()),
+        parent_native_session_id: member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.clone()),
+    }
+}
+
+fn provider_native_session_ref(
+    provider: &str,
+    native_session_id: impl Into<String>,
+) -> NativeSessionRef {
+    let profile = team_member_provider_profile(provider);
+    let native_locator_kind = match provider {
+        "codex" => "codex_rollout",
+        "kimi" => "kimi_code_session",
+        "claude" => "claude_project_session",
+        _ => "provider_native_session",
+    };
+    NativeSessionRef {
+        provider: provider.to_string(),
+        execution_mode: profile.execution_mode,
+        native_session_id: native_session_id.into(),
+        native_locator_kind: native_locator_kind.to_string(),
+        provider_version: profile.provider_version,
+        adapter_contract_version: profile
+            .adapter_contract_version
+            .unwrap_or_else(|| "unknown".to_string()),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: profile.supports_resume,
+        last_verified_at: Some(now_string()),
+        parent_native_session_id: None,
+    }
+}
+
+fn provider_version_output(provider: &str) -> Result<String, String> {
+    let binary = match provider {
+        "kimi" => resolve_kimi_bin(),
+        "codex" => "codex".to_string(),
+        "claude" => "claude".to_string(),
+        other => other.to_string(),
+    };
+    let output = Command::new(&binary)
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("failed to run {binary} --version: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{binary} --version exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Err(format!("{binary} --version returned no version"));
+    }
+    Ok(match provider {
+        "codex" => raw.strip_prefix("codex-cli ").unwrap_or(&raw).to_string(),
+        "claude" => raw.split_whitespace().next().unwrap_or(&raw).to_string(),
+        _ => raw,
+    })
 }
 
 /// Parse one `--member name:role:provider[:model][@path1,path2]` spec.
@@ -5061,16 +5592,126 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2])"
         )));
     }
+    let (provider, execution_mode) = match parts[2].split_once('/') {
+        Some((provider, mode)) if !provider.is_empty() && !mode.is_empty() => (
+            provider.to_string(),
+            Some(match mode {
+                "app-server" | "app_server" => "codex_app_server".to_string(),
+                "exec" => "codex_exec".to_string(),
+                "acp" => "kimi_acp".to_string(),
+                "cli" if provider == "claude" => "claude_cli".to_string(),
+                other => other.to_string(),
+            }),
+        ),
+        _ => (parts[2].to_string(), None),
+    };
     Ok(TeamMemberSpec {
         name: parts[0].to_string(),
         role: parts[1].to_string(),
-        provider: parts[2].to_string(),
+        provider,
+        execution_mode,
         model: parts
             .get(3)
             .map(|model| model.to_string())
             .filter(|model| !model.is_empty()),
+        worktree_ref: None,
         owned_paths,
+        resume_native_session_id: None,
     })
+}
+
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    Some(project::canonicalize_best_effort(&resolved))
+}
+
+fn git_worktree_root(root: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let value = raw.trim();
+    (!value.is_empty()).then(|| project::canonicalize_best_effort(Path::new(value)))
+}
+
+/// Resolve and validate an explicit TeamRun/member workspace override. A
+/// registered project may execute at its own root or at any Git worktree that
+/// shares its git common directory, including Codex worktrees outside the
+/// project path. Raw-store compatibility mode has no registered project
+/// identity, so it can only require an existing directory.
+fn validate_workspace_override(
+    project_context: Option<&ProjectContext>,
+    raw: &str,
+    label: &str,
+) -> CliResult<String> {
+    if raw.trim().is_empty() {
+        return Err(CliError::Usage(format!("{label} must not be empty")));
+    }
+    let base = project_context
+        .map(|context| context.project_root.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let requested = PathBuf::from(raw);
+    let requested = if requested.is_absolute() {
+        requested
+    } else {
+        base.join(requested)
+    };
+    let resolved = project::canonicalize_best_effort(&requested);
+    if !resolved.is_dir() {
+        return Err(CliError::Usage(format!(
+            "{label} is not an existing directory: {}",
+            resolved.display()
+        )));
+    }
+    if let Some(context) = project_context {
+        let project_root = project::canonicalize_best_effort(&context.project_root);
+        let allowed = resolved == project_root
+            || (git_worktree_root(&resolved).as_ref() == Some(&resolved)
+                && git_common_dir(&resolved)
+                    .zip(git_common_dir(&project_root))
+                    .is_some_and(|(candidate, project)| candidate == project));
+        if !allowed {
+            return Err(CliError::Usage(format!(
+                "{label} must be the selected project root {} or a Git worktree sharing its git common directory",
+                project_root.display()
+            )));
+        }
+    }
+    Ok(resolved.display().to_string())
+}
+
+fn default_execution_root(project_context: Option<&ProjectContext>) -> String {
+    let root = project_context
+        .map(|context| context.project_root.clone())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    project::canonicalize_best_effort(&root)
+        .display()
+        .to_string()
 }
 
 /// Everything `team-run create` journals, returned so the CLI/HTTP layers can
@@ -5079,6 +5720,62 @@ struct CreatedTeamRun {
     team_run: AgentTeamRun,
     member_runs: Vec<MemberRun>,
     assignment_messages: Vec<TeamMessage>,
+}
+
+fn build_member_run_for_team(
+    project_context: Option<&ProjectContext>,
+    team_run_id: &str,
+    member: &TeamMemberSpec,
+) -> CliResult<MemberRun> {
+    let profile =
+        team_member_provider_profile_for_mode(&member.provider, member.execution_mode.as_deref());
+    let native_session =
+        member
+            .resume_native_session_id
+            .as_ref()
+            .map(|session_id| NativeSessionRef {
+                provider: member.provider.clone(),
+                execution_mode: profile.execution_mode.clone(),
+                native_session_id: session_id.clone(),
+                native_locator_kind: match member.provider.as_str() {
+                    "codex" => "codex_rollout",
+                    "kimi" => "kimi_code_session",
+                    "claude" => "claude_project_session",
+                    _ => "provider_native",
+                }
+                .to_string(),
+                provider_version: profile.provider_version.clone(),
+                adapter_contract_version: profile
+                    .adapter_contract_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                availability: NativeSessionAvailability::Unknown,
+                supports_resume: profile.supports_resume,
+                last_verified_at: None,
+                parent_native_session_id: Some(session_id.clone()),
+            });
+    Ok(MemberRun {
+        id: generated_id("member-run"),
+        team_run_id: team_run_id.to_string(),
+        slot_id: None,
+        name: member.name.clone(),
+        role: member.role.clone(),
+        provider: member.provider.clone(),
+        model: member.model.clone(),
+        provider_profile: Some(profile),
+        status: MemberRunStatus::Idle,
+        native_session,
+        worktree_ref: member
+            .worktree_ref
+            .as_deref()
+            .map(|value| validate_workspace_override(project_context, value, "member worktree_ref"))
+            .transpose()?,
+        workspace_snapshot: None,
+        owned_paths: member.owned_paths.clone(),
+        started_at: now_string(),
+        last_event_at: None,
+        finished_at: None,
+    })
 }
 
 fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
@@ -5093,16 +5790,20 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 /// MemberRun per member, one queued assignment TeamMessage per member
 /// (from the reserved "host" sender), and a folded TeamRunEvent per created
 /// entity (host-sourced, seq increasing). Shared by the `team-run create` CLI
-/// arm and POST /v1/team-runs. `previous_run_id` records retry lineage. For a
-/// native Wave it must name an earlier attempt of that same Mission/Wave.
+/// arm and POST /v1/team-runs. `previous_run_id` records explicit retry
+/// lineage. It must remain inside the same Mission/Team relation; historical
+/// direct-Wave retries additionally remain inside that exact Wave.
 #[allow(clippy::too_many_arguments)]
 fn create_team_run(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    requested_execution_root: Option<String>,
     objective: &str,
     budget_limit_usd: Option<f64>,
     host_surface: &str,
     host_thread_id: Option<String>,
     previous_run_id: Option<String>,
+    agent_team_id: Option<String>,
     mission_id: Option<String>,
     wave_id: Option<String>,
     members: &[TeamMemberSpec],
@@ -5138,6 +5839,10 @@ fn create_team_run(
             "agent_team runs require at least one member".to_string(),
         ));
     }
+    let execution_root = match requested_execution_root {
+        Some(root) => validate_workspace_override(project_context, &root, "execution_root")?,
+        None => default_execution_root(project_context),
+    };
     let mut member_names = std::collections::HashSet::new();
     for member in members {
         if member.name.trim().is_empty()
@@ -5164,10 +5869,48 @@ fn create_team_run(
                 member.name
             )));
         }
+        if let Some(worktree_ref) = member.worktree_ref.as_deref() {
+            validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
+        }
+        if let Some(mode) = member.execution_mode.as_deref() {
+            let allowed = matches!(
+                (member.provider.as_str(), mode),
+                ("codex", "codex_exec")
+                    | ("codex", "codex_app_server")
+                    | ("kimi", "kimi_acp")
+                    | ("claude", "claude_cli")
+            );
+            if !allowed {
+                return Err(CliError::Usage(format!(
+                    "execution mode {mode} is not registered for provider {}",
+                    member.provider
+                )));
+            }
+        }
     }
     let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
-    // A wave chained onto a previous run must name a run that exists. Linked
-    // retries must stay inside the exact same native Mission/Wave.
+    if let Some(team_id) = agent_team_id.as_deref() {
+        let team = latest_teams(store)?
+            .remove(team_id)
+            .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+        if team.status != AgentTeamStatus::Active {
+            return Err(CliError::Usage(format!("team {team_id} is not active")));
+        }
+        if let Some(mission_id) = mission_id.as_deref() {
+            let mission = store
+                .latest_missions()?
+                .into_iter()
+                .find(|mission| mission.id == mission_id)
+                .ok_or_else(|| CliError::Usage(format!("mission not found: {mission_id}")))?;
+            if !mission.agent_team_ids.iter().any(|id| id == team_id) {
+                return Err(CliError::Usage(format!(
+                    "team {team_id} is not linked to mission {mission_id}; run `harness mission link-team` first"
+                )));
+            }
+        }
+    }
+    // Retry lineage never crosses Mission or stable Team identity. Historical
+    // direct-Wave retries also stay inside that exact Wave.
     if let Some(previous) = previous_run_id.as_deref() {
         let previous = latest_team_run(store, previous)?;
         if let Some(wave) = wave.as_ref() {
@@ -5179,41 +5922,40 @@ fn create_team_run(
                     previous.id, wave.mission_id, wave.id
                 )));
             }
+        } else {
+            if previous.mission_id != mission_id {
+                return Err(CliError::Usage(format!(
+                    "previous run {} is not in the same mission",
+                    previous.id
+                )));
+            }
+            if previous.agent_team_id != agent_team_id {
+                return Err(CliError::Usage(format!(
+                    "previous run {} is not for the same agent team",
+                    previous.id
+                )));
+            }
         }
     }
     let run_id = generated_id("team-run");
     let mut member_runs = Vec::new();
     let mut member_run_ids = Vec::new();
     for member in members {
-        let member_run = MemberRun {
-            id: generated_id("member-run"),
-            team_run_id: run_id.clone(),
-            slot_id: None,
-            name: member.name.clone(),
-            role: member.role.clone(),
-            provider: member.provider.clone(),
-            model: member.model.clone(),
-            status: MemberRunStatus::Idle,
-            provider_session_id: None,
-            acp_session_id: None,
-            worktree_ref: None,
-            owned_paths: member.owned_paths.clone(),
-            started_at: now_string(),
-            last_event_at: None,
-            finished_at: None,
-        };
+        let member_run = build_member_run_for_team(project_context, &run_id, member)?;
         member_run_ids.push(member_run.id.clone());
         member_runs.push(member_run);
     }
     let team_run = AgentTeamRun {
         id: run_id.clone(),
-        definition_id: None,
+        definition_id: agent_team_id.clone(),
+        agent_team_id,
         previous_run_id,
         mission_id,
         wave_id,
         host_surface: host_surface.to_string(),
         host_thread_id,
         objective: objective.to_string(),
+        execution_root: Some(execution_root),
         status: TeamRunStatus::Planning,
         member_run_ids,
         budget_limit_usd,
@@ -5260,6 +6002,7 @@ fn create_team_run(
         let message = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: run_id.clone(),
+            origin_wave_id: team_run.wave_id.clone(),
             from_member_id: "host".to_string(),
             to_member_ids: vec![member_run.id.clone()],
             kind: TeamMessageKind::Assignment,
@@ -5302,9 +6045,203 @@ fn create_team_run(
     })
 }
 
-/// Validate optional outer Mission/Wave joins for a new AgentTeamRun. A Wave
-/// is owned by one native Mission, so `--wave-id` can safely supply a missing
-/// mission id; conflicting or unknown joins fail before any run rows append.
+fn add_team_run_member(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    team_run_id: &str,
+    member: &TeamMemberSpec,
+    assignment: &str,
+    origin_wave_id: Option<String>,
+) -> CliResult<(AgentTeamRun, MemberRun, TeamMessage)> {
+    if assignment.trim().is_empty() {
+        return Err(CliError::Usage(
+            "new member assignment must not be empty".to_string(),
+        ));
+    }
+    let current = latest_team_run(store, team_run_id)?;
+    if !matches!(
+        current.status,
+        TeamRunStatus::Planning | TeamRunStatus::Running | TeamRunStatus::Waiting
+    ) {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} is {} and cannot accept a member",
+            serde_snake_label(&current.status)
+        )));
+    }
+    if latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .any(|existing| existing.team_run_id == team_run_id && existing.name == member.name)
+    {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} already has a member named {}",
+            member.name
+        )));
+    }
+    let member_run = build_member_run_for_team(project_context, team_run_id, member)?;
+    let mut next = current.clone();
+    next.member_run_ids.push(member_run.id.clone());
+    next.updated_at = now_string();
+    let linked_wave_status = match current.status {
+        TeamRunStatus::Planning => WaveStatus::Planned,
+        TeamRunStatus::Running => WaveStatus::Running,
+        TeamRunStatus::Waiting | TeamRunStatus::Reviewing => WaveStatus::Waiting,
+        TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled => {
+            WaveStatus::Completed
+        }
+    };
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &current,
+        &next,
+        linked_wave_status,
+        &now_string(),
+    ))?;
+    store.append_member_run(&member_run)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Host,
+        Some(member_run.id.clone()),
+        "member_run",
+        &member_run.id,
+        "created",
+        &format!(
+            "member {} ({}/{}) joined an existing run",
+            member_run.name, member_run.role, member_run.provider
+        ),
+    )?;
+    let message = send_team_message(
+        store,
+        team_run_id,
+        "host",
+        vec![member_run.id.clone()],
+        TeamMessageKind::Assignment,
+        assignment,
+        None,
+        None,
+        origin_wave_id,
+    )?;
+    Ok((next, member_run, message))
+}
+
+fn rename_team_run_member(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    name: &str,
+) -> CliResult<MemberRun> {
+    if name.trim().is_empty() {
+        return Err(CliError::Usage(
+            "member display name must not be empty".to_string(),
+        ));
+    }
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let members = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    if members
+        .iter()
+        .any(|member| member.id != member_run_id && member.name == name)
+    {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} already has a member named {name}"
+        )));
+    }
+    let mut member = members
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.name == name {
+        return Ok(member);
+    }
+    let previous_name = member.name.clone();
+    member.name = name.to_string();
+    member.last_event_at = Some(now_string());
+    store.append_member_run(&member)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "renamed",
+        &format!("member {previous_name} renamed to {name}"),
+    )?;
+    Ok(member)
+}
+
+fn deactivate_team_run_member(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    reason: &str,
+) -> CliResult<MemberRun> {
+    if reason.trim().is_empty() {
+        return Err(CliError::Usage(
+            "member deactivation reason must not be empty".to_string(),
+        ));
+    }
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let mut member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.status == MemberRunStatus::Stopped {
+        return Ok(member);
+    }
+    if matches!(
+        member.status,
+        MemberRunStatus::Starting | MemberRunStatus::Running
+    ) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is {}; interrupt its provider turn first, then deactivate it",
+            serde_snake_label(&member.status)
+        )));
+    }
+    if matches!(
+        member.status,
+        MemberRunStatus::Completed | MemberRunStatus::Failed
+    ) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is already terminal ({})",
+            serde_snake_label(&member.status)
+        )));
+    }
+    let now = now_string();
+    member.status = MemberRunStatus::Stopped;
+    member.last_event_at = Some(now.clone());
+    member.finished_at = Some(now);
+    store.append_member_run(&member)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "deactivated",
+        &format!("member {} deactivated: {reason}", member.name),
+    )?;
+    Ok(member)
+}
+
+/// Validate optional outer Mission/Wave joins for a new AgentTeamRun.
+/// Mission-only is the primary long-lived-team path. Supplying a Wave retains
+/// legacy direct-executor compatibility and can derive its Mission.
 fn resolve_team_run_mission_wave(
     store: &HarnessStore,
     mission_id: Option<String>,
@@ -5321,13 +6258,6 @@ fn resolve_team_run_mission_wave(
         ));
     }
     let mut mission_id = mission_id;
-
-    if mission_id.is_some() && wave_id.is_none() {
-        return Err(CliError::Usage(
-            "a native Mission-linked TeamRun requires --wave-id; omit both ids only for an unlinked compatibility run"
-                .to_string(),
-        ));
-    }
 
     if mission_id.is_some()
         && !store.latest_missions()?.iter().any(|mission| {
@@ -5395,6 +6325,7 @@ fn send_team_message(
     body: &str,
     correlation_id: Option<String>,
     causation_id: Option<String>,
+    origin_wave_id: Option<String>,
 ) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
@@ -5427,11 +6358,26 @@ fn send_team_message(
             )));
         }
     }
+    if let Some(origin_wave_id) = origin_wave_id.as_deref() {
+        let mission_id = run.mission_id.as_deref().ok_or_else(|| {
+            CliError::Usage(format!(
+                "origin_wave_id requires team run {team_run_id} to be linked to a Mission"
+            ))
+        })?;
+        let wave = latest_wave(store, origin_wave_id)?;
+        if wave.mission_id != mission_id {
+            return Err(CliError::Usage(format!(
+                "origin Wave {origin_wave_id} belongs to Mission {}, not TeamRun Mission {mission_id}",
+                wave.mission_id
+            )));
+        }
+    }
     let (correlation_id, causation_id) =
         resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
     let message = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
+        origin_wave_id,
         from_member_id: from_member_id.to_string(),
         to_member_ids: to_member_ids.clone(),
         kind,
@@ -5689,6 +6635,92 @@ pub(crate) fn transition_team_run(
     Ok(next)
 }
 
+/// Recover a running attempt only after the operator has independently stopped
+/// every provider process. This is not cooperative interruption: the explicit
+/// CLI flag is an auditable attestation used when the foreground orchestrator
+/// disappeared before it could journal terminal state.
+fn recover_interrupted_team_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+    reason: &str,
+    cancelled_by: &str,
+) -> CliResult<AgentTeamRun> {
+    if reason.trim().is_empty() || cancelled_by.trim().is_empty() {
+        return Err(CliError::Usage(
+            "interrupted recovery requires non-empty --reason and --cancelled-by".to_string(),
+        ));
+    }
+    let current = latest_team_run(store, team_run_id)?;
+    if current.status != TeamRunStatus::Running {
+        return Err(CliError::Usage(format!(
+            "--confirm-provider-stopped is only valid for a running team run; {} is {}",
+            current.id,
+            serde_snake_label(&current.status)
+        )));
+    }
+
+    let ledger = TeamRunLedger::new(store, team_run_id);
+    let members = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    for member in members {
+        if matches!(
+            member.status,
+            MemberRunStatus::Completed
+                | MemberRunStatus::Failed
+                | MemberRunStatus::Stopped
+                | MemberRunStatus::Blocked
+        ) {
+            continue;
+        }
+        let mut stopped = member.clone();
+        stopped.status = MemberRunStatus::Stopped;
+        stopped.last_event_at = Some(now_string());
+        stopped.finished_at = Some(now_string());
+        ledger.save_member_run(&stopped)?;
+        ledger.append_action(
+            &member.id,
+            "interrupted",
+            MemberActionStatus::Cancelled,
+            "provider execution stopped",
+            reason,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Host,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            "updated",
+            &format!(
+                "member {} marked stopped after provider interruption",
+                member.name
+            ),
+        )?;
+    }
+
+    let mut cancelled = current.clone();
+    cancelled.status = TeamRunStatus::Cancelled;
+    cancelled.updated_at = now_string();
+    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+        &current,
+        &cancelled,
+        WaveStatus::Planned,
+        &now_string(),
+    ))?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        None,
+        "team_run",
+        team_run_id,
+        "updated",
+        &format!(
+            "team run recovered as cancelled after {cancelled_by} confirmed provider processes stopped: {reason}"
+        ),
+    )?;
+    Ok(cancelled)
+}
+
 /// Parse a team message kind from its snake_case wire name.
 fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
@@ -5729,15 +6761,45 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|start|send|events|complete|cancel",
+        "team-run create|list|status|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "create" => {
-            let members: Vec<TeamMemberSpec> = many(args, "--member")
+            let agent_team_id = value(args, "--agent-team-id");
+            let mut members: Vec<TeamMemberSpec> = many(args, "--member")
                 .iter()
                 .map(|raw| parse_team_member_spec(raw))
                 .collect::<CliResult<_>>()?;
+            if members.is_empty() {
+                if let Some(team_id) = agent_team_id.as_deref() {
+                    members = team_member_specs_from_definition(store, team_id)?;
+                }
+            }
+            for resume in many(args, "--resume-member") {
+                let (name, session_id) = resume.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--resume-member expects name:native-session-id".to_string())
+                })?;
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--resume-member names unknown member {name}"))
+                    })?;
+                member.resume_native_session_id = Some(session_id.to_string());
+            }
+            for override_spec in many(args, "--member-worktree") {
+                let (name, worktree_ref) = override_spec.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--member-worktree expects name:path".to_string())
+                })?;
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--member-worktree names unknown member {name}"))
+                    })?;
+                member.worktree_ref = Some(worktree_ref.to_string());
+            }
             let budget_limit_usd = value(args, "--budget-usd")
                 .map(|raw| {
                     raw.parse::<f64>()
@@ -5746,11 +6808,14 @@ fn team_run_command(
                 .transpose()?;
             let created = create_team_run(
                 store,
+                resolved.context.as_ref(),
+                value(args, "--execution-root"),
                 &required(args, "--objective")?,
                 budget_limit_usd,
                 &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
                 value(args, "--host-thread-id"),
                 value(args, "--previous"),
+                agent_team_id,
                 value(args, "--mission-id"),
                 value(args, "--wave-id"),
                 &members,
@@ -5774,11 +6839,40 @@ fn team_run_command(
         }
         "cancel" => {
             let id = required(args, "--id")?;
-            let run = transition_team_run(store, &id, TeamRunStatus::Cancelled)?;
+            let run = if has_flag(args, "--confirm-provider-stopped") {
+                recover_interrupted_team_run(
+                    store,
+                    &id,
+                    &required(args, "--reason")?,
+                    &value(args, "--cancelled-by").unwrap_or_else(|| "host".to_string()),
+                )?
+            } else {
+                transition_team_run(store, &id, TeamRunStatus::Cancelled)?
+            };
             if json {
                 print_json(&serde_json::json!(run))?;
             } else {
                 println!("{}\t{}", run.id, serde_snake_label(&run.status));
+            }
+        }
+        "resolve-interaction" => {
+            let team_run_id = required(args, "--id")?;
+            let interaction_id = required(args, "--interaction-id")?;
+            let mut body = serde_json::json!({
+                "resolved_by": value(args, "--resolved-by").unwrap_or_else(|| "host".to_string())
+            });
+            if let Some(option_id) = value(args, "--option-id") {
+                body["option_id"] = serde_json::Value::String(option_id);
+            }
+            if let Some(response_text) = value(args, "--response-text") {
+                body["response_text"] = serde_json::Value::String(response_text);
+            }
+            let interaction =
+                resolve_pending_interaction_value(store, &team_run_id, &interaction_id, &body)?;
+            if json {
+                print_json(&interaction)?;
+            } else {
+                println!("{}", interaction["id"].as_str().unwrap_or(&interaction_id));
             }
         }
         "list" => {
@@ -5898,6 +6992,7 @@ fn team_run_command(
                 &required(args, "--body")?,
                 value(args, "--correlation-id"),
                 value(args, "--causation-id"),
+                value(args, "--origin-wave-id"),
             )?;
             if json {
                 print_json(&message)?;
@@ -5905,6 +7000,34 @@ fn team_run_command(
                 println!("{}", message.id);
             }
         }
+        "add-member" => {
+            let member = parse_team_member_spec(&required(args, "--member")?)?;
+            let (run, member, assignment) = add_team_run_member(
+                store,
+                resolved.context.as_ref(),
+                &required(args, "--id")?,
+                &member,
+                &required(args, "--assignment")?,
+                value(args, "--origin-wave-id"),
+            )?;
+            print_json(&serde_json::json!({
+                "team_run": run,
+                "member_run": member,
+                "assignment": assignment,
+            }))?;
+        }
+        "rename-member" => print_json(&rename_team_run_member(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &required(args, "--name")?,
+        )?)?,
+        "deactivate-member" => print_json(&deactivate_team_run_member(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &required(args, "--reason")?,
+        )?)?,
         "start" => {
             // Foreground orchestration: this process is the WRITER driving
             // member sessions; `harness serve` stays the read/broadcast side.
@@ -5967,10 +7090,9 @@ fn team_run_command(
 // The orchestrator is a FOREGROUND CLI process and the single WRITER of member
 // state transitions; `harness serve` stays a pure read/broadcast surface (its
 // SSE watcher tails the same JSONL files, so a live console sees every row the
-// orchestrator journals). v0 implements exactly one member adapter — kimi over
-// ACP ([`kimi_acp::KimiAcpClient`]). Members of any other provider are
-// journaled as failed with an honest "adapter not implemented in v0" summary
-// instead of being silently skipped.
+// orchestrator journals). Registered modes are Codex exec/app-server, Kimi ACP,
+// and Claude CLI. Other providers or modes fail explicitly instead of being
+// silently skipped or substituted.
 //
 // Concurrency: one OS thread per member, bounded by a semaphore
 // (--max-concurrency, default 4). All seq-assigning ledger writes serialize
@@ -5986,10 +7108,6 @@ const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
 /// message ping-pong from looping the orchestrator forever.
 const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
 
-/// Throttle for `progress` MemberActions while assistant text streams: at
-/// most one per member per window, no matter how chatty the chunks are.
-const TEAM_RUN_PROGRESS_THROTTLE: Duration = Duration::from_secs(5);
-
 /// Live member thinking is an ephemeral operator hint, never a ledger row.
 /// Each preview expires in the browser shortly after publication and is not
 /// available to reconnecting clients.
@@ -5998,6 +7116,127 @@ const LIVE_MEMBER_ACTIVITY_MAX_CHARS: usize = 240;
 const LIVE_MEMBER_ACTIVITY_THROTTLE: Duration = Duration::from_secs(1);
 static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
 static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+/// Process-local control plane for provider sessions started by `serve` or the
+/// MCP server. The durable TeamMessage remains the conversation record; this
+/// registry is only the live transport into the currently running provider
+/// turn and is deliberately not reconstructed after process restart.
+static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct LiveMemberControl {
+    team_run_id: String,
+    execution_mode: String,
+    supports_steer: bool,
+    supports_interrupt: bool,
+    sender: SyncSender<MemberControlCommand>,
+}
+
+enum MemberControlCommand {
+    Steer {
+        content: String,
+        requested_by: String,
+        reply: SyncSender<CliResult<serde_json::Value>>,
+    },
+    Interrupt {
+        reason: String,
+        requested_by: String,
+        reply: SyncSender<CliResult<serde_json::Value>>,
+    },
+}
+
+struct LiveMemberControlRegistration {
+    member_run_id: String,
+}
+
+impl Drop for LiveMemberControlRegistration {
+    fn drop(&mut self) {
+        LIVE_MEMBER_CONTROLS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.member_run_id);
+    }
+}
+
+fn register_live_member_control(
+    member: &MemberRun,
+    capacity: usize,
+) -> (
+    ControlReceiver<MemberControlCommand>,
+    LiveMemberControlRegistration,
+) {
+    let (sender, receiver) = sync_channel(capacity.max(1));
+    let profile = member.provider_profile.as_ref();
+    LIVE_MEMBER_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            member.id.clone(),
+            LiveMemberControl {
+                team_run_id: member.team_run_id.clone(),
+                execution_mode: profile
+                    .map(|profile| profile.execution_mode.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                supports_steer: profile
+                    .is_some_and(|profile| profile.execution_mode == "codex_app_server"),
+                supports_interrupt: profile.is_some_and(|profile| profile.supports_cancel),
+                sender,
+            },
+        );
+    (
+        receiver,
+        LiveMemberControlRegistration {
+            member_run_id: member.id.clone(),
+        },
+    )
+}
+
+fn dispatch_live_member_control(
+    team_run_id: &str,
+    member_run_id: &str,
+    command: impl FnOnce(SyncSender<CliResult<serde_json::Value>>) -> MemberControlCommand,
+    require_steer: bool,
+) -> CliResult<serde_json::Value> {
+    let control = LIVE_MEMBER_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(member_run_id)
+        .cloned()
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "member {member_run_id} has no live provider session in this server process"
+            ))
+        })?;
+    if control.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "member {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if require_steer && !control.supports_steer {
+        return Err(CliError::Usage(format!(
+            "{} does not support mid-turn steer; send a queued TeamMessage instead",
+            control.execution_mode
+        )));
+    }
+    if !require_steer && !control.supports_interrupt {
+        return Err(CliError::Usage(format!(
+            "{} does not support live interruption",
+            control.execution_mode
+        )));
+    }
+    let (reply_tx, reply_rx) = sync_channel(1);
+    control.sender.send(command(reply_tx)).map_err(|_| {
+        CliError::Usage(format!(
+            "member {member_run_id} provider session already ended"
+        ))
+    })?;
+    reply_rx
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| CliError::Usage("provider control acknowledgement timed out".to_string()))?
+}
 
 #[derive(Clone, Debug)]
 struct LiveMemberActivityPreview {
@@ -6119,19 +7358,27 @@ impl TeamRunLedger {
             .max()
             .unwrap_or(0)
             + 1;
+        let completed_at = (!matches!(
+            status,
+            MemberActionStatus::Started | MemberActionStatus::Progress
+        ))
+        .then(now_string);
         let action = MemberAction {
             id: generated_id("mact"),
             seq,
             team_run_id: self.run_id.clone(),
             member_run_id: member_run_id.to_string(),
             task_id: None,
+            provider_call_id: None,
             action_type: action_type.to_string(),
             status,
+            provider_status: None,
+            semantic_status: None,
             title: title.to_string(),
             summary: summary.to_string(),
             evidence_refs: Vec::new(),
             started_at: now_string(),
-            completed_at: Some(now_string()),
+            completed_at,
         };
         self.store.append_member_action(&action)?;
         Ok(action)
@@ -6145,6 +7392,11 @@ impl TeamRunLedger {
     fn save_message(&self, message: &TeamMessage) -> CliResult<()> {
         let _guard = self.write_lock();
         Ok(self.store.append_team_message(message)?)
+    }
+
+    fn save_pending_interaction(&self, interaction: &PendingInteraction) -> CliResult<()> {
+        let _guard = self.write_lock();
+        Ok(self.store.append_pending_interaction(interaction)?)
     }
 
     fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
@@ -6289,41 +7541,112 @@ pub(crate) fn drive_prepared_team_run(
         ledger,
     } = prepared;
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
-    let mut handles = Vec::new();
-    for member in members {
-        let ledger = Arc::clone(&ledger);
-        let semaphore = Arc::clone(&semaphore);
-        let objective = objective.clone();
-        let cwd = member_spawn_cwd(project_context.as_ref(), &member);
-        let handle_member = member.clone();
-        let live_sink = live_sink.clone();
-        let handle = std::thread::spawn(move || {
-            let _permit = semaphore.acquire();
-            run_member_orchestration(
-                &ledger,
-                &objective,
-                handle_member,
-                &cwd,
-                idle_timeout,
-                live_sink,
-            )
-        });
-        handles.push((member, handle));
-    }
-
+    let mut queued = members;
+    let mut seen_member_ids = HashSet::new();
     let mut outcomes = Vec::new();
-    for (member, handle) in handles {
-        match handle.join() {
-            Ok(outcome) => outcomes.push(outcome),
-            Err(_) => {
-                // A panicked member thread must not take the run down with it.
-                journal_member_failure(&ledger, &member, "orchestration thread panicked");
-                outcomes.push(MemberOutcome::new(
-                    &member,
-                    MemberRunStatus::Failed,
-                    "orchestration thread panicked".to_string(),
-                ));
+    loop {
+        let mut handles = Vec::new();
+        for mut member in queued.drain(..) {
+            seen_member_ids.insert(member.id.clone());
+            let member_ledger = Arc::clone(&ledger);
+            let member_semaphore = Arc::clone(&semaphore);
+            let member_objective = objective.clone();
+            let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
+            member.workspace_snapshot = Some(snapshot_member_workspace(&cwd));
+            member_ledger.save_member_run(&member)?;
+            member_ledger.fold_event(
+                TeamRunEventSourceKind::Host,
+                Some(member.id.clone()),
+                "member_run",
+                &member.id,
+                "workspace_snapshot",
+                &format!("member workspace resolved to {}", cwd.display()),
+            )?;
+            let handle_member = member.clone();
+            let member_live_sink = live_sink.clone();
+            let handle = std::thread::spawn(move || {
+                let _permit = member_semaphore.acquire();
+                run_member_orchestration(
+                    &member_ledger,
+                    &member_objective,
+                    handle_member,
+                    &cwd,
+                    idle_timeout,
+                    member_live_sink,
+                )
+            });
+            handles.push((member, handle));
+        }
+
+        for (member, handle) in handles {
+            match handle.join() {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(_) => {
+                    journal_member_failure(&ledger, &member, "orchestration thread panicked");
+                    outcomes.push(MemberOutcome::new(
+                        &member,
+                        MemberRunStatus::Failed,
+                        "orchestration thread panicked".to_string(),
+                    ));
+                }
             }
+        }
+
+        let current = latest_team_run(&ledger.store, &run_id)?;
+        queued = latest_member_runs_in_append_order(&ledger.store)?
+            .into_iter()
+            .filter(|member| member.team_run_id == run_id && !seen_member_ids.contains(&member.id))
+            .collect();
+        if !queued.is_empty() {
+            ledger.fold_event(
+                TeamRunEventSourceKind::Host,
+                None,
+                "team_run",
+                &run_id,
+                "updated",
+                &format!("{} member(s) joined while the run was active", queued.len()),
+            )?;
+            continue;
+        }
+
+        // Terminalize against the latest run row. If an add-member CAS lands
+        // between this read and our write, retry and execute the new member
+        // rather than losing it or ending the run early.
+        let any_unfinished = outcomes
+            .iter()
+            .any(|outcome| outcome.status != MemberRunStatus::Completed);
+        let final_status = if any_unfinished {
+            TeamRunStatus::Reviewing
+        } else {
+            TeamRunStatus::Completed
+        };
+        let mut finished = current.clone();
+        finished.status = final_status;
+        finished.updated_at = now_string();
+        if final_status == TeamRunStatus::Completed {
+            finished.completed_at = Some(now_string());
+        }
+        match ledger.store.compare_and_append_team_run_with_wave_status(
+            &current,
+            &finished,
+            WaveStatus::Waiting,
+            &now_string(),
+        ) {
+            Ok(()) => break,
+            Err(StoreError::Conflict(_)) => {
+                queued = latest_member_runs_in_append_order(&ledger.store)?
+                    .into_iter()
+                    .filter(|member| {
+                        member.team_run_id == run_id && !seen_member_ids.contains(&member.id)
+                    })
+                    .collect();
+                if queued.is_empty() {
+                    return Err(CliError::Usage(format!(
+                        "team run {run_id} changed concurrently; inspect status before retrying"
+                    )));
+                }
+            }
+            Err(error) => return Err(error.into()),
         }
     }
 
@@ -6343,18 +7666,6 @@ pub(crate) fn drive_prepared_team_run(
         .iter()
         .filter(|outcome| outcome.status == MemberRunStatus::Completed)
         .count();
-    let mut finished = running.clone();
-    finished.status = final_status;
-    finished.updated_at = now_string();
-    if final_status == TeamRunStatus::Completed {
-        finished.completed_at = Some(now_string());
-    }
-    store_conflict_as_usage(ledger.store.compare_and_append_team_run_with_wave_status(
-        &running,
-        &finished,
-        WaveStatus::Waiting,
-        &now_string(),
-    ))?;
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -6398,10 +7709,23 @@ fn run_member_orchestration(
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
 ) -> MemberOutcome {
+    let execution_mode = member
+        .provider_profile
+        .as_ref()
+        .map(|profile| profile.execution_mode.as_str());
     let result = if member.provider.eq_ignore_ascii_case("kimi") {
         run_kimi_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
-    } else if member.provider.eq_ignore_ascii_case("codex") {
+    } else if member.provider.eq_ignore_ascii_case("codex")
+        && matches!(
+            execution_mode,
+            Some("codex_exec") | Some("codex_app_server") | None
+        )
+    {
         run_codex_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
+    } else if member.provider.eq_ignore_ascii_case("claude")
+        && matches!(execution_mode, Some("claude_cli") | None)
+    {
+        run_claude_team_member(ledger, objective, &member, cwd, idle_timeout, live_sink)
     } else {
         Err(CliError::Usage(format!(
             "team member adapter not implemented for provider {}",
@@ -6433,6 +7757,9 @@ fn run_codex_member(
 ) -> CliResult<MemberOutcome> {
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        apply_provider_version(profile, provider_version_output("codex").ok());
+    }
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
     ledger.fold_event(
@@ -6447,6 +7774,36 @@ fn run_codex_member(
             cwd.display()
         ),
     )?;
+
+    let app_server_mode = member_row
+        .provider_profile
+        .as_ref()
+        .is_some_and(|profile| profile.execution_mode == "codex_app_server");
+    let mut app_server = if app_server_mode {
+        Some(codex_app_server::CodexAppServerClient::spawn(
+            cwd,
+            member.model.as_deref(),
+            !member.owned_paths.is_empty(),
+            member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str()),
+        )?)
+    } else {
+        None
+    };
+    let mut live_control = None;
+    let mut live_control_registration = None;
+    if let Some(client) = app_server.as_ref() {
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            client.thread_id(),
+            "codex_rollout",
+        ));
+        let (receiver, registration) = register_live_member_control(&member_row, 16);
+        live_control = Some(receiver);
+        live_control_registration = Some(registration);
+    }
 
     member_row.status = MemberRunStatus::Running;
     member_row.last_event_at = Some(now_string());
@@ -6467,16 +7824,55 @@ fn run_codex_member(
     let mut final_summary = String::new();
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
-        let turn = run_codex_team_turn(
-            &prompt_text,
-            cwd,
-            member,
-            idle_timeout,
-            live_sink.clone(),
-            &ledger.run_id,
-        )?;
-        if member_row.acp_session_id.is_none() {
-            member_row.acp_session_id = turn.thread_id;
+        let turn = if let Some(client) = app_server.as_mut() {
+            run_codex_app_server_turn(
+                client,
+                &prompt_text,
+                member,
+                idle_timeout,
+                live_sink.clone(),
+                ledger,
+                live_control.as_ref().expect("live control registered"),
+            )?
+        } else {
+            run_codex_team_turn(
+                &prompt_text,
+                cwd,
+                member,
+                idle_timeout,
+                live_sink.clone(),
+                ledger,
+            )?
+        };
+        let verified_thread_id = turn.thread_id.clone().or_else(|| {
+            member_row
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone())
+        });
+        if let Some(thread_id) = verified_thread_id {
+            member_row.native_session =
+                Some(native_session_ref(&member_row, thread_id, "codex_rollout"));
+            ledger.save_member_run(&member_row)?;
+        }
+        if turn.interrupted {
+            member_row.status = MemberRunStatus::Stopped;
+            member_row.finished_at = Some(now_string());
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.append_action(
+                &member.id,
+                "interrupted",
+                MemberActionStatus::Cancelled,
+                "provider turn interrupted",
+                "The operator or Lead interrupted the active Codex turn.",
+            )?;
+            drop(live_control_registration.take());
+            return Ok(MemberOutcome::new(
+                member,
+                MemberRunStatus::Stopped,
+                "Codex turn interrupted by operator or Lead".to_string(),
+            ));
         }
         let final_text = turn.final_text;
         if final_text.trim().is_empty() {
@@ -6485,17 +7881,12 @@ fn run_codex_member(
                 member.name
             )));
         }
-        ledger.append_action(
-            &member.id,
-            "progress",
-            MemberActionStatus::Progress,
-            "assistant response received",
-            &format!("{} chars received", final_text.len()),
-        )?;
-
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
+            origin_wave_id: assignment
+                .as_ref()
+                .and_then(|message| message.origin_wave_id.clone()),
             from_member_id: member.id.clone(),
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Handoff,
@@ -6614,30 +8005,108 @@ fn run_codex_member(
 struct CodexTeamTurn {
     thread_id: Option<String>,
     final_text: String,
+    interrupted: bool,
 }
 
-/// Run one read-only Codex turn and consume its event stream in memory. Raw
-/// events and reasoning are intentionally not returned to any durable writer.
+fn project_codex_team_event_live(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    raw: &serde_json::Value,
+    live_sink: Option<&LiveMemberActivitySink>,
+) {
+    let Some(event_type) = raw.get("type").and_then(|value| value.as_str()) else {
+        return;
+    };
+    if !matches!(event_type, "item.started" | "item.completed") {
+        return;
+    }
+    let Some(item) = raw.get("item") else { return };
+    let item_type = item
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if matches!(item_type, "agent_message" | "reasoning" | "plan") || item_type.is_empty() {
+        return;
+    }
+    let title = match item_type {
+        "command_execution" => "Bash".to_string(),
+        "file_change" => "File change".to_string(),
+        "mcp_tool_call" => item
+            .get("tool")
+            .or_else(|| item.get("name"))
+            .and_then(|value| value.as_str())
+            .map(|name| format!("MCP · {name}"))
+            .unwrap_or_else(|| "MCP tool".to_string()),
+        "web_search" => "Web search".to_string(),
+        other => other.replace('_', " "),
+    };
+    let provider_status = item
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or(if event_type == "item.started" {
+            "in_progress"
+        } else {
+            "completed"
+        });
+    let summary = match item_type {
+        "command_execution" => item
+            .get("command")
+            .and_then(|value| value.as_str())
+            .map(|command| truncate_on_char_boundary(command, 240).to_string())
+            .unwrap_or_else(|| format!("command {provider_status}")),
+        "file_change" => format!(
+            "{} file change(s)",
+            item.get("changes")
+                .and_then(|value| value.as_array())
+                .map(Vec::len)
+                .unwrap_or(0)
+        ),
+        _ => format!("{title} {provider_status}"),
+    };
+    if let Some(sink) = live_sink {
+        sink(LiveMemberActivityPreview {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+            provider: member.provider.clone(),
+            preview: summary,
+        });
+    }
+}
+
+fn codex_team_sandbox() -> &'static str {
+    // Temporary development policy: Agent Team members receive full execution
+    // permission. Owned paths remain a coordination/acceptance boundary, not a
+    // provider sandbox claim.
+    "danger-full-access"
+}
+
+/// Run one Codex turn and consume its event stream in memory. Members without
+/// owned paths still receive the temporary full-access development policy;
+/// ownership remains a durable coordination contract. Raw events and reasoning
+/// are intentionally not returned to any durable writer.
 fn run_codex_team_turn(
     prompt: &str,
     cwd: &Path,
     member: &MemberRun,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
-    team_run_id: &str,
+    ledger: &TeamRunLedger,
 ) -> CliResult<CodexTeamTurn> {
     let mut cmd = Command::new("codex");
     cmd.arg("exec")
         .arg("--cd")
         .arg(cwd)
         .arg("--sandbox")
-        .arg("read-only")
-        .arg("--skip-git-repo-check")
-        .arg("--json");
+        .arg(codex_team_sandbox())
+        .arg("--skip-git-repo-check");
     if let Some(model) = member.model.as_deref() {
         cmd.arg("-m").arg(model);
     }
-    cmd.arg(prompt)
+    if let Some(session) = member.native_session.as_ref() {
+        cmd.arg("resume").arg(&session.native_session_id);
+    }
+    cmd.arg("--json")
+        .arg(prompt)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -6681,6 +8150,12 @@ fn run_codex_team_turn(
             Ok(line) => {
                 last_activity = Instant::now();
                 if let Some(event) = CodexExecEvent::parse_line(&line) {
+                    project_codex_team_event_live(
+                        ledger,
+                        member,
+                        &event.payload,
+                        live_sink.as_ref(),
+                    );
                     let reasoning = event
                         .payload
                         .get("item")
@@ -6694,7 +8169,7 @@ fn run_codex_team_turn(
                         if let (Some(sink), Some(preview)) = (&live_sink, reasoning) {
                             last_live_activity = Instant::now();
                             sink(LiveMemberActivityPreview {
-                                team_run_id: team_run_id.to_string(),
+                                team_run_id: ledger.run_id.clone(),
                                 member_run_id: member.id.clone(),
                                 provider: member.provider.clone(),
                                 preview,
@@ -6727,8 +8202,8 @@ fn run_codex_team_turn(
     };
     let _ = stdout_reader.join();
     let stderr_text = stderr_reader.join().unwrap_or_default();
-    let inferred = infer_provider_session_status(&events, status.success());
-    if inferred != ProviderSessionStatus::Succeeded {
+    let inferred = infer_provider_execution_status(&events, status.success());
+    if inferred != ProviderExecutionStatus::Succeeded {
         return Err(CliError::Usage(format!(
             "codex team member {} failed ({inferred:?}): {}",
             member.name,
@@ -6741,7 +8216,520 @@ fn run_codex_team_turn(
     Ok(CodexTeamTurn {
         thread_id: extract_thread_id_from_exec_events(&events),
         final_text,
+        interrupted: false,
     })
+}
+
+/// Drive one turn on the persistent Codex app-server session. Unlike
+/// `codex exec`, this transport can inject user input into the active turn and
+/// interrupt it without killing an unrelated host process.
+fn run_codex_app_server_turn(
+    client: &mut codex_app_server::CodexAppServerClient,
+    prompt: &str,
+    member: &MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    ledger: &TeamRunLedger,
+    controls: &ControlReceiver<MemberControlCommand>,
+) -> CliResult<CodexTeamTurn> {
+    let mut turn_id = client.start_turn(prompt)?;
+    let mut final_text = String::new();
+    let mut last_activity = Instant::now();
+    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
+    let mut interrupt_requested = false;
+    loop {
+        while let Ok(command) = controls.try_recv() {
+            match command {
+                MemberControlCommand::Steer {
+                    content,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = client.steer(&turn_id, &content).and_then(|active_turn| {
+                        turn_id = active_turn;
+                        ledger.append_action(
+                            &member.id,
+                            "steered",
+                            MemberActionStatus::Succeeded,
+                            "active Codex turn steered",
+                            &format!("{requested_by} injected {} characters", content.len()),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "delivery": "steered",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
+                MemberControlCommand::Interrupt {
+                    reason,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = client.interrupt(&turn_id).and_then(|()| {
+                        interrupt_requested = true;
+                        ledger.append_action(
+                            &member.id,
+                            "interrupt_requested",
+                            MemberActionStatus::Progress,
+                            "Codex interruption requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "status": "interrupt_requested",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
+            }
+        }
+
+        match client.recv(Duration::from_millis(50)) {
+            Ok(frame) => {
+                last_activity = Instant::now();
+                let method = frame.get("method").and_then(|value| value.as_str());
+                let params = frame.get("params").unwrap_or(&frame);
+                match method {
+                    Some("item/agentMessage/delta") => {
+                        if let Some(delta) = params.get("delta").and_then(|value| value.as_str()) {
+                            final_text.push_str(delta);
+                        }
+                    }
+                    Some("item/reasoning/summaryTextDelta") | Some("item/reasoning/textDelta") => {
+                        let preview = params
+                            .get("delta")
+                            .and_then(|value| value.as_str())
+                            .and_then(sanitize_live_member_preview);
+                        if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                            if let (Some(sink), Some(preview)) = (&live_sink, preview) {
+                                last_live_activity = Instant::now();
+                                sink(LiveMemberActivityPreview {
+                                    team_run_id: ledger.run_id.clone(),
+                                    member_run_id: member.id.clone(),
+                                    provider: member.provider.clone(),
+                                    preview,
+                                });
+                            }
+                        }
+                    }
+                    Some("item/started") | Some("item/completed") => {
+                        let event_type = if method == Some("item/started") {
+                            "item.started"
+                        } else {
+                            "item.completed"
+                        };
+                        project_codex_team_event_live(
+                            ledger,
+                            member,
+                            &serde_json::json!({
+                                "type": event_type,
+                                "item": params.get("item").cloned().unwrap_or_default(),
+                            }),
+                            live_sink.as_ref(),
+                        );
+                    }
+                    Some("turn/completed") => {
+                        let status = params
+                            .pointer("/turn/status")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("completed");
+                        if final_text.trim().is_empty() {
+                            final_text = params
+                                .pointer("/turn/items")
+                                .and_then(|value| value.as_array())
+                                .into_iter()
+                                .flatten()
+                                .filter(|item| {
+                                    item.get("type").and_then(|value| value.as_str())
+                                        == Some("agentMessage")
+                                })
+                                .filter_map(|item| {
+                                    item.get("text").and_then(|value| value.as_str())
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                        }
+                        let interrupted = interrupt_requested
+                            || matches!(status, "interrupted" | "cancelled" | "canceled");
+                        if !interrupted && status != "completed" {
+                            return Err(CliError::Usage(format!(
+                                "codex app-server turn {turn_id} ended as {status}"
+                            )));
+                        }
+                        return Ok(CodexTeamTurn {
+                            thread_id: Some(client.thread_id().to_string()),
+                            final_text,
+                            interrupted,
+                        });
+                    }
+                    _ if frame.get("id").is_some() && method.is_some() => {
+                        let result = handle_codex_provider_request(ledger, member, &frame)?;
+                        client.respond(frame.get("id").expect("checked"), result)?;
+                    }
+                    _ => {}
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if last_activity.elapsed() >= idle_timeout {
+                    client.interrupt(&turn_id)?;
+                    interrupt_requested = true;
+                    last_activity = Instant::now();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(CliError::Usage(
+                    "codex app-server ended before turn/completed".to_string(),
+                ));
+            }
+        }
+    }
+}
+
+/// Drive one Claude Code Team Member without mirroring its stream-json output.
+/// The provider-owned `~/.claude/projects/**/<session>.jsonl` remains the
+/// execution history; Harness stores only the session locator, assignment,
+/// handoff, and explicit round outcome.
+fn run_claude_team_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<MemberOutcome> {
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        apply_provider_version(profile, provider_version_output("claude").ok());
+    }
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (claude cli, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+    member_row.status = MemberRunStatus::Running;
+    ledger.save_member_run(&member_row)?;
+
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    if let Some(assignment) = &assignment {
+        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+    }
+
+    let mut round = 0u32;
+    let mut next_prompt = Some(contract_prompt(objective, &member_row, &assignment_body));
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    while let Some(prompt) = next_prompt.take() {
+        round += 1;
+        let turn = run_claude_team_turn(
+            &prompt,
+            cwd,
+            &member_row,
+            idle_timeout,
+            live_sink.clone(),
+            ledger,
+        )?;
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            &turn.session_id,
+            "claude_project_session",
+        ));
+        ledger.save_member_run(&member_row)?;
+
+        let handoff = TeamMessage {
+            id: generated_id("tmsg"),
+            team_run_id: ledger.run_id.clone(),
+            origin_wave_id: assignment
+                .as_ref()
+                .and_then(|message| message.origin_wave_id.clone()),
+            from_member_id: member.id.clone(),
+            to_member_ids: vec!["host".to_string()],
+            kind: TeamMessageKind::Handoff,
+            body: turn.final_text.clone(),
+            correlation_id: assignment
+                .as_ref()
+                .map(|message| message.correlation_id.clone())
+                .unwrap_or_else(|| generated_id("corr")),
+            causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".to_string(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                updated_at: now_string(),
+            }],
+            created_at: now_string(),
+        };
+        ledger.save_message(&handoff)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "message",
+            &handoff.id,
+            "created",
+            &format!("handoff from {} to host (round {round})", member.name),
+        )?;
+
+        let result = parse_round_result(&turn.final_text);
+        let (action_type, action_status, member_status) = match result {
+            MemberRoundResult::Done => (
+                "completed",
+                MemberActionStatus::Succeeded,
+                MemberRunStatus::Completed,
+            ),
+            MemberRoundResult::Blocked => (
+                "blocked",
+                MemberActionStatus::Failed,
+                MemberRunStatus::Blocked,
+            ),
+            MemberRoundResult::Failed => {
+                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            }
+        };
+        let result_section = extract_report_section(&turn.final_text, "RESULT")
+            .unwrap_or_else(|| "done".to_string());
+        let action = ledger.append_action(
+            &member.id,
+            action_type,
+            action_status,
+            &format!("round {round} {action_type}"),
+            &result_section,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("{} round {round}: {action_type}", member.name),
+        )?;
+        member_row.status = member_status;
+        member_row.finished_at = Some(now_string());
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        final_status = member_status;
+        final_summary = extract_report_section(&turn.final_text, "SUMMARY").unwrap_or_else(|| {
+            turn.final_text
+                .lines()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+
+        if round >= TEAM_RUN_START_MAX_ROUNDS {
+            break;
+        }
+        let queued = ledger.queued_messages_for(&member.id)?;
+        if queued.is_empty() {
+            break;
+        }
+        let mut follow_up = String::from("FOLLOW-UP MESSAGES arrived while you worked. Address them and report again with ## RESULT and ## SUMMARY.\n\n");
+        for message in &queued {
+            follow_up.push_str(&format!(
+                "--- {} ({}) ---\n{}\n\n",
+                message.from_member_id,
+                team_message_kind_label(&message.kind),
+                message.body
+            ));
+            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        }
+        member_row.status = MemberRunStatus::Running;
+        member_row.finished_at = None;
+        ledger.save_member_run(&member_row)?;
+        next_prompt = Some(follow_up);
+    }
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+struct ClaudeTeamTurn {
+    session_id: String,
+    final_text: String,
+}
+
+fn claude_team_permission_mode() -> &'static str {
+    "bypassPermissions"
+}
+
+fn run_claude_team_turn(
+    prompt: &str,
+    cwd: &Path,
+    member: &MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    ledger: &TeamRunLedger,
+) -> CliResult<ClaudeTeamTurn> {
+    let mut cmd = Command::new("claude");
+    cmd.arg("-p")
+        .arg(prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--permission-mode")
+        .arg(claude_team_permission_mode());
+    if let Some(model) = member.model.as_deref() {
+        cmd.arg("--model").arg(model);
+    }
+    if let Some(session) = member.native_session.as_ref() {
+        cmd.arg("--resume").arg(&session.native_session_id);
+    }
+    cmd.current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|error| {
+        CliError::Usage(format!(
+            "failed to spawn Claude Team Member {}: {error}",
+            member.name
+        ))
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("claude stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("claude stderr unavailable".into()))?;
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let stdout_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+    let mut events = Vec::new();
+    let mut bound_session_id = member
+        .native_session
+        .as_ref()
+        .map(|session| session.native_session_id.clone());
+    let mut last_activity = Instant::now();
+    let status = loop {
+        match line_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => {
+                last_activity = Instant::now();
+                if let Some(event) = ClaudeStreamEvent::parse_line(&line) {
+                    if let Some(session_id) = event.session_id() {
+                        if bound_session_id.as_deref() != Some(session_id.as_str()) {
+                            let mut bound = member.clone();
+                            bound.native_session = Some(native_session_ref(
+                                member,
+                                &session_id,
+                                "claude_project_session",
+                            ));
+                            bound.last_event_at = Some(now_string());
+                            ledger.save_member_run(&bound)?;
+                            bound_session_id = Some(session_id);
+                        }
+                    }
+                    project_claude_team_event_live(
+                        ledger,
+                        member,
+                        &event.payload,
+                        live_sink.as_ref(),
+                    );
+                    events.push(event);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break child.wait()?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if child.try_wait()?.is_some() {
+                    continue;
+                }
+                if last_activity.elapsed() >= idle_timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CliError::Usage(format!(
+                        "Claude Team Member {} exceeded idle timeout",
+                        member.name
+                    )));
+                }
+            }
+        }
+    };
+    let _ = stdout_reader.join();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if infer_claude_session_status(&events, status.success()) != ProviderExecutionStatus::Succeeded
+    {
+        let provider_error = extract_claude_reply_text(&events)
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                let stderr = stderr.trim();
+                (!stderr.is_empty()).then(|| stderr.to_string())
+            })
+            .unwrap_or_else(|| format!("provider exited with {status}"));
+        return Err(CliError::Usage(format!(
+            "Claude Team Member {} failed: {}",
+            member.name, provider_error
+        )));
+    }
+    let session_id = extract_session_id_from_claude_events(&events)
+        .or_else(|| {
+            member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone())
+        })
+        .ok_or_else(|| CliError::Usage("Claude completed without a native session id".into()))?;
+    let final_text = extract_claude_reply_text(&events)
+        .ok_or_else(|| CliError::Usage("Claude completed without an assistant result".into()))?;
+    Ok(ClaudeTeamTurn {
+        session_id,
+        final_text,
+    })
+}
+
+fn project_claude_team_event_live(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    raw: &serde_json::Value,
+    live_sink: Option<&LiveMemberActivitySink>,
+) {
+    let Some(sink) = live_sink else { return };
+    let Some(content) = raw
+        .pointer("/message/content")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for block in content {
+        if block.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
+            continue;
+        }
+        let title = block
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("tool");
+        sink(LiveMemberActivityPreview {
+            team_run_id: ledger.run_id.clone(),
+            member_run_id: member.id.clone(),
+            provider: member.provider.clone(),
+            preview: format!("tool started · {title}"),
+        });
+    }
 }
 
 /// Drive one kimi member: spawn its ACP session, deliver the assignment as a
@@ -6772,9 +8760,24 @@ fn run_kimi_member(
         ),
     )?;
 
-    let mut client = kimi_acp::KimiAcpClient::spawn(cwd, member.model.as_deref())?;
+    let mut client = kimi_acp::KimiAcpClient::spawn(
+        cwd,
+        member.model.as_deref(),
+        member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+    )?;
     member_row.status = MemberRunStatus::Running;
-    member_row.acp_session_id = client.session_id().map(str::to_string);
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        apply_provider_version(profile, client.provider_version().map(str::to_string));
+    }
+    member_row.native_session = client
+        .session_id()
+        .map(|session_id| native_session_ref(&member_row, session_id, "kimi_code_session"));
+    // Publish the live control handle before the durable Running projection so
+    // an operator cannot observe Running and race into a false "no session".
+    let (live_control, _live_control_registration) = register_live_member_control(&member_row, 8);
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
     ledger.fold_event(
@@ -6786,10 +8789,13 @@ fn run_kimi_member(
         &format!(
             "member {} running (acp session {})",
             member.name,
-            member_row.acp_session_id.as_deref().unwrap_or("?")
+            member_row
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str())
+                .unwrap_or("?")
         ),
     )?;
-
     // The assignment is the newest Assignment-kind message with a still-queued
     // delivery to this member; absent one, the run objective is the contract.
     let assignment = latest_queued_assignment(ledger, &member.id)?;
@@ -6808,15 +8814,73 @@ fn run_kimi_member(
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
-        let outcome = client.prompt(&prompt_text, idle_timeout, |update| mapper.handle(update))?;
+        let outcome = client.prompt(
+            &prompt_text,
+            idle_timeout,
+            |update| mapper.handle(update),
+            |request| handle_kimi_provider_request(ledger, &member_row, request),
+            || {
+                let mut cancel = false;
+                while let Ok(command) = live_control.try_recv() {
+                    match command {
+                        MemberControlCommand::Interrupt {
+                            reason,
+                            requested_by,
+                            reply,
+                        } => {
+                            ledger.append_action(
+                                &member.id,
+                                "interrupt_requested",
+                                MemberActionStatus::Progress,
+                                "Kimi cancellation requested",
+                                &format!("{requested_by}: {reason}"),
+                            )?;
+                            cancel = true;
+                            let _ = reply.send(Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "status": "cancel_requested",
+                            })));
+                        }
+                        MemberControlCommand::Steer { reply, .. } => {
+                            let _ = reply.send(Err(CliError::Usage(
+                                "kimi_acp does not support mid-turn steer".to_string(),
+                            )));
+                        }
+                    }
+                }
+                Ok(cancel)
+            },
+        )?;
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
+        if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
+            member_row.status = MemberRunStatus::Stopped;
+            member_row.finished_at = Some(now_string());
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.append_action(
+                &member.id,
+                "interrupted",
+                MemberActionStatus::Cancelled,
+                "Kimi prompt cancelled",
+                "The active ACP prompt acknowledged session/cancel.",
+            )?;
+            client.shutdown();
+            return Ok(MemberOutcome::new(
+                member,
+                MemberRunStatus::Stopped,
+                "Kimi prompt cancelled by operator or Lead".to_string(),
+            ));
+        }
         let result = parse_round_result(&final_text);
 
         // Handoff to the host: the full final report, manual-ack delivery.
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
+            origin_wave_id: assignment
+                .as_ref()
+                .and_then(|message| message.origin_wave_id.clone()),
             from_member_id: member.id.clone(),
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Handoff,
@@ -7064,16 +9128,82 @@ pub(crate) fn acknowledge_team_message(
 
 /// Where a member's ACP session runs: its pinned worktree when set, else the
 /// selected project's root, else (unrouted raw-store invocation) the CLI cwd.
-fn member_spawn_cwd(project_context: Option<&ProjectContext>, member: &MemberRun) -> PathBuf {
+fn member_spawn_cwd(
+    project_context: Option<&ProjectContext>,
+    run: &AgentTeamRun,
+    member: &MemberRun,
+) -> PathBuf {
     if let Some(worktree) = &member.worktree_ref {
         if !worktree.is_empty() {
             return PathBuf::from(worktree);
+        }
+    }
+    if let Some(execution_root) = &run.execution_root {
+        if !execution_root.is_empty() {
+            return PathBuf::from(execution_root);
         }
     }
     if let Some(context) = project_context {
         return context.project_root.clone();
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn git_value(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn snapshot_member_workspace(cwd: &Path) -> MemberWorkspaceSnapshot {
+    let cwd = project::canonicalize_best_effort(cwd);
+    let mut instruction_roots = BTreeSet::new();
+    let mut skill_roots = BTreeSet::new();
+    for ancestor in cwd.ancestors() {
+        if ["AGENTS.md", "CLAUDE.md"]
+            .iter()
+            .any(|name| ancestor.join(name).is_file())
+        {
+            instruction_roots.insert(ancestor.display().to_string());
+        }
+        for relative in [".agents/skills", ".codex/skills", "skills"] {
+            let candidate = ancestor.join(relative);
+            if candidate.is_dir() {
+                skill_roots.insert(
+                    project::canonicalize_best_effort(&candidate)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for relative in [".agents/skills", ".codex/skills"] {
+            let candidate = home.join(relative);
+            if candidate.is_dir() {
+                skill_roots.insert(
+                    project::canonicalize_best_effort(&candidate)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    MemberWorkspaceSnapshot {
+        cwd: cwd.display().to_string(),
+        git_head: git_value(&cwd, &["rev-parse", "HEAD"]),
+        git_branch: git_value(&cwd, &["symbolic-ref", "--short", "HEAD"]),
+        instruction_roots: instruction_roots.into_iter().collect(),
+        skill_roots: skill_roots.into_iter().collect(),
+    }
 }
 
 /// Reduce a provider-approved thought chunk to a short, single-preview string.
@@ -7094,6 +9224,457 @@ fn sanitize_live_member_preview(value: &str) -> Option<String> {
     (!preview.is_empty()).then_some(preview)
 }
 
+fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
+    frame
+        .pointer("/params/toolCall/content")
+        .and_then(|content| content.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            block
+                .pointer("/content/text")
+                .or_else(|| block.get("text"))
+                .and_then(|text| text.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn handle_codex_provider_request(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    frame: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let method = frame
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let params = frame.get("params").unwrap_or(frame);
+    let provider_request_id = frame
+        .get("id")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .unwrap_or_else(|| generated_id("provider-request"));
+
+    let (kind, route, title, prompt, options) = if method == "item/tool/requestUserInput" {
+        let question = params
+            .get("questions")
+            .and_then(|value| value.as_array())
+            .and_then(|questions| questions.first());
+        let question_id = question
+            .and_then(|question| question.get("id"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("answer");
+        let options = question
+            .and_then(|question| question.get("options"))
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, option)| PendingInteractionOption {
+                id: format!("{question_id}::{index}"),
+                label: option
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Option")
+                    .to_string(),
+                intent: Some("answer".to_string()),
+            })
+            .collect::<Vec<_>>();
+        (
+            PendingInteractionKind::Question,
+            PendingInteractionRoute::Lead,
+            question
+                .and_then(|question| question.get("header"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex question")
+                .to_string(),
+            question
+                .and_then(|question| question.get("question"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex requested input")
+                .to_string(),
+            options,
+        )
+    } else if matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        (
+            PendingInteractionKind::ToolApproval,
+            PendingInteractionRoute::Policy,
+            "Codex approval".to_string(),
+            params
+                .get("reason")
+                .or_else(|| params.get("command"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Codex requested permission for an action")
+                .to_string(),
+            vec![
+                PendingInteractionOption {
+                    id: "approve_once".to_string(),
+                    label: "Approve once".to_string(),
+                    intent: Some("allow_once".to_string()),
+                },
+                PendingInteractionOption {
+                    id: "deny".to_string(),
+                    label: "Deny".to_string(),
+                    intent: Some("reject_once".to_string()),
+                },
+            ],
+        )
+    } else {
+        return Err(CliError::Usage(format!(
+            "unsupported Codex app-server request {method}; denied fail-closed"
+        )));
+    };
+
+    let interaction = PendingInteraction {
+        id: generated_id("interaction"),
+        team_run_id: ledger.run_id.clone(),
+        member_run_id: member.id.clone(),
+        provider: member.provider.clone(),
+        provider_request_id,
+        method: method.to_string(),
+        kind,
+        route,
+        status: PendingInteractionStatus::Pending,
+        title,
+        prompt,
+        options,
+        tool_call_id: params
+            .get("itemId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        response_option_id: None,
+        response_text: None,
+        created_at: now_string(),
+        resolved_at: None,
+        resolved_by: None,
+    };
+    ledger.save_pending_interaction(&interaction)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "pending_interaction",
+        &interaction.id,
+        "created",
+        &format!("{} waiting for {:?}", interaction.title, interaction.route),
+    )?;
+    ledger.append_action(
+        &member.id,
+        if kind == PendingInteractionKind::Question {
+            "waiting_for_input"
+        } else {
+            "waiting_for_approval"
+        },
+        MemberActionStatus::Started,
+        &interaction.title,
+        &interaction.prompt,
+    )?;
+    let mut waiting = member.clone();
+    waiting.status = MemberRunStatus::Waiting;
+    waiting.last_event_at = Some(now_string());
+    ledger.save_member_run(&waiting)?;
+
+    let resolved = loop {
+        let current = latest_pending_interactions_in_append_order(&ledger.store)?
+            .into_iter()
+            .find(|candidate| candidate.id == interaction.id)
+            .unwrap_or_else(|| interaction.clone());
+        if current.status != PendingInteractionStatus::Pending {
+            break current;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut running = member.clone();
+    running.status = MemberRunStatus::Running;
+    running.last_event_at = Some(now_string());
+    ledger.save_member_run(&running)?;
+    ledger.append_action(
+        &member.id,
+        "interaction_resolved",
+        if matches!(
+            resolved.status,
+            PendingInteractionStatus::Answered | PendingInteractionStatus::Approved
+        ) {
+            MemberActionStatus::Succeeded
+        } else {
+            MemberActionStatus::Cancelled
+        },
+        &resolved.title,
+        &format!("resolved as {}", serde_snake_label(&resolved.status)),
+    )?;
+
+    if method == "item/tool/requestUserInput" {
+        let question_id = params
+            .pointer("/questions/0/id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("answer");
+        let answer = resolved
+            .response_text
+            .clone()
+            .or_else(|| {
+                resolved.response_option_id.as_deref().and_then(|selected| {
+                    interaction
+                        .options
+                        .iter()
+                        .find(|option| option.id == selected)
+                        .map(|option| option.label.clone())
+                })
+            })
+            .unwrap_or_default();
+        return Ok(serde_json::json!({
+            "answers": {question_id: {"answers": [answer]}}
+        }));
+    }
+    if method == "item/permissions/requestApproval" {
+        return Ok(serde_json::json!({
+            "permissions": if resolved.status == PendingInteractionStatus::Approved {
+                params.get("permissions").cloned().unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            },
+            "scope": "turn"
+        }));
+    }
+    Ok(serde_json::json!({
+        "decision": if resolved.status == PendingInteractionStatus::Approved {
+            "accept"
+        } else {
+            "decline"
+        }
+    }))
+}
+
+fn handle_kimi_provider_request(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    frame: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let params = frame.get("params").unwrap_or(frame);
+    let options = params
+        .get("options")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            Some(PendingInteractionOption {
+                id: option.get("optionId")?.as_str()?.to_string(),
+                label: option
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Option")
+                    .to_string(),
+                intent: option
+                    .get("kind")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            })
+        })
+        .collect::<Vec<_>>();
+    let title = params
+        .pointer("/toolCall/title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Provider interaction")
+        .to_string();
+    let question =
+        title == "AskUserQuestion" || options.iter().any(|option| option.id.starts_with("q0_"));
+    let plan_review = options.iter().any(|option| option.id.starts_with("plan_"));
+    let kind = if question {
+        PendingInteractionKind::Question
+    } else if plan_review {
+        PendingInteractionKind::PlanReview
+    } else if !options.is_empty() {
+        PendingInteractionKind::ToolApproval
+    } else {
+        PendingInteractionKind::Unknown
+    };
+    let route = match kind {
+        PendingInteractionKind::Question | PendingInteractionKind::PlanReview => {
+            PendingInteractionRoute::Lead
+        }
+        PendingInteractionKind::ToolApproval => PendingInteractionRoute::Policy,
+        PendingInteractionKind::Unknown => PendingInteractionRoute::Human,
+    };
+    let provider_request_id = frame
+        .get("id")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .unwrap_or_else(|| generated_id("provider-request"));
+    let prompt = kimi_interaction_prompt(frame);
+    let interaction = PendingInteraction {
+        id: generated_id("interaction"),
+        team_run_id: ledger.run_id.clone(),
+        member_run_id: member.id.clone(),
+        provider: member.provider.clone(),
+        provider_request_id,
+        method: "session/request_permission".to_string(),
+        kind,
+        route,
+        status: PendingInteractionStatus::Pending,
+        title: title.clone(),
+        prompt: if prompt.trim().is_empty() {
+            format!("{title} requires a decision")
+        } else {
+            prompt
+        },
+        options,
+        tool_call_id: params
+            .pointer("/toolCall/toolCallId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        response_option_id: None,
+        response_text: None,
+        created_at: now_string(),
+        resolved_at: None,
+        resolved_by: None,
+    };
+    ledger.save_pending_interaction(&interaction)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "pending_interaction",
+        &interaction.id,
+        "created",
+        &format!("{} waiting for {:?}", interaction.title, interaction.route),
+    )?;
+    ledger.append_action(
+        &member.id,
+        if kind == PendingInteractionKind::Question {
+            "waiting_for_input"
+        } else {
+            "waiting_for_approval"
+        },
+        MemberActionStatus::Started,
+        &interaction.title,
+        &interaction.prompt,
+    )?;
+
+    // Temporary development policy: ordinary Kimi tool permission requests are
+    // approved immediately by policy. Persist both the request and its policy
+    // resolution/control acknowledgement, but never the provider transcript or
+    // thinking. AskUserQuestion and PlanReview deliberately continue below into
+    // the Lead-routed wait loop.
+    if kind == PendingInteractionKind::ToolApproval {
+        let option_id = interaction
+            .options
+            .iter()
+            .find(|option| {
+                option.intent.as_deref() == Some("allow_always")
+                    || option.id.contains("approve_always")
+                    || option.id.contains("allow_always")
+            })
+            .or_else(|| {
+                interaction.options.iter().find(|option| {
+                    option
+                        .intent
+                        .as_deref()
+                        .is_some_and(|intent| intent.starts_with("allow"))
+                        || option.id.contains("approve")
+                        || option.id.contains("allow")
+                })
+            })
+            .map(|option| option.id.clone())
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "Kimi tool approval {} exposed no policy-approvable option",
+                    interaction.id
+                ))
+            })?;
+        let mut approved = interaction.clone();
+        approved.status = PendingInteractionStatus::Approved;
+        approved.response_option_id = Some(option_id.clone());
+        approved.resolved_at = Some(now_string());
+        approved.resolved_by = Some("policy".to_string());
+        ledger.save_pending_interaction(&approved)?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Host,
+            Some(member.id.clone()),
+            "pending_interaction",
+            &approved.id,
+            "resolved",
+            "Kimi tool approval auto-approved by temporary development policy",
+        )?;
+        ledger.append_action(
+            &member.id,
+            "interaction_resolved",
+            MemberActionStatus::Succeeded,
+            &approved.title,
+            "interaction approved by policy (temporary full-access development policy)",
+        )?;
+        return Ok(serde_json::json!({
+            "outcome": {"outcome": "selected", "optionId": option_id}
+        }));
+    }
+
+    let mut waiting = member.clone();
+    waiting.status = MemberRunStatus::Waiting;
+    waiting.last_event_at = Some(now_string());
+    ledger.save_member_run(&waiting)?;
+
+    loop {
+        let current = latest_pending_interactions_in_append_order(&ledger.store)?
+            .into_iter()
+            .find(|candidate| candidate.id == interaction.id)
+            .unwrap_or_else(|| interaction.clone());
+        if current.status != PendingInteractionStatus::Pending {
+            let action_status = match current.status {
+                PendingInteractionStatus::Answered | PendingInteractionStatus::Approved => {
+                    MemberActionStatus::Succeeded
+                }
+                PendingInteractionStatus::Denied
+                | PendingInteractionStatus::Dismissed
+                | PendingInteractionStatus::Unsupported
+                | PendingInteractionStatus::Cancelled => MemberActionStatus::Cancelled,
+                PendingInteractionStatus::Pending => MemberActionStatus::Progress,
+            };
+            ledger.append_action(
+                &member.id,
+                "interaction_resolved",
+                action_status,
+                &current.title,
+                &format!(
+                    "interaction {} by {}",
+                    serde_snake_label(&current.status),
+                    current.resolved_by.as_deref().unwrap_or("unknown")
+                ),
+            )?;
+            if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Running {
+                let mut resumed = waiting.clone();
+                resumed.status = MemberRunStatus::Running;
+                resumed.last_event_at = Some(now_string());
+                ledger.save_member_run(&resumed)?;
+            }
+            return Ok(match current.response_option_id {
+                Some(option_id) => serde_json::json!({
+                    "outcome": {"outcome": "selected", "optionId": option_id}
+                }),
+                None => serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+            });
+        }
+        if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Cancelled {
+            let mut cancelled = current;
+            cancelled.status = PendingInteractionStatus::Cancelled;
+            cancelled.resolved_at = Some(now_string());
+            cancelled.resolved_by = Some("host".to_string());
+            ledger.save_pending_interaction(&cancelled)?;
+            return Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}}));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Maps `session/update` frames of one prompt round onto the member ledger.
 /// Reasoning streams (`agent_thought_chunk`) are intentionally ignored here:
 /// no MemberAction or other durable record may contain thinking. A future
@@ -7105,9 +9686,8 @@ struct MemberUpdateMapper<'a> {
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
-    last_progress_at: std::time::Instant,
-    /// toolCallId → title of tools we journaled `tool_started` for, so the
-    /// completion action can carry a name even when the update frame omits it.
+    /// toolCallId → title retained only in memory so a completion projection
+    /// stays readable. Provider tool activity is never written to Harness.
     open_tools: std::collections::HashMap<String, String>,
 }
 
@@ -7123,10 +9703,6 @@ impl<'a> MemberUpdateMapper<'a> {
             live_sink,
             last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
             text: String::new(),
-            // Arm the throttle already expired so the FIRST chunk journals one
-            // progress action immediately (the console shows life), then at
-            // most one per TEAM_RUN_PROGRESS_THROTTLE window.
-            last_progress_at: std::time::Instant::now() - TEAM_RUN_PROGRESS_THROTTLE,
             open_tools: std::collections::HashMap::new(),
         }
     }
@@ -7163,21 +9739,18 @@ impl<'a> MemberUpdateMapper<'a> {
             {
                 self.text.push_str(text);
             }
-            if self.last_progress_at.elapsed() >= TEAM_RUN_PROGRESS_THROTTLE {
-                self.last_progress_at = std::time::Instant::now();
-                let summary = format!("{} chars streamed", self.text.len());
-                if self
-                    .ledger
-                    .append_action(
-                        &self.member.id,
-                        "progress",
-                        MemberActionStatus::Progress,
-                        "assistant streaming",
-                        &summary,
-                    )
-                    .is_ok()
-                {
-                    self.touch_member();
+            if self.last_live_activity_at.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
+                if let Some(sink) = &self.live_sink {
+                    self.last_live_activity_at = Instant::now();
+                    sink(LiveMemberActivityPreview {
+                        team_run_id: self.ledger.run_id.clone(),
+                        member_run_id: self.member.id.clone(),
+                        provider: self.member.provider.clone(),
+                        preview: format!(
+                            "assistant response streaming · {} chars",
+                            self.text.len()
+                        ),
+                    });
                 }
             }
             return;
@@ -7196,46 +9769,25 @@ impl<'a> MemberUpdateMapper<'a> {
                 .to_string();
             let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("");
             let terminal = matches!(status, "completed" | "failed" | "error" | "cancelled");
-            // Loose ACP mapping: `tool_call` starts; `tool_call_update` only
-            // completes when its status is terminal (a mid-flight "running"
-            // update journals nothing new); any other *tool* frame starts.
-            let journaled = if kind == "tool_call" || !kind.contains("update") {
-                self.open_tools.insert(tool_id, title.clone());
-                self.ledger.append_action(
-                    &self.member.id,
-                    "tool_started",
-                    MemberActionStatus::Started,
-                    &title,
-                    &format!("tool started: {title}"),
-                )
+            let preview = if kind == "tool_call" || !kind.contains("update") {
+                self.open_tools.insert(tool_id.clone(), title.clone());
+                Some(format!("tool started · {title}"))
             } else if terminal {
                 let title = self.open_tools.remove(&tool_id).unwrap_or(title);
-                self.ledger.append_action(
-                    &self.member.id,
-                    "tool_completed",
-                    if status == "completed" {
-                        MemberActionStatus::Succeeded
-                    } else {
-                        MemberActionStatus::Failed
-                    },
-                    &title,
-                    &format!("tool {status}: {title}"),
-                )
+                Some(format!("tool {status} · {title}"))
             } else {
-                return;
+                None
             };
-            if journaled.is_ok() {
-                self.touch_member();
+            if let (Some(sink), Some(preview)) = (&self.live_sink, preview) {
+                sink(LiveMemberActivityPreview {
+                    team_run_id: self.ledger.run_id.clone(),
+                    member_run_id: self.member.id.clone(),
+                    provider: self.member.provider.clone(),
+                    preview,
+                });
             }
         }
         // Anything else (available_commands_update, plan, ...): not journaled.
-    }
-
-    /// Refresh `last_event_at` whenever something was journaled for the member
-    /// (throttled to the journaling cadence, not per chunk).
-    fn touch_member(&mut self) {
-        self.member.last_event_at = Some(now_string());
-        let _ = self.ledger.save_member_run(&self.member);
     }
 
     /// The accumulated assistant text of this round (all message chunks).
@@ -7460,12 +10012,10 @@ fn handle_sse_stream(
     // Send initial snapshot
     let events = store.events()?;
     let messages = store.messages()?;
-    let sessions = store.provider_sessions()?;
     // Initial snapshot sent to client for sync
     let _snapshot = sse::SseEventFrame::Snapshot {
         agent_events: events,
         messages,
-        provider_sessions: sessions,
         generated_at: now_string(),
     };
 
@@ -7510,14 +10060,6 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::ProviderSession(session) => {
-                        if let Ok(json) = serde_json::to_value(&session) {
-                            if sse::write_sse_frame(&mut stream, "provider_session", &json).is_err()
-                            {
-                                break; // Client disconnected
-                            }
-                        }
-                    }
                     // WP2: workflow run and step frames
                     sse::SseEventFrame::WorkflowRun(run) => {
                         if let Ok(json) = serde_json::to_value(&run) {
@@ -7531,23 +10073,6 @@ fn handle_sse_stream(
                             if sse::write_sse_frame(&mut stream, "workflow_step", &json).is_err() {
                                 break; // Client disconnected
                             }
-                        }
-                    }
-                    sse::SseEventFrame::ProviderTurnEvent(value) => {
-                        if sse::write_sse_frame(&mut stream, "provider_turn_event", &value).is_err()
-                        {
-                            break; // Client disconnected
-                        }
-                    }
-                    sse::SseEventFrame::ProviderTurnEventNormalized(value) => {
-                        if sse::write_sse_frame(
-                            &mut stream,
-                            "provider_turn_event_normalized",
-                            &value,
-                        )
-                        .is_err()
-                        {
-                            break; // Client disconnected
                         }
                     }
                     // Agent Team v0: folded per-run events (team console merges
@@ -7597,6 +10122,15 @@ fn handle_sse_stream(
                     sse::SseEventFrame::MemberAction(action) => {
                         if let Ok(json) = serde_json::to_value(&action) {
                             if sse::write_sse_frame(&mut stream, "member_action", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::PendingInteraction(interaction) => {
+                        if let Ok(json) = serde_json::to_value(&interaction) {
+                            if sse::write_sse_frame(&mut stream, "pending_interaction", &json)
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -7743,7 +10277,6 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // Tests can keep the transient live turn-event tee instead of truncating it on
     // startup (per-project truncation drops in-flight events for ALL projects at
     // once — see Risks). Production serve always truncates.
-    let no_truncate = has_flag(args, "--no-truncate");
     let listener = TcpListener::bind(&addr)?;
     println!("serving harness API on http://{addr}");
     // Show WHICH store this serve reads — the #1 confusion in issue #89 item 3 was
@@ -7765,65 +10298,6 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
 
     let sse_manager = sse::SseManager::new();
 
-    // Truncate the transient live turn-event tee (Stage B) on startup so it does
-    // not grow unbounded across serve runs; the watcher seeds at EOF and the
-    // per-session NDJSON remains the durable source for catch-up. This is done
-    // PER PROJECT now — restarting serve drops in-flight live events for every
-    // watched project at once (documented disruption, P6 Risks). `--no-truncate`
-    // lets tests preserve pre-seeded rows.
-    if !no_truncate {
-        for store_root in watch_map.values() {
-            let _ = fs::write(store_root.join("provider_turn_events.jsonl"), b"");
-        }
-    }
-
-    // The live-turn-event normalizer is project-scoped: it must look up the
-    // provider session in the SAME store the event came from, so the per-project
-    // watcher passes the project's store root to its normalizer.
-    let make_normalize = |normalize_store: HarnessStore| {
-        let provider_cache = Mutex::new(HashMap::<String, String>::new());
-        let next_seq_cache = Mutex::new(HashMap::<String, u64>::new());
-        move |session_id: &str, raw: &serde_json::Value| -> Vec<serde_json::Value> {
-            let provider = {
-                let Ok(mut cache) = provider_cache.lock() else {
-                    return Vec::new();
-                };
-                if let Some(provider) = cache.get(session_id).cloned() {
-                    provider
-                } else {
-                    let session = match latest_provider_session(&normalize_store, session_id) {
-                        Ok(Some(session)) => session,
-                        Ok(None) | Err(_) => return Vec::new(),
-                    };
-                    let provider = session.provider;
-                    cache.insert(session_id.to_string(), provider.clone());
-                    provider
-                }
-            };
-
-            let next_seq = {
-                let Ok(cache) = next_seq_cache.lock() else {
-                    return Vec::new();
-                };
-                cache.get(session_id).copied().unwrap_or(0)
-            };
-            let events = normalize_live_turn_event(&provider, session_id, raw, next_seq);
-            if events.is_empty() {
-                return Vec::new();
-            }
-
-            let Ok(mut cache) = next_seq_cache.lock() else {
-                return Vec::new();
-            };
-            cache.insert(session_id.to_string(), next_seq + events.len() as u64);
-
-            events
-                .into_iter()
-                .filter_map(|event| serde_json::to_value(event).ok())
-                .collect()
-        }
-    };
-
     // Start ONE project-multiplexed SSE watcher: per-project offsets + per-project
     // subscriber channels, so a client subscribed to project A never sees B. The
     // watcher re-scans the registry every poll (via `watch_map()`), so a project
@@ -7831,14 +10305,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // restart (#147 follow-up); each project's normalizer is built lazily by the
     // factory below, scoped to that project's store.
     let watcher_projects = projects.clone();
-    sse::start_sse_watcher(
-        move || watcher_projects.watch_map(),
-        move |root| {
-            Box::new(make_normalize(HarnessStore::new(root.to_path_buf()))) as sse::Normalizer
-        },
-        sse_manager.clone(),
-    )
-    .map_err(CliError::Io)?;
+    sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
+        .map_err(CliError::Io)?;
 
     // Start the abandoned-run reaper PER WATCHED PROJECT: periodically flip
     // `Running` runs whose driver process has died (or legacy runs past the stale
@@ -7853,7 +10321,6 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
             let _ = reap_stale_workflow_runs(&reaper_store);
             let _ = workflow_gc_worktrees(&reaper_store);
             let _ = reap_orphaned_workers(&reaper_store, false);
-            let _ = workflow_gc_trace(&reaper_store, 100, None, false);
         });
     }
 
@@ -8105,137 +10572,77 @@ fn handle_http_connection(
                     &serde_json::json!({"error": "doc_not_found", "detail": detail}),
                 )?,
             },
-            // GET /v1/provider-sessions/{id}/normalized-events — normalized
-            // HarnessTurnEvent[] computed on read from the retained RAW
-            // per-session provider NDJSON. This does not write new storage and
-            // intentionally uses provider adapter defaults until S2b/S2c add
-            // provider-specific mappings.
-            session_path
-                if session_path.starts_with("/v1/provider-sessions/")
-                    && session_path.ends_with("/normalized-events") =>
+            member_path
+                if member_path.starts_with("/v1/member-runs/")
+                    && member_path.ends_with("/native-activity") =>
             {
-                // Session ids are generated tokens (delivery-<ts>-<n>): safe
-                // path chars, no URL-decoding needed.
-                let session_id = session_path
-                    .strip_prefix("/v1/provider-sessions/")
-                    .and_then(|rest| rest.strip_suffix("/normalized-events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_provider_session_normalized_events(store, &session_id) {
-                    Ok((events, truncated)) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "events": events,
-                            "truncated": truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
+                let member_run_id = member_path
+                    .strip_prefix("/v1/member-runs/")
+                    .and_then(|rest| rest.strip_suffix("/native-activity"))
+                    .unwrap_or_default();
+                let member = latest_member_runs_in_append_order(store)?
+                    .into_iter()
+                    .find(|member| member.id == member_run_id);
+                match member {
+                    Some(member) => match member.native_session.as_ref() {
+                        Some(session) => write_http_json(
+                            &mut stream,
+                            "200 OK",
+                            &native_session::read_activity(session)?,
+                        )?,
+                        None => write_http_json(
+                            &mut stream,
+                            "409 Conflict",
+                            &serde_json::json!({
+                                "error": "native_session_unbound",
+                                "member_run_id": member_run_id,
+                            }),
+                        )?,
+                    },
+                    None => write_http_json(
                         &mut stream,
                         "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
+                        &serde_json::json!({
+                            "error": "member_run_not_found",
+                            "member_run_id": member_run_id,
+                        }),
                     )?,
                 }
             }
-            // GET /v1/provider-sessions/{id}/events — the RAW provider turn,
-            // 1:1: every line of the persisted claude/codex stream as parsed
-            // JSON, so the dashboard can show the agent's actual events
-            // (assistant text, tool_use, tool_result, result) instead of a
-            // wrapped "succeeded: N events" summary.
-            session_path
-                if session_path.starts_with("/v1/provider-sessions/")
-                    && session_path.ends_with("/events") =>
+            step_path
+                if step_path.starts_with("/v1/workflow-steps/")
+                    && step_path.ends_with("/native-activity") =>
             {
-                // Session ids are generated tokens (delivery-<ts>-<n>): safe
-                // path chars, no URL-decoding needed.
-                let session_id = session_path
-                    .strip_prefix("/v1/provider-sessions/")
-                    .and_then(|rest| rest.strip_suffix("/events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_provider_session_events(store, &session_id) {
-                    Ok((events, truncated)) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "events": events,
-                            "truncated": truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
+                let step_id = step_path
+                    .strip_prefix("/v1/workflow-steps/")
+                    .and_then(|rest| rest.strip_suffix("/native-activity"))
+                    .unwrap_or_default();
+                let step = latest_workflow_steps_in_append_order(store)?
+                    .into_iter()
+                    .find(|step| step.id == step_id);
+                match step {
+                    Some(step) => match step.native_session.as_ref() {
+                        Some(session) => write_http_json(
+                            &mut stream,
+                            "200 OK",
+                            &native_session::read_activity(session)?,
+                        )?,
+                        None => write_http_json(
+                            &mut stream,
+                            "409 Conflict",
+                            &serde_json::json!({
+                                "error": "native_session_unbound",
+                                "workflow_step_id": step_id,
+                            }),
+                        )?,
+                    },
+                    None => write_http_json(
                         &mut stream,
                         "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
-                    )?,
-                }
-            }
-            // GET /v1/sessions/{id}/normalized-events — the normalized
-            // (HarnessTurnEvent[]) companion to the historical raw endpoint
-            // below, computed on read from the DURABLE per-session NDJSON. Same
-            // `retained` semantics: a pruned `--trace live` run returns
-            // `retained: false` with an empty list so the dashboard can render
-            // "trace not retained" provider-agnostically. Matched BEFORE the raw
-            // `/events` arm because it is the more specific suffix.
-            sessions_norm_path
-                if sessions_norm_path.starts_with("/v1/sessions/")
-                    && sessions_norm_path.ends_with("/normalized-events") =>
-            {
-                let session_id = sessions_norm_path
-                    .strip_prefix("/v1/sessions/")
-                    .and_then(|rest| rest.strip_suffix("/normalized-events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_session_turn_events_normalized(store, &session_id) {
-                    Ok((retained, events, truncated)) => write_http_json(
-                        &mut stream,
-                        "200 OK",
                         &serde_json::json!({
-                            "session_id": session_id,
-                            "retained": retained,
-                            "events": events,
-                            "truncated": truncated,
+                            "error": "workflow_step_not_found",
+                            "workflow_step_id": step_id,
                         }),
-                    )?,
-                    Err(detail) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
-                    )?,
-                }
-            }
-            // GET /v1/sessions/{id}/events — the PERSISTED per-session turn
-            // events for a completed durable run's historical drill-in (two-tier
-            // persistence read side). Reads the durable per-session NDJSON the
-            // ProviderSession's jsonl_ref/stdout_ref points at (survives a serve
-            // restart). A `--trace live` run whose trace was pruned after
-            // execution left those refs None, so we return `retained: false`
-            // ("trace not retained") and the UI can distinguish it.
-            sessions_path
-                if sessions_path.starts_with("/v1/sessions/")
-                    && sessions_path.ends_with("/events") =>
-            {
-                let session_id = sessions_path
-                    .strip_prefix("/v1/sessions/")
-                    .and_then(|rest| rest.strip_suffix("/events"))
-                    .unwrap_or_default()
-                    .to_string();
-                match read_session_turn_events(store, &session_id) {
-                    Ok(result) => write_http_json(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::json!({
-                            "session_id": session_id,
-                            "retained": result.retained,
-                            "events": result.events,
-                            "truncated": result.truncated,
-                        }),
-                    )?,
-                    Err(detail) => write_http_json(
-                        &mut stream,
-                        "404 Not Found",
-                        &serde_json::json!({"error": "session_events_not_found", "detail": detail.to_string()}),
                     )?,
                 }
             }
@@ -8496,7 +10903,13 @@ fn handle_http_connection(
         return Ok(());
     }
 
-    match handle_http_action(store, &path_only, &body_json) {
+    // Raw --store compatibility mode has no registered project_root. Do not
+    // mislabel its centralized store_root as an execution workspace.
+    let project_context = projects
+        .harness_home
+        .as_ref()
+        .map(|_| projects.context_for(&project_id, store));
+    match handle_http_action(store, project_context.as_ref(), &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
             "200 OK",
@@ -8571,6 +10984,7 @@ fn query_param(target: &str, key: &str) -> Option<String> {
 
 fn handle_http_action(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
@@ -8583,6 +10997,49 @@ fn handle_http_action(
     {
         return close_mission_value(store, mission_id, body);
     }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/teams"))
+    {
+        let team_value = create_team_value(store, body)?;
+        let team_id = team_value["id"]
+            .as_str()
+            .ok_or_else(|| CliError::Usage("created team has no id".to_string()))?;
+        let mission = revise_mission_team_link(store, mission_id, team_id, true)?;
+        return Ok(serde_json::json!({"mission": mission, "team": team_value}));
+    }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/context"))
+    {
+        return Ok(serde_json::to_value(revise_mission_context(
+            store,
+            mission_id,
+            &required_json_string(body, "context")?,
+        )?)?);
+    }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/link-team"))
+    {
+        return Ok(serde_json::to_value(revise_mission_team_link(
+            store,
+            mission_id,
+            &required_json_string(body, "team_id")?,
+            true,
+        )?)?);
+    }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/unlink-team"))
+    {
+        return Ok(serde_json::to_value(revise_mission_team_link(
+            store,
+            mission_id,
+            &required_json_string(body, "team_id")?,
+            false,
+        )?)?);
+    }
     if path == "/v1/waves" {
         return create_wave_value(store, body);
     }
@@ -8592,8 +11049,59 @@ fn handle_http_action(
     {
         return gate_wave_value(store, wave_id, body);
     }
+    if let Some(wave_id) = path
+        .strip_prefix("/v1/waves/")
+        .and_then(|rest| rest.strip_suffix("/context"))
+    {
+        return Ok(serde_json::to_value(revise_wave(
+            store,
+            wave_id,
+            &required_json_string(body, "context")?,
+            &optional_json_string(body, "updated_by")?.unwrap_or_else(|| "host".to_string()),
+        )?)?);
+    }
+    if let Some(wave_id) = path
+        .strip_prefix("/v1/waves/")
+        .and_then(|rest| rest.strip_suffix("/advance"))
+    {
+        return Ok(serde_json::to_value(advance_wave(
+            store,
+            wave_id,
+            &required_json_string(body, "outcome")?,
+            &optional_json_string(body, "advanced_by")?.unwrap_or_else(|| "host".to_string()),
+            optional_json_string_array(body, "artifact_refs")?,
+        )?)?);
+    }
     if path == "/v1/team-runs" {
-        return create_team_run_value(store, body);
+        return create_team_run_value(store, project_context, body);
+    }
+    if let Some(team_run_id) = path
+        .strip_prefix("/v1/team-runs/")
+        .and_then(|rest| rest.strip_suffix("/members"))
+    {
+        let member = TeamMemberSpec {
+            name: required_json_string(body, "name")?,
+            role: required_json_string(body, "role")?,
+            provider: required_json_string(body, "provider")?,
+            execution_mode: optional_json_string(body, "execution_mode")?,
+            model: optional_json_string(body, "model")?,
+            worktree_ref: optional_json_string(body, "worktree_ref")?,
+            owned_paths: optional_json_string_array(body, "owned_paths")?,
+            resume_native_session_id: optional_json_string(body, "resume_native_session_id")?,
+        };
+        let (run, member, assignment) = add_team_run_member(
+            store,
+            project_context,
+            team_run_id,
+            &member,
+            &required_json_string(body, "assignment")?,
+            optional_json_string(body, "origin_wave_id")?,
+        )?;
+        return Ok(serde_json::json!({
+            "team_run": run,
+            "member_run": member,
+            "assignment": assignment,
+        }));
     }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
@@ -8605,6 +11113,31 @@ fn handle_http_action(
         let parts = rest.split('/').collect::<Vec<_>>();
         if let [team_run_id, "messages", message_id, "ack"] = parts.as_slice() {
             return acknowledge_team_message_value(store, team_run_id, message_id, body);
+        }
+        if let [team_run_id, "interactions", interaction_id, "resolve"] = parts.as_slice() {
+            return resolve_pending_interaction_value(store, team_run_id, interaction_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "steer"] = parts.as_slice() {
+            return steer_team_member_value(store, team_run_id, member_run_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "interrupt"] = parts.as_slice() {
+            return interrupt_team_member_value(store, team_run_id, member_run_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "rename"] = parts.as_slice() {
+            return Ok(serde_json::to_value(rename_team_run_member(
+                store,
+                team_run_id,
+                member_run_id,
+                &required_json_string(body, "name")?,
+            )?)?);
+        }
+        if let [team_run_id, "members", member_run_id, "deactivate"] = parts.as_slice() {
+            return Ok(serde_json::to_value(deactivate_team_run_member(
+                store,
+                team_run_id,
+                member_run_id,
+                &required_json_string(body, "reason")?,
+            )?)?);
         }
     }
     if let Some(team_run_id) = path
@@ -8656,7 +11189,7 @@ fn handle_http_action(
             store,
             agent_id,
             &required_json_string(body, "message_id")?,
-            json_string(body, "session_id").as_deref(),
+            json_string(body, "delivery_id").as_deref(),
             json_string(body, "reason")
                 .as_deref()
                 .unwrap_or("dashboard requested retry"),
@@ -8665,13 +11198,13 @@ fn handle_http_action(
     }
     if let Some(agent_id) = path
         .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/reconcile-session"))
+        .and_then(|rest| rest.strip_suffix("/reconcile-delivery"))
     {
-        return reconcile_provider_session_value(
+        return reconcile_delivery_value(
             store,
             agent_id,
-            &required_json_string(body, "session_id")?,
-            parse_provider_session_status(
+            &required_json_string(body, "delivery_id")?,
+            parse_provider_execution_status(
                 json_string(body, "status").as_deref().unwrap_or("failed"),
             )?,
             parse_terminal_source(
@@ -8695,6 +11228,200 @@ fn handle_http_action(
     Err(CliError::Usage(format!("unknown action path: {path}")))
 }
 
+fn steer_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let content = required_json_string(body, "content")?;
+    let requested_by =
+        optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
+    let result = dispatch_live_member_control(
+        team_run_id,
+        member_run_id,
+        |reply| MemberControlCommand::Steer {
+            content: content.clone(),
+            requested_by: requested_by.clone(),
+            reply,
+        },
+        true,
+    )?;
+    let mut message = send_team_message(
+        store,
+        team_run_id,
+        "host",
+        vec![member_run_id.to_string()],
+        TeamMessageKind::Control,
+        &content,
+        None,
+        None,
+        json_string(body, "origin_wave_id"),
+    )?;
+    for delivery in &mut message.deliveries {
+        delivery.policy = TeamDeliveryPolicy::Inject;
+        delivery.status = TeamDeliveryStatus::Delivered;
+        delivery.updated_at = now_string();
+    }
+    store.append_team_message(&message)?;
+    Ok(serde_json::json!({"control": result, "message": message}))
+}
+
+fn interrupt_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let requested_by =
+        optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
+    let reason = optional_json_string(body, "reason")?
+        .unwrap_or_else(|| "operator requested interruption".to_string());
+    // Unblock any reverse provider request before waiting for the live adapter
+    // acknowledgement. Otherwise the provider thread and HTTP caller would
+    // deadlock: the adapter is paused in PendingInteraction while the caller
+    // waits for it to consume the interrupt command.
+    for interaction in latest_pending_interactions_in_append_order(store)?
+        .into_iter()
+        .filter(|interaction| {
+            interaction.team_run_id == team_run_id
+                && interaction.member_run_id == member_run_id
+                && interaction.status == PendingInteractionStatus::Pending
+        })
+    {
+        let mut cancelled = interaction;
+        cancelled.status = PendingInteractionStatus::Cancelled;
+        cancelled.resolved_at = Some(now_string());
+        cancelled.resolved_by = Some(requested_by.clone());
+        cancelled.response_text = Some(reason.clone());
+        store.append_pending_interaction(&cancelled)?;
+        append_team_run_event(
+            store,
+            team_run_id,
+            0,
+            TeamRunEventSourceKind::Host,
+            Some(member_run_id.to_string()),
+            "pending_interaction",
+            &cancelled.id,
+            "resolved",
+            "pending provider interaction cancelled by member interruption",
+        )?;
+    }
+    dispatch_live_member_control(
+        team_run_id,
+        member_run_id,
+        |reply| MemberControlCommand::Interrupt {
+            reason,
+            requested_by,
+            reply,
+        },
+        false,
+    )
+}
+
+pub(crate) fn resolve_pending_interaction_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    interaction_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let current = latest_pending_interactions_in_append_order(store)?
+        .into_iter()
+        .find(|interaction| interaction.id == interaction_id)
+        .ok_or_else(|| CliError::Usage(format!("interaction not found: {interaction_id}")))?;
+    if current.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "interaction {interaction_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if current.status != PendingInteractionStatus::Pending {
+        return Err(CliError::Usage(format!(
+            "interaction {interaction_id} is already {}",
+            serde_snake_label(&current.status)
+        )));
+    }
+    let resolved_by = required_json_string(body, "resolved_by")?;
+    let authorized = match current.route {
+        PendingInteractionRoute::Lead => matches!(resolved_by.as_str(), "host" | "lead"),
+        PendingInteractionRoute::Human => matches!(resolved_by.as_str(), "operator" | "human"),
+        PendingInteractionRoute::Policy => resolved_by == "policy",
+    };
+    if !authorized {
+        return Err(CliError::Usage(format!(
+            "interaction {} requires {} authority; resolved_by={resolved_by} is not allowed",
+            interaction_id,
+            serde_snake_label(&current.route)
+        )));
+    }
+    let option_id = json_string(body, "option_id");
+    let response_text = json_string(body, "response_text");
+    if option_id.is_none() && response_text.is_none() {
+        return Err(CliError::Usage(
+            "interaction resolution requires option_id or response_text".to_string(),
+        ));
+    }
+    let selected = option_id
+        .as_deref()
+        .map(|id| {
+            current
+                .options
+                .iter()
+                .find(|option| option.id == id)
+                .cloned()
+                .ok_or_else(|| CliError::Usage(format!("unknown interaction option: {id}")))
+        })
+        .transpose()?;
+    let status = match current.kind {
+        PendingInteractionKind::Question => {
+            if selected.as_ref().is_some_and(|option| {
+                option.intent.as_deref() == Some("reject_once") || option.id.ends_with("_skip")
+            }) {
+                PendingInteractionStatus::Dismissed
+            } else {
+                PendingInteractionStatus::Answered
+            }
+        }
+        PendingInteractionKind::ToolApproval | PendingInteractionKind::PlanReview => {
+            if selected.as_ref().is_some_and(|option| {
+                option
+                    .intent
+                    .as_deref()
+                    .is_some_and(|intent| intent.starts_with("allow"))
+                    || option.id.contains("approve")
+                    || option.id.starts_with("plan_opt_")
+            }) {
+                PendingInteractionStatus::Approved
+            } else {
+                PendingInteractionStatus::Denied
+            }
+        }
+        PendingInteractionKind::Unknown => PendingInteractionStatus::Answered,
+    };
+    let mut resolved = current;
+    resolved.status = status;
+    resolved.response_option_id = option_id;
+    resolved.response_text = response_text;
+    resolved.resolved_at = Some(now_string());
+    resolved.resolved_by = Some(resolved_by);
+    store.append_pending_interaction(&resolved)?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        0,
+        TeamRunEventSourceKind::Host,
+        Some(resolved.member_run_id.clone()),
+        "pending_interaction",
+        &resolved.id,
+        "resolved",
+        &format!(
+            "{} resolved as {}",
+            resolved.title,
+            serde_snake_label(&resolved.status)
+        ),
+    )?;
+    serde_json::to_value(resolved).map_err(CliError::Json)
+}
+
 /// POST /v1/missions — create native Mission intent. Goal compatibility
 /// projections are read-only and intentionally have no creation endpoint.
 fn create_mission_value(
@@ -8707,6 +11434,7 @@ fn create_mission_value(
         &required_json_string(body, "title")?,
         &required_json_string(body, "objective")?,
         optional_json_string(body, "desired_outcome")?,
+        optional_json_string(body, "context")?,
     )?)?)
 }
 
@@ -8749,9 +11477,13 @@ fn create_wave_value(
         index,
         &required_json_string(body, "title")?,
         &required_json_string(body, "objective")?,
-        parse_wave_executor_kind(&required_json_string(body, "executor_kind")?)?,
+        parse_wave_executor_kind(
+            &optional_json_string(body, "executor_kind")?.unwrap_or_else(|| "host".to_string()),
+        )?,
         optional_json_string(body, "exit_criteria")?,
         optional_json_string(body, "plan_note")?,
+        optional_json_string(body, "context")?,
+        optional_json_string(body, "updated_by")?,
     )?)?)
 }
 
@@ -8883,7 +11615,9 @@ fn create_team_value(
         id: json_string(body, "id").unwrap_or_else(|| generated_id("team")),
         name: required_json_string(body, "name")?,
         description: required_json_string(body, "description")?,
-        owner_agent_id: required_json_string(body, "owner")
+        owner_agent_id: required_json_string(body, "lead_agent_id")
+            .or_else(|_| required_json_string(body, "lead"))
+            .or_else(|_| required_json_string(body, "owner"))
             .or_else(|_| required_json_string(body, "owner_agent_id"))?,
         status: AgentTeamStatus::Active,
         member_ids: json_string_array(body, "member"),
@@ -8898,6 +11632,7 @@ fn create_team_value(
 /// as `team-run create`; the host surface defaults to "http").
 fn create_team_run_value(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     if body.get("wave_index").is_some() {
@@ -8906,10 +11641,12 @@ fn create_team_run_value(
                 .to_string(),
         ));
     }
+    let agent_team_id = optional_json_string(body, "agent_team_id")?;
     let member_values = body
         .get("members")
         .and_then(|value| value.as_array())
-        .ok_or_else(|| CliError::Usage("missing JSON field: members".to_string()))?;
+        .cloned()
+        .unwrap_or_default();
     let mut members = Vec::new();
     for (member_index, member) in member_values.iter().enumerate() {
         let owned_paths = match member.get("owned_paths") {
@@ -8935,9 +11672,17 @@ fn create_team_run_value(
             name: required_json_string(member, "name")?,
             role: required_json_string(member, "role")?,
             provider: required_json_string(member, "provider")?,
+            execution_mode: optional_json_string(member, "execution_mode")?,
             model: optional_json_string(member, "model")?,
+            worktree_ref: optional_json_string(member, "worktree_ref")?,
             owned_paths,
+            resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
         });
+    }
+    if members.is_empty() {
+        if let Some(team_id) = agent_team_id.as_deref() {
+            members = team_member_specs_from_definition(store, team_id)?;
+        }
     }
     let budget_limit_usd = match body.get("budget_limit_usd") {
         None | Some(serde_json::Value::Null) => None,
@@ -8949,11 +11694,14 @@ fn create_team_run_value(
         optional_json_string(body, "host_surface")?.unwrap_or_else(|| "http".to_string());
     let created = create_team_run(
         store,
+        project_context,
+        optional_json_string(body, "execution_root")?,
         &required_json_string(body, "objective")?,
         budget_limit_usd,
         &host_surface,
         optional_json_string(body, "host_thread_id")?,
         optional_json_string(body, "previous_run_id")?,
+        agent_team_id,
         optional_json_string(body, "mission_id")?,
         optional_json_string(body, "wave_id")?,
         &members,
@@ -8997,6 +11745,7 @@ fn send_team_message_value(
         &required_json_string(body, "body")?,
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
+        json_string(body, "origin_wave_id"),
     )?;
     Ok(serde_json::to_value(message)?)
 }
@@ -9052,6 +11801,7 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
+        native_session: None,
         provider_thread_id: None,
         provider_agent_path: json_string(body, "provider_agent_path"),
         provider_agent_nickname: json_string(body, "provider_agent_nickname"),
@@ -9293,10 +12043,10 @@ fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<A
         )?;
     }
 
-    mark_running_provider_sessions_terminal(
+    mark_running_delivery_attempts_terminal(
         store,
         &member.id,
-        ProviderSessionStatus::Canceled,
+        ProviderExecutionStatus::Canceled,
         Some(MessageTerminalSource::Failed),
     )?;
     member.status = AgentMemberStatus::Closed;
@@ -9456,12 +12206,6 @@ struct WorkflowDeliveryOptions {
     /// run's ceiling between the cumulative tally's barrier-granular checks. `None`
     /// = no per-worker cap. Codex has no native budget flag, so this is claude-only.
     max_budget_usd: Option<f64>,
-    /// Retention policy for the heavy per-node turn-event trace: "durable"
-    /// (default) persists the per-session AgentEvents + retained NDJSON trace;
-    /// "live" streams the trace over SSE during execution but prunes it after the
-    /// run so a PAST run shows "trace not retained". Live streaming itself is
-    /// independent and always happens.
-    trace_retention: String,
     /// When true, emit a compact NDJSON progress line to STDERR as each step goes
     /// `running` then terminal — so an agent caller that invoked us via its shell
     /// tool sees the phase-by-phase timeline (which step/phase is live) alongside
@@ -9535,8 +12279,8 @@ fn workflow_effective_effort<'a>(
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
 /// seam: (1) queue a Message addressed to the member, (2) deliver exactly that
 /// message via `deliver_agent_messages_value` (which claims + runs
-/// `run_provider_delivery`), (3) read back the resulting provider session and
-/// report to build a [`workflow::StepResult`].
+/// `run_provider_delivery`), and (3) reduce the explicit provider outcome into
+/// a [`workflow::StepResult`]. Provider history remains in its native session.
 ///
 /// This fn is TOTAL: any error (store failure, no runtime, provider failure) is
 /// reported as `StepResult { ok: false, .. }` so the workflow's control flow —
@@ -9573,7 +12317,11 @@ fn build_terminal_step(
         run_id: run_id.to_string(),
         phase: result.phase.clone(),
         label: result.label.clone(),
-        provider_session_id: result.provider_session_id.clone(),
+        native_session: result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("native_session"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
         status: result.step_status(),
         output_summary: Some(result.output_summary.clone()),
         result: Some(workflow::step_result_json(result)),
@@ -9594,14 +12342,9 @@ fn workflow_real_agent_step(
     options: &WorkflowDeliveryOptions,
     spec: &workflow::AgentStepSpec,
 ) -> workflow::StepResult {
-    // Mint the provider session id HERE, before the `running` row, and stamp it
-    // on that row — so the dashboard can link this step to its LIVE turn-event
-    // stream WHILE it runs, not only after it finishes. The worker tees each
-    // event to the shared `provider_turn_events.jsonl` keyed by this id; the
-    // per-node drill-in looks the step's `provider_session_id` up in that live
-    // buffer. If the id were only assigned on the terminal row (as before), a
-    // running step carried `None` and its live tool-by-tool activity could not be
-    // attached until it completed. The worker reuses this exact id.
+    // Mint an internal transport-attempt id before launch. It scopes temporary
+    // files only; the provider-reported NativeSessionRef is attached after
+    // discovery and remains the sole drill-in/resume locator.
     let step_id = generated_id("wfstep");
     let session_id = generated_id("session");
     let started_at = now_string();
@@ -9610,7 +12353,7 @@ fn workflow_real_agent_step(
         run_id: run_id.to_string(),
         phase: spec.phase.clone(),
         label: spec.label.clone(),
-        provider_session_id: Some(session_id.clone()),
+        native_session: None,
         status: WorkflowStepStatus::Running,
         output_summary: None,
         result: None,
@@ -9662,7 +12405,6 @@ fn workflow_real_agent_step(
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: false,
-                provider_session_id: None,
                 output_summary: format!("agent step error: {error}"),
                 step_id: Some(step_id.clone()),
                 started_at: Some(started_at.clone()),
@@ -9757,8 +12499,7 @@ fn try_workflow_real_agent_step(
             isolation: spec.isolation.clone(),
             ok: true,
             // Reuse the caller's session id so the mock terminal row matches the
-            // `running` row's `provider_session_id` (consistent in dry-run too).
-            provider_session_id: Some(session_id.to_string()),
+            // `running` row's `native_session` (consistent in dry-run too).
             output_summary,
             // The journaling identity is assigned by the caller, which already
             // journaled the `running` start row before this step began.
@@ -10189,21 +12930,16 @@ fn spawn_ephemeral_worker(
         .map(|g| g.path.clone())
         .unwrap_or_else(|| repo_root.clone());
 
-    // One ephemeral worker == one ProviderSession. The session id keys the
-    // dashboard per-node drill-in (WorkflowStep.provider_session_id) and the
-    // durable NDJSON / live turn-events. It is minted by the caller and already
-    // stamped on the `running` step row, so the live drill-in links mid-flight;
-    // the worker reuses it verbatim.
+    // This id is a Harness-local execution key, not a provider session id. The
+    // provider-owned id is discovered from the native stream and attached to
+    // the terminal WorkflowStep as a NativeSessionRef.
     let session_id = session_id.to_string();
-    let session_dir = store.root().join("provider-sessions").join(&session_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("workflow-workers")
+        .join(&session_id);
     fs::create_dir_all(&session_dir)?;
-
-    // Publish a RUNNING ProviderSession row NOW, before the blocking spawn — so the
-    // dashboard's per-node drill-in resolves this step's session WHILE it runs and
-    // renders the live turn-event stream, instead of "no turn yet" until the step
-    // finishes. `ingest_ephemeral_events` writes the terminal row afterward (same
-    // id, latest-wins).
-    write_running_ephemeral_session(store, &session_id, &session_dir, spec);
 
     // The structured schema normalized to a real JSON Schema for the providers'
     // native flags (claude `--json-schema`, codex `--output-schema`). `None` for
@@ -10345,23 +13081,6 @@ fn spawn_ephemeral_worker(
     };
     let artifact_outcome = collect_expected_artifacts(&cwd, &repo_root, &spec.expected_artifacts);
 
-    // Two-tier persistence (locked design). The live SSE frames were already
-    // streamed during the spawn loop (per-session NDJSON + shared
-    // provider_turn_events.jsonl), so a LIVE drill-in worked during execution no
-    // matter the retention. Now decide what SURVIVES the run:
-    //  - durable: persist the heavy trace (per-session AgentEvents + retained
-    //    NDJSON) so a completed run can be drilled into historically.
-    //  - live: do NOT retain the heavy trace — skip the durable AgentEvents and
-    //    prune the streamed NDJSON rows — so a past live-only run shows
-    //    "trace not retained". The ProviderSession row is still written either
-    //    way (with jsonl_ref only when durable), keeping the
-    //    WorkflowStep.provider_session_id linkage stable.
-    let retain_trace = options.trace_retention != "live";
-    let _ = ingest_ephemeral_events(store, &session_id, spec, &spawn, retain_trace);
-    if !retain_trace {
-        prune_live_only_trace(store, &session_id);
-    }
-
     let mut output_summary = if let Some(reply) = spawn.reply.clone() {
         // The worker's FINAL answer, FULL and FAITHFUL — NOT truncated. This is the
         // text `agent()` hands the program in text mode: the program splits it
@@ -10369,9 +13088,8 @@ fn spawn_ephemeral_worker(
         // leaf's prompt. Capping it (the old 4000-char clip) silently truncated the
         // node's output, so chaining a long result into a later leaf (e.g. a synthesis
         // over deep-dive sections) lost most of the input — a real design defect. The
-        // full text is the node's data; newlines are preserved; reply.txt keeps a
-        // durable copy too. Bounding runaway output is the budget/idle-timeout's job,
-        // not a silent clip here.
+        // full text is the node's durable Workflow outcome; newlines are
+        // preserved. Bounding runaway output is the budget/idle-timeout's job.
         reply
     } else {
         format!(
@@ -10503,6 +13221,11 @@ fn spawn_ephemeral_worker(
         }
     }
 
+    // output-schema and last-message files are process-local transport aids.
+    // Remove them after reducing the explicit Workflow outcome; provider-native
+    // history remains in the provider store.
+    let _ = fs::remove_dir_all(&session_dir);
+
     // The step is ok iff the worker succeeded AND (text mode OR schema parsed).
     let ok = step_ok_after_gates(spawn.ok, schema_failed, &artifact_outcome);
 
@@ -10512,7 +13235,6 @@ fn spawn_ephemeral_worker(
         provider: spec.provider.clone(),
         isolation: spec.isolation.clone(),
         ok,
-        provider_session_id: Some(session_id),
         output_summary,
         step_id: None,
         started_at: None,
@@ -10730,6 +13452,7 @@ fn build_step_details(
         .or_else(|| spawn.model.clone());
     let mut details = serde_json::json!({
         "model": model,
+        "native_session": spawn.native_session,
         "exit_code": spawn.exit_code,
         "duration_ms": duration_ms,
         "persist_changes": spec.persist_changes.clone(),
@@ -10834,8 +13557,9 @@ fn build_step_details(
 struct EphemeralSpawn {
     ok: bool,
     reply: Option<String>,
-    /// Raw NDJSON stdout (one JSON event per line) for neutral-event ingest.
-    ndjson: String,
+    /// Reference to the provider-owned session discovered from the native
+    /// stream. The Harness execution key is intentionally not a session id.
+    native_session: Option<NativeSessionRef>,
     stderr: String,
     /// Process exit code; `None` when the worker was killed on timeout / signal.
     exit_code: Option<i32>,
@@ -11002,11 +13726,11 @@ fn codex_delivery_structured(reply: Option<&str>, spec: &LaunchSpec) -> Option<s
 /// SUCCEEDED delivery. A failed/stale turn may have emitted partial or
 /// schema-violating JSON that must not be reported as the structured result.
 fn structured_for_status(
-    status: &ProviderSessionStatus,
+    status: &ProviderExecutionStatus,
     structured: Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     match status {
-        ProviderSessionStatus::Succeeded => structured,
+        ProviderExecutionStatus::Succeeded => structured,
         _ => None,
     }
 }
@@ -11155,7 +13879,7 @@ fn spawn_codex_ephemeral(
         Some(OrphanRegistration {
             dir: session_dir
                 .parent()
-                .and_then(|provider_sessions| provider_sessions.parent())
+                .and_then(|delivery_dir| delivery_dir.parent())
                 .unwrap_or(session_dir)
                 .join("worker_pids"),
             run_id: run_id.to_string(),
@@ -11170,8 +13894,8 @@ fn spawn_codex_ephemeral(
         .filter_map(|line| CodexExecEvent::parse_line(&line))
         .collect();
     let ok = matches!(
-        infer_provider_session_status(&codex_events, run.process_success),
-        ProviderSessionStatus::Succeeded
+        infer_provider_execution_status(&codex_events, run.process_success),
+        ProviderExecutionStatus::Succeeded
     );
     // Prefer the parsed agent message; fall back to the last-message file codex
     // wrote (the terminal assistant text).
@@ -11201,7 +13925,8 @@ fn spawn_codex_ephemeral(
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&run.events),
+        native_session: extract_thread_id_from_exec_events(&codex_events)
+            .map(|id| provider_native_session_ref("codex", id)),
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
@@ -11307,7 +14032,7 @@ fn spawn_claude_ephemeral(
         Some(OrphanRegistration {
             dir: session_dir
                 .parent()
-                .and_then(|provider_sessions| provider_sessions.parent())
+                .and_then(|delivery_dir| delivery_dir.parent())
                 .unwrap_or(session_dir)
                 .join("worker_pids"),
             run_id: run_id.to_string(),
@@ -11323,7 +14048,7 @@ fn spawn_claude_ephemeral(
         .collect();
     let ok = matches!(
         infer_claude_session_status(&claude_events, run.process_success),
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     );
     let reply = extract_claude_reply_text(&claude_events);
     let tokens = parse_claude_usage(&run.events);
@@ -11335,7 +14060,8 @@ fn spawn_claude_ephemeral(
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&run.events),
+        native_session: extract_session_id_from_claude_events(&claude_events)
+            .map(|id| provider_native_session_ref("claude", id)),
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
@@ -11365,11 +14091,9 @@ struct NdjsonRun {
     warnings: Vec<String>,
 }
 
-/// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed),
-/// teeing each parsed event to TWO sinks while it streams MID-TURN: (1) the
-/// durable per-session `<file>` the ProviderSession's jsonl_ref points at, and
-/// (2) the shared `<store_root>/provider_turn_events.jsonl` the SSE watcher tails
-/// to push live frames (keyed by session id). Enforces a per-node timeout: on
+/// Spawn a child that emits NDJSON on stdout, non-interactively (stdin closed).
+/// Events are reduced in memory only; the provider-owned native session remains
+/// the sole transcript/tool stream. Enforces a per-node timeout: on
 /// timeout the child is killed and `process_success=false` (the run tolerates
 /// failed nodes). Returns the terminal [`NdjsonRun`].
 /// SIGKILL the worker's whole process GROUP (the child is the group leader, so
@@ -11491,13 +14215,7 @@ fn run_ndjson_child(
         .take()
         .ok_or_else(|| CliError::Usage(format!("{context} stderr not available")))?;
 
-    let _ = fs::create_dir_all(session_dir);
-    let live_path = session_dir.join(live_file_name);
-    let shared_path = session_dir
-        .parent()
-        .and_then(|provider_sessions| provider_sessions.parent())
-        .map(|store_root| store_root.join("provider_turn_events.jsonl"));
-    let session_id_owned = session_id.to_string();
+    let _ = (session_dir, session_id, live_file_name);
 
     // IDLE-timeout clock. A productive worker keeps emitting events, each resetting
     // this to "now"; the main thread kills only a worker that has gone SILENT for
@@ -11517,27 +14235,6 @@ fn run_ndjson_child(
     // which ends this loop.
     let stdout_handle = std::thread::spawn(move || {
         let mut warnings = Vec::new();
-        let mut session_writer = match fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&live_path)
-        {
-            Ok(file) => Some(BufWriter::new(file)),
-            Err(_) => {
-                warnings.push("failed to open live ndjson file".to_string());
-                None
-            }
-        };
-        let mut shared_writer = match shared_path.as_ref() {
-            Some(path) => match fs::OpenOptions::new().create(true).append(true).open(path) {
-                Ok(file) => Some(BufWriter::new(file)),
-                Err(_) => {
-                    warnings.push("failed to open shared ndjson file".to_string());
-                    None
-                }
-            },
-            None => None,
-        };
         let mut events = Vec::new();
         let mut dropped_lines = 0usize;
         for line in BufReader::new(stdout).lines() {
@@ -11555,18 +14252,6 @@ fn run_ndjson_child(
                 dropped_lines += 1;
                 continue;
             };
-            if let Some(writer) = session_writer.as_mut() {
-                let _ = writeln!(writer, "{trimmed}");
-                let _ = writer.flush();
-            }
-            if let Some(writer) = shared_writer.as_mut() {
-                let envelope =
-                    serde_json::json!({ "session_id": session_id_owned, "event": payload });
-                if let Ok(line) = serde_json::to_string(&envelope) {
-                    let _ = writeln!(writer, "{line}");
-                    let _ = writer.flush();
-                }
-            }
             events.push(payload);
         }
         if dropped_lines > 0 {
@@ -11649,18 +14334,6 @@ fn run_ndjson_child(
         stderr: stderr_log,
         warnings,
     })
-}
-
-/// Join parsed event payloads back into NDJSON text (one JSON object per line).
-fn ndjson_lines(events: &[serde_json::Value]) -> String {
-    let mut out = String::new();
-    for event in events {
-        if let Ok(line) = serde_json::to_string(event) {
-            out.push_str(&line);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 /// `git -C <wt> diff --binary` — the node's collected evidence for the isolation
@@ -11893,218 +14566,9 @@ fn count_unique_worktree_diff_files(diff: &str) -> usize {
         .len()
 }
 
-/// Persist the ephemeral worker's NDJSON as neutral AgentEvents + one
-/// ProviderSession row keyed by `session_id`, so the dashboard per-node drill-in
-/// streams its tool calls. Reuses the existing claude stream-json reducer
-/// (`ingest_claude_stream_json`) for claude; emits a neutral event per codex
-/// NDJSON line for codex, mirroring the existing provider-output ingest.
-/// Write a RUNNING [`ProviderSession`] row the instant a workflow worker starts,
-/// BEFORE the blocking spawn. The dashboard's per-node drill-in resolves a step's
-/// turn-event stream via its `provider_session_id`, so without this row a RUNNING
-/// step rendered "no turn yet" — its live `provider_turn_event`s reached the
-/// frontend but had no session row to attach to — until it finished and
-/// [`ingest_ephemeral_events`] wrote the terminal row. This publishes the row up
-/// front (same id; the terminal row supersedes it latest-wins) and pre-creates the
-/// live NDJSON so `GET /v1/provider-sessions/{id}/events` returns a growing list
-/// from t0 rather than a missing-file error. Best-effort: a failure here must not
-/// abort the step — the terminal row still records the outcome.
-fn write_running_ephemeral_session(
-    store: &HarnessStore,
-    session_id: &str,
-    session_dir: &Path,
-    spec: &workflow::AgentStepSpec,
-) {
-    let live_file = provider_adapter(&spec.provider)
-        .map(|adapter| adapter.live_ndjson_file_name())
-        .unwrap_or_else(|| CodexAdapter.live_ndjson_file_name());
-    let live_path = session_dir.join(live_file);
-    // Pre-create the live NDJSON so the events route serves [] (then a growing
-    // list) during the turn instead of erroring on a not-yet-existent file.
-    let _ = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&live_path);
-    let jsonl_ref = Some(live_path.display().to_string());
-    let session = ProviderSession {
-        id: session_id.into(),
-        provider: spec.provider.clone(),
-        agent_member_id: session_id.into(),
-        task_id: None,
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: None,
-        status: ProviderSessionStatus::Running,
-        command: spec.provider.clone(),
-        args: Vec::new(),
-        prompt_ref: None,
-        prompt_summary: Some(format!(
-            "ephemeral {} worker: {}",
-            spec.provider, spec.label
-        )),
-        provider_session_ref: None,
-        stdout_ref: jsonl_ref.clone(),
-        jsonl_ref,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: None,
-        started_at: now_string(),
-        ended_at: None,
-        evidence_ids: Vec::new(),
-    };
-    let _ = store.append_provider_session(&session);
-}
-
-fn ingest_ephemeral_events(
-    store: &HarnessStore,
-    session_id: &str,
-    spec: &workflow::AgentStepSpec,
-    spawn: &EphemeralSpawn,
-    retain_trace: bool,
-) -> CliResult<()> {
-    // Persist the worker's FULL reply as a human-browsable artifact, so the
-    // deliverable can be retrieved in full (issue #89 item 4). The step's
-    // `output_summary` is capped at OUTPUT_SUMMARY_CAP chars, so a long synthesis
-    // would otherwise only live (scattered) inside the turn trace. Durable runs
-    // only; a `--trace live` run prunes the session dir afterward, and
-    // `workflow get-output` then falls back to the capped summary.
-    if retain_trace {
-        if let Some(reply) = spawn.reply.as_deref() {
-            let reply_path = store
-                .root()
-                .join("provider-sessions")
-                .join(session_id)
-                .join("reply.txt");
-            if let Some(parent) = reply_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&reply_path, reply);
-        }
-    }
-
-    // The DURABLE per-session AgentEvents are the heavy trace gated by retention.
-    // When `retain_trace` is false (a `--trace live` run) we skip them entirely:
-    // the live SSE frames already streamed during the spawn loop, so the only
-    // thing we omit is the historical (post-run) trace.
-    if retain_trace {
-        // claude => claude reducer; codex/unknown => codex AgentEvent loop (unchanged policy).
-        provider_adapter(&spec.provider)
-            .unwrap_or(&CodexAdapter as &dyn ProviderAdapter)
-            .ingest_ephemeral_trace(store, session_id, spawn);
-    }
-
-    // A ProviderSession keyed by OUR session id — the stable drill-in key, always
-    // written so WorkflowStep.provider_session_id resolves either way. The
-    // jsonl_ref/stdout_ref point at the retained per-session NDJSON ONLY when the
-    // trace is durable; a live-only run leaves them None so the drill-in renders
-    // "trace not retained" (the NDJSON is pruned after the run).
-    let live_file = provider_adapter(&spec.provider)
-        .map(|adapter| adapter.live_ndjson_file_name())
-        .unwrap_or_else(|| CodexAdapter.live_ndjson_file_name());
-    let jsonl_ref = if retain_trace {
-        Some(
-            store
-                .root()
-                .join("provider-sessions")
-                .join(session_id)
-                .join(live_file)
-                .display()
-                .to_string(),
-        )
-    } else {
-        None
-    };
-    let status = if spawn.ok {
-        ProviderSessionStatus::Succeeded
-    } else {
-        ProviderSessionStatus::Failed
-    };
-    let session = ProviderSession {
-        id: session_id.into(),
-        provider: spec.provider.clone(),
-        agent_member_id: session_id.into(),
-        task_id: None,
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: spec.provider.clone(),
-        args: Vec::new(),
-        prompt_ref: None,
-        prompt_summary: Some(format!(
-            "ephemeral {} worker: {}",
-            spec.provider, spec.label
-        )),
-        provider_session_ref: None,
-        stdout_ref: jsonl_ref.clone(),
-        jsonl_ref,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: Some(if spawn.ok { 0 } else { 1 }),
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    let _ = store.append_provider_session(&session);
-    Ok(())
-}
-
-/// Prune the heavy turn-event trace a `--trace live` run streamed but does NOT
-/// retain (two-tier persistence). The live SSE frames already reached connected
-/// clients during execution; this removes what would otherwise SURVIVE so a past
-/// live-only run shows "trace not retained":
-///  - the per-session NDJSON directory (`provider-sessions/<session_id>/`), and
-///  - this session's rows in the shared `provider_turn_events.jsonl`.
-///
-/// Best-effort: a prune failure must not flip an otherwise-successful step.
-fn prune_live_only_trace(store: &HarnessStore, session_id: &str) {
-    // Drop the per-session NDJSON the spawn loop teed during streaming.
-    let session_dir = store.root().join("provider-sessions").join(session_id);
-    let _ = fs::remove_dir_all(&session_dir);
-
-    // Strip this session's lines from the shared turn-event log, keeping the rows
-    // of OTHER (possibly durable) sessions intact. Each line is a
-    // {"session_id": ..., "event": ...} envelope; we drop only matching ids.
-    let shared_path = store.root().join("provider_turn_events.jsonl");
-    let Ok(contents) = fs::read_to_string(&shared_path) else {
-        return;
-    };
-    let mut kept = String::new();
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let drop_line = serde_json::from_str::<serde_json::Value>(trimmed)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("session_id")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s == session_id)
-            })
-            .unwrap_or(false);
-        if !drop_line {
-            kept.push_str(line);
-            kept.push('\n');
-        }
-    }
-    let _ = fs::write(&shared_path, kept);
-}
-
-/// Backstop GC (cleanup layer 3): `git worktree prune` + sweep
-/// `.harness/worktrees/` for dirs not tied to an ACTIVE run. Active = a worktree
-/// still registered with git (a leftover from a crash is unregistered after
-/// prune). Conservative: only removes dirs git no longer tracks.
 /// `workflow get-output <run_id> [--step <label>]` — retrieve a run's leaf
-/// OUTPUTS (issue #89 item 4). For text-producing workflows the deliverable was
-/// hard to get back: `output_summary` is capped and the full text otherwise only
-/// lived (scattered) in the turn trace. Each step's full reply is persisted as
-/// `provider-sessions/<session_id>/reply.txt` at ingest (durable runs); this reads
-/// it back, in `step_ids` order, falling back to the capped `output_summary` when
-/// the full artifact is absent (e.g. a `--trace live` run whose dir was pruned).
-/// `source` tells the caller which they got: `"reply"` (full) or `"summary"`.
+/// durable WorkflowStep outcomes in authored order and join optional native
+/// provider activity through each step's `NativeSessionRef`.
 fn workflow_get_output_value(
     store: &HarnessStore,
     args: &[String],
@@ -12149,32 +14613,19 @@ fn workflow_get_output_value(
                 continue;
             }
         }
-        let (output, source) = match step.provider_session_id.as_deref() {
-            Some(sid) => {
-                let reply_path = store
-                    .root()
-                    .join("provider-sessions")
-                    .join(sid)
-                    .join("reply.txt");
-                match fs::read_to_string(&reply_path) {
-                    Ok(text) => (text, "reply"),
-                    Err(_) => (step.output_summary.clone().unwrap_or_default(), "summary"),
-                }
-            }
-            None => (step.output_summary.clone().unwrap_or_default(), "summary"),
-        };
-        let session_summary = step
-            .provider_session_id
-            .as_deref()
-            .map(|sid| workflow_provider_session_summary(store, sid))
+        let output = step.output_summary.clone().unwrap_or_default();
+        let native_activity = step
+            .native_session
+            .as_ref()
+            .map(native_session::read_activity)
             .transpose()?;
         out_steps.push(serde_json::json!({
             "label": step.label,
             "status": serde_json::to_value(step.status)?,
-            "provider_session_id": step.provider_session_id,
-            "source": source,
+            "native_session": step.native_session,
+            "source": "workflow_step",
             "result": step.result,
-            "session_summary": session_summary,
+            "native_activity": native_activity,
             "output": output,
         }));
     }
@@ -12191,42 +14642,6 @@ fn workflow_get_output_value(
         "run_id": run_id,
         "workflow_name": run.workflow_name,
         "steps": out_steps,
-    }))
-}
-
-fn workflow_provider_session_summary(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<serde_json::Value> {
-    let (retained, events, truncated) = read_session_turn_events_normalized(store, session_id)?;
-    let mut tool_counts: BTreeMap<String, u64> = BTreeMap::new();
-    let mut final_message: Option<String> = None;
-    for event in events {
-        match event.kind {
-            HarnessTurnEventKind::ToolCall => {
-                let name = event
-                    .tool_call
-                    .map(|tool| tool.name)
-                    .unwrap_or_else(|| "unknown".to_string());
-                *tool_counts.entry(name).or_insert(0) += 1;
-            }
-            HarnessTurnEventKind::Message => {
-                if let Some(text) = event.text.filter(|text| !text.trim().is_empty()) {
-                    final_message = Some(truncate_on_char_boundary(text.trim(), 500).to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    let tool_calls = tool_counts
-        .into_iter()
-        .map(|(name, count)| serde_json::json!({ "name": name, "count": count }))
-        .collect::<Vec<_>>();
-    Ok(serde_json::json!({
-        "retained": retained,
-        "truncated": truncated,
-        "tool_calls": tool_calls,
-        "final_message": final_message,
     }))
 }
 
@@ -12317,87 +14732,10 @@ fn created_ms(created_at: &str) -> u128 {
         .unwrap_or(0)
 }
 
-/// Retention-window GC for the heavy per-node turn-event trace. The small audit
-/// record (WorkflowRun / WorkflowStep / result / initiated_by / spec) is ALWAYS
-/// kept; only the durable per-session NDJSON of OLDER runs is pruned. We keep the
-/// `keep_runs` most-recent durable runs and any newer than `keep_days` (when
-/// set), and prune the rest: delete each session's on-disk NDJSON dir, null its
-/// `jsonl_ref`/`stdout_ref` (so `/v1/sessions/<id>/events` reports
-/// `retained:false`), and flip the run's `trace_retention` to `"expired"`
-/// (distinct from `"live"`, which was never retained). `--dry-run` reports the
-/// plan without touching anything. Run it on a schedule (cron / `/loop`).
-fn workflow_gc_trace(
-    store: &HarnessStore,
-    keep_runs: usize,
-    keep_days: Option<u64>,
-    dry_run: bool,
-) -> CliResult<serde_json::Value> {
-    let now_ms = current_unix_ms();
-    let mut durable: Vec<WorkflowRun> = latest_workflow_runs_in_append_order(store)?
-        .into_iter()
-        .filter(|run| run.trace_retention == "durable")
-        .collect();
-    // Most-recent first, so the first `keep_runs` survive.
-    durable.sort_by_key(|run| std::cmp::Reverse(created_ms(&run.created_at)));
-
-    let steps = latest_workflow_steps_in_append_order(store)?;
-    let mut pruned = Vec::new();
-    let mut freed_sessions = 0usize;
-
-    for (index, run) in durable.iter().enumerate() {
-        let too_many = index >= keep_runs;
-        let too_old = keep_days
-            .map(|days| {
-                now_ms.saturating_sub(created_ms(&run.created_at)) > u128::from(days) * 86_400_000
-            })
-            .unwrap_or(false);
-        if !(too_many || too_old) {
-            continue;
-        }
-        let session_ids: Vec<String> = steps
-            .iter()
-            .filter(|step| step.run_id == run.id)
-            .filter_map(|step| step.provider_session_id.clone())
-            .collect();
-        pruned.push(serde_json::json!({
-            "run_id": run.id,
-            "created_at": run.created_at,
-            "sessions": session_ids.len(),
-            "reason": if too_old { "age" } else { "count" },
-        }));
-        if dry_run {
-            freed_sessions += session_ids.len();
-            continue;
-        }
-        for session_id in &session_ids {
-            let dir = store.root().join("provider-sessions").join(session_id);
-            let _ = fs::remove_dir_all(&dir);
-            if let Some(mut session) = latest_provider_session(store, session_id)? {
-                session.jsonl_ref = None;
-                session.stdout_ref = None;
-                store.append_provider_session(&session)?;
-            }
-            freed_sessions += 1;
-        }
-        let mut expired = run.clone();
-        expired.trace_retention = "expired".to_string();
-        store.append_workflow_run(&expired)?;
-    }
-
-    Ok(serde_json::json!({
-        "ok": true,
-        "kept_runs": durable.len().min(keep_runs),
-        "pruned_runs": pruned.len(),
-        "freed_sessions": freed_sessions,
-        "dry_run": dry_run,
-        "pruned": pruned,
-    }))
-}
-
 fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees|gc-trace",
+        "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees",
     )?;
     match args[0].as_str() {
         "patch" => {
@@ -12418,15 +14756,6 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             // Useful to clean up abandoned `Running` runs when serve is not up.
             let reaped = reap_stale_workflow_runs(store)?;
             print_json(&serde_json::json!({ "reaped": reaped }))?;
-        }
-        "gc-trace" => {
-            let keep_runs = value(&args[1..], "--keep-runs")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(100);
-            let keep_days = value(&args[1..], "--keep-days").and_then(|v| v.parse::<u64>().ok());
-            let dry_run = args[1..].iter().any(|a| a == "--dry-run");
-            let result = workflow_gc_trace(store, keep_runs, keep_days, dry_run)?;
-            print_json(&result)?;
         }
         "list" => {
             let registry = workflow::WorkflowRegistry::builtin();
@@ -12509,7 +14838,6 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         default_effort: value(args, "--effort"),
         max_budget_usd: None,
         // Registry runs always retain their trace durably.
-        trace_retention: "durable".to_string(),
         progress: has_flag(args, "--progress"),
         project: workflow_project_context(store),
     };
@@ -12536,7 +14864,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 }
 
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
-///  [--trace durable|live] [--dry-run] [--start-runtime] [--timeout-ms <ms>]
+///  [--dry-run] [--start-runtime] [--timeout-ms <ms>]
 ///  [--model <m>] [--effort <e>] [--initiated-by <id>]`
 ///
 /// Reads a runtime-authored Starlark program — the SOLE dynamic authoring
@@ -12582,7 +14910,6 @@ fn step_result_from_stored(step: &WorkflowStep) -> Option<workflow::StepResult> 
         provider,
         isolation,
         ok: true,
-        provider_session_id: step.provider_session_id.clone(),
         output_summary: step.output_summary.clone().unwrap_or_default(),
         step_id: None,
         started_at: None,
@@ -13672,16 +15999,6 @@ fn workflow_run_script_value(
         None => None,
     };
 
-    // Retention policy for the heavy per-node turn-event trace. `durable`
-    // (default) persists the trace; `live` streams it over SSE during execution
-    // but does not retain it. Validated up front so a typo fails fast.
-    let trace_retention = value(args, "--trace").unwrap_or_else(|| "durable".to_string());
-    if trace_retention != "durable" && trace_retention != "live" {
-        return Err(CliError::Usage(format!(
-            "--trace must be 'durable' or 'live', got '{trace_retention}'"
-        )));
-    }
-
     let options = WorkflowDeliveryOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
@@ -13694,7 +16011,6 @@ fn workflow_run_script_value(
         default_model: value(args, "--model"),
         default_effort: value(args, "--effort"),
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
-        trace_retention: trace_retention.clone(),
         progress: has_flag(args, "--progress"),
         project: workflow_project_context(store),
     };
@@ -13743,7 +16059,6 @@ fn workflow_run_script_value(
             }),
             None => serde_json::json!({ "lang": "starlark", "script": script }),
         }),
-        trace_retention,
         // Stamp this driver process's pid so the serve-side reaper can detect an
         // abandoned run (driver killed/crashed before journaling a terminal row).
         host_pid: Some(std::process::id()),
@@ -13815,7 +16130,6 @@ fn run_workflow_with_driver(
         initiated_by: Some("operator".to_string()),
         design_intent: None,
         spec: None,
-        trace_retention: "durable".to_string(),
         // Stamp this driver process's pid so the serve-side reaper can detect an
         // abandoned run (see the run-script path and `reap_abandoned_runs`).
         host_pid: Some(std::process::id()),
@@ -13938,17 +16252,17 @@ fn deliver_agent_messages_value(
             "Runtime pid or socket is not healthy",
             None,
         )?;
-        mark_running_provider_sessions_terminal(
+        mark_running_delivery_attempts_terminal(
             store,
             &member.id,
-            ProviderSessionStatus::Stale,
+            ProviderExecutionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )?;
         runtime = None;
         member = latest_member(store, &agent_id)?;
         ensure_member_accepts_delivery(&member)?;
     }
-    if has_unresolved_provider_session(store, &member.id)? {
+    if has_unresolved_delivery_attempt(store, &member.id)? {
         return Err(CliError::Usage(format!(
             "agent {} still has an unresolved provider turn; ingest a terminal provider event or close the runtime before delivering more messages",
             member.id
@@ -14013,7 +16327,7 @@ fn deliver_agent_messages_value(
                 store,
                 &delivery_id,
                 &claimed_message,
-                ProviderSessionStatus::Succeeded,
+                ProviderExecutionStatus::Succeeded,
                 provider_thread_id.clone(),
                 provider_turn_id.clone(),
                 Some(MessageTerminalSource::DryRun),
@@ -14022,15 +16336,12 @@ fn deliver_agent_messages_value(
                 Some(0),
             )?;
             DeliveryOutcome {
-                status: ProviderSessionStatus::Succeeded,
+                status: ProviderExecutionStatus::Succeeded,
+                native_session: None,
                 provider_thread_id,
                 provider_turn_id,
                 terminal_source: Some(MessageTerminalSource::DryRun),
-                stdout_ref: None,
-                stderr_ref: None,
-                request_ref: None,
                 provider_request_id: None,
-                provider_session_id: Some(delivery_id.clone()),
                 evidence_ids,
                 exit_code: Some(0),
                 tokens: None,
@@ -14066,7 +16377,7 @@ fn deliver_agent_messages_value(
                     store,
                     &delivery_id,
                     &claimed_message,
-                    ProviderSessionStatus::Failed,
+                    ProviderExecutionStatus::Failed,
                     member.provider_thread_id.clone(),
                     None,
                     Some(MessageTerminalSource::Failed),
@@ -14075,15 +16386,12 @@ fn deliver_agent_messages_value(
                     Some(1),
                 )?;
                 DeliveryOutcome {
-                    status: ProviderSessionStatus::Failed,
+                    status: ProviderExecutionStatus::Failed,
+                    native_session: None,
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
-                    stdout_ref: None,
-                    stderr_ref: None,
-                    request_ref: None,
                     provider_request_id: None,
-                    provider_session_id: Some(delivery_id.clone()),
                     evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
@@ -14098,7 +16406,7 @@ fn deliver_agent_messages_value(
                     store,
                     &delivery_id,
                     &claimed_message,
-                    ProviderSessionStatus::Failed,
+                    ProviderExecutionStatus::Failed,
                     member.provider_thread_id.clone(),
                     None,
                     Some(MessageTerminalSource::Failed),
@@ -14107,15 +16415,12 @@ fn deliver_agent_messages_value(
                     Some(1),
                 )?;
                 DeliveryOutcome {
-                    status: ProviderSessionStatus::Failed,
+                    status: ProviderExecutionStatus::Failed,
+                    native_session: None,
                     provider_thread_id: member.provider_thread_id.clone(),
                     provider_turn_id: None,
                     terminal_source: Some(MessageTerminalSource::Failed),
-                    stdout_ref: None,
-                    stderr_ref: None,
-                    request_ref: None,
                     provider_request_id: None,
-                    provider_session_id: Some(delivery_id.clone()),
                     evidence_ids,
                     exit_code: Some(1),
                     tokens: None,
@@ -14142,7 +16447,13 @@ fn deliver_agent_messages_value(
         let mut delivered_message = latest_message(store, &claimed_message.id)?;
         delivered_message.delivery_status = message_status_for_delivery(&delivery.status);
         delivered_message.delivery = Some(MessageDelivery {
-            provider_session_id: delivery.provider_session_id.clone(),
+            delivery_id: Some(delivery_id.clone()),
+            execution_status: Some(delivery.status.clone()),
+            native_session: delivery.native_session.clone(),
+            started_at: claimed_message
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.started_at.clone()),
             provider_request_id: delivery.provider_request_id.clone(),
             provider_thread_id: delivery.provider_thread_id.clone(),
             provider_turn_id: delivery.provider_turn_id.clone(),
@@ -14151,7 +16462,7 @@ fn deliver_agent_messages_value(
             last_error: delivery_error_message(&delivery.status, &delivery.summary),
         });
         store.append_message(&delivered_message)?;
-        if delivery.provider_session_id.is_some() && !delivery_unresolved {
+        if !delivery_unresolved {
             let report = Message {
                 id: generated_id("msg"),
                 task_id: delivered_message.task_id.clone(),
@@ -14171,9 +16482,12 @@ fn deliver_agent_messages_value(
         if let Some(thread_id) = delivery.provider_thread_id.clone() {
             member.provider_thread_id = Some(thread_id);
         }
+        if let Some(native_session) = delivery.native_session.clone() {
+            member.native_session = Some(native_session);
+        }
         if let Some(mut runtime_value) = runtime.clone() {
             runtime_value.health.delivery_probe = Some(match &delivery.status {
-                ProviderSessionStatus::Succeeded => {
+                ProviderExecutionStatus::Succeeded => {
                     format!(
                         "pass: {}",
                         delivery
@@ -14183,8 +16497,8 @@ fn deliver_agent_messages_value(
                             .unwrap_or_else(|| "unknown terminal source".into())
                     )
                 }
-                ProviderSessionStatus::Running => format!("pending: {}", delivery.summary),
-                ProviderSessionStatus::Stale => format!("stale: {}", delivery.summary),
+                ProviderExecutionStatus::Running => format!("pending: {}", delivery.summary),
+                ProviderExecutionStatus::Stale => format!("stale: {}", delivery.summary),
                 _ => format!("failed: {}", delivery.summary),
             });
             runtime_value.health.checked_at = Some(now_string());
@@ -14192,10 +16506,10 @@ fn deliver_agent_messages_value(
             store.append_runtime(&runtime_value)?;
             runtime = Some(runtime_value);
         }
-        if delivery.status == ProviderSessionStatus::Running {
+        if delivery.status == ProviderExecutionStatus::Running {
             member.status = AgentMemberStatus::Running;
             member.current_task_id = delivered_message.task_id.clone();
-        } else if delivery.status == ProviderSessionStatus::Stale {
+        } else if delivery.status == ProviderExecutionStatus::Stale {
             member.status = AgentMemberStatus::Stale;
             member.current_task_id = delivered_message.task_id.clone();
         } else {
@@ -14210,29 +16524,15 @@ fn deliver_agent_messages_value(
             member.provider_runtime_id.as_deref(),
             delivered_message.task_id.as_deref(),
             match &delivery.status {
-                ProviderSessionStatus::Succeeded => "delivery_delivered",
-                ProviderSessionStatus::Running => "delivery_running",
-                ProviderSessionStatus::Stale => "delivery_stale",
+                ProviderExecutionStatus::Succeeded => "delivery_delivered",
+                ProviderExecutionStatus::Running => "delivery_running",
+                ProviderExecutionStatus::Stale => "delivery_stale",
                 _ => "delivery_failed",
             },
             &delivery.summary,
-            delivery
-                .stdout_ref
-                .as_deref()
-                .or(delivery.stderr_ref.as_deref()),
+            None,
         )?;
 
-        if !delivery_unresolved {
-            if let Some(stdout_ref) = delivery.stdout_ref.as_deref() {
-                ingest_provider_output(
-                    store,
-                    &member.id,
-                    member.provider_runtime_id.as_deref(),
-                    delivered_message.task_id.as_deref(),
-                    stdout_ref,
-                )?;
-            }
-        }
         results.push(serde_json::json!({
             "message_id": delivered_message.id,
             "delivery_status": delivered_message.delivery_status,
@@ -14241,9 +16541,6 @@ fn deliver_agent_messages_value(
             "provider_turn_id": delivery.provider_turn_id,
             "terminal_source": delivery.terminal_source,
             "provider_request_id": delivery.provider_request_id,
-            "request_ref": delivery.request_ref,
-            "stdout_ref": delivery.stdout_ref,
-            "stderr_ref": delivery.stderr_ref,
             "exit_code": delivery.exit_code,
             "tokens": delivery.tokens.map(TokenUsage::to_json),
             "cost_usd": delivery.cost_usd,
@@ -14351,46 +16648,42 @@ fn expire_safe_delivery_claims_value(
     }
     let now_ms = current_unix_ms();
     let messages = latest_messages(store)?;
-    let sessions = latest_provider_sessions_in_append_order(store)?;
     let mut expired = Vec::new();
-    for session in sessions {
-        if session.status != ProviderSessionStatus::Running {
+    for message in messages.values() {
+        if message.delivery_status != MessageDeliveryStatus::Acknowledged {
             continue;
         }
-        let Some(started_ms) = parse_unix_ms(&session.started_at) else {
+        let Some(delivery) = message.delivery.as_ref() else {
+            continue;
+        };
+        if delivery.execution_status != Some(ProviderExecutionStatus::Running)
+            || delivery.provider_request_id.is_some()
+            || delivery.provider_turn_id.is_some()
+        {
+            continue;
+        }
+        let Some(started_ms) = delivery.started_at.as_deref().and_then(parse_unix_ms) else {
             continue;
         };
         if now_ms.saturating_sub(started_ms) < u128::from(claim_ttl_ms) {
             continue;
         }
-        let Some(message) = messages.values().find(|message| {
-            message.delivery_status == MessageDeliveryStatus::Acknowledged
-                && message.delivery.as_ref().is_some_and(|delivery| {
-                    delivery.provider_session_id.as_deref() == Some(session.id.as_str())
-                        && delivery.provider_request_id.is_none()
-                        && delivery.provider_turn_id.is_none()
-                })
-        }) else {
-            continue;
-        };
-        if session.provider_turn_id.is_some() {
-            continue;
-        }
         let Some(agent_id) = message.to_agent_id.as_deref() else {
             continue;
         };
+        let delivery_id = delivery.delivery_id.as_deref();
         match retry_delivery_value(
             store,
             agent_id,
             &message.id,
-            Some(&session.id),
+            delivery_id,
             "gateway expired unreconciled pre-provider delivery claim",
             false,
         ) {
             Ok(result) => expired.push(serde_json::json!({"ok": true, "result": result})),
             Err(error) => expired.push(serde_json::json!({
                 "ok": false,
-                "provider_session_id": session.id,
+                "delivery_id": delivery_id,
                 "message_id": message.id,
                 "error": error.to_string()
             })),
@@ -14401,15 +16694,12 @@ fn expire_safe_delivery_claims_value(
 
 #[derive(Debug)]
 struct DeliveryOutcome {
-    status: ProviderSessionStatus,
+    status: ProviderExecutionStatus,
+    native_session: Option<NativeSessionRef>,
     provider_thread_id: Option<String>,
     provider_turn_id: Option<String>,
     terminal_source: Option<MessageTerminalSource>,
-    stdout_ref: Option<String>,
-    stderr_ref: Option<String>,
-    request_ref: Option<String>,
     provider_request_id: Option<String>,
-    provider_session_id: Option<String>,
     evidence_ids: Vec<String>,
     exit_code: Option<i32>,
     tokens: Option<TokenUsage>,
@@ -14422,33 +16712,15 @@ struct DeliveryOutcome {
 fn claim_message_for_delivery(
     store: &HarnessStore,
     member: &AgentMember,
-    runtime: Option<&AgentRuntime>,
+    _runtime: Option<&AgentRuntime>,
     message: &Message,
     delivery_id: &str,
 ) -> CliResult<Option<Message>> {
-    let mut provider_session =
-        build_claimed_provider_session(delivery_id, member, runtime, message);
-    // Live agent view: point the RUNNING claim row at the NDJSON file the exec
-    // delivery appends to MID-TURN, and pre-create it so the first poll of
-    // GET /v1/provider-sessions/{id}/events returns [] (not a not-found error)
-    // before the first event lands. Same delivery_id → same session row as the
-    // terminal row, so the poll resolves to the growing file throughout. Both
-    // providers stream; the file name matches what each exec path writes.
-    let live_filename =
-        provider_adapter(member.provider.as_str()).map(|adapter| adapter.live_ndjson_file_name());
-    if let Some(filename) = live_filename {
-        let session_dir = store.root().join("provider-sessions").join(delivery_id);
-        let live_path = session_dir.join(filename);
-        if fs::create_dir_all(&session_dir).is_ok() {
-            let _ = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&live_path);
-            provider_session.jsonl_ref = Some(live_path.display().to_string());
-        }
-    }
     let delivery = MessageDelivery {
-        provider_session_id: Some(delivery_id.to_string()),
+        delivery_id: Some(delivery_id.to_string()),
+        execution_status: Some(ProviderExecutionStatus::Running),
+        native_session: member.native_session.clone(),
+        started_at: Some(now_string()),
         provider_request_id: None,
         provider_thread_id: member.provider_thread_id.clone(),
         provider_turn_id: None,
@@ -14456,15 +16728,10 @@ fn claim_message_for_delivery(
         delivered_at: None,
         last_error: None,
     };
-    match store.claim_queued_message_delivery(
-        &member.id,
-        &message.id,
-        delivery,
-        provider_session,
-    )? {
+    match store.claim_queued_message_delivery(&member.id, &message.id, delivery)? {
         MessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
         MessageDeliveryClaimResult::NotQueued => Ok(None),
-        MessageDeliveryClaimResult::BlockedBySession(session_id) => Err(CliError::Usage(format!(
+        MessageDeliveryClaimResult::BlockedByDelivery(session_id) => Err(CliError::Usage(format!(
             "agent {} has unresolved provider session {}; cannot claim another delivery",
             member.id, session_id
         ))),
@@ -14492,25 +16759,25 @@ fn retry_delivery_value(
             "message {message_id} has no delivery claim to retry"
         ))
     })?;
-    let session_id = session_id
+    let delivery_id = session_id
         .map(str::to_string)
-        .or(delivery.provider_session_id.clone())
+        .or(delivery.delivery_id.clone())
         .ok_or_else(|| {
             CliError::Usage(format!(
-                "message {message_id} has no provider session id to retry"
+                "message {message_id} has no delivery attempt id to retry"
             ))
         })?;
-    let mut session = latest_provider_session(store, &session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    if session.agent_member_id != agent_id {
+    if delivery.delivery_id.as_deref() != Some(delivery_id.as_str()) {
         return Err(CliError::Usage(format!(
-            "provider session {session_id} does not belong to agent {agent_id}"
+            "delivery attempt {delivery_id} does not belong to message {message_id}"
         )));
     }
     let safe_without_force = delivery.provider_request_id.is_none()
         && delivery.provider_turn_id.is_none()
-        && session.provider_turn_id.is_none()
-        && !matches!(session.status, ProviderSessionStatus::Succeeded);
+        && !matches!(
+            delivery.execution_status,
+            Some(ProviderExecutionStatus::Succeeded)
+        );
     if !force && !safe_without_force {
         return Err(CliError::Usage(format!(
             "delivery retry for message {message_id} is not safe without --force; reconcile provider output first or pass --force explicitly"
@@ -14521,17 +16788,9 @@ fn retry_delivery_value(
         store,
         message.task_id.clone(),
         "delivery_retry",
-        &format!("provider-session:{session_id}"),
+        &format!("delivery-attempt:{delivery_id}"),
         reason,
     )?;
-    session.status = ProviderSessionStatus::Canceled;
-    session.terminal_source = Some(MessageTerminalSource::Failed);
-    session.ended_at = Some(now_string());
-    if !session.evidence_ids.contains(&evidence_id) {
-        session.evidence_ids.push(evidence_id.clone());
-    }
-    store.append_provider_session(&session)?;
-
     message.delivery_status = MessageDeliveryStatus::Queued;
     message.delivery = None;
     store.append_message(&message)?;
@@ -14548,57 +16807,57 @@ fn retry_delivery_value(
     Ok(serde_json::json!({
         "agent_member_id": agent_id,
         "message_id": message_id,
-        "provider_session_id": session_id,
+        "delivery_id": delivery_id,
         "delivery_status": message.delivery_status,
-        "session_status": session.status,
+        "execution_status": ProviderExecutionStatus::Canceled,
         "evidence_id": evidence_id,
         "forced": force
     }))
 }
 
-fn reconcile_provider_session_value(
+fn reconcile_delivery_value(
     store: &HarnessStore,
     agent_id: &str,
-    session_id: &str,
-    status: ProviderSessionStatus,
+    delivery_id: &str,
+    status: ProviderExecutionStatus,
     terminal_source: MessageTerminalSource,
     reason: &str,
 ) -> CliResult<serde_json::Value> {
     if matches!(
         status,
-        ProviderSessionStatus::Queued | ProviderSessionStatus::Running
+        ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running
     ) {
         return Err(CliError::Usage(
-            "reconcile-session requires a terminal status".into(),
+            "reconcile-delivery requires a terminal status".into(),
         ));
     }
-    let mut session = latest_provider_session(store, session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    if session.agent_member_id != agent_id {
-        return Err(CliError::Usage(format!(
-            "provider session {session_id} does not belong to agent {agent_id}"
-        )));
-    }
+    let mut message = latest_messages_in_append_order(store)?
+        .into_iter()
+        .find(|message| {
+            message.to_agent_id.as_deref() == Some(agent_id)
+                && message
+                    .delivery
+                    .as_ref()
+                    .is_some_and(|delivery| delivery.delivery_id.as_deref() == Some(delivery_id))
+        })
+        .ok_or_else(|| CliError::Usage(format!("delivery attempt not found: {delivery_id}")))?;
     let evidence_id = record_operator_evidence(
         store,
-        session.task_id.clone(),
-        "provider_session_reconciliation",
-        &format!("provider-session:{session_id}"),
+        message.task_id.clone(),
+        "delivery_reconciliation",
+        &format!("delivery-attempt:{delivery_id}"),
         reason,
     )?;
-    session.status = status.clone();
-    session.terminal_source = Some(terminal_source.clone());
-    session.ended_at = Some(now_string());
-    if !session.evidence_ids.contains(&evidence_id) {
-        session.evidence_ids.push(evidence_id.clone());
+    message.delivery_status = message_status_for_terminal(&status, Some(&terminal_source));
+    let delivery = message.delivery.as_mut().expect("delivery checked");
+    delivery.execution_status = Some(status.clone());
+    delivery.terminal_source = Some(terminal_source.clone());
+    delivery.delivered_at = Some(now_string());
+    delivery.last_error = delivery_error_message(&status, reason);
+    if !message.evidence_ids.contains(&evidence_id) {
+        message.evidence_ids.push(evidence_id.clone());
     }
-    store.append_provider_session(&session)?;
-    mark_delivery_messages_terminal(
-        store,
-        &session,
-        status.clone(),
-        Some(terminal_source.clone()),
-    )?;
+    store.append_message(&message)?;
     if let Ok(mut member) = latest_member(store, agent_id) {
         if matches!(
             member.status,
@@ -14606,7 +16865,7 @@ fn reconcile_provider_session_value(
         ) && member
             .current_task_id
             .as_ref()
-            .map_or_else(|| true, |task_id| session.task_id.as_ref() == Some(task_id))
+            .map_or_else(|| true, |task_id| message.task_id.as_ref() == Some(task_id))
         {
             member.status = AgentMemberStatus::Idle;
             member.current_task_id = None;
@@ -14618,14 +16877,14 @@ fn reconcile_provider_session_value(
         store,
         agent_id,
         None,
-        session.task_id.as_deref(),
-        "provider_session_reconciled",
+        message.task_id.as_deref(),
+        "delivery_reconciled",
         reason,
         None,
     )?;
     Ok(serde_json::json!({
         "agent_member_id": agent_id,
-        "provider_session_id": session_id,
+        "delivery_id": delivery_id,
         "status": status,
         "terminal_source": terminal_source,
         "evidence_id": evidence_id
@@ -14654,63 +16913,27 @@ fn record_operator_evidence(
     Ok(id)
 }
 
-fn build_claimed_provider_session(
-    delivery_id: &str,
-    member: &AgentMember,
-    runtime: Option<&AgentRuntime>,
-    message: &Message,
-) -> ProviderSession {
-    ProviderSession {
-        id: delivery_id.into(),
-        provider: member.provider.clone(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: member.worktree_ref.clone(),
-        provider_thread_id: member.provider_thread_id.clone(),
-        provider_turn_id: None,
-        terminal_source: None,
-        status: ProviderSessionStatus::Running,
-        command: "harness".into(),
-        args: vec![
-            member.provider.clone(),
-            "message-delivery-claim".into(),
-            message.id.clone(),
-        ],
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("claimed delivery for message {}", message.id)),
-        provider_session_ref: runtime.and_then(|runtime| runtime.control_endpoint.clone()),
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: None,
-        started_at: now_string(),
-        ended_at: None,
-        evidence_ids: Vec::new(),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn record_claimed_delivery_terminal(
     store: &HarnessStore,
     delivery_id: &str,
     message: &Message,
-    status: ProviderSessionStatus,
-    provider_thread_id: Option<String>,
-    provider_turn_id: Option<String>,
-    terminal_source: Option<MessageTerminalSource>,
+    _status: ProviderExecutionStatus,
+    _provider_thread_id: Option<String>,
+    _provider_turn_id: Option<String>,
+    _terminal_source: Option<MessageTerminalSource>,
     summary: &str,
     source_ref: Option<&str>,
-    exit_code: Option<i32>,
+    _exit_code: Option<i32>,
 ) -> CliResult<Vec<String>> {
     let evidence_id = generated_id("evidence");
     let evidence = Evidence {
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
-        source_type: "claude_delivery_session".into(),
+        source_type: "delivery_attempt".into(),
         source_ref: source_ref
             .map(str::to_string)
-            .unwrap_or_else(|| format!("provider-session:{delivery_id}")),
+            .unwrap_or_else(|| format!("delivery-attempt:{delivery_id}")),
         summary: summary.into(),
         created_at: now_string(),
         evidence_kind: None,
@@ -14718,68 +16941,42 @@ fn record_claimed_delivery_terminal(
     };
     store.append_evidence(&evidence)?;
 
-    let mut session = latest_provider_session(store, delivery_id)?.ok_or_else(|| {
-        CliError::Usage(format!(
-            "claimed provider session not found for delivery {delivery_id}"
-        ))
-    })?;
-    session.status = status;
-    session.provider_thread_id = provider_thread_id.or(session.provider_thread_id);
-    session.provider_turn_id = provider_turn_id.or(session.provider_turn_id);
-    session.terminal_source = terminal_source;
-    session.exit_code = exit_code;
-    session.ended_at = Some(now_string());
-    if !session.evidence_ids.contains(&evidence_id) {
-        session.evidence_ids.push(evidence_id.clone());
-    }
-    store.append_provider_session(&session)?;
     Ok(vec![evidence_id])
 }
 
-fn message_status_for_delivery(status: &ProviderSessionStatus) -> MessageDeliveryStatus {
+fn message_status_for_delivery(status: &ProviderExecutionStatus) -> MessageDeliveryStatus {
     message_status_for_terminal(status, None)
 }
 
 fn message_status_for_terminal(
-    status: &ProviderSessionStatus,
+    status: &ProviderExecutionStatus,
     terminal_source: Option<&MessageTerminalSource>,
 ) -> MessageDeliveryStatus {
     match status {
-        ProviderSessionStatus::Succeeded => MessageDeliveryStatus::Delivered,
-        ProviderSessionStatus::Running => MessageDeliveryStatus::Acknowledged,
-        ProviderSessionStatus::Stale if terminal_source != Some(&MessageTerminalSource::Failed) => {
+        ProviderExecutionStatus::Succeeded => MessageDeliveryStatus::Delivered,
+        ProviderExecutionStatus::Running => MessageDeliveryStatus::Acknowledged,
+        ProviderExecutionStatus::Stale
+            if terminal_source != Some(&MessageTerminalSource::Failed) =>
+        {
             MessageDeliveryStatus::Acknowledged
         }
         _ => MessageDeliveryStatus::Failed,
     }
 }
 
-fn provider_status_blocks_delivery(status: &ProviderSessionStatus) -> bool {
+fn provider_status_blocks_delivery(status: &ProviderExecutionStatus) -> bool {
     matches!(
         status,
-        ProviderSessionStatus::Running | ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Running | ProviderExecutionStatus::Stale
     )
 }
 
-fn provider_session_blocks_delivery(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Queued
-        || session.status == ProviderSessionStatus::Running
-        || (session.status == ProviderSessionStatus::Stale
-            && session.terminal_source != Some(MessageTerminalSource::Failed))
-}
-
-fn provider_session_needs_terminal_update(session: &ProviderSession) -> bool {
-    session.status == ProviderSessionStatus::Running
-        || (session.status == ProviderSessionStatus::Stale
-            && session.terminal_source != Some(MessageTerminalSource::Failed))
-}
-
-fn delivery_error_message(status: &ProviderSessionStatus, summary: &str) -> Option<String> {
+fn delivery_error_message(status: &ProviderExecutionStatus, summary: &str) -> Option<String> {
     matches!(
         status,
-        ProviderSessionStatus::Failed
-            | ProviderSessionStatus::Canceled
-            | ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Failed
+            | ProviderExecutionStatus::Canceled
+            | ProviderExecutionStatus::Stale
     )
     .then(|| summary.to_string())
 }
@@ -14824,47 +17021,7 @@ fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json:
 /// the endpoint verbatim so callers that only inspect existence/format keep
 /// working without assuming a unix socket. This keeps the seam provider-neutral
 /// per ADR 0011 — the endpoint format is the one place Codex assumed a socket.
-fn ingest_provider_output(
-    store: &HarnessStore,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    source_ref: &str,
-) -> CliResult<()> {
-    // The member's declared provider is the source of truth for the native output
-    // shape we parse and the provider string we stamp; on lookup failure default to codex.
-    let provider = latest_member(store, agent_member_id)
-        .map(|member| member.provider)
-        .unwrap_or_else(|_| CodexAdapter.name().to_string());
-    match provider_adapter(&provider) {
-        Some(adapter) => {
-            adapter.ingest_output(store, agent_member_id, runtime_id, task_id, source_ref)
-        }
-        None => Err(unknown_provider_error(&provider, "output ingest")),
-    }
-}
-
-fn terminal_source_from_provider_event(
-    value: &serde_json::Value,
-    event_type: &str,
-) -> Option<MessageTerminalSource> {
-    if event_type.contains("turn_completed") {
-        return Some(MessageTerminalSource::TurnCompleted);
-    }
-    if event_type.contains("thread_status_changed")
-        && value
-            .get("params")
-            .and_then(|params| params.get("status"))
-            .and_then(|status| status.get("type"))
-            .and_then(|status_type| status_type.as_str())
-            == Some("idle")
-    {
-        return Some(MessageTerminalSource::ThreadIdle);
-    }
-    None
-}
-
-fn reconcile_running_provider_sessions(
+fn reconcile_running_delivery_attempts(
     store: &HarnessStore,
     agent_member_id: &str,
     task_id: Option<&str>,
@@ -14875,46 +17032,66 @@ fn reconcile_running_provider_sessions(
     if provider_thread_id.is_none() && provider_turn_id.is_none() {
         return Ok(false);
     }
-    let mut latest = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        latest.insert(session.id.clone(), session);
-    }
     let mut reconciled_task_ids = BTreeSet::new();
     let mut reconciled_any = false;
-    for mut session in latest.into_values().filter(|session| {
-        provider_session_needs_terminal_update(session)
-            && session.agent_member_id == agent_member_id
-            && task_id.is_none_or(|task_id| session.task_id.as_deref() == Some(task_id))
-            && provider_thread_id
-                .is_none_or(|thread_id| session.provider_thread_id.as_deref() == Some(thread_id))
-            && provider_turn_id.is_none_or(|turn_id| {
-                session
-                    .provider_turn_id
-                    .as_deref()
-                    .is_none_or(|session_turn_id| session_turn_id == turn_id)
-            })
-    }) {
-        session.status = ProviderSessionStatus::Succeeded;
-        session.terminal_source = Some(terminal_source.clone());
-        if session.provider_thread_id.is_none() {
-            session.provider_thread_id = provider_thread_id.map(str::to_string);
+    for mut message in latest_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message.delivery_status == MessageDeliveryStatus::Acknowledged
+                && task_id.is_none_or(|task_id| message.task_id.as_deref() == Some(task_id))
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    matches!(
+                        delivery.execution_status,
+                        Some(ProviderExecutionStatus::Running | ProviderExecutionStatus::Stale)
+                    ) && provider_thread_id.is_none_or(|thread_id| {
+                        delivery.provider_thread_id.as_deref() == Some(thread_id)
+                    }) && provider_turn_id.is_none_or(|turn_id| {
+                        delivery
+                            .provider_turn_id
+                            .as_deref()
+                            .is_none_or(|delivery_turn_id| delivery_turn_id == turn_id)
+                    })
+                })
+        })
+    {
+        message.delivery_status = MessageDeliveryStatus::Delivered;
+        if let Some(delivery) = message.delivery.as_mut() {
+            delivery.execution_status = Some(ProviderExecutionStatus::Succeeded);
+            delivery.terminal_source = Some(terminal_source.clone());
+            if delivery.provider_thread_id.is_none() {
+                delivery.provider_thread_id = provider_thread_id.map(str::to_string);
+            }
+            if delivery.provider_turn_id.is_none() {
+                delivery.provider_turn_id = provider_turn_id.map(str::to_string);
+            }
+            delivery.delivered_at = Some(now_string());
+            delivery.last_error = None;
         }
-        if session.provider_turn_id.is_none() {
-            session.provider_turn_id = provider_turn_id.map(str::to_string);
-        }
-        session.exit_code = session.exit_code.or(Some(0));
-        session.ended_at = Some(now_string());
-        if let Some(task_id) = session.task_id.clone() {
+        if let Some(task_id) = message.task_id.clone() {
             reconciled_task_ids.insert(task_id);
         }
-        store.append_provider_session(&session)?;
+        store.append_message(&message)?;
+        let delivery_id = message
+            .delivery
+            .as_ref()
+            .and_then(|delivery| delivery.delivery_id.as_deref())
+            .unwrap_or("unknown");
+        store.append_message(&Message {
+            id: generated_id("msg"),
+            task_id: message.task_id.clone(),
+            from_agent_id: agent_member_id.into(),
+            to_agent_id: None,
+            channel: Some("provider-report".into()),
+            kind: MessageKind::Report,
+            delivery_status: MessageDeliveryStatus::Delivered,
+            content: format!("Delivery {delivery_id} completed from provider-native activity"),
+            evidence_ids: message.evidence_ids.clone(),
+            created_at: now_string(),
+            delivery: message.delivery.clone(),
+            sender_kind: SenderKind::Agent,
+        })?;
         reconciled_any = true;
-        mark_delivery_messages_terminal(
-            store,
-            &session,
-            ProviderSessionStatus::Succeeded,
-            Some(terminal_source.clone()),
-        )?;
     }
     if reconciled_any {
         if let Ok(mut member) = latest_member(store, agent_member_id) {
@@ -14939,58 +17116,6 @@ fn reconcile_running_provider_sessions(
     Ok(reconciled_any)
 }
 
-fn mark_delivery_messages_terminal(
-    store: &HarnessStore,
-    session: &ProviderSession,
-    status: ProviderSessionStatus,
-    terminal_source: Option<MessageTerminalSource>,
-) -> CliResult<()> {
-    let mut latest = BTreeMap::new();
-    for message in store.messages()? {
-        latest.insert(message.id.clone(), message);
-    }
-    for mut message in latest.into_values().filter(|message| {
-        message.delivery_status == MessageDeliveryStatus::Acknowledged
-            && message.delivery.as_ref().is_some_and(|delivery| {
-                delivery.provider_session_id.as_deref() == Some(session.id.as_str())
-            })
-    }) {
-        message.delivery_status = message_status_for_terminal(&status, terminal_source.as_ref());
-        if let Some(delivery) = message.delivery.as_mut() {
-            delivery.terminal_source = terminal_source.clone();
-            if delivery.provider_thread_id.is_none() {
-                delivery.provider_thread_id = session.provider_thread_id.clone();
-            }
-            if delivery.provider_turn_id.is_none() {
-                delivery.provider_turn_id = session.provider_turn_id.clone();
-            }
-            delivery.delivered_at = Some(now_string());
-            delivery.last_error = delivery_error_message(&status, "provider delivery ended");
-        }
-        store.append_message(&message)?;
-        let report = Message {
-            id: generated_id("msg"),
-            task_id: message.task_id.clone(),
-            from_agent_id: session.agent_member_id.clone(),
-            to_agent_id: None,
-            channel: Some("provider-report".into()),
-            kind: MessageKind::Report,
-            delivery_status: MessageDeliveryStatus::Delivered,
-            content: format!(
-                "Provider delivery {} ended with status {}",
-                session.id,
-                provider_status_label(&status)
-            ),
-            evidence_ids: session.evidence_ids.clone(),
-            created_at: now_string(),
-            delivery: message.delivery.clone(),
-            sender_kind: SenderKind::Agent,
-        };
-        store.append_message(&report)?;
-    }
-    Ok(())
-}
-
 fn mark_runtime_delivery_reconciled(
     store: &HarnessStore,
     runtime_id: &str,
@@ -15009,18 +17134,18 @@ fn mark_runtime_delivery_reconciled(
 fn mark_runtime_delivery_terminal(
     store: &HarnessStore,
     runtime_id: &str,
-    status: &ProviderSessionStatus,
+    status: &ProviderExecutionStatus,
     terminal_source: Option<&MessageTerminalSource>,
 ) -> CliResult<()> {
     if let Some(mut runtime) = latest_runtime(store, runtime_id)? {
         runtime.health.delivery_probe = Some(match status {
-            ProviderSessionStatus::Succeeded => format!(
+            ProviderExecutionStatus::Succeeded => format!(
                 "pass: {}",
                 terminal_source
                     .map(terminal_source_label)
                     .unwrap_or_else(|| "unknown".into())
             ),
-            ProviderSessionStatus::Stale => format!(
+            ProviderExecutionStatus::Stale => format!(
                 "stale: {}",
                 terminal_source
                     .map(terminal_source_label)
@@ -15040,36 +17165,51 @@ fn mark_runtime_delivery_terminal(
     Ok(())
 }
 
-fn has_unresolved_provider_session(store: &HarnessStore, agent_member_id: &str) -> CliResult<bool> {
-    let mut latest = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        latest.insert(session.id.clone(), session);
-    }
-    Ok(latest.into_values().any(|session| {
-        session.agent_member_id == agent_member_id && provider_session_blocks_delivery(&session)
-    }))
+fn has_unresolved_delivery_attempt(store: &HarnessStore, agent_member_id: &str) -> CliResult<bool> {
+    Ok(latest_messages_in_append_order(store)?
+        .into_iter()
+        .any(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    matches!(
+                        delivery.execution_status,
+                        Some(ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running)
+                    ) || (delivery.execution_status == Some(ProviderExecutionStatus::Stale)
+                        && !matches!(
+                            delivery.terminal_source,
+                            Some(MessageTerminalSource::Failed)
+                        ))
+                })
+        }))
 }
 
-fn mark_running_provider_sessions_terminal(
+fn mark_running_delivery_attempts_terminal(
     store: &HarnessStore,
     agent_member_id: &str,
-    status: ProviderSessionStatus,
+    status: ProviderExecutionStatus,
     terminal_source: Option<MessageTerminalSource>,
 ) -> CliResult<()> {
-    let mut latest = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        latest.insert(session.id.clone(), session);
-    }
     let mut changed = false;
-    for mut session in latest.into_values().filter(|session| {
-        session.agent_member_id == agent_member_id
-            && provider_session_needs_terminal_update(session)
-    }) {
-        session.status = status.clone();
-        session.terminal_source = terminal_source.clone();
-        session.ended_at = Some(now_string());
-        store.append_provider_session(&session)?;
-        mark_delivery_messages_terminal(store, &session, status.clone(), terminal_source.clone())?;
+    for mut message in latest_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| {
+            message.to_agent_id.as_deref() == Some(agent_member_id)
+                && message.delivery.as_ref().is_some_and(|delivery| {
+                    matches!(
+                        delivery.execution_status,
+                        Some(ProviderExecutionStatus::Running | ProviderExecutionStatus::Stale)
+                    )
+                })
+        })
+    {
+        message.delivery_status = message_status_for_terminal(&status, terminal_source.as_ref());
+        if let Some(delivery) = message.delivery.as_mut() {
+            delivery.execution_status = Some(status.clone());
+            delivery.terminal_source = terminal_source.clone();
+            delivery.delivered_at = Some(now_string());
+            delivery.last_error = delivery_error_message(&status, "provider delivery ended");
+        }
+        store.append_message(&message)?;
         changed = true;
     }
     if changed {
@@ -15094,73 +17234,6 @@ fn mark_running_provider_sessions_terminal(
         }
     }
     Ok(())
-}
-
-fn extract_provider_json_values(text: &str) -> Vec<serde_json::Value> {
-    extract_provider_json_values_from_bytes(text.as_bytes())
-}
-
-fn extract_provider_json_values_from_bytes(bytes: &[u8]) -> Vec<serde_json::Value> {
-    let mut values = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut cursor = 0;
-    while let Some(relative_header_start) = find_bytes(&bytes[cursor..], b"Content-Length:") {
-        let header_start = cursor + relative_header_start;
-        let Some(relative_header_end) = find_bytes(&bytes[header_start..], b"\r\n\r\n") else {
-            break;
-        };
-        let header_end = header_start + relative_header_end;
-        let header = String::from_utf8_lossy(&bytes[header_start..header_end]);
-        let Some(content_length) = header.lines().find_map(parse_content_length) else {
-            cursor = header_end + 4;
-            continue;
-        };
-        let body_start = header_end + 4;
-        let body_end = body_start + content_length;
-        if body_end > bytes.len() {
-            break;
-        }
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes[body_start..body_end])
-        {
-            push_unique_json(&mut values, &mut seen, value);
-        }
-        cursor = body_end;
-    }
-
-    for line in String::from_utf8_lossy(bytes).lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('{') {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                push_unique_json(&mut values, &mut seen, value);
-            }
-        }
-    }
-    values
-}
-
-fn parse_content_length(line: &str) -> Option<usize> {
-    let (name, value) = line.split_once(':')?;
-    if !name.eq_ignore_ascii_case("content-length") {
-        return None;
-    }
-    value.trim().parse().ok()
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn push_unique_json(
-    values: &mut Vec<serde_json::Value>,
-    seen: &mut BTreeSet<String>,
-    value: serde_json::Value,
-) {
-    let key = serde_json::to_string(&value).unwrap_or_default();
-    if seen.insert(key) {
-        values.push(value);
-    }
 }
 
 // Test-only helper: extracts JSON-RPC error strings; covered by unit tests only.
@@ -15238,78 +17311,6 @@ fn turn_id_from_container(value: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn provider_child_thread_id_from_container(value: &serde_json::Value) -> Option<String> {
-    for path in [
-        &["newThreadId"][..],
-        &["new_thread_id"][..],
-        &["childThreadId"][..],
-        &["child_thread_id"][..],
-        &["receiverThreadId"][..],
-        &["receiver_thread_id"][..],
-    ] {
-        if let Some(thread_id) = json_path_string(value, path) {
-            return Some(thread_id);
-        }
-    }
-    None
-}
-
-fn provider_child_thread_from_event(
-    provider: &str,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    parent_provider_thread_id: Option<&str>,
-    value: &serde_json::Value,
-) -> Option<ProviderChildThread> {
-    let method = value
-        .get("method")
-        .and_then(|method| method.as_str())
-        .or_else(|| value.get("type").and_then(|kind| kind.as_str()))
-        .unwrap_or_default()
-        .replace(['/', '.'], "_");
-    let is_spawn_or_subagent = method.contains("subagent")
-        || method.contains("collab_agent_spawn")
-        || method.contains("agent_spawn");
-    if !is_spawn_or_subagent {
-        return None;
-    }
-    let params = value.get("params").unwrap_or(value);
-    let provider_thread_id = provider_child_thread_id_from_container(params)
-        .or_else(|| json_path_string(params, &["threadId"]))
-        .or_else(|| json_path_string(params, &["thread_id"]))?;
-    let status = if method.contains("stop") || method.contains("close") {
-        ProviderChildThreadStatus::Closed
-    } else if method.contains("end") || method.contains("completed") {
-        ProviderChildThreadStatus::Completed
-    } else if method.contains("start") || method.contains("spawn") {
-        ProviderChildThreadStatus::Open
-    } else {
-        ProviderChildThreadStatus::Unknown
-    };
-    Some(ProviderChildThread {
-        id: generated_id("provider-child"),
-        provider: provider.into(),
-        agent_member_id: agent_member_id.into(),
-        provider_runtime_id: runtime_id.map(str::to_string),
-        task_id: task_id.map(str::to_string),
-        parent_provider_thread_id: parent_provider_thread_id.map(str::to_string),
-        provider_thread_id,
-        provider_agent_path: json_path_string(params, &["agentPath"])
-            .or_else(|| json_path_string(params, &["agent_path"])),
-        provider_agent_nickname: json_path_string(params, &["agentNickname"])
-            .or_else(|| json_path_string(params, &["agent_nickname"]))
-            .or_else(|| json_path_string(params, &["newAgentNickname"])),
-        provider_agent_role: json_path_string(params, &["agentRole"])
-            .or_else(|| json_path_string(params, &["agent_role"]))
-            .or_else(|| json_path_string(params, &["newAgentRole"])),
-        status,
-        last_message_ref: None,
-        created_at: now_string(),
-        updated_at: now_string(),
-    })
-}
-
 // Test-only helper: extracts a thread id from codex app-server values; unit-tested only.
 #[cfg(test)]
 fn extract_thread_id(values: &[serde_json::Value], request_id: &str) -> Option<String> {
@@ -15379,6 +17380,7 @@ fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+#[cfg(test)]
 fn summarize_json_value(value: &serde_json::Value) -> String {
     let raw = serde_json::to_string(value).unwrap_or_else(|_| "provider event".into());
     if raw.len() > 240 {
@@ -15396,7 +17398,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let messages = latest_messages_in_append_order(store)?;
     let events = store.events()?;
     let evidence = store.evidence()?;
-    let sessions = latest_provider_sessions_in_append_order(store)?;
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
     let workflow_steps = latest_workflow_steps_in_append_order(store)?;
@@ -15413,6 +17414,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
     let member_actions = visible_member_actions_in_append_order(store)?;
+    let pending_interactions = latest_pending_interactions_in_append_order(store)?;
     let delegation_runs = latest_delegation_runs_in_append_order(store)?;
     let team_run_events = recent_team_run_events_in_append_order(store, 500)?;
     let member_cards: Vec<_> = members
@@ -15448,6 +17450,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "runtime_alive": runtime.is_some_and(runtime_is_alive),
                 "runtime_health": runtime.map(|runtime| runtime.health.clone()),
                 "control_endpoint": member.control_endpoint.clone(),
+                "native_session": member.native_session.clone(),
                 "provider_thread_id": member.provider_thread_id.clone(),
                 "provider_agent_path": member.provider_agent_path.clone(),
                 "provider_agent_nickname": member.provider_agent_nickname.clone(),
@@ -15478,7 +17481,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "messages": messages,
         "events": events,
         "evidence": evidence,
-        "provider_sessions": sessions,
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
         "workflow_steps": workflow_steps,
@@ -15490,6 +17492,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "member_runs": member_runs,
         "team_messages": team_messages,
         "member_actions": member_actions,
+        "pending_interactions": pending_interactions,
         "delegation_runs": delegation_runs,
         "team_run_events": team_run_events,
         "company_os": company_os
@@ -15522,278 +17525,6 @@ fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<Ag
         runtimes.insert(runtime.id.clone(), runtime);
     }
     Ok(runtimes.remove(runtime_id))
-}
-
-fn latest_provider_session(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<Option<ProviderSession>> {
-    let mut sessions = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        sessions.insert(session.id.clone(), session);
-    }
-    Ok(sessions.remove(session_id))
-}
-
-/// Read the RAW provider turn for one session, 1:1: each line of the persisted
-/// claude (`jsonl_ref`) or codex (`stdout_ref`) NDJSON stream parsed back into
-/// JSON. This is what powers the dashboard's "▸ turn" drill-in — the agent's
-/// actual events (assistant text, tool_use, tool_result, result), not a wrapped
-/// summary. Returns `(events, truncated)`; capped so a long turn cannot flood
-/// the response. Non-JSON lines are skipped so a partial final line is safe.
-fn read_provider_session_events(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<(Vec<serde_json::Value>, bool)> {
-    const MAX_EVENTS: usize = 1000;
-    let session = latest_provider_session(store, session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    let path = session
-        .jsonl_ref
-        .clone()
-        .or_else(|| session.stdout_ref.clone())
-        .ok_or_else(|| {
-            CliError::Usage(format!("session {session_id} has no recorded event stream"))
-        })?;
-    let content = fs::read_to_string(&path)
-        .map_err(|error| CliError::Usage(format!("cannot read session stream {path}: {error}")))?;
-    let mut events = Vec::new();
-    let mut truncated = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if events.len() >= MAX_EVENTS {
-                truncated = true;
-                break;
-            }
-            events.push(value);
-        }
-    }
-    Ok((events, truncated))
-}
-
-/// A normalized event for a raw provider frame we have no specific mapping
-/// for yet: retains the raw JSON, stamps provider/ts, kind = Unknown. The
-/// caller/read helper assigns the final sequence number.
-fn generic_turn_event(
-    provider: &str,
-    session_id: &str,
-    raw: &serde_json::Value,
-) -> HarnessTurnEvent {
-    HarnessTurnEvent {
-        session_id: session_id.to_string(),
-        provider: provider.to_string(),
-        seq: 0,
-        ts: now_string(),
-        provider_thread_id: None,
-        provider_turn_id: None,
-        provider_item_id: None,
-        kind: HarnessTurnEventKind::Unknown,
-        role: None,
-        text: None,
-        delta: None,
-        tool_call: None,
-        tool_result: None,
-        usage: None,
-        model: None,
-        duration_ms: None,
-        cost_usd: None,
-        status: None,
-        error: None,
-        raw_provider_event: raw.clone(),
-    }
-}
-
-fn normalize_live_turn_event(
-    provider: &str,
-    session_id: &str,
-    raw: &serde_json::Value,
-    next_seq: u64,
-) -> Vec<HarnessTurnEvent> {
-    match provider_adapter(provider) {
-        Some(adapter) => adapter.normalize_turn_event(session_id, raw),
-        None => vec![generic_turn_event(provider, session_id, raw)],
-    }
-    .into_iter()
-    .enumerate()
-    .map(|(index, mut event)| {
-        event.seq = next_seq + index as u64;
-        event
-    })
-    .collect()
-}
-
-/// Read a session's RAW per-session events and normalize each to a
-/// HarnessTurnEvent (normalize-on-read; no new storage, raw route unchanged).
-fn read_provider_session_normalized_events(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<(Vec<HarnessTurnEvent>, bool)> {
-    let session = latest_provider_session(store, session_id)?
-        .ok_or_else(|| CliError::Usage(format!("provider session not found: {session_id}")))?;
-    let (raw_events, truncated) = read_provider_session_events(store, session_id)?;
-    let normalized = raw_events
-        .iter()
-        .flat_map(|raw| match provider_adapter(&session.provider) {
-            Some(adapter) => adapter.normalize_turn_event(session_id, raw),
-            None => vec![generic_turn_event(&session.provider, session_id, raw)],
-        })
-        .enumerate()
-        .map(|(i, mut event)| {
-            event.seq = i as u64;
-            event
-        })
-        .collect();
-    Ok((normalized, truncated))
-}
-
-/// Historical (completed-run) normalized read: the normalize-on-read companion to
-/// `read_session_turn_events`, used by `GET /v1/sessions/{id}/normalized-events`.
-/// Mirrors `read_provider_session_normalized_events` but reads the DURABLE
-/// per-session NDJSON via the two-tier-persistence path so it can also report
-/// `retained` — a `--trace live` run whose trace was pruned returns
-/// `(retained=false, [], false)` so the dashboard renders "trace not retained"
-/// instead of a 404, exactly like the raw historical endpoint.
-fn read_session_turn_events_normalized(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<(bool, Vec<HarnessTurnEvent>, bool)> {
-    let raw = read_session_turn_events(store, session_id)?;
-    if !raw.retained {
-        return Ok((false, Vec::new(), raw.truncated));
-    }
-    // The provider drives adapter selection; a retained trace always has its
-    // ProviderSession row, but fall back to the generic adapter if it is missing
-    // so a normalized read never fails on a recoverable lookup.
-    let provider = latest_provider_session(store, session_id)?
-        .map(|session| session.provider)
-        .unwrap_or_default();
-    let normalized = raw
-        .events
-        .iter()
-        .flat_map(|event| match provider_adapter(&provider) {
-            Some(adapter) => adapter.normalize_turn_event(session_id, event),
-            None => vec![generic_turn_event(&provider, session_id, event)],
-        })
-        .enumerate()
-        .map(|(i, mut event)| {
-            event.seq = i as u64;
-            event
-        })
-        .collect();
-    Ok((true, normalized, raw.truncated))
-}
-
-/// Outcome of reading one provider session's PERSISTED turn-event trace for the
-/// historical drill-in (`GET /v1/sessions/<id>/events`). Distinguishes a durable
-/// run whose heavy trace survived from a `--trace live` run whose trace was
-/// pruned after execution (two-tier persistence): the latter streamed live over
-/// SSE but retains nothing, so a past drill-in shows "trace not retained".
-struct SessionTurnEvents {
-    /// Whether the heavy per-node trace was retained for this session.
-    retained: bool,
-    /// Ordered turn events parsed from the durable per-session NDJSON (one JSON
-    /// value per line). Empty when `retained` is false.
-    events: Vec<serde_json::Value>,
-    /// True when the cap was hit and trailing events were dropped.
-    truncated: bool,
-}
-
-/// Read the PERSISTED per-session turn events for a completed durable run's
-/// historical drill-in, keyed by provider session id. This is the read side of
-/// the two-tier persistence design: the small audit record (WorkflowRun/Step)
-/// always survives, while the heavy turn-event trace survives only for
-/// `trace_retention == "durable"` runs.
-///
-/// Source of truth is the DURABLE per-session NDJSON the ProviderSession's
-/// `jsonl_ref` (claude) / `stdout_ref` (codex) points at — the file the spawn
-/// loop writes under `provider-sessions/<id>/` and which survives a server
-/// restart (unlike the shared `provider_turn_events.jsonl` live tee, which
-/// `serve` truncates on startup). We parse it the same way `read_provider_session_events`
-/// and `sse.rs` do: one JSON value per line, skipping torn/non-JSON lines so a
-/// mid-append final fragment is safe.
-///
-/// A `--trace live` run prunes that NDJSON after execution and the Backend left
-/// the ProviderSession's `jsonl_ref`/`stdout_ref` as `None` precisely so the
-/// historical drill-in reports `retained: false` ("trace not retained") instead
-/// of an empty-but-durable trace. A session with no ProviderSession row at all is
-/// likewise reported as not retained.
-fn read_session_turn_events(
-    store: &HarnessStore,
-    session_id: &str,
-) -> CliResult<SessionTurnEvents> {
-    const MAX_EVENTS: usize = 1000;
-
-    // The retention marker IS the presence of a recorded event stream on the
-    // session row: durable runs point jsonl_ref/stdout_ref at the retained
-    // per-session NDJSON; live-only runs (and missing sessions) have neither.
-    let path = match latest_provider_session(store, session_id)? {
-        Some(session) => session
-            .jsonl_ref
-            .clone()
-            .or_else(|| session.stdout_ref.clone()),
-        None => None,
-    };
-    let Some(path) = path else {
-        return Ok(SessionTurnEvents {
-            retained: false,
-            events: Vec::new(),
-            truncated: false,
-        });
-    };
-
-    // The trace was retained but the file may have been swept; treat an
-    // unreadable durable ref as an empty (still-retained) trace rather than 404.
-    let content = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(_) => {
-            return Ok(SessionTurnEvents {
-                retained: true,
-                events: Vec::new(),
-                truncated: false,
-            })
-        }
-    };
-    let mut events = Vec::new();
-    let mut truncated = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            continue;
-        };
-        if events.len() >= MAX_EVENTS {
-            truncated = true;
-            break;
-        }
-        events.push(value);
-    }
-    Ok(SessionTurnEvents {
-        retained: true,
-        events,
-        truncated,
-    })
-}
-
-fn latest_provider_sessions_in_append_order(
-    store: &HarnessStore,
-) -> CliResult<Vec<ProviderSession>> {
-    let mut session_ids = Vec::new();
-    let mut sessions_by_id = BTreeMap::new();
-    for session in store.provider_sessions()? {
-        session_ids.retain(|id| id != &session.id);
-        session_ids.push(session.id.clone());
-        sessions_by_id.insert(session.id.clone(), session);
-    }
-    Ok(session_ids
-        .into_iter()
-        .filter_map(|id| sessions_by_id.remove(&id))
-        .collect())
 }
 
 fn latest_workflow_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<WorkflowRun>> {
@@ -15847,6 +17578,19 @@ fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<
         ids.retain(|id| id != &action.id);
         ids.push(action.id.clone());
         by_id.insert(action.id.clone(), action);
+    }
+    Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+pub(crate) fn latest_pending_interactions_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<PendingInteraction>> {
+    let mut ids = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for interaction in store.pending_interactions()? {
+        ids.retain(|id| id != &interaction.id);
+        ids.push(interaction.id.clone());
+        by_id.insert(interaction.id.clone(), interaction);
     }
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
@@ -16374,6 +18118,7 @@ fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResu
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
+        native_session: None,
         provider_thread_id: None,
         provider_agent_path: value(args, "--provider-agent-path"),
         provider_agent_nickname: value(args, "--provider-agent-nickname"),
@@ -16442,10 +18187,8 @@ fn build_bootstrap_prompt(member: &AgentMember) -> String {
 //
 // The harness core stays provider-neutral (ADR 0011); all provider-specific
 // behaviour lives behind these four dispatch points keyed on `member.provider`.
-// Codex routes to the existing, regression-clean implementation. Claude routes
-// to stubs that return a clear "not yet implemented" error until BE-WP7/WP8
-// land the real claude-CLI runtime/delivery/ingest. Unknown providers fail
-// fast with an explicit, debuggable message rather than silently assuming Codex.
+// Codex, Claude, and Kimi route to their registered adapters. Unknown providers
+// fail fast with an explicit error rather than silently assuming Codex.
 // ---------------------------------------------------------------------------
 
 /// Everything a one-shot ephemeral provider spawn needs, bundled so the
@@ -16502,17 +18245,13 @@ trait ProviderAdapter: Sync {
         }
     }
 
-    /// The per-session live NDJSON filename this provider's spawn/delivery writes,
-    /// which the ProviderSession `jsonl_ref` points at during a turn.
+    /// Filename used only inside the short-lived process transport directory.
+    /// It is reduced in memory and removed; it is never a Harness history record.
     fn live_ndjson_file_name(&self) -> &'static str;
 
     /// Map a LaunchPermission to this provider's CLI permission flag value
     /// (codex `--sandbox`, claude `--permission-mode`).
     fn map_permission(&self, perm: LaunchPermission) -> &'static str;
-
-    /// The recorded argv head for this provider's delivery command (the
-    /// ProviderSession `args` audit field), optionally resuming `resume_id`.
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String>;
 
     /// Record a provider hook event into the neutral event log. Hooks are a
     /// codex-runtime mechanism; the default reports the provider has no hook
@@ -16524,39 +18263,6 @@ trait ProviderAdapter: Sync {
             self.name()
         )))
     }
-
-    /// Map one raw provider event frame to normalized HarnessTurnEvents. The
-    /// default is a single generic Unknown event (raw retained); each provider
-    /// overrides it to map its own vocabulary. The read helper assigns final seq.
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        vec![generic_turn_event(self.name(), session_id, raw)]
-    }
-
-    /// Reduce this provider's retained ephemeral NDJSON trace into neutral
-    /// AgentEvents (and, for claude, a coexisting ProviderSession). Called only on
-    /// durable runs. Ingest errors are swallowed — they must never fail the step.
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    );
-
-    /// Ingest a persistent provider runtime's recorded output file (`source_ref`)
-    /// into neutral AgentEvents / child-threads / proposals / reconciliations /
-    /// reports. The provider-output ingest counterpart of the runtime delivery path.
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()>;
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
@@ -16606,206 +18312,6 @@ impl ProviderAdapter for CodexAdapter {
             LaunchPermission::WorkspaceWrite => "workspace-write",
             LaunchPermission::FullAccess => "danger-full-access",
         }
-    }
-
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        match resume_id {
-            Some(id) => vec![
-                "codex".into(),
-                "exec".into(),
-                "resume".into(),
-                "--json".into(),
-                id.into(),
-            ],
-            None => vec!["codex".into(), "exec".into(), "--json".into()],
-        }
-    }
-
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        let mut event = generic_turn_event(self.name(), session_id, raw);
-
-        if let Some(error) = raw.get("error") {
-            event.kind = HarnessTurnEventKind::Error;
-            event.error = Some(
-                error
-                    .as_str()
-                    .map(str::to_string)
-                    .or_else(|| {
-                        error
-                            .get("message")
-                            .and_then(|message| message.as_str())
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_else(|| error.to_string()),
-            );
-            return vec![event];
-        }
-
-        match raw.get("type").and_then(|value| value.as_str()) {
-            Some("thread.started") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-                event.provider_thread_id = raw
-                    .get("thread_id")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-            }
-            Some("turn.started") => {
-                event.kind = HarnessTurnEventKind::TurnStarted;
-                event.provider_turn_id = raw
-                    .get("turn_id")
-                    .and_then(|value| value.as_str())
-                    .or_else(|| {
-                        raw.get("turn")
-                            .and_then(|turn| turn.get("id"))
-                            .and_then(|value| value.as_str())
-                    })
-                    .map(str::to_string);
-            }
-            Some("item.started") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-                event.provider_item_id = raw
-                    .get("item")
-                    .and_then(|item| item.get("id"))
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-            }
-            Some("item.completed") => {
-                if let Some(item) = raw.get("item") {
-                    event.provider_item_id = item
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string);
-                    match item.get("type").and_then(|value| value.as_str()) {
-                        Some("agent_message") => {
-                            event.kind = HarnessTurnEventKind::Message;
-                            event.role = Some("assistant".into());
-                            event.text = item
-                                .get("text")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string);
-                        }
-                        Some("reasoning") => {
-                            event.kind = HarnessTurnEventKind::Reasoning;
-                            event.text = item
-                                .get("text")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string);
-                        }
-                        Some("command_execution") => {
-                            event.kind = HarnessTurnEventKind::ToolCall;
-                            let name = item
-                                .get("command")
-                                .and_then(|value| value.as_str())
-                                .filter(|value| !value.is_empty())
-                                .unwrap_or("command_execution")
-                                .to_string();
-                            event.tool_call = Some(HarnessToolCall {
-                                id: event.provider_item_id.clone(),
-                                name: name.clone(),
-                                args: item.clone(),
-                            });
-                            let output = item
-                                .get("aggregated_output")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let exit_code = item.get("exit_code").and_then(|value| value.as_i64());
-                            let failed = exit_code.is_some_and(|code| code != 0);
-                            // Emit a ToolResult whenever the command produced ANY
-                            // output (raw, not trimmed — whitespace-only output is
-                            // still real output and must not be discarded) or it
-                            // failed. Content is the actual output verbatim; fall
-                            // back to `exit N` only when there is literally no
-                            // output. Trimming/hide-if-blank is a render concern the
-                            // dashboard owns; the canonical event stays faithful.
-                            if !output.is_empty() || failed {
-                                let mut result = generic_turn_event(self.name(), session_id, raw);
-                                result.provider_item_id = event.provider_item_id.clone();
-                                result.kind = HarnessTurnEventKind::ToolResult;
-                                result.tool_result = Some(HarnessToolResult {
-                                    tool_call_id: event.provider_item_id.clone(),
-                                    name: Some(name),
-                                    content: if output.is_empty() {
-                                        format!("exit {}", exit_code.unwrap_or_default())
-                                    } else {
-                                        output
-                                    },
-                                    is_error: failed,
-                                });
-                                return vec![event, result];
-                            }
-                            return vec![event];
-                        }
-                        Some("file_change") => {
-                            let changes = item
-                                .get("changes")
-                                .and_then(|value| value.as_array())
-                                .filter(|changes| !changes.is_empty());
-                            if let Some(changes) = changes {
-                                let mut events = Vec::with_capacity(changes.len());
-                                for change in changes {
-                                    let name =
-                                        match change.get("kind").and_then(|value| value.as_str()) {
-                                            Some("add") => "Write",
-                                            Some("delete") => "Delete",
-                                            _ => "Edit",
-                                        };
-                                    let mut change_event =
-                                        generic_turn_event(self.name(), session_id, raw);
-                                    change_event.provider_item_id = event.provider_item_id.clone();
-                                    change_event.kind = HarnessTurnEventKind::ToolCall;
-                                    change_event.tool_call = Some(HarnessToolCall {
-                                        id: event.provider_item_id.clone(),
-                                        name: name.into(),
-                                        args: change.clone(),
-                                    });
-                                    events.push(change_event);
-                                }
-                                return events;
-                            }
-                            event.kind = HarnessTurnEventKind::ProviderMeta;
-                        }
-                        _ => {
-                            event.kind = HarnessTurnEventKind::ProviderMeta;
-                        }
-                    }
-                } else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                }
-            }
-            Some("turn.completed") | Some("turn_completed") => {
-                event.kind = HarnessTurnEventKind::TurnCompleted;
-                // The raw usage object lives where parse_codex_usage reads it, so
-                // the normalized usage also keeps codex's cached/reasoning subtotals.
-                let raw_usage = raw
-                    .get("usage")
-                    .or_else(|| raw.get("turn").and_then(|turn| turn.get("usage")));
-                event.usage =
-                    parse_codex_usage(std::slice::from_ref(raw)).map(|usage| HarnessTokenUsage {
-                        input_tokens: usage.input,
-                        output_tokens: usage.output,
-                        total_tokens: usage.total,
-                        cached_input_tokens: raw_usage
-                            .and_then(|usage| usage.get("cached_input_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                        reasoning_output_tokens: raw_usage
-                            .and_then(|usage| usage.get("reasoning_output_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                    });
-            }
-            // Codex emits `thread.idle` as the terminal idle marker (see
-            // codex_event_is_terminal); there is no `turn.idle`.
-            Some("thread.idle") | Some("thread_idle") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-            }
-            _ => {}
-        }
-
-        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -16858,7 +18364,6 @@ impl ProviderAdapter for CodexAdapter {
         let provider_turn_id =
             json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
         let event_id = generated_id("event");
-        let payload_ref = persist_hook_payload(store, &event_id, &payload)?;
         let now = now_string();
         let event = AgentEvent {
             id: event_id,
@@ -16871,7 +18376,7 @@ impl ProviderAdapter for CodexAdapter {
             provider_child_thread_id: json_str(&payload, "agent_id"),
             event_type: format!("codex_hook.{hook_event_name}"),
             summary: codex_hook_summary(&hook_event_name, &payload),
-            payload_ref: Some(payload_ref),
+            payload_ref: None,
             created_at: now.clone(),
         };
         store.append_event(&event)?;
@@ -16892,7 +18397,7 @@ impl ProviderAdapter for CodexAdapter {
             }
         }
         if hook_event_name.eq_ignore_ascii_case("stop") {
-            reconcile_running_provider_sessions(
+            reconcile_running_delivery_attempts(
                 store,
                 &agent_id,
                 task_id.as_deref(),
@@ -16902,44 +18407,6 @@ impl ProviderAdapter for CodexAdapter {
             )?;
         }
         Ok(())
-    }
-
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    ) {
-        // Codex: one neutral AgentEvent per NDJSON line, mirroring the
-        // provider-output ingest path (event_type from the `type` discriminant).
-        for line in spawn.ndjson.lines() {
-            let Ok(payload) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-                continue;
-            };
-            let event_type = payload
-                .get("type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("provider_output")
-                .replace(['/', '.'], "_");
-            let event = AgentEvent {
-                id: generated_id("event"),
-                agent_member_id: session_id.into(),
-                provider_runtime_id: None,
-                task_id: None,
-                provider: self.name().into(),
-                provider_thread_id: payload
-                    .get("thread_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                provider_turn_id: None,
-                provider_child_thread_id: None,
-                event_type,
-                summary: summarize_json_value(&payload),
-                payload_ref: None,
-                created_at: now_string(),
-            };
-            let _ = store.append_event(&event);
-        }
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -16957,115 +18424,6 @@ impl ProviderAdapter for CodexAdapter {
             ctx.timeout_ms,
             ctx.wall_clock_ms,
         )
-    }
-
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()> {
-        let provider = self.name().to_string();
-        let text = fs::read_to_string(source_ref).unwrap_or_default();
-        for value in extract_provider_json_values(&text) {
-            let method = value
-                .get("method")
-                .and_then(|value| value.as_str())
-                .or_else(|| value.get("type").and_then(|value| value.as_str()))
-                .unwrap_or("provider_output");
-            let event_type = method.replace(['/', '.'], "_");
-            let summary = summarize_json_value(&value);
-            let provider_context = value.get("params").unwrap_or(&value);
-            let provider_thread_id = thread_id_from_container(provider_context);
-            let provider_turn_id = turn_id_from_container(provider_context);
-            let provider_child_thread_id =
-                provider_child_thread_id_from_container(provider_context);
-            let event = AgentEvent {
-                id: generated_id("event"),
-                agent_member_id: agent_member_id.into(),
-                provider_runtime_id: runtime_id.map(str::to_string),
-                task_id: task_id.map(str::to_string),
-                provider: provider.clone(),
-                provider_thread_id: provider_thread_id.clone(),
-                provider_turn_id: provider_turn_id.clone(),
-                provider_child_thread_id: provider_child_thread_id.clone(),
-                event_type: event_type.clone(),
-                summary,
-                payload_ref: Some(source_ref.into()),
-                created_at: now_string(),
-            };
-            store.append_event(&event)?;
-            if let Some(child_thread) = provider_child_thread_from_event(
-                &provider,
-                agent_member_id,
-                runtime_id,
-                task_id,
-                provider_thread_id.as_deref(),
-                &value,
-            ) {
-                store.append_provider_child_thread(&child_thread)?;
-            }
-            if event_type.contains("turn_plan_updated") || event_type.contains("turn_diff_updated")
-            {
-                if let Some(task_id) = task_id {
-                    let proposal = Proposal {
-                        id: generated_id("proposal"),
-                        task_id: task_id.into(),
-                        agent_member_id: agent_member_id.into(),
-                        title: format!("Provider {}", event_type),
-                        summary: "Proposal candidate from provider notification".into(),
-                        status: ProposalStatus::Draft,
-                        changed_paths: Vec::new(),
-                        evidence_ids: Vec::new(),
-                        created_at: now_string(),
-                        updated_at: now_string(),
-                    };
-                    store.append_proposal(&proposal)?;
-                }
-            }
-            if let Some(terminal_source) = terminal_source_from_provider_event(&value, &event_type)
-            {
-                let reconciled = reconcile_running_provider_sessions(
-                    store,
-                    agent_member_id,
-                    task_id,
-                    provider_thread_id.as_deref(),
-                    provider_turn_id.as_deref(),
-                    terminal_source,
-                )?;
-                if reconciled {
-                    continue;
-                }
-            }
-            if event_type.contains("turn_completed") {
-                let report = Message {
-                    id: generated_id("msg"),
-                    task_id: task_id.map(str::to_string),
-                    from_agent_id: agent_member_id.into(),
-                    to_agent_id: None,
-                    channel: Some("provider-report".into()),
-                    kind: MessageKind::Report,
-                    delivery_status: MessageDeliveryStatus::Delivered,
-                    content: "Provider turn completed".into(),
-                    evidence_ids: Vec::new(),
-                    created_at: now_string(),
-                    delivery: Some(MessageDelivery {
-                        provider_session_id: None,
-                        provider_request_id: None,
-                        provider_thread_id,
-                        provider_turn_id,
-                        terminal_source: Some(MessageTerminalSource::TurnCompleted),
-                        delivered_at: Some(now_string()),
-                        last_error: None,
-                    }),
-                    sender_kind: SenderKind::Agent,
-                };
-                store.append_message(&report)?;
-            }
-        }
-        Ok(())
     }
 }
 impl ProviderAdapter for ClaudeAdapter {
@@ -17087,221 +18445,6 @@ impl ProviderAdapter for ClaudeAdapter {
             LaunchPermission::WorkspaceWrite => "acceptEdits",
             LaunchPermission::FullAccess => "bypassPermissions",
         }
-    }
-
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        let mut args = vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-        ];
-        if let Some(id) = resume_id {
-            args.push("--resume".into());
-            args.push(id.into());
-        }
-        args
-    }
-
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        let mut event = generic_turn_event(self.name(), session_id, raw);
-        let payload = raw;
-
-        match raw.get("type").and_then(|value| value.as_str()) {
-            Some("system") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-                event.model = payload
-                    .get("model")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                event.provider_thread_id = payload
-                    .get("session_id")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-            }
-            Some("assistant") => {
-                let Some(blocks) = payload
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-                    .and_then(|content| content.as_array())
-                else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                };
-
-                let mut events = Vec::new();
-
-                let thinking_parts: Vec<&str> = blocks
-                    .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(|value| value.as_str()) == Some("thinking")
-                    })
-                    .filter_map(|block| {
-                        block
-                            .get("thinking")
-                            .or_else(|| block.get("text"))
-                            .and_then(|value| value.as_str())
-                    })
-                    .collect();
-                if !thinking_parts.is_empty() {
-                    let mut reasoning_event = generic_turn_event(self.name(), session_id, raw);
-                    reasoning_event.kind = HarnessTurnEventKind::Reasoning;
-                    reasoning_event.text = Some(thinking_parts.join("\n"));
-                    events.push(reasoning_event);
-                }
-
-                let text_parts: Vec<&str> = blocks
-                    .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(|value| value.as_str()) == Some("text")
-                    })
-                    .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
-                    .collect();
-                if !text_parts.is_empty() {
-                    let mut message_event = generic_turn_event(self.name(), session_id, raw);
-                    message_event.kind = HarnessTurnEventKind::Message;
-                    message_event.role = Some("assistant".into());
-                    message_event.text = Some(text_parts.join("\n"));
-                    events.push(message_event);
-                }
-
-                for block in blocks.iter().filter(|block| {
-                    block.get("type").and_then(|value| value.as_str()) == Some("tool_use")
-                }) {
-                    let mut tool_call_event = generic_turn_event(self.name(), session_id, raw);
-                    tool_call_event.kind = HarnessTurnEventKind::ToolCall;
-                    tool_call_event.provider_item_id = block
-                        .get("id")
-                        .and_then(|value| value.as_str())
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    tool_call_event.tool_call = Some(HarnessToolCall {
-                        id: tool_call_event.provider_item_id.clone(),
-                        name: block
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .filter(|value| !value.is_empty())
-                            .unwrap_or("tool_use")
-                            .to_string(),
-                        args: block.get("input").cloned().unwrap_or_else(|| block.clone()),
-                    });
-                    events.push(tool_call_event);
-                }
-
-                if events.is_empty() {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                }
-                return events;
-            }
-            Some("user") => {
-                let Some(blocks) = payload
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-                    .and_then(|content| content.as_array())
-                else {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                };
-
-                let mut events = Vec::new();
-                for block in blocks.iter().filter(|block| {
-                    block.get("type").and_then(|value| value.as_str()) == Some("tool_result")
-                }) {
-                    let mut tool_result_event = generic_turn_event(self.name(), session_id, raw);
-                    tool_result_event.kind = HarnessTurnEventKind::ToolResult;
-                    tool_result_event.provider_item_id = block
-                        .get("tool_use_id")
-                        .and_then(|value| value.as_str())
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    let content = block
-                        .get("content")
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_string)
-                                .unwrap_or_else(|| value.to_string())
-                        })
-                        .unwrap_or_default();
-                    tool_result_event.tool_result = Some(HarnessToolResult {
-                        tool_call_id: tool_result_event.provider_item_id.clone(),
-                        name: None,
-                        content,
-                        is_error: block
-                            .get("is_error")
-                            .and_then(|value| value.as_bool())
-                            .unwrap_or(false),
-                    });
-                    events.push(tool_result_event);
-                }
-
-                if events.is_empty() {
-                    event.kind = HarnessTurnEventKind::ProviderMeta;
-                    return vec![event];
-                }
-                return events;
-            }
-            Some("result") => {
-                let raw_usage = payload.get("usage");
-                event.usage =
-                    parse_claude_usage(std::slice::from_ref(raw)).map(|usage| HarnessTokenUsage {
-                        input_tokens: usage.input,
-                        output_tokens: usage.output,
-                        total_tokens: usage.total,
-                        cached_input_tokens: raw_usage
-                            .and_then(|usage| usage.get("cached_input_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                        reasoning_output_tokens: raw_usage
-                            .and_then(|usage| usage.get("reasoning_output_tokens"))
-                            .and_then(serde_json::Value::as_u64),
-                    });
-                let (_structured, cost_usd) = parse_claude_result_extras(std::slice::from_ref(raw));
-                event.cost_usd = cost_usd;
-                event.model = parse_worker_model(std::slice::from_ref(raw));
-                event.text = payload
-                    .get("result")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-
-                match payload.get("subtype").and_then(|value| value.as_str()) {
-                    Some(subtype) if subtype != "success" => {
-                        event.kind = HarnessTurnEventKind::Error;
-                        event.error = Some(
-                            payload
-                                .get("result")
-                                .and_then(|value| value.as_str())
-                                .or_else(|| payload.get("error").and_then(|value| value.as_str()))
-                                .map(str::to_string)
-                                .or_else(|| {
-                                    payload
-                                        .get("error")
-                                        .and_then(|error| error.get("message"))
-                                        .and_then(|value| value.as_str())
-                                        .map(str::to_string)
-                                })
-                                .or_else(|| payload.get("error").map(|value| value.to_string()))
-                                .unwrap_or_else(|| format!("claude result subtype {subtype}")),
-                        );
-                    }
-                    _ => {
-                        event.kind = HarnessTurnEventKind::TurnCompleted;
-                    }
-                }
-            }
-            Some("stream_event") => {
-                event.kind = HarnessTurnEventKind::ProviderMeta;
-            }
-            _ => {}
-        }
-
-        vec![event]
     }
 
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
@@ -17330,16 +18473,6 @@ impl ProviderAdapter for ClaudeAdapter {
         )
     }
 
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    ) {
-        let _ =
-            ingest_claude_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
-    }
-
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
         spawn_claude_ephemeral(
             ctx.session_dir,
@@ -17354,25 +18487,6 @@ impl ProviderAdapter for ClaudeAdapter {
             ctx.timeout_ms,
             ctx.wall_clock_ms,
             ctx.max_budget_usd,
-        )
-    }
-
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()> {
-        let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_claude_stream_json(
-            store,
-            self.name(),
-            agent_member_id,
-            runtime_id,
-            task_id,
-            &text,
         )
     }
 }
@@ -17445,15 +18559,6 @@ fn resolve_kimi_bin() -> String {
 // array of blocks (tool/structured turns) — both are handled.
 // ============================================================================
 
-/// Parse Kimi stream-json NDJSON text into raw JSON frames (one per non-empty line).
-fn parse_kimi_frames(text: &str) -> Vec<serde_json::Value> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .collect()
-}
-
 /// The assistant reply: concatenate the `content` of every `role=="assistant"`
 /// frame in order. `content` is a string, or an array of blocks (each block's own
 /// string, or its `text`/`content` field). None when the turn produced no text.
@@ -17507,13 +18612,16 @@ fn extract_kimi_session_id(frames: &[serde_json::Value]) -> Option<String> {
 /// Session status for a `kimi -p` turn. There is no terminal success frame, so a
 /// clean child exit IS success; a non-zero exit (e.g. an arg error on stderr) is a
 /// failure; a clean exit with zero frames is stale (no reply produced).
-fn infer_kimi_status(frames: &[serde_json::Value], process_success: bool) -> ProviderSessionStatus {
+fn infer_kimi_status(
+    frames: &[serde_json::Value],
+    process_success: bool,
+) -> ProviderExecutionStatus {
     if !process_success {
-        ProviderSessionStatus::Failed
+        ProviderExecutionStatus::Failed
     } else if frames.is_empty() {
-        ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Stale
     } else {
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     }
 }
 
@@ -17578,7 +18686,7 @@ fn spawn_kimi_ephemeral(
         Some(OrphanRegistration {
             dir: session_dir
                 .parent()
-                .and_then(|provider_sessions| provider_sessions.parent())
+                .and_then(|delivery_dir| delivery_dir.parent())
                 .unwrap_or(session_dir)
                 .join("worker_pids"),
             run_id: run_id.to_string(),
@@ -17593,7 +18701,7 @@ fn spawn_kimi_ephemeral(
     let frames = &run.events;
     let ok = matches!(
         infer_kimi_status(frames, run.process_success),
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     );
     let reply = extract_kimi_reply_text(frames);
     // -p stream-json carries no usage/model/cost frame; degrade per kimi_exec()
@@ -17606,7 +18714,8 @@ fn spawn_kimi_ephemeral(
     Ok(EphemeralSpawn {
         ok,
         reply,
-        ndjson: ndjson_lines(&run.events),
+        native_session: extract_kimi_session_id(frames)
+            .map(|id| provider_native_session_ref("kimi", id)),
         stderr: run.stderr,
         exit_code: run.exit_code,
         timed_out: run.timed_out,
@@ -17742,9 +18851,8 @@ fn run_kimi_exec_delivery_real(
     ))
 }
 
-/// Run one Kimi member delivery. Mirrors [`run_claude_delivery`] (claude-shaped
-/// telemetry/status/session bookkeeping) but spawns `kimi` and records the row
-/// under the `kimi` provider + `kimi.stream-json.ndjson` jsonl_ref.
+/// Run one Kimi member delivery. The short-lived transport stream is reduced in
+/// memory and removed; Kimi's own session remains the execution history.
 #[allow(clippy::too_many_arguments)]
 fn run_kimi_delivery(
     store: &HarnessStore,
@@ -17755,10 +18863,12 @@ fn run_kimi_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("deliveries")
+        .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
-
     let (process_success, _events, raw_events, session_id, stderr_log) =
         run_kimi_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?;
     // Kimi -p stream-json carries no usage/model/cost/structured frame; degrade per
@@ -17767,14 +18877,6 @@ fn run_kimi_delivery(
     let (tokens, cost_usd, model): (Option<TokenUsage>, Option<f64>, Option<String>) =
         (None, None, None);
     let raw_structured: Option<serde_json::Value> = None;
-
-    let ndjson_ref = session_dir.join(KimiAdapter.live_ndjson_file_name());
-    let mut ndjson_content = String::new();
-    for frame in &raw_events {
-        ndjson_content.push_str(&serde_json::to_string(frame).unwrap_or_default());
-        ndjson_content.push('\n');
-    }
-    fs::write(&ndjson_ref, &ndjson_content)?;
 
     let status = infer_kimi_status(&raw_events, process_success);
     let structured = structured_for_status(&status, raw_structured);
@@ -17785,15 +18887,12 @@ fn run_kimi_delivery(
     // Only a real session id parsed from the stream is resumable; the synthetic
     // fallback is not surfaced as a resume token (claude-identical).
     let resumable_session_id = session_id.clone();
-    let used_resume_id = build_launch_spec(member, message).resume;
-    let recorded_args = KimiAdapter.recorded_args(used_resume_id.as_deref());
-
     let evidence_id = generated_id("evidence");
     let evidence = Evidence {
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
         source_type: "kimi_delivery_session".into(),
-        source_ref: format!("provider-session:{resolved_session_id}"),
+        source_ref: format!("native-session:kimi:{resolved_session_id}"),
         summary: format!(
             "Kimi stream-json delivery {} for message {} ({} frames)",
             resolved_session_id,
@@ -17806,52 +18905,16 @@ fn run_kimi_delivery(
     };
     store.append_evidence(&evidence)?;
 
-    let provider_session = ProviderSession {
-        id: delivery_id.to_string(),
-        provider: KimiAdapter.name().into(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: resumable_session_id.clone(),
-        provider_turn_id: None,
-        terminal_source: terminal_source.clone(),
-        status: status.clone(),
-        command: "kimi".into(),
-        args: recorded_args,
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", message.id)),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: Some(ndjson_ref.display().to_string()),
-        transcript_ref: if stderr_log.is_empty() {
-            None
-        } else {
-            Some(session_dir.join("kimi.stderr").display().to_string())
-        },
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
-
+    let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
+        native_session: resumable_session_id
+            .as_ref()
+            .map(|id| provider_native_session_ref("kimi", id)),
         provider_thread_id: resumable_session_id,
         provider_turn_id: None,
         terminal_source,
         status,
-        stdout_ref: None,
-        stderr_ref: if !stderr_log.is_empty() {
-            let stderr_path = session_dir.join("kimi.stderr");
-            fs::write(&stderr_path, &stderr_log)?;
-            Some(stderr_path.display().to_string())
-        } else {
-            None
-        },
-        request_ref: Some(session_dir.display().to_string()),
         provider_request_id: None,
-        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
@@ -17894,44 +18957,6 @@ impl ProviderAdapter for KimiAdapter {
         }
     }
 
-    fn recorded_args(&self, resume_id: Option<&str>) -> Vec<String> {
-        // Mirrors the real kimi invocation surface (no `--verbose`; resume is
-        // `-S/--session <id>`).
-        let mut args = vec!["-p".into(), "--output-format".into(), "stream-json".into()];
-        if let Some(id) = resume_id {
-            args.push("--session".into());
-            args.push(id.into());
-        }
-        args
-    }
-
-    fn normalize_turn_event(
-        &self,
-        session_id: &str,
-        raw: &serde_json::Value,
-    ) -> Vec<HarnessTurnEvent> {
-        // Kimi -p stream-json is flat and NOT claude-shaped, so map its frames
-        // directly: a `role=="assistant"` frame -> an assistant Message event with
-        // the reply text; the `session.resume_hint` meta frame -> ProviderMeta
-        // carrying the resume token; anything else -> a generic ProviderMeta. All
-        // stamped provider="kimi" via `generic_turn_event(self.name(), ...)`.
-        let mut event = generic_turn_event(self.name(), session_id, raw);
-        if raw.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-            event.kind = HarnessTurnEventKind::Message;
-            event.role = Some("assistant".into());
-            event.text = extract_kimi_reply_text(std::slice::from_ref(raw));
-        } else if raw.get("type").and_then(|t| t.as_str()) == Some("session.resume_hint") {
-            event.kind = HarnessTurnEventKind::ProviderMeta;
-            event.provider_thread_id = raw
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-        } else {
-            event.kind = HarnessTurnEventKind::ProviderMeta;
-        }
-        vec![event]
-    }
-
     fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
         start_kimi_runtime(store, member)
     }
@@ -17958,17 +18983,6 @@ impl ProviderAdapter for KimiAdapter {
         )
     }
 
-    fn ingest_ephemeral_trace(
-        &self,
-        store: &HarnessStore,
-        session_id: &str,
-        spawn: &EphemeralSpawn,
-    ) {
-        // Kimi -p stream-json is not claude-shaped → use the kimi-native reducer,
-        // stamping the durable AgentEvent / ProviderSession rows provider="kimi".
-        let _ = ingest_kimi_stream_json(store, self.name(), session_id, None, None, &spawn.ndjson);
-    }
-
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
         spawn_kimi_ephemeral(
             ctx.session_dir,
@@ -17983,27 +18997,6 @@ impl ProviderAdapter for KimiAdapter {
             ctx.timeout_ms,
             ctx.wall_clock_ms,
             ctx.max_budget_usd,
-        )
-    }
-
-    fn ingest_output(
-        &self,
-        store: &HarnessStore,
-        agent_member_id: &str,
-        runtime_id: Option<&str>,
-        task_id: Option<&str>,
-        source_ref: &str,
-    ) -> CliResult<()> {
-        // Kimi -p stream-json is not claude-shaped → use the kimi-native reducer,
-        // stamping the durable rows provider="kimi".
-        let text = fs::read_to_string(source_ref).unwrap_or_default();
-        ingest_kimi_stream_json(
-            store,
-            self.name(),
-            agent_member_id,
-            runtime_id,
-            task_id,
-            &text,
         )
     }
 }
@@ -18092,42 +19085,39 @@ impl ClaudeStreamEvent {
     }
 }
 
-/// Infer provider session status from Claude stream-json events.
+/// Infer provider execution status from Claude stream-json events.
 fn infer_claude_session_status(
     events: &[ClaudeStreamEvent],
     process_success: bool,
-) -> ProviderSessionStatus {
+) -> ProviderExecutionStatus {
     if !process_success {
-        return ProviderSessionStatus::Failed;
+        return ProviderExecutionStatus::Failed;
     }
     let has_result = events.iter().any(|e| e.event_type == "result");
     if has_result {
         if let Some(result_event) = events.iter().find(|e| e.event_type == "result") {
-            if result_event.payload.get("error").is_some() {
-                return ProviderSessionStatus::Failed;
+            if result_event.payload.get("error").is_some()
+                || result_event
+                    .payload
+                    .get("is_error")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+                || result_event.payload.get("api_error_status").is_some()
+            {
+                return ProviderExecutionStatus::Failed;
             }
         }
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     } else if events.is_empty() {
-        ProviderSessionStatus::Failed
+        ProviderExecutionStatus::Failed
     } else {
-        ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Stale
     }
 }
 
 /// Extract session_id from Claude stream events.
 fn extract_session_id_from_claude_events(events: &[ClaudeStreamEvent]) -> Option<String> {
     events.iter().find_map(|e| e.session_id())
-}
-
-/// Extract provider_thread_id from Claude stream events if present.
-fn extract_thread_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<String> {
-    None
-}
-
-/// Extract provider_turn_id from Claude stream events if present.
-fn extract_turn_id_from_claude_events(_events: &[ClaudeStreamEvent]) -> Option<String> {
-    None
 }
 
 /// Extract the assistant's ACTUAL reply text from a `claude -p
@@ -18177,195 +19167,18 @@ fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
-/// Parse Claude stream-json NDJSON and ingest as neutral AgentEvent / ProviderSession.
-/// Mirrors the Codex exec reducer: same neutral objects, provider-specific parsing.
-///
-/// `provider` stamps the written AgentEvent / ProviderSession rows. Kimi is
-/// claude-shaped on the wire, so it reuses this reducer but passes `provider="kimi"`
-/// so the durable trace is attributed to the real provider (not "claude").
-fn ingest_claude_stream_json(
-    store: &HarnessStore,
-    provider: &str,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    text: &str,
-) -> CliResult<()> {
-    // Parse NDJSON from text
-    let mut events = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            if let Some(event) = ClaudeStreamEvent::parse_line(trimmed) {
-                events.push(event);
-            }
-        }
-    }
-
-    // Extract session_id and infer status from the event stream.
-    let session_id =
-        extract_session_id_from_claude_events(&events).unwrap_or_else(|| generated_id("session"));
-    let process_success = true; // Stream was parsed successfully.
-    let status = infer_claude_session_status(&events, process_success);
-
-    // Ingest each event as a neutral AgentEvent.
-    for event in &events {
-        let event_kind = match event.event_type.as_str() {
-            "system" => "stream_system_init",
-            "stream_event" => {
-                // Extract the stream_event subtype if present.
-                event
-                    .payload
-                    .get("event")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("stream_event")
-            }
-            "result" => "stream_result",
-            _ => "unknown",
-        };
-
-        let summary = summarize_json_value(&event.payload);
-        let thread_id = extract_thread_id_from_claude_events(std::slice::from_ref(event));
-        let turn_id = extract_turn_id_from_claude_events(std::slice::from_ref(event));
-
-        let agent_event = AgentEvent {
-            id: generated_id("event"),
-            agent_member_id: agent_member_id.into(),
-            provider_runtime_id: runtime_id.map(str::to_string),
-            task_id: task_id.map(str::to_string),
-            provider: provider.into(),
-            provider_thread_id: thread_id,
-            provider_turn_id: turn_id,
-            provider_child_thread_id: None, // Subagents handled separately per ADR 0011
-            event_type: event_kind.to_string(),
-            summary,
-            payload_ref: None, // Inline payload
-            created_at: now_string(),
-        };
-        store.append_event(&agent_event)?;
-    }
-
-    // Create one ProviderSession record for the entire delivery.
-    let provider_session = ProviderSession {
-        id: session_id.clone(),
-        provider: provider.into(),
-        agent_member_id: agent_member_id.into(),
-        task_id: task_id.map(str::to_string),
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: provider.into(),
-        args: vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-        ],
-        prompt_ref: None,
-        prompt_summary: Some(format!("delivered via {provider} -p stream-json")),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    store.append_provider_session(&provider_session)?;
-
-    Ok(())
-}
-
-/// Parse Kimi `-p --output-format stream-json` NDJSON and ingest as neutral
-/// AgentEvent / ProviderSession rows. Mirrors [`ingest_claude_stream_json`] but on
-/// the flat kimi-native frames (see the kimi stream banner). `provider` stamps the
-/// rows (always "kimi" here). The session id is read from the `session.resume_hint`
-/// meta frame; status is inferred from the frames (the live spawn path drives the
-/// authoritative status from the child exit code).
-fn ingest_kimi_stream_json(
-    store: &HarnessStore,
-    provider: &str,
-    agent_member_id: &str,
-    runtime_id: Option<&str>,
-    task_id: Option<&str>,
-    text: &str,
-) -> CliResult<()> {
-    let frames = parse_kimi_frames(text);
-    let session_id = extract_kimi_session_id(&frames).unwrap_or_else(|| generated_id("session"));
-    let process_success = true; // The stream parsed; exit-code status is set on the live path.
-    let status = infer_kimi_status(&frames, process_success);
-
-    for frame in &frames {
-        let event_kind = match (
-            frame.get("role").and_then(|r| r.as_str()),
-            frame.get("type").and_then(|t| t.as_str()),
-        ) {
-            (Some("assistant"), _) => "assistant_message",
-            (_, Some("session.resume_hint")) => "session_resume_hint",
-            (Some(role), _) => role, // e.g. "meta", "user"
-            _ => "unknown",
-        };
-        let agent_event = AgentEvent {
-            id: generated_id("event"),
-            agent_member_id: agent_member_id.into(),
-            provider_runtime_id: runtime_id.map(str::to_string),
-            task_id: task_id.map(str::to_string),
-            provider: provider.into(),
-            provider_thread_id: None,
-            provider_turn_id: None,
-            provider_child_thread_id: None,
-            event_type: event_kind.to_string(),
-            summary: summarize_json_value(frame),
-            payload_ref: None,
-            created_at: now_string(),
-        };
-        store.append_event(&agent_event)?;
-    }
-
-    let provider_session = ProviderSession {
-        id: session_id.clone(),
-        provider: provider.into(),
-        agent_member_id: agent_member_id.into(),
-        task_id: task_id.map(str::to_string),
-        workspace_ref: None,
-        provider_thread_id: None,
-        provider_turn_id: None,
-        terminal_source: status_to_terminal_source(&status),
-        status,
-        command: provider.into(),
-        args: vec!["-p".into(), "--output-format".into(), "stream-json".into()],
-        prompt_ref: None,
-        prompt_summary: Some(format!("delivered via {provider} -p stream-json")),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: None,
-        transcript_ref: None,
-        last_message_ref: None,
-        exit_code: Some(0),
-        started_at: now_string(),
-        ended_at: Some(now_string()),
-        evidence_ids: Vec::new(),
-    };
-    store.append_provider_session(&provider_session)?;
-    Ok(())
-}
-
-/// Map ProviderSessionStatus to terminal source.
-fn status_to_terminal_source(status: &ProviderSessionStatus) -> Option<MessageTerminalSource> {
+/// Map ProviderExecutionStatus to terminal source.
+fn status_to_terminal_source(status: &ProviderExecutionStatus) -> Option<MessageTerminalSource> {
     match status {
-        ProviderSessionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
-        ProviderSessionStatus::Failed => Some(MessageTerminalSource::Failed),
+        ProviderExecutionStatus::Succeeded => Some(MessageTerminalSource::TurnCompleted),
+        ProviderExecutionStatus::Failed => Some(MessageTerminalSource::Failed),
         _ => None,
     }
 }
 
 // --- Codex exec --json delivery (WP-2) ---
-// Parse NDJSON output from `codex exec --json` into AgentEvent + ProviderSession lifecycle.
-// Row parity with app-server path: identical ProviderSession/Evidence structure.
+// Parse the short-lived transport stream in memory. Harness records only the
+// delivery outcome and NativeSessionRef; Codex owns the durable item history.
 
 #[derive(Debug, Clone, PartialEq)]
 struct CodexExecEvent {
@@ -18453,24 +19266,24 @@ fn parse_codex_ndjson_to<F: FnMut(&serde_json::Value)>(
 
 /// Infer the lifecycle status from a stream of CodexExecEvent.
 /// Follows the same logic as the app-server path: queued → running → (succeeded|failed).
-fn infer_provider_session_status(
+fn infer_provider_execution_status(
     events: &[CodexExecEvent],
     process_success: bool,
-) -> ProviderSessionStatus {
+) -> ProviderExecutionStatus {
     if !process_success {
-        return ProviderSessionStatus::Failed;
+        return ProviderExecutionStatus::Failed;
     }
     // If we saw a terminal event, we succeeded.
     let has_terminal = events
         .iter()
         .any(|e| codex_event_is_terminal(&e.event_type));
     if has_terminal {
-        ProviderSessionStatus::Succeeded
+        ProviderExecutionStatus::Succeeded
     } else if events.is_empty() {
-        ProviderSessionStatus::Failed
+        ProviderExecutionStatus::Failed
     } else {
         // We have events but no terminal: stale (timed out waiting for completion).
-        ProviderSessionStatus::Stale
+        ProviderExecutionStatus::Stale
     }
 }
 
@@ -18479,7 +19292,7 @@ fn infer_provider_session_status(
 /// Codex `exec --json` emits a `thread.started` event carrying the real
 /// `thread_id` (e.g. `{"thread_id":"019e...","type":"thread.started"}`). We
 /// scan every event payload for a top-level `thread_id` string and return the
-/// first match so the ProviderSession records the provider's real thread id.
+/// first match so the provider execution attempt records the provider's real thread id.
 fn extract_thread_id_from_exec_events(events: &[CodexExecEvent]) -> Option<String> {
     events.iter().find_map(|event| {
         event
@@ -18780,26 +19593,12 @@ fn codex_mcp_id_key(id: &str) -> String {
     }
 }
 
-// Run a single Codex exec delivery, writing identical ProviderSession/Evidence rows.
-// WP-5: Minimal record of provider session for exec-stream delivery.
-// This records evidence and session metadata for audit/tracing.
+// Record only the Harness-level link from a delivery attempt to provider-native
+// session truth. The provider owns the transcript, tool history, and resume data.
 struct ExecDeliverySessionRecord<'a> {
     delivery_id: &'a str,
-    member: &'a AgentMember,
     message: &'a Message,
-    session_dir: &'a Path,
-    status: ProviderSessionStatus,
-    started_at: String,
-    stdout_ref: Option<String>,
-    stderr_ref: Option<String>,
-    exit_code: Option<i32>,
     provider_thread_id: Option<String>,
-    provider_turn_id: Option<String>,
-    terminal_source: Option<MessageTerminalSource>,
-    /// Prior session id this delivery resumed (`codex exec resume <id>`), if any.
-    /// Recorded into the ProviderSession args so the snapshot is the evidence
-    /// that resume was actually used.
-    resume_id: Option<String>,
 }
 
 fn record_exec_delivery_session(
@@ -18811,7 +19610,11 @@ fn record_exec_delivery_session(
         id: evidence_id.clone(),
         task_id: record.message.task_id.clone(),
         source_type: "codex_exec_delivery_session".into(),
-        source_ref: record.session_dir.display().to_string(),
+        source_ref: record
+            .provider_thread_id
+            .as_ref()
+            .map(|id| format!("native-session:codex:{id}"))
+            .unwrap_or_else(|| "native-session:codex:unavailable".to_string()),
         summary: format!(
             "Codex exec-stream delivery {} for message {}",
             record.delivery_id, record.message.id
@@ -18821,38 +19624,6 @@ fn record_exec_delivery_session(
         goal_id: None,
     };
     store.append_evidence(&evidence)?;
-    let ended_at = if record.status == ProviderSessionStatus::Running {
-        None
-    } else {
-        Some(now_string())
-    };
-    let provider_session = ProviderSession {
-        id: record.delivery_id.into(),
-        provider: "codex".into(),
-        agent_member_id: record.member.id.clone(),
-        task_id: record.message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: record.provider_thread_id,
-        provider_turn_id: record.provider_turn_id,
-        terminal_source: record.terminal_source,
-        status: record.status,
-        command: "harness".into(),
-        args: CodexAdapter.recorded_args(record.resume_id.as_deref()),
-        prompt_ref: record.member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", record.message.id)),
-        provider_session_ref: None,
-        // jsonl_ref must be the events FILE (read by the events route), not the
-        // session dir; for codex that is the same NDJSON as stdout_ref.
-        jsonl_ref: record.stdout_ref.clone(),
-        stdout_ref: record.stdout_ref,
-        transcript_ref: record.stderr_ref,
-        last_message_ref: None,
-        exit_code: record.exit_code,
-        started_at: record.started_at,
-        ended_at,
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
     Ok(evidence_id)
 }
 
@@ -18867,14 +19638,13 @@ fn run_codex_exec_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("deliveries")
+        .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
-
-    // The resume id used for this delivery (same source as the spawned command:
-    // the member's prior provider thread id). Recorded into the session args.
     let spec = build_launch_spec(member, message);
-    let resume_id = spec.resume.clone();
 
     let (process_success, events, raw_events, stderr_log) = run_codex_exec_process(
         &session_dir,
@@ -18886,16 +19656,9 @@ fn run_codex_exec_delivery(
     )?;
     let (tokens, cost_usd, model) = codex_delivery_telemetry(&raw_events, &spec);
 
-    // The event NDJSON is the live file run_codex_exec_process already wrote
-    // incrementally (mid-turn streaming) — point the session row at it rather
-    // than re-serializing a redundant copy. Just persist stderr.
-    let stdout_ref = session_dir.join("codex.stream-json.ndjson");
-    let stderr_ref = session_dir.join("exec.stderr.log");
-    fs::write(&stderr_ref, &stderr_log)?;
-
     // Infer the delivery status from events and process exit.
-    let status = infer_provider_session_status(&events, process_success);
-    let terminal_source = if matches!(status, ProviderSessionStatus::Succeeded) {
+    let status = infer_provider_execution_status(&events, process_success);
+    let terminal_source = if matches!(status, ProviderExecutionStatus::Succeeded) {
         events
             .iter()
             .find_map(|e| e.terminal_source())
@@ -18915,26 +19678,16 @@ fn run_codex_exec_delivery(
         store,
         ExecDeliverySessionRecord {
             delivery_id,
-            member,
             message,
-            session_dir: &session_dir,
-            status: status.clone(),
-            started_at,
-            stdout_ref: Some(stdout_ref.display().to_string()),
-            stderr_ref: Some(stderr_ref.display().to_string()),
-            exit_code,
             provider_thread_id: provider_thread_id.clone(),
-            provider_turn_id: provider_turn_id.clone(),
-            terminal_source: terminal_source.clone(),
-            resume_id: resume_id.clone(),
         },
     )?;
 
     let summary = match status {
-        ProviderSessionStatus::Succeeded => reply
+        ProviderExecutionStatus::Succeeded => reply
             .clone()
             .unwrap_or_else(|| "Codex exec --json turn completed successfully".into()),
-        ProviderSessionStatus::Failed => {
+        ProviderExecutionStatus::Failed => {
             if stderr_log.is_empty() {
                 "Codex exec --json failed: no output".into()
             } else {
@@ -18944,22 +19697,23 @@ fn run_codex_exec_delivery(
                 )
             }
         }
-        ProviderSessionStatus::Stale => {
+        ProviderExecutionStatus::Stale => {
             "Codex exec --json produced output but did not complete before timeout".into()
         }
         _ => "Codex exec --json session ended".into(),
     };
 
+    let _ = fs::remove_dir_all(&session_dir);
+    let native_session = provider_thread_id
+        .as_ref()
+        .map(|id| provider_native_session_ref("codex", id));
     Ok(DeliveryOutcome {
         status: status.clone(),
+        native_session,
         provider_thread_id,
         provider_turn_id,
         terminal_source,
-        stdout_ref: Some(stdout_ref.display().to_string()),
-        stderr_ref: Some(stderr_ref.display().to_string()),
-        request_ref: Some(session_dir.display().to_string()),
         provider_request_id: None, // exec stream does not use request_id
-        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code,
         tokens,
@@ -19111,9 +19865,12 @@ fn run_claude_delivery(
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<DeliveryOutcome> {
-    let session_dir = store.root().join("provider-sessions").join(delivery_id);
+    let session_dir = store
+        .root()
+        .join("runtimes")
+        .join("deliveries")
+        .join(delivery_id);
     fs::create_dir_all(&session_dir)?;
-    let started_at = now_string();
 
     // WP-3: Spawn real `claude -p --output-format stream-json --verbose`.
     //
@@ -19121,9 +19878,7 @@ fn run_claude_delivery(
     // fresh `claude -p <prompt>` that exits per turn, hold a `claude
     // --input-format stream-json` process open and feed the turn as a stdin
     // frame (see `resident.rs`). The returned tuple shape is identical to the
-    // default path, so everything below (NDJSON write, status infer, telemetry,
-    // evidence, ProviderSession) is reused verbatim. When unset/false the default
-    // path runs unchanged.
+    // default path, so status inference and telemetry stay provider-neutral.
     let resident = env::var("HARNESS_CLAUDE_RESIDENT").as_deref() == Ok("1");
     let (process_success, events, raw_events, session_id, stderr_log) = if resident {
         run_claude_resident_delivery_real(&session_dir, member, message, timeout_ms, project)?
@@ -19131,15 +19886,6 @@ fn run_claude_delivery(
         run_claude_exec_delivery_real(&session_dir, member, message, timeout_ms, project)?
     };
     let (tokens, cost_usd, model, raw_structured) = claude_delivery_telemetry(&raw_events);
-
-    // Save NDJSON events to jsonl_ref for ingest.
-    let ndjson_ref = session_dir.join("claude.stream-json.ndjson");
-    let mut ndjson_content = String::new();
-    for event in &events {
-        ndjson_content.push_str(&serde_json::to_string(&event.payload).unwrap_or_default());
-        ndjson_content.push('\n');
-    }
-    fs::write(&ndjson_ref, &ndjson_content)?;
 
     let status = infer_claude_session_status(&events, process_success);
     let structured = structured_for_status(&status, raw_structured);
@@ -19154,16 +19900,6 @@ fn run_claude_delivery(
     // as a resume token.
     let resumable_session_id = session_id.clone();
 
-    // The resume id this delivery actually used (from the member's prior thread,
-    // same source as `spec.resume`). Recorded into the session args so the
-    // snapshot is the evidence that `--resume` was passed.
-    let used_resume_id = build_launch_spec(member, message).resume;
-    let recorded_args = if resident {
-        resident::resident_recorded_args(used_resume_id.as_deref())
-    } else {
-        ClaudeAdapter.recorded_args(used_resume_id.as_deref())
-    };
-
     // Record an Evidence row for the delivery session, mirroring the codex path
     // so every provider delivery is auditable from the snapshot.
     let evidence_id = generated_id("evidence");
@@ -19171,7 +19907,7 @@ fn run_claude_delivery(
         id: evidence_id.clone(),
         task_id: message.task_id.clone(),
         source_type: "claude_delivery_session".into(),
-        source_ref: format!("provider-session:{resolved_session_id}"),
+        source_ref: format!("native-session:claude:{resolved_session_id}"),
         summary: format!(
             "Claude stream-json delivery {} for message {} ({} events)",
             resolved_session_id,
@@ -19184,65 +19920,18 @@ fn run_claude_delivery(
     };
     store.append_evidence(&evidence)?;
 
-    // Record session in ProviderSession (neutral object, not provider-specific).
-    let provider_session = ProviderSession {
-        // Key the terminal session row on the delivery id (same key as the
-        // "running" claim row) so it reconciles that claim to terminal in
-        // `has_unresolved_provider_session`. The provider's real session id is
-        // carried in `provider_thread_id`, not the row id. Keying on the session
-        // id instead would leave the running claim row dangling and wrongly
-        // block the next delivery.
-        id: delivery_id.to_string(),
-        provider: "claude".into(),
-        agent_member_id: member.id.clone(),
-        task_id: message.task_id.clone(),
-        workspace_ref: None,
-        provider_thread_id: resumable_session_id.clone(),
-        provider_turn_id: None,
-        terminal_source: terminal_source.clone(),
-        status: status.clone(),
-        command: "claude".into(),
-        args: recorded_args,
-        prompt_ref: member.prompt_ref.clone(),
-        prompt_summary: Some(format!("deliver message {}", message.id)),
-        provider_session_ref: None,
-        stdout_ref: None,
-        jsonl_ref: Some(ndjson_ref.display().to_string()),
-        transcript_ref: if stderr_log.is_empty() {
-            None
-        } else {
-            Some(session_dir.join("claude.stderr").display().to_string())
-        },
-        last_message_ref: None,
-        exit_code: if process_success { Some(0) } else { Some(1) },
-        started_at,
-        ended_at: Some(now_string()),
-        evidence_ids: vec![evidence_id.clone()],
-    };
-    store.append_provider_session(&provider_session)?;
-
+    let _ = fs::remove_dir_all(&session_dir);
     Ok(DeliveryOutcome {
+        native_session: resumable_session_id
+            .as_ref()
+            .map(|id| provider_native_session_ref("claude", id)),
         // Surface the real claude session id as the member's provider thread so
         // the next delivery resumes this conversation (memory across deliveries).
         provider_thread_id: resumable_session_id,
         provider_turn_id: None,
         terminal_source,
         status,
-        stdout_ref: None,
-        stderr_ref: if !stderr_log.is_empty() {
-            let stderr_path = session_dir.join("claude.stderr");
-            fs::write(&stderr_path, &stderr_log)?;
-            Some(stderr_path.display().to_string())
-        } else {
-            None
-        },
-        request_ref: Some(session_dir.display().to_string()),
         provider_request_id: None,
-        // The session ROW id (delivery_id), so a message's delivery.provider_session_id
-        // maps 1:1 to its ProviderSession row (resume continuity lives in
-        // provider_thread_id). This matches codex + the dry-run/failure paths and
-        // lets the dashboard drill into the exact turn by id.
-        provider_session_id: Some(delivery_id.to_string()),
         evidence_ids: vec![evidence_id],
         exit_code: if process_success { Some(0) } else { Some(1) },
         tokens,
@@ -19587,21 +20276,6 @@ fn parse_hook_payload(input: &str) -> serde_json::Value {
     }
 }
 
-fn persist_hook_payload(
-    store: &HarnessStore,
-    event_id: &str,
-    payload: &serde_json::Value,
-) -> CliResult<String> {
-    let payload_dir = store.root().join("hook-payloads");
-    fs::create_dir_all(&payload_dir)?;
-    let path = payload_dir.join(format!("{event_id}.json"));
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(payload).expect("serialize hook payload"),
-    )?;
-    Ok(path.display().to_string())
-}
-
 fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -19734,14 +20408,14 @@ fn sender_kind_from_args(args: &[String]) -> CliResult<SenderKind> {
     }
 }
 
-fn parse_provider_session_status(value: &str) -> CliResult<ProviderSessionStatus> {
+fn parse_provider_execution_status(value: &str) -> CliResult<ProviderExecutionStatus> {
     match value {
-        "queued" => Ok(ProviderSessionStatus::Queued),
-        "running" => Ok(ProviderSessionStatus::Running),
-        "succeeded" => Ok(ProviderSessionStatus::Succeeded),
-        "failed" => Ok(ProviderSessionStatus::Failed),
-        "canceled" => Ok(ProviderSessionStatus::Canceled),
-        "stale" => Ok(ProviderSessionStatus::Stale),
+        "queued" => Ok(ProviderExecutionStatus::Queued),
+        "running" => Ok(ProviderExecutionStatus::Running),
+        "succeeded" => Ok(ProviderExecutionStatus::Succeeded),
+        "failed" => Ok(ProviderExecutionStatus::Failed),
+        "canceled" => Ok(ProviderExecutionStatus::Canceled),
+        "stale" => Ok(ProviderExecutionStatus::Stale),
         other => Err(CliError::Usage(format!(
             "unknown provider session status: {other}"
         ))),
@@ -19776,14 +20450,14 @@ fn terminal_source_label(source: &MessageTerminalSource) -> String {
     .into()
 }
 
-fn provider_status_label(status: &ProviderSessionStatus) -> &'static str {
+fn provider_status_label(status: &ProviderExecutionStatus) -> &'static str {
     match status {
-        ProviderSessionStatus::Queued => "queued",
-        ProviderSessionStatus::Running => "running",
-        ProviderSessionStatus::Succeeded => "succeeded",
-        ProviderSessionStatus::Failed => "failed",
-        ProviderSessionStatus::Canceled => "canceled",
-        ProviderSessionStatus::Stale => "stale",
+        ProviderExecutionStatus::Queued => "queued",
+        ProviderExecutionStatus::Running => "running",
+        ProviderExecutionStatus::Succeeded => "succeeded",
+        ProviderExecutionStatus::Failed => "failed",
+        ProviderExecutionStatus::Canceled => "canceled",
+        ProviderExecutionStatus::Stale => "stale",
     }
 }
 
@@ -19828,15 +20502,18 @@ fn print_help() {
   project remove | project show | project migrate
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
-  mission create|list|show
-  wave create|list|show|gate
-  team-run create|list|status|start|send|events|complete|cancel
-  team create|list|show|close
+  mission create|list|show|update-context|create-team|link-team|unlink-team|close
+  wave create|list|show|history|update|advance|gate
+  team-run create|list|status|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
-  company docs health
-  company docs module create | page-definition create | document create|rename|move|archive | template create|status | block append|update|archive|remove|reorder | typed-record append|update | view create | relation link|unlink
-  agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-session|gateway|ingest|close
-  workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers|gc-trace
+  company docs query|search|traverse|refs|related|health|snapshot|diff|change-report
+  company docs module create | page scaffold|verify|publish | page-definition create
+  company docs document create|rename|move|archive | template create|status
+  company docs block append|update|archive|remove|reorder
+  company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
+  agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
+  workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
@@ -19844,7 +20521,10 @@ fn print_help() {
   daemon start|status|stop
 
 Retired coordination commands fail explicitly. Historical rows are available only
-through legacy-goal-task export|verify."#
+through legacy-goal-task export|verify.
+
+Agent Team creation uses --lead <host-agent-id>; --owner remains a compatibility
+alias. Mission create-team defaults the Lead to the current Host Agent (`host`)."#
     );
 }
 #[cfg(test)]
@@ -19917,7 +20597,6 @@ mod workflow_runtime_tests {
                 initiated_by: Some("test".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid: None,
                 dry_run: false,
                 terminal_reason: None,
@@ -19971,7 +20650,7 @@ mod workflow_runtime_tests {
         );
         assert_eq!(
             infer_kimi_status(&frames, true),
-            ProviderSessionStatus::Succeeded
+            ProviderExecutionStatus::Succeeded
         );
         // REGRESSION GUARD: the claude reply extractor must FAIL on this shape —
         // proving why the kimi-native parser is required (no `type:"result"` /
@@ -20003,13 +20682,13 @@ mod workflow_runtime_tests {
 
     #[test]
     fn kimi_status_failed_on_nonzero_exit_and_stale_when_empty() {
-        assert_eq!(infer_kimi_status(&[], true), ProviderSessionStatus::Stale);
+        assert_eq!(infer_kimi_status(&[], true), ProviderExecutionStatus::Stale);
         assert_eq!(
             infer_kimi_status(
                 &[serde_json::json!({"role": "assistant", "content": "x"})],
                 false
             ),
-            ProviderSessionStatus::Failed
+            ProviderExecutionStatus::Failed
         );
     }
 
@@ -20427,7 +21106,6 @@ mod workflow_runtime_tests {
             provider: spec.provider.clone(),
             isolation: spec.isolation.clone(),
             ok: true,
-            provider_session_id: Some(format!("session-{}", spec.label)),
             output_summary: format!("mock ok: {}", spec.label),
             step_id: None,
             started_at: None,
@@ -20674,15 +21352,12 @@ mod workflow_runtime_tests {
         structured: Option<serde_json::Value>,
     ) -> DeliveryOutcome {
         DeliveryOutcome {
-            status: ProviderSessionStatus::Succeeded,
+            status: ProviderExecutionStatus::Succeeded,
+            native_session: None,
             provider_thread_id: None,
             provider_turn_id: None,
             terminal_source: Some(MessageTerminalSource::Unknown),
-            stdout_ref: None,
-            stderr_ref: None,
-            request_ref: None,
             provider_request_id: None,
-            provider_session_id: Some("delivery-test".into()),
             evidence_ids: Vec::new(),
             exit_code: Some(0),
             tokens,
@@ -20795,7 +21470,7 @@ mod workflow_runtime_tests {
     fn delivery_outcome_defaults_have_no_telemetry_for_non_provider_paths() {
         let dry_run = delivery_outcome_for_test(None, None, None, None);
         let mut failure = delivery_outcome_for_test(None, None, None, None);
-        failure.status = ProviderSessionStatus::Failed;
+        failure.status = ProviderExecutionStatus::Failed;
         failure.exit_code = Some(1);
 
         for outcome in [dry_run, failure] {
@@ -20810,17 +21485,17 @@ mod workflow_runtime_tests {
     fn structured_is_surfaced_only_on_succeeded_status() {
         let value = serde_json::json!({ "verdict": "pass" });
         assert_eq!(
-            structured_for_status(&ProviderSessionStatus::Succeeded, Some(value.clone())),
+            structured_for_status(&ProviderExecutionStatus::Succeeded, Some(value.clone())),
             Some(value.clone())
         );
         // A turn that RAN but did not succeed must not report a (possibly partial /
         // schema-violating) structured result, even if one was extracted.
         for status in [
-            ProviderSessionStatus::Failed,
-            ProviderSessionStatus::Stale,
-            ProviderSessionStatus::Canceled,
-            ProviderSessionStatus::Running,
-            ProviderSessionStatus::Queued,
+            ProviderExecutionStatus::Failed,
+            ProviderExecutionStatus::Stale,
+            ProviderExecutionStatus::Canceled,
+            ProviderExecutionStatus::Running,
+            ProviderExecutionStatus::Queued,
         ] {
             assert_eq!(structured_for_status(&status, Some(value.clone())), None);
         }
@@ -20904,7 +21579,7 @@ mod workflow_runtime_tests {
         let spawn = EphemeralSpawn {
             ok: true,
             reply: Some("done".into()),
-            ndjson: String::new(),
+            native_session: None,
             stderr: String::new(),
             exit_code: Some(0),
             timed_out: false,
@@ -20959,7 +21634,7 @@ mod workflow_runtime_tests {
         let spawn = EphemeralSpawn {
             ok: false,
             reply: None,
-            ndjson: String::new(),
+            native_session: None,
             stderr: "boom: provider exploded".into(),
             exit_code: Some(3),
             timed_out: false,
@@ -21011,7 +21686,7 @@ mod workflow_runtime_tests {
         let spawn = EphemeralSpawn {
             ok: true,
             reply: None,
-            ndjson: String::new(),
+            native_session: None,
             stderr: String::new(),
             exit_code: Some(0),
             timed_out: false,
@@ -21076,7 +21751,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: Some("worktree".into()),
             ok: true,
-            provider_session_id: Some("session-1".into()),
             output_summary: "done".into(),
             step_id: None,
             started_at: None,
@@ -21121,7 +21795,6 @@ new file mode 100644
             default_model: Some("run-model".into()),
             default_effort: Some("medium".into()),
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: temp_project_context("eff", false),
         };
@@ -21168,7 +21841,7 @@ new file mode 100644
         // A worker that emits one line then HANGS (stdout open, never exits) goes
         // SILENT, so the IDLE timeout fires and kills it — not block forever.
         let root = std::env::temp_dir().join(format!("mah-hang-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -21207,7 +21880,7 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_warns_and_keeps_valid_events_after_junk_stdout() {
         let root = std::env::temp_dir().join(format!("mah-junk-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -21245,7 +21918,7 @@ new file mode 100644
         // limit (300ms) — because it never goes silent that long. A fixed total-
         // wall-clock timeout would have wrongly killed it.
         let root = std::env::temp_dir().join(format!("mah-slow-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         // 8 events, ~100ms apart → ~800ms total, never silent for 300ms.
@@ -21278,7 +21951,7 @@ new file mode 100644
         // A worker that never goes idle is still bounded by the per-leaf wall-clock
         // timeout.
         let root = std::env::temp_dir().join(format!("mah-wall-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -21318,7 +21991,7 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_allows_worker_finishing_before_wall_clock_timeout() {
         let root = std::env::temp_dir().join(format!("mah-wall-ok-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -21350,7 +22023,7 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_without_orphan_registration_writes_no_pidfile() {
         let root = std::env::temp_dir().join(format!("mah-no-pidfile-{}", generated_id("t")));
-        let session_dir = root.join("provider-sessions").join("s");
+        let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("printf '{\"type\":\"item\"}\\n'");
@@ -21385,7 +22058,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: None,
             ok: true,
-            provider_session_id: Some("s".into()),
             output_summary: "summary".into(),
             step_id: None,
             started_at: None,
@@ -21436,930 +22108,20 @@ new file mode 100644
         assert_eq!(runs[1].status, WorkflowRunStatus::Completed);
         assert_eq!(runs[0].id, runs[1].id);
 
-        // Three steps journaled, all completed, with provider_session_id links.
+        // Three dry-run steps journaled. No provider ran, so no native session
+        // may be invented merely to make the dashboard look live.
         let steps = store.workflow_steps().expect("read steps");
         assert_eq!(steps.len(), 3);
         for step in &steps {
             assert_eq!(step.status, WorkflowStepStatus::Completed);
             assert_eq!(step.run_id, runs[0].id);
-            assert!(step.provider_session_id.is_some());
+            assert!(step.native_session.is_none());
             assert!(step.ended_at.is_some());
         }
         // The serial step is first, in the "scope" phase.
         assert_eq!(steps[0].phase, "scope");
         assert_eq!(steps[1].phase, "audit");
         assert_eq!(steps[2].phase, "audit");
-    }
-
-    /// Build a ProviderSession keyed by `session_id`. `jsonl_ref` carries the
-    /// durable per-session NDJSON path when retained; `None` is the live-only
-    /// "trace not retained" marker the Backend leaves after pruning.
-    fn provider_session_with_ref(session_id: &str, jsonl_ref: Option<String>) -> ProviderSession {
-        ProviderSession {
-            id: session_id.into(),
-            provider: "claude".into(),
-            agent_member_id: session_id.into(),
-            task_id: None,
-            workspace_ref: None,
-            provider_thread_id: None,
-            provider_turn_id: None,
-            terminal_source: Some(MessageTerminalSource::TurnCompleted),
-            status: ProviderSessionStatus::Succeeded,
-            command: "harness".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: Some(0),
-            started_at: "unix-ms:1".into(),
-            ended_at: Some("unix-ms:2".into()),
-            evidence_ids: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn codex_normalize_thread_started_sets_provider_thread_id_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "thread.started",
-            "thread_id": "thread-1"
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-T");
-        assert_eq!(event.provider, "codex");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(event.provider_thread_id.as_deref(), Some("thread-1"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_turn_started_sets_kind_and_provider_turn_id_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "turn.started",
-            "turn_id": "turn-1"
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::TurnStarted);
-        assert_eq!(event.provider_turn_id.as_deref(), Some("turn-1"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_agent_message_item_completed_sets_message_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "item-1",
-                "type": "agent_message",
-                "text": "done"
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::Message);
-        assert_eq!(event.provider_item_id.as_deref(), Some("item-1"));
-        assert_eq!(event.role.as_deref(), Some("assistant"));
-        assert_eq!(event.text.as_deref(), Some("done"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_with_output_emits_call_and_result() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-1",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "ok\n",
-                "exit_code": 0
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-
-        let call = &events[0];
-        assert_eq!(call.kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(call.provider_item_id.as_deref(), Some("cmd-1"));
-        assert_eq!(
-            call.tool_call,
-            Some(HarnessToolCall {
-                id: Some("cmd-1".into()),
-                name: "cargo test".into(),
-                args: raw.get("item").unwrap().clone(),
-            })
-        );
-        assert_eq!(call.raw_provider_event, raw);
-
-        let result = &events[1];
-        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(result.provider_item_id.as_deref(), Some("cmd-1"));
-        assert_eq!(
-            result.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("cmd-1".into()),
-                name: Some("cargo test".into()),
-                content: "ok\n".into(),
-                is_error: false,
-            })
-        );
-        assert_eq!(result.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn live_normalize_codex_command_execution_assigns_seq_and_serializes_payload_events() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-live",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "ok\n",
-                "exit_code": 0
-            }
-        });
-
-        let events = normalize_live_turn_event("codex", "session-live", &raw, 41);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[0].seq, 41);
-        assert_eq!(events[0].raw_provider_event, raw);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[1].seq, 42);
-        assert_eq!(events[1].raw_provider_event, raw);
-
-        let payload = serde_json::json!({
-            "session_id": "session-live",
-            "events": events
-                .iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()
-                .expect("serialize events"),
-        });
-        let payload_events = payload
-            .get("events")
-            .and_then(|value| value.as_array())
-            .expect("payload events");
-        assert_eq!(payload_events.len(), 2);
-        assert_eq!(
-            payload_events[0].get("kind").and_then(|v| v.as_str()),
-            Some("tool_call")
-        );
-        assert_eq!(
-            payload_events[1].get("kind").and_then(|v| v.as_str()),
-            Some("tool_result")
-        );
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_without_output_or_error_emits_call_only() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-1",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "",
-                "exit_code": 0
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(event.provider_item_id.as_deref(), Some("cmd-1"));
-        assert_eq!(
-            event.tool_call,
-            Some(HarnessToolCall {
-                id: Some("cmd-1".into()),
-                name: "cargo test".into(),
-                args: raw.get("item").unwrap().clone(),
-            })
-        );
-        assert!(event.tool_result.is_none());
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_nonzero_exit_emits_error_result() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-1",
-                "type": "command_execution",
-                "command": "cargo test",
-                "aggregated_output": "",
-                "exit_code": 2
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[0].raw_provider_event, raw);
-
-        let result = &events[1];
-        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(
-            result.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("cmd-1".into()),
-                name: Some("cargo test".into()),
-                content: "exit 2".into(),
-                is_error: true,
-            })
-        );
-        assert_eq!(result.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_command_execution_whitespace_output_is_preserved() {
-        // Whitespace-only output is still real output: the ToolResult must carry
-        // the verbatim string, NOT fall back to `exit N`. Emptiness is decided on
-        // the raw string, not a trimmed one, so a newline-only result survives.
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "cmd-ws",
-                "type": "command_execution",
-                "command": "printf '\\n'",
-                "aggregated_output": "\n",
-                "exit_code": 1
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-
-        let result = &events[1];
-        assert_eq!(result.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(
-            result.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("cmd-ws".into()),
-                name: Some("printf '\\n'".into()),
-                content: "\n".into(),
-                is_error: true,
-            })
-        );
-        assert_eq!(result.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_file_change_emits_one_tool_call_per_change() {
-        let raw = serde_json::json!({
-            "type": "item.completed",
-            "item": {
-                "id": "file-1",
-                "type": "file_change",
-                "changes": [
-                    {"kind": "add", "path": "/a"},
-                    {"kind": "delete", "path": "/b"}
-                ]
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 2);
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[0].provider_item_id.as_deref(), Some("file-1"));
-        let first_call = events[0].tool_call.as_ref().unwrap();
-        assert_eq!(first_call.id.as_deref(), Some("file-1"));
-        assert_eq!(first_call.name, "Write");
-        assert_eq!(
-            first_call.args.get("path").and_then(|path| path.as_str()),
-            Some("/a")
-        );
-        assert_eq!(events[0].raw_provider_event, raw);
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[1].provider_item_id.as_deref(), Some("file-1"));
-        let second_call = events[1].tool_call.as_ref().unwrap();
-        assert_eq!(second_call.id.as_deref(), Some("file-1"));
-        assert_eq!(second_call.name, "Delete");
-        assert_eq!(
-            second_call.args.get("path").and_then(|path| path.as_str()),
-            Some("/b")
-        );
-        assert_eq!(events[1].raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_file_change_without_changes_stays_provider_meta() {
-        for raw in [
-            serde_json::json!({
-                "type": "item.completed",
-                "item": {
-                    "id": "file-1",
-                    "type": "file_change",
-                    "changes": []
-                }
-            }),
-            serde_json::json!({
-                "type": "item.completed",
-                "item": {
-                    "id": "file-1",
-                    "type": "file_change"
-                }
-            }),
-        ] {
-            let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-            assert_eq!(events.len(), 1);
-            let event = &events[0];
-
-            assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-            assert_eq!(event.provider_item_id.as_deref(), Some("file-1"));
-            assert!(event.tool_call.is_none());
-            assert_eq!(event.raw_provider_event, raw);
-        }
-    }
-
-    #[test]
-    fn codex_normalize_turn_completed_sets_usage_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "turn.completed",
-            "usage": {
-                "input_tokens": 1200,
-                "output_tokens": 340,
-                "cached_input_tokens": 800,
-                "reasoning_output_tokens": 120
-            }
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(
-            event.usage,
-            Some(HarnessTokenUsage {
-                input_tokens: 1200,
-                output_tokens: 340,
-                total_tokens: 1540,
-                cached_input_tokens: Some(800),
-                reasoning_output_tokens: Some(120),
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn codex_normalize_unrecognized_type_stays_unknown_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "provider_specific",
-            "payload": {"n": 1}
-        });
-
-        let events = CodexAdapter.normalize_turn_event("session-T", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-T");
-        assert_eq!(event.provider, "codex");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
-        assert_eq!(event.raw_provider_event, raw);
-        assert!(event.provider_thread_id.is_none());
-        assert!(event.provider_turn_id.is_none());
-        assert!(event.text.is_none());
-        assert!(event.tool_call.is_none());
-        assert!(event.usage.is_none());
-    }
-
-    #[test]
-    fn claude_normalize_system_sets_provider_meta_model_thread_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "system",
-            "subtype": "init",
-            "session_id": "claude-session-1",
-            "model": "claude-opus-4-8"
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-C");
-        assert_eq!(event.provider, "claude");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(event.model.as_deref(), Some("claude-opus-4-8"));
-        assert_eq!(
-            event.provider_thread_id.as_deref(),
-            Some("claude-session-1")
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_assistant_text_sets_message_role_text_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "hello"},
-                    {"type": "text", "text": "world"}
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::Message);
-        assert_eq!(event.role.as_deref(), Some("assistant"));
-        assert_eq!(event.text.as_deref(), Some("hello\nworld"));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_assistant_tool_use_sets_tool_call_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_01",
-                        "name": "Read",
-                        "input": {"file_path": "Cargo.toml"}
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
-        assert_eq!(
-            event.tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_01".into()),
-                name: "Read".into(),
-                args: serde_json::json!({"file_path": "Cargo.toml"}),
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_assistant_text_then_tool_use_expands_in_order_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "checking"},
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_01",
-                        "name": "Read",
-                        "input": {"file_path": "Cargo.toml"}
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| event.raw_provider_event == raw));
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Message);
-        assert_eq!(events[0].role.as_deref(), Some("assistant"));
-        assert_eq!(events[0].text.as_deref(), Some("checking"));
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[1].provider_item_id.as_deref(), Some("toolu_01"));
-        assert_eq!(
-            events[1].tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_01".into()),
-                name: "Read".into(),
-                args: serde_json::json!({"file_path": "Cargo.toml"}),
-            })
-        );
-    }
-
-    #[test]
-    fn claude_normalize_assistant_thinking_text_and_tool_uses_expands_in_order_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "thinking", "thinking": "thinking one"},
-                    {"type": "text", "text": "done thinking"},
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_A",
-                        "name": "Read",
-                        "input": {"file_path": "Cargo.toml"}
-                    },
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_B",
-                        "name": "Write",
-                        "input": {"file_path": "README.md", "content": "notes"}
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 4);
-        assert!(events.iter().all(|event| event.raw_provider_event == raw));
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Reasoning);
-        assert_eq!(events[0].text.as_deref(), Some("thinking one"));
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::Message);
-        assert_eq!(events[1].role.as_deref(), Some("assistant"));
-        assert_eq!(events[1].text.as_deref(), Some("done thinking"));
-
-        assert_eq!(events[2].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[2].provider_item_id.as_deref(), Some("toolu_A"));
-        assert_eq!(
-            events[2].tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_A".into()),
-                name: "Read".into(),
-                args: serde_json::json!({"file_path": "Cargo.toml"}),
-            })
-        );
-
-        assert_eq!(events[3].kind, HarnessTurnEventKind::ToolCall);
-        assert_eq!(events[3].provider_item_id.as_deref(), Some("toolu_B"));
-        assert_eq!(
-            events[3].tool_call,
-            Some(HarnessToolCall {
-                id: Some("toolu_B".into()),
-                name: "Write".into(),
-                args: serde_json::json!({"file_path": "README.md", "content": "notes"}),
-            })
-        );
-    }
-
-    #[test]
-    fn claude_normalize_assistant_unknown_content_block_stays_provider_meta_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "server_tool_use", "id": "srv_01"}
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_user_tool_result_sets_tool_result_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_01",
-                        "content": [{"type": "text", "text": "file contents"}],
-                        "is_error": true
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(event.provider_item_id.as_deref(), Some("toolu_01"));
-        assert_eq!(
-            event.tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("toolu_01".into()),
-                name: None,
-                content: serde_json::json!([{"type": "text", "text": "file contents"}]).to_string(),
-                is_error: true,
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_user_tool_results_expand_in_order_and_retain_raw() {
-        let raw = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u1",
-                        "content": "first"
-                    },
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u2",
-                        "content": [{"type": "text", "text": "second"}],
-                        "is_error": true
-                    }
-                ]
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| event.raw_provider_event == raw));
-
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[0].provider_item_id.as_deref(), Some("u1"));
-        assert_eq!(
-            events[0].tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("u1".into()),
-                name: None,
-                content: "first".into(),
-                is_error: false,
-            })
-        );
-
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[1].provider_item_id.as_deref(), Some("u2"));
-        assert_eq!(
-            events[1].tool_result,
-            Some(HarnessToolResult {
-                tool_call_id: Some("u2".into()),
-                name: None,
-                content: serde_json::json!([{"type": "text", "text": "second"}]).to_string(),
-                is_error: true,
-            })
-        );
-    }
-
-    #[test]
-    fn live_normalize_claude_expansion_assigns_monotonic_seq_from_next_seq() {
-        let raw = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u1",
-                        "content": "first"
-                    },
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "u2",
-                        "content": "second"
-                    }
-                ]
-            }
-        });
-
-        let events = normalize_live_turn_event("claude", "session-C", &raw, 8);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[0].seq, 8);
-        assert_eq!(events[0].raw_provider_event, raw);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::ToolResult);
-        assert_eq!(events[1].seq, 9);
-        assert_eq!(events[1].raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_result_success_sets_completed_usage_cost_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "result": "final answer",
-            "total_cost_usd": 0.1866,
-            "structured_output": {"verdict": "pass"},
-            "usage": {
-                "input_tokens": 42,
-                "output_tokens": 15,
-                "cached_input_tokens": 7,
-                "reasoning_output_tokens": 3
-            }
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(event.text.as_deref(), Some("final answer"));
-        assert_eq!(
-            event.usage,
-            Some(HarnessTokenUsage {
-                input_tokens: 42,
-                output_tokens: 15,
-                total_tokens: 57,
-                cached_input_tokens: Some(7),
-                reasoning_output_tokens: Some(3),
-            })
-        );
-        assert_eq!(event.cost_usd, Some(0.1866));
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_result_non_success_sets_error_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "result",
-            "subtype": "error_during_execution",
-            "result": "tool failed",
-            "usage": {"input_tokens": 1, "output_tokens": 2}
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.kind, HarnessTurnEventKind::Error);
-        assert_eq!(event.text.as_deref(), Some("tool failed"));
-        assert_eq!(event.error.as_deref(), Some("tool failed"));
-        assert_eq!(
-            event.usage,
-            Some(HarnessTokenUsage {
-                input_tokens: 1,
-                output_tokens: 2,
-                total_tokens: 3,
-                cached_input_tokens: None,
-                reasoning_output_tokens: None,
-            })
-        );
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn claude_normalize_unrecognized_type_stays_unknown_and_retains_raw() {
-        let raw = serde_json::json!({
-            "type": "provider_specific",
-            "payload": {"n": 1}
-        });
-
-        let events = ClaudeAdapter.normalize_turn_event("session-C", &raw);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-C");
-        assert_eq!(event.provider, "claude");
-        assert_eq!(event.seq, 0);
-        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
-        assert_eq!(event.raw_provider_event, raw);
-        assert!(event.provider_thread_id.is_none());
-        assert!(event.text.is_none());
-        assert!(event.tool_call.is_none());
-        assert!(event.tool_result.is_none());
-        assert!(event.usage.is_none());
-    }
-
-    #[test]
-    fn live_normalize_unknown_provider_falls_back_to_generic_event_with_seq() {
-        let raw = serde_json::json!({
-            "type": "provider_specific",
-            "payload": {"n": 1}
-        });
-
-        let events = normalize_live_turn_event("mystery", "session-U", &raw, 17);
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
-
-        assert_eq!(event.session_id, "session-U");
-        assert_eq!(event.provider, "mystery");
-        assert_eq!(event.seq, 17);
-        assert_eq!(event.kind, HarnessTurnEventKind::Unknown);
-        assert_eq!(event.raw_provider_event, raw);
-    }
-
-    #[test]
-    fn read_provider_session_normalized_events_preserves_order_and_raw() {
-        let store = temp_store("normalized-events");
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join("session-N")
-            .join("claude.stream-json.ndjson");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        let raw0 = serde_json::json!({"type": "assistant", "text": "first"});
-        let raw1 = serde_json::json!({"type": "result", "status": "ok"});
-        fs::write(&ndjson, format!("{raw0}\nnot-json\n{raw1}\n")).expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                "session-N",
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append durable session");
-
-        let (events, truncated) =
-            read_provider_session_normalized_events(&store, "session-N").expect("read events");
-
-        assert!(!truncated);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].provider, "claude");
-        assert_eq!(events[0].seq, 0);
-        assert_eq!(events[0].kind, HarnessTurnEventKind::ProviderMeta);
-        assert_eq!(events[0].raw_provider_event, raw0);
-        assert_eq!(events[1].provider, "claude");
-        assert_eq!(events[1].seq, 1);
-        assert_eq!(events[1].kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(events[1].raw_provider_event, raw1);
-    }
-
-    /// Seed one durable run: a real per-session NDJSON + ProviderSession(jsonl_ref),
-    /// a completed WorkflowRun(trace_retention="durable") at `created`, and a step
-    /// linking them. Returns the NDJSON path so a test can assert its survival.
-    fn seed_durable_run(store: &HarnessStore, id: &str, created: u128) -> std::path::PathBuf {
-        let session = format!("sess-{id}");
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join(&session)
-            .join("events.jsonl");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        fs::write(&ndjson, "{\"type\":\"assistant\"}\n").expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                &session,
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append session");
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: id.into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Completed,
-                step_ids: vec![format!("{id}-s")],
-                created_at: format!("unix-ms:{created}"),
-                ended_at: Some(format!("unix-ms:{}", created + 1)),
-                summary: None,
-                args: None,
-                agents_spawned: 1,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: None,
-                dry_run: false,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_workflow_step(&WorkflowStep {
-                id: format!("{id}-s"),
-                run_id: id.into(),
-                phase: "work".into(),
-                label: "node".into(),
-                provider_session_id: Some(session),
-                status: WorkflowStepStatus::Completed,
-                output_summary: None,
-                result: None,
-                started_at: format!("unix-ms:{created}"),
-                ended_at: Some(format!("unix-ms:{}", created + 1)),
-                terminal_reason: None,
-                partial: false,
-            })
-            .expect("append step");
-        ndjson
     }
 
     #[test]
@@ -22380,7 +22142,6 @@ new file mode 100644
             initiated_by: Some("op".into()),
             design_intent: None,
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -22437,7 +22198,6 @@ new file mode 100644
                 initiated_by: Some("op".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid: Some(dead_pid),
                 dry_run: false,
                 terminal_reason: None,
@@ -22451,7 +22211,7 @@ new file mode 100644
                 run_id: "wfrun-dead".into(),
                 phase: "scan".into(),
                 label: "scan-context".into(),
-                provider_session_id: None,
+                native_session: None,
                 status: WorkflowStepStatus::Running,
                 output_summary: None,
                 result: None,
@@ -22477,7 +22237,6 @@ new file mode 100644
                 initiated_by: Some("op".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid: Some(std::process::id()),
                 dry_run: false,
                 terminal_reason: None,
@@ -22600,7 +22359,6 @@ new file mode 100644
                 initiated_by: Some("op".into()),
                 design_intent: None,
                 spec: None,
-                trace_retention: "durable".into(),
                 host_pid,
                 dry_run: false,
                 terminal_reason: None,
@@ -22710,7 +22468,7 @@ new file mode 100644
     #[test]
     fn running_step_carries_session_id_for_live_drill_in() {
         // The `running` row a step journals at start must carry the same
-        // provider_session_id as its terminal row — so the dashboard can link the
+        // native_session as its terminal row — so the dashboard can link the
         // step to its LIVE turn-event stream WHILE it runs, not only after it
         // finishes. (dry-run exercises the journaling without spawning a worker.)
         let store = temp_store("live-step-session");
@@ -22721,7 +22479,6 @@ new file mode 100644
             default_model: None,
             default_effort: None,
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: temp_project_context("live", false),
         };
@@ -22751,7 +22508,7 @@ new file mode 100644
             ordinal: Some(0),
         };
 
-        let result = workflow_real_agent_step(&store, "wfrun-live", &options, &spec);
+        let _result = workflow_real_agent_step(&store, "wfrun-live", &options, &spec);
 
         // Read the RAW append log (not the latest-wins projection) so we can
         // inspect the `running` row distinctly from the terminal row.
@@ -22760,17 +22517,8 @@ new file mode 100644
             .iter()
             .find(|s| s.status == WorkflowStepStatus::Running)
             .expect("a running row was journaled at step start");
-        // THE FIX: the running row must already carry a session id (was `None`).
-        let session = running
-            .provider_session_id
-            .as_deref()
-            .expect("running step carries its session id for the live drill-in");
-        assert!(
-            session.starts_with("session-"),
-            "session id is a real minted id, got {session}"
-        );
-        // The terminal row + the returned result must reuse the SAME id, so the
-        // live buffer and the durable trace resolve to one session.
+        // A native session is bound only after the provider reports its own id.
+        assert!(running.native_session.is_none());
         let terminal = rows
             .iter()
             .find(|s| {
@@ -22780,67 +22528,7 @@ new file mode 100644
                 )
             })
             .expect("a terminal row was journaled at step finish");
-        assert_eq!(terminal.provider_session_id.as_deref(), Some(session));
-        assert_eq!(result.provider_session_id.as_deref(), Some(session));
-    }
-
-    #[test]
-    fn running_provider_session_row_is_published_before_the_worker_finishes() {
-        // The per-node drill-in resolves a step's live turn-event stream via its
-        // provider_session_id -> the matching ProviderSession ROW. Without a row
-        // published at step START, a RUNNING step renders "no turn yet" and its
-        // live events (already streaming) have nothing to attach to. This asserts
-        // the row exists, is RUNNING (not terminal), and the live NDJSON is
-        // pre-created so the events route serves a growing list from t0.
-        let store = temp_store("live-session-row");
-        let session_id = "session-test-live";
-        let session_dir = store.root().join("provider-sessions").join(session_id);
-        std::fs::create_dir_all(&session_dir).expect("mk session dir");
-        let spec = workflow::AgentStepSpec {
-            phase: "work".into(),
-            label: "explore".into(),
-            provider: "claude".into(),
-            model: None,
-            effort: None,
-            service_tier: None,
-            fallback_model: None,
-            timeout_s: None,
-            image: Vec::new(),
-            add_dir: Vec::new(),
-            expected_artifacts: Vec::new(),
-            persist_changes: None,
-            write_mode: None,
-            owned_paths: Vec::new(),
-            artifact_root: None,
-            write_roots: Vec::new(),
-            auto_apply_on_verdict: false,
-            isolation: None,
-            prompt: "p".into(),
-            schema: None,
-            schema_strict: false,
-            writable: false,
-            ordinal: Some(0),
-        };
-
-        write_running_ephemeral_session(&store, session_id, &session_dir, &spec);
-
-        let sessions = store.provider_sessions().expect("read sessions");
-        let row = sessions
-            .iter()
-            .find(|s| s.id == session_id)
-            .expect("a RUNNING provider session row is published at step start");
-        assert_eq!(row.status, ProviderSessionStatus::Running);
-        assert!(row.ended_at.is_none(), "running row has no ended_at");
-        assert!(row.exit_code.is_none(), "running row has no exit code");
-        assert!(
-            session_dir.join("claude.stream-json.ndjson").exists(),
-            "live NDJSON pre-created so the events route serves a growing list"
-        );
-        assert!(row
-            .jsonl_ref
-            .as_deref()
-            .expect("jsonl_ref points at the live file")
-            .ends_with("claude.stream-json.ndjson"));
+        assert!(terminal.native_session.is_none());
     }
 
     #[test]
@@ -22927,150 +22615,6 @@ new file mode 100644
         assert_eq!(root, PathBuf::from("/explicit/store"));
         // Flag stripped so dispatch sees only the subcommand.
         assert_eq!(args, vec!["serve"]);
-    }
-
-    #[test]
-    fn workflow_get_output_returns_full_reply_and_falls_back_to_summary() {
-        let store = temp_store("get-output");
-        let mk_step = |id: &str, label: &str, sid: &str, summary: &str| WorkflowStep {
-            id: id.into(),
-            run_id: "wfrun-go".into(),
-            phase: "p".into(),
-            label: label.into(),
-            provider_session_id: Some(sid.into()),
-            status: WorkflowStepStatus::Completed,
-            output_summary: Some(summary.into()),
-            result: Some(serde_json::json!({
-                "ok": true,
-                "telemetry": "journaled"
-            })),
-            started_at: "unix-ms:1".into(),
-            ended_at: Some("unix-ms:2".into()),
-            terminal_reason: Some(WorkflowTerminalReason::Completed),
-            partial: false,
-        };
-        store
-            .append_workflow_run(&WorkflowRun {
-                id: "wfrun-go".into(),
-                workflow_name: "demo".into(),
-                status: WorkflowRunStatus::Completed,
-                step_ids: vec!["s1".into(), "s2".into()],
-                created_at: "unix-ms:1".into(),
-                ended_at: Some("unix-ms:9".into()),
-                summary: None,
-                args: None,
-                agents_spawned: 2,
-                final_output: None,
-                initiated_by: Some("op".into()),
-                design_intent: None,
-                spec: None,
-                trace_retention: "durable".into(),
-                host_pid: None,
-                dry_run: false,
-                terminal_reason: None,
-                partial_output_available: false,
-            })
-            .expect("append run");
-        store
-            .append_workflow_step(&mk_step("s1", "scan", "sess-1", "scan summary"))
-            .expect("append s1");
-        store
-            .append_workflow_step(&mk_step(
-                "s2",
-                "synthesis",
-                "sess-2",
-                "synth summary (capped)",
-            ))
-            .expect("append s2");
-
-        // Persist a FULL reply only for s2's session (mirrors ingest writing reply.txt).
-        let full = "FULL synthesis output ".repeat(500); // > any summary cap
-        let dir = store.root().join("provider-sessions").join("sess-2");
-        std::fs::create_dir_all(&dir).expect("mk session dir");
-        std::fs::write(dir.join("reply.txt"), &full).expect("write reply");
-        let ndjson_path = dir.join("codex.exec.ndjson");
-        std::fs::write(
-            &ndjson_path,
-            concat!(
-                "{\"type\":\"item.completed\",\"item\":{\"id\":\"cmd-1\",\"type\":\"command_execution\",\"command\":\"python write.py\",\"aggregated_output\":\"ok\\n\",\"exit_code\":0}}\n",
-                "{\"type\":\"item.completed\",\"item\":{\"id\":\"msg-1\",\"type\":\"agent_message\",\"text\":\"final artifact note\"}}\n"
-            ),
-        )
-        .expect("write ndjson");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "sess-2".into(),
-                provider: "codex".into(),
-                agent_member_id: "sess-2".into(),
-                task_id: None,
-                workspace_ref: None,
-                provider_thread_id: None,
-                provider_turn_id: None,
-                terminal_source: Some(MessageTerminalSource::TurnCompleted),
-                status: ProviderSessionStatus::Succeeded,
-                command: "codex".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: Some(ndjson_path.display().to_string()),
-                jsonl_ref: Some(ndjson_path.display().to_string()),
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: Some(0),
-                started_at: "unix-ms:1".into(),
-                ended_at: Some("unix-ms:2".into()),
-                evidence_ids: Vec::new(),
-            })
-            .expect("append provider session");
-
-        let out = workflow_get_output_value(&store, &["wfrun-go".to_string()]).expect("get-output");
-        let steps = out["steps"].as_array().expect("steps array");
-        assert_eq!(steps.len(), 2);
-        // Order follows run.step_ids: scan (s1) then synthesis (s2).
-        assert_eq!(steps[0]["label"], "scan");
-        assert_eq!(steps[1]["label"], "synthesis");
-        // s1 has no reply.txt -> falls back to the capped summary.
-        assert_eq!(steps[0]["source"], "summary");
-        assert_eq!(steps[0]["output"], "scan summary");
-        // s2 has reply.txt -> full text, source "reply".
-        assert_eq!(steps[1]["source"], "reply");
-        assert_eq!(steps[1]["output"].as_str().unwrap(), full);
-        assert_eq!(steps[1]["result"]["telemetry"], "journaled");
-        assert_eq!(
-            steps[1]["session_summary"]["tool_calls"][0]["name"],
-            "python write.py"
-        );
-        assert_eq!(
-            steps[1]["session_summary"]["final_message"],
-            "final artifact note"
-        );
-
-        // --step selects one leaf.
-        let one = workflow_get_output_value(
-            &store,
-            &[
-                "wfrun-go".to_string(),
-                "--step".to_string(),
-                "synthesis".to_string(),
-            ],
-        )
-        .expect("get-output --step");
-        let one_steps = one["steps"].as_array().unwrap();
-        assert_eq!(one_steps.len(), 1);
-        assert_eq!(one_steps[0]["label"], "synthesis");
-
-        // Unknown step / unknown run are usage errors.
-        assert!(workflow_get_output_value(
-            &store,
-            &[
-                "wfrun-go".to_string(),
-                "--step".to_string(),
-                "nope".to_string()
-            ]
-        )
-        .is_err());
-        assert!(workflow_get_output_value(&store, &["wfrun-missing".to_string()]).is_err());
     }
 
     #[test]
@@ -23279,7 +22823,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: Some("worktree".into()),
             ok: true,
-            provider_session_id: Some(format!("session-{label}")),
             output_summary: format!("{label} wrote {path}"),
             step_id: None,
             started_at: None,
@@ -23306,7 +22849,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("test writable patch and artifact manifest path".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -23401,7 +22943,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("test direct shared-repo write journaling".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -23414,7 +22955,6 @@ new file mode 100644
                 provider: "codex".into(),
                 isolation: None,
                 ok: true,
-                provider_session_id: Some("session-direct".into()),
                 output_summary: "direct edit [direct diff: 6 lines]".into(),
                 step_id: None,
                 started_at: None,
@@ -23657,7 +23197,6 @@ new file mode 100644
                 provider: "codex".into(),
                 isolation: Some("worktree".into()),
                 ok: true,
-                provider_session_id: Some(format!("session-{label}")),
                 output_summary: format!("{label} wrote {path}"),
                 step_id: None,
                 started_at: None,
@@ -23685,7 +23224,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("test discard and auto-apply patch behavior".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -23748,7 +23286,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("standalone D3a persistence gate".into()),
             spec: None, // NOT orchestrated
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -23760,7 +23297,6 @@ new file mode 100644
             provider: "codex".into(),
             isolation: Some("worktree".into()),
             ok: false, // step FAILED
-            provider_session_id: None,
             output_summary: "boom".into(),
             step_id: Some("wfstep-failed".into()),
             started_at: None,
@@ -23779,7 +23315,6 @@ new file mode 100644
             provider: "kimi".into(),
             isolation: Some("worktree".into()),
             ok: true,
-            provider_session_id: None,
             output_summary: "read but wrote anyway".into(),
             step_id: Some("wfstep-kimi".into()),
             started_at: None,
@@ -23841,7 +23376,6 @@ new file mode 100644
             initiated_by: Some("test".into()),
             design_intent: Some("standalone D3a positive control".into()),
             spec: None,
-            trace_retention: "durable".into(),
             host_pid: None,
             dry_run: false,
             terminal_reason: None,
@@ -23854,7 +23388,6 @@ new file mode 100644
                 provider: "codex".into(),
                 isolation: Some("worktree".into()),
                 ok: true,
-                provider_session_id: None,
                 output_summary: "ok".into(),
                 step_id: Some("wfstep-ok".into()),
                 started_at: None,
@@ -24254,7 +23787,6 @@ new file mode 100644
             default_model: None,
             default_effort: None,
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: ProjectContext {
                 id: harness_core::GLOBAL_PROJECT_ID.into(),
@@ -24298,7 +23830,6 @@ new file mode 100644
             default_model: None,
             default_effort: None,
             max_budget_usd: None,
-            trace_retention: "durable".into(),
             progress: false,
             project: ProjectContext {
                 id: harness_core::GLOBAL_PROJECT_ID.into(),
@@ -24444,183 +23975,6 @@ new file mode 100644
     }
 
     #[test]
-    fn gc_trace_prunes_old_durable_runs_and_keeps_recent() {
-        let store = temp_store("gc-trace");
-        let old1 = seed_durable_run(&store, "wfrun-old1", 1_000);
-        let old2 = seed_durable_run(&store, "wfrun-old2", 2_000);
-        let recent = seed_durable_run(&store, "wfrun-new", 9_000);
-
-        // Keep only the single most-recent durable run; prune the rest.
-        let out = workflow_gc_trace(&store, 1, None, false).expect("gc-trace");
-        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(2));
-        assert_eq!(out.get("kept_runs").and_then(|v| v.as_u64()), Some(1));
-
-        // Recent run's heavy trace survives intact.
-        assert!(recent.exists(), "recent NDJSON must remain");
-        assert!(
-            read_session_turn_events(&store, "sess-wfrun-new")
-                .unwrap()
-                .retained
-        );
-
-        // Old runs: NDJSON deleted, endpoint reports not-retained, run flips to expired.
-        assert!(!old1.exists() && !old2.exists(), "old NDJSON removed");
-        assert!(
-            !read_session_turn_events(&store, "sess-wfrun-old1")
-                .unwrap()
-                .retained
-        );
-        assert!(
-            !read_session_turn_events(&store, "sess-wfrun-old2")
-                .unwrap()
-                .retained
-        );
-        let latest = latest_workflow_runs_in_append_order(&store).unwrap();
-        let retention = |id: &str| {
-            latest
-                .iter()
-                .find(|r| r.id == id)
-                .unwrap()
-                .trace_retention
-                .clone()
-        };
-        assert_eq!(retention("wfrun-old1"), "expired");
-        assert_eq!(retention("wfrun-old2"), "expired");
-        assert_eq!(retention("wfrun-new"), "durable");
-    }
-
-    #[test]
-    fn gc_trace_dry_run_changes_nothing() {
-        let store = temp_store("gc-trace-dry");
-        let old = seed_durable_run(&store, "wfrun-old", 1_000);
-        seed_durable_run(&store, "wfrun-new", 9_000);
-        let out = workflow_gc_trace(&store, 1, None, true).expect("gc dry");
-        assert_eq!(out.get("pruned_runs").and_then(|v| v.as_u64()), Some(1));
-        assert!(old.exists(), "dry-run must not delete the NDJSON");
-        assert!(
-            read_session_turn_events(&store, "sess-wfrun-old")
-                .unwrap()
-                .retained
-        );
-    }
-
-    #[test]
-    fn durable_session_returns_persisted_turn_events_in_order() {
-        let store = temp_store("durable-events");
-        // Write the durable per-session NDJSON the jsonl_ref will point at.
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join("session-A")
-            .join("claude.stream-json.ndjson");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        fs::write(&ndjson, "{\"type\":\"assistant\"}\n{\"type\":\"result\"}\n")
-            .expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                "session-A",
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append durable session");
-
-        let out = read_session_turn_events(&store, "session-A").expect("read events");
-        assert!(out.retained, "durable run must report retained");
-        assert!(!out.truncated);
-        assert_eq!(out.events.len(), 2);
-        assert_eq!(
-            out.events[0].get("type").and_then(|t| t.as_str()),
-            Some("assistant")
-        );
-        assert_eq!(
-            out.events[1].get("type").and_then(|t| t.as_str()),
-            Some("result")
-        );
-    }
-
-    #[test]
-    fn live_only_session_reports_not_retained() {
-        let store = temp_store("live-events");
-        // Live-only: the session row survives but its jsonl_ref/stdout_ref are None
-        // (the Backend pruned the NDJSON after the run).
-        store
-            .append_provider_session(&provider_session_with_ref("session-L", None))
-            .expect("append live-only session");
-
-        let out = read_session_turn_events(&store, "session-L").expect("read events");
-        assert!(!out.retained, "live run must report not retained");
-        assert!(out.events.is_empty(), "not-retained trace yields no events");
-        assert!(!out.truncated);
-    }
-
-    #[test]
-    fn unknown_session_reports_not_retained() {
-        let store = temp_store("missing-events");
-        // No ProviderSession row at all -> nothing to drill into.
-        let out = read_session_turn_events(&store, "session-Z").expect("read events");
-        assert!(!out.retained, "missing session has no retained trace");
-        assert!(out.events.is_empty());
-    }
-
-    #[test]
-    fn historical_normalized_events_normalize_durable_trace_and_report_retained() {
-        let store = temp_store("historical-normalized");
-        let ndjson = store
-            .root()
-            .join("provider-sessions")
-            .join("session-HN")
-            .join("claude.stream-json.ndjson");
-        fs::create_dir_all(ndjson.parent().unwrap()).expect("mkdir session dir");
-        // A real-ish claude trace: an assistant text block then a result.
-        fs::write(
-            &ndjson,
-            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n{\"type\":\"result\",\"subtype\":\"success\"}\n",
-        )
-        .expect("write ndjson");
-        store
-            .append_provider_session(&provider_session_with_ref(
-                "session-HN",
-                Some(ndjson.display().to_string()),
-            ))
-            .expect("append durable session");
-
-        let (retained, events, truncated) =
-            read_session_turn_events_normalized(&store, "session-HN").expect("read normalized");
-        assert!(retained, "durable run must report retained");
-        assert!(!truncated);
-        assert_eq!(events.len(), 2);
-        // Provider-agnostic canonical kinds (claude assistant text -> Message,
-        // result -> TurnCompleted), monotonic seq, raw retained on each.
-        assert_eq!(events[0].kind, HarnessTurnEventKind::Message);
-        assert_eq!(events[0].seq, 0);
-        assert_eq!(events[0].text.as_deref(), Some("hi"));
-        assert!(!events[0].raw_provider_event.is_null());
-        assert_eq!(events[1].kind, HarnessTurnEventKind::TurnCompleted);
-        assert_eq!(events[1].seq, 1);
-        assert!(!events[1].raw_provider_event.is_null());
-    }
-
-    #[test]
-    fn historical_normalized_events_report_not_retained_for_pruned_trace() {
-        let store = temp_store("historical-normalized-pruned");
-        // Live-only run: row survives, jsonl_ref pruned -> not retained, no events.
-        store
-            .append_provider_session(&provider_session_with_ref("session-HP", None))
-            .expect("append live-only session");
-
-        let (retained, events, truncated) =
-            read_session_turn_events_normalized(&store, "session-HP").expect("read normalized");
-        assert!(
-            !retained,
-            "pruned --trace live run must report not retained"
-        );
-        assert!(
-            events.is_empty(),
-            "not-retained trace yields no normalized events"
-        );
-        assert!(!truncated);
-    }
-
-    #[test]
     fn workflow_run_transitions_running_to_failed_on_failed_required_step() {
         let store = temp_store("failed");
         let registry = workflow::WorkflowRegistry::builtin();
@@ -24634,7 +23988,6 @@ new file mode 100644
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok,
-                provider_session_id: ok.then(|| "s".to_string()),
                 output_summary: "mock".to_string(),
                 step_id: None,
                 started_at: None,
@@ -24980,8 +24333,11 @@ agent("a NEW second leaf that changes the ordinal alignment")
             team_run_id: "team-run-legacy".to_string(),
             member_run_id: "member-run-legacy".to_string(),
             task_id: None,
+            provider_call_id: None,
             action_type: "thinking".to_string(),
             status: MemberActionStatus::Succeeded,
+            provider_status: None,
+            semantic_status: None,
             title: "old reasoning".to_string(),
             summary: "must remain only in the legacy ledger".to_string(),
             evidence_refs: Vec::new(),
@@ -25025,7 +24381,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 run_id: run_id.clone(),
                 phase: spec.phase.clone(),
                 label: spec.label.clone(),
-                provider_session_id: None,
+                native_session: None,
                 status: WorkflowStepStatus::Running,
                 output_summary: None,
                 result: None,
@@ -25043,7 +24399,6 @@ agent("a NEW second leaf that changes the ordinal alignment")
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: true,
-                provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.label),
                 step_id: Some(step_id.clone()),
                 started_at: Some(started_at.clone()),
@@ -25113,6 +24468,27 @@ agent("a NEW second leaf that changes the ordinal alignment")
 mod tests {
     use super::*;
 
+    #[test]
+    fn provider_version_drift_requires_adapter_review() {
+        let mut current = team_member_provider_profile("codex");
+        apply_provider_version(&mut current, Some("0.145.0-alpha.18".to_string()));
+        assert_eq!(
+            current.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut drifted = team_member_provider_profile("codex");
+        apply_provider_version(&mut drifted, Some("0.146.0".to_string()));
+        assert_eq!(
+            drifted.compatibility_status,
+            ProviderCompatibilityStatus::ReviewRequired
+        );
+        assert!(drifted
+            .compatibility_note
+            .as_deref()
+            .is_some_and(|note| note.contains("regenerate protocol schemas")));
+    }
+
     fn make_member(id: &str) -> AgentMember {
         AgentMember {
             id: id.into(),
@@ -25135,6 +24511,7 @@ mod tests {
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
+            native_session: None,
             provider_thread_id: None,
             provider_agent_path: None,
             provider_agent_nickname: None,
@@ -25143,6 +24520,43 @@ mod tests {
             created_at: "unix-ms:1".into(),
             last_seen_at: None,
         }
+    }
+
+    fn append_test_delivery_attempt(
+        store: &HarnessStore,
+        agent_id: &str,
+        task_id: Option<&str>,
+        status: ProviderExecutionStatus,
+        thread_id: Option<&str>,
+        turn_id: Option<&str>,
+    ) {
+        store
+            .append_message(&Message {
+                id: generated_id("message"),
+                task_id: task_id.map(str::to_string),
+                from_agent_id: "lead-1".into(),
+                to_agent_id: Some(agent_id.into()),
+                channel: Some("assignment".into()),
+                kind: MessageKind::Assignment,
+                delivery_status: MessageDeliveryStatus::Acknowledged,
+                content: "test delivery".into(),
+                evidence_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                delivery: Some(MessageDelivery {
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(status),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
+                    provider_request_id: None,
+                    provider_thread_id: thread_id.map(str::to_string),
+                    provider_turn_id: turn_id.map(str::to_string),
+                    terminal_source: None,
+                    delivered_at: None,
+                    last_error: None,
+                }),
+                sender_kind: SenderKind::Agent,
+            })
+            .expect("append delivery attempt");
     }
 
     #[test]
@@ -25249,15 +24663,15 @@ mod tests {
     #[test]
     fn running_delivery_is_acknowledged_not_delivered() {
         assert_eq!(
-            message_status_for_delivery(&ProviderSessionStatus::Running),
+            message_status_for_delivery(&ProviderExecutionStatus::Running),
             MessageDeliveryStatus::Acknowledged
         );
         assert_eq!(
-            message_status_for_delivery(&ProviderSessionStatus::Succeeded),
+            message_status_for_delivery(&ProviderExecutionStatus::Succeeded),
             MessageDeliveryStatus::Delivered
         );
         assert_eq!(
-            message_status_for_delivery(&ProviderSessionStatus::Failed),
+            message_status_for_delivery(&ProviderExecutionStatus::Failed),
             MessageDeliveryStatus::Failed
         );
     }
@@ -25387,49 +24801,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_member_ingest_dispatches_to_claude_stub() {
-        // WP-3: Test claude stream-json ingest (replaces stub).
-        let root = std::env::temp_dir().join(format!(
-            "harness-cli-test-{}",
-            generated_id("claude-ingest")
-        ));
-        let store = HarnessStore::new(&root);
-        let mut member = make_member("claude-agent");
-        member.provider = "claude".into();
-        store.append_member(&member).expect("append member");
-        let source = root.join("provider-output.ndjson");
-        std::fs::create_dir_all(&root).expect("create root");
-        // Use Claude stream-json format (NDJSON).
-        std::fs::write(
-            &source,
-            r#"{"type": "system", "session_id": "sess_test_123"}
-{"type": "stream_event", "event": "text_delta"}
-{"type": "result", "session_id": "sess_test_123"}"#,
-        )
-        .expect("write provider output");
-
-        // WP-3: Real claude ingest parses stream-json and creates neutral AgentEvent/ProviderSession
-        ingest_provider_output(
-            &store,
-            "claude-agent",
-            None,
-            None,
-            &source.display().to_string(),
-        )
-        .expect("claude ingest dispatch should succeed");
-
-        // Verify neutral objects were created from the stream.
-        let events = store.events().expect("events");
-        assert!(
-            !events.is_empty(),
-            "claude ingest should create AgentEvent from stream"
-        );
-        assert_eq!(events.len(), 3, "should ingest 3 events from stream-json");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn unknown_provider_runtime_start_fails_fast() {
         let root = std::env::temp_dir().join(format!(
             "harness-cli-test-{}",
@@ -25450,201 +24821,6 @@ mod tests {
             message,
             "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi"
         );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn codex_member_ingest_stays_on_codex_path() {
-        // Regression guard: a codex member must still flow through the existing
-        // (regression-clean) codex parser and persist a codex-stamped event.
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("codex-ingest")));
-        let store = HarnessStore::new(&root);
-        let member = make_member("codex-agent");
-        assert_eq!(member.provider, "codex");
-        store.append_member(&member).expect("append member");
-        std::fs::create_dir_all(&root).expect("create root");
-        let source = root.join("provider-output.jsonl");
-        std::fs::write(
-            &source,
-            r#"{"method":"thread/started","params":{"threadId":"thread-1"}}"#,
-        )
-        .expect("write provider output");
-
-        ingest_provider_output(
-            &store,
-            "codex-agent",
-            None,
-            None,
-            &source.display().to_string(),
-        )
-        .expect("codex ingest must succeed via the codex dispatch branch");
-
-        let events = store.events().expect("events");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].provider, "codex");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn ingest_turn_completed_reconciles_running_delivery_session() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("reconcile")));
-        let store = HarnessStore::new(&root);
-        let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Running;
-        member.current_task_id = Some("task-1".into());
-        member.provider_runtime_id = Some("runtime-1".into());
-        store.append_member(&member).expect("append member");
-        store
-            .append_runtime(&AgentRuntime {
-                id: "runtime-1".into(),
-                agent_member_id: "agent-1".into(),
-                provider: "codex".into(),
-                status: AgentRuntimeStatus::Running,
-                pid: None,
-                control_endpoint: Some("unix://test.sock".into()),
-                command: "codex".into(),
-                args: Vec::new(),
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                last_event_at: Some("unix-ms:1".into()),
-                health: AgentRuntimeHealth {
-                    process_alive: true,
-                    socket_exists: true,
-                    protocol_probe: Some("pass".into()),
-                    delivery_probe: Some("pending: delivery accepted".into()),
-                    checked_at: Some("unix-ms:1".into()),
-                },
-            })
-            .expect("append runtime");
-        store
-            .append_message(&Message {
-                id: "message-1".into(),
-                task_id: Some("task-1".into()),
-                from_agent_id: "lead-1".into(),
-                to_agent_id: Some("agent-1".into()),
-                channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
-                content: "Do the task".into(),
-                evidence_ids: Vec::new(),
-                created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
-                    provider_session_id: Some("delivery-1".into()),
-                    provider_request_id: None,
-                    provider_thread_id: Some("thread-1".into()),
-                    provider_turn_id: Some("turn-1".into()),
-                    terminal_source: Some(MessageTerminalSource::Unknown),
-                    delivered_at: Some("unix-ms:1".into()),
-                    last_error: None,
-                }),
-                sender_kind: SenderKind::Agent,
-            })
-            .expect("append acknowledged assignment");
-        let evidence = Evidence {
-            id: "evidence-1".into(),
-            task_id: Some("task-1".into()),
-            source_type: "claude_delivery_session".into(),
-            source_ref: root.display().to_string(),
-            summary: "running delivery evidence".into(),
-            created_at: "unix-ms:1".into(),
-            evidence_kind: None,
-            goal_id: None,
-        };
-        store.append_evidence(&evidence).expect("append evidence");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: vec!["evidence-1".into()],
-            })
-            .expect("append running provider session");
-        let source = root.join("turn-completed.jsonl");
-        std::fs::write(
-            &source,
-            r#"{"method":"turn/completed","params":{"threadId":"thread-1","turnId":"turn-1"}}"#,
-        )
-        .expect("write provider event");
-
-        ingest_provider_output(
-            &store,
-            "agent-1",
-            Some("runtime-1"),
-            Some("task-1"),
-            &source.display().to_string(),
-        )
-        .expect("ingest provider output");
-
-        let sessions = store.provider_sessions().expect("provider sessions");
-        let latest = sessions
-            .iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("reconciled session");
-        assert_eq!(latest.status, ProviderSessionStatus::Succeeded);
-        assert_eq!(
-            latest.terminal_source,
-            Some(MessageTerminalSource::TurnCompleted)
-        );
-        assert_eq!(latest.exit_code, Some(0));
-        assert!(latest.ended_at.is_some());
-        let latest_member = latest_member(&store, "agent-1").expect("latest member");
-        assert_eq!(latest_member.status, AgentMemberStatus::Idle);
-        assert_eq!(latest_member.current_task_id, None);
-        let latest_runtime = latest_runtime(&store, "runtime-1")
-            .expect("runtime lookup")
-            .expect("latest runtime");
-        assert_eq!(
-            latest_runtime.health.delivery_probe.as_deref(),
-            Some("pass: turn_completed")
-        );
-        let latest_message = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(
-            latest_message.delivery_status,
-            MessageDeliveryStatus::Delivered
-        );
-        let delivery = latest_message.delivery.expect("message delivery");
-        assert_eq!(
-            delivery.terminal_source,
-            Some(MessageTerminalSource::TurnCompleted)
-        );
-        assert_eq!(delivery.last_error, None);
-        let reports: Vec<_> = store
-            .messages()
-            .expect("messages")
-            .into_iter()
-            .filter(|message| message.kind == MessageKind::Report)
-            .filter(|message| message.channel.as_deref() == Some("provider-report"))
-            .collect();
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].delivery.as_ref().is_some_and(|delivery| {
-            delivery.provider_session_id.as_deref() == Some("delivery-1")
-        }));
-        assert!(reports
-            .iter()
-            .any(|message| message.evidence_ids == vec!["evidence-1".to_string()]));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -25671,7 +24847,10 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
-                    provider_session_id: Some("delivery-1".into()),
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(ProviderExecutionStatus::Running),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
                     provider_turn_id: Some("turn-1".into()),
@@ -25682,34 +24861,7 @@ mod tests {
                 sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged message");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: None,
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: vec!["evidence-1".into()],
-            })
-            .expect("append running provider session");
-
-        reconcile_running_provider_sessions(
+        reconcile_running_delivery_attempts(
             &store,
             "agent-1",
             None,
@@ -25735,106 +24887,69 @@ mod tests {
                 message.kind == MessageKind::Report
                     && message.channel.as_deref() == Some("provider-report")
                     && message.delivery.as_ref().is_some_and(|delivery| {
-                        delivery.provider_session_id.as_deref() == Some("delivery-1")
+                        delivery.delivery_id.as_deref() == Some("delivery-1")
                     })
             })
             .expect("provider report");
         assert_eq!(report.task_id, None);
-        assert_eq!(report.evidence_ids, vec!["evidence-1".to_string()]);
+        assert!(report.evidence_ids.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn running_provider_session_blocks_more_delivery() {
+    fn running_delivery_attempt_blocks_more_delivery() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("block")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: vec!["evidence-1".into()],
-            })
-            .expect("append running provider session");
-
-        assert!(has_unresolved_provider_session(&store, "agent-1").expect("running check"));
-
-        mark_running_provider_sessions_terminal(
+        append_test_delivery_attempt(
             &store,
             "agent-1",
-            ProviderSessionStatus::Stale,
+            Some("task-1"),
+            ProviderExecutionStatus::Running,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
+
+        assert!(has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
+
+        mark_running_delivery_attempts_terminal(
+            &store,
+            "agent-1",
+            ProviderExecutionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )
         .expect("mark stale");
-        assert!(!has_unresolved_provider_session(&store, "agent-1").expect("running check"));
-        let sessions = store.provider_sessions().expect("provider sessions");
-        let latest = sessions
-            .iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("latest session");
-        assert_eq!(latest.status, ProviderSessionStatus::Stale);
+        assert!(!has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
+        let latest = latest_messages_in_append_order(&store)
+            .expect("messages")
+            .into_iter()
+            .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
+            .expect("latest delivery message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Failed);
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn stale_unknown_provider_session_blocks_more_delivery() {
+    fn stale_unknown_delivery_attempt_blocks_more_delivery() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("stale")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Stale,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append stale provider session");
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderExecutionStatus::Stale,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
 
-        assert!(has_unresolved_provider_session(&store, "agent-1").expect("running check"));
+        assert!(has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn stale_failed_provider_session_marks_message_failed_and_clears_member() {
+    fn stale_failed_delivery_attempt_marks_message_failed_and_clears_member() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("stale-failed")));
         let store = HarnessStore::new(&root);
@@ -25855,7 +24970,10 @@ mod tests {
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
                 delivery: Some(MessageDelivery {
-                    provider_session_id: Some("delivery-1".into()),
+                    delivery_id: Some("delivery-1".into()),
+                    execution_status: Some(ProviderExecutionStatus::Stale),
+                    native_session: None,
+                    started_at: Some("unix-ms:1".into()),
                     provider_request_id: None,
                     provider_thread_id: Some("thread-1".into()),
                     provider_turn_id: Some("turn-1".into()),
@@ -25866,42 +24984,15 @@ mod tests {
                 sender_kind: SenderKind::Agent,
             })
             .expect("append acknowledged message");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Stale,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append stale provider session");
-
-        mark_running_provider_sessions_terminal(
+        mark_running_delivery_attempts_terminal(
             &store,
             "agent-1",
-            ProviderSessionStatus::Stale,
+            ProviderExecutionStatus::Stale,
             Some(MessageTerminalSource::Failed),
         )
         .expect("mark stale failed");
 
-        assert!(!has_unresolved_provider_session(&store, "agent-1").expect("running check"));
+        assert!(!has_unresolved_delivery_attempt(&store, "agent-1").expect("running check"));
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
@@ -25921,32 +25012,14 @@ mod tests {
         store
             .append_member(&make_member("agent-1"))
             .expect("append member");
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append running provider session");
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderExecutionStatus::Running,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
 
         let result = deliver_agent_messages(
             &store,
@@ -25963,34 +25036,16 @@ mod tests {
     fn thread_idle_without_turn_id_reconciles_single_running_session() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("idle")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: Some("turn-1".into()),
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append running provider session");
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderExecutionStatus::Running,
+            Some("thread-1"),
+            Some("turn-1"),
+        );
 
-        reconcile_running_provider_sessions(
+        reconcile_running_delivery_attempts(
             &store,
             "agent-1",
             Some("task-1"),
@@ -26000,15 +25055,19 @@ mod tests {
         )
         .expect("thread idle should reconcile the active session");
 
-        let latest = store
-            .provider_sessions()
-            .expect("provider sessions")
+        let latest = latest_messages_in_append_order(&store)
+            .expect("messages")
             .into_iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("latest session");
-        assert_eq!(latest.status, ProviderSessionStatus::Succeeded);
-        assert_eq!(latest.provider_turn_id.as_deref(), Some("turn-1"));
+            .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
+            .expect("latest delivery message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(
+            latest
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.provider_turn_id.as_deref()),
+            Some("turn-1")
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -26046,34 +25105,16 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("turnless")));
         let store = HarnessStore::new(&root);
-        store
-            .append_provider_session(&ProviderSession {
-                id: "delivery-1".into(),
-                provider: "codex".into(),
-                agent_member_id: "agent-1".into(),
-                task_id: Some("task-1".into()),
-                workspace_ref: None,
-                provider_thread_id: Some("thread-1".into()),
-                provider_turn_id: None,
-                terminal_source: Some(MessageTerminalSource::Unknown),
-                status: ProviderSessionStatus::Running,
-                command: "harness".into(),
-                args: Vec::new(),
-                prompt_ref: None,
-                prompt_summary: None,
-                provider_session_ref: None,
-                stdout_ref: None,
-                jsonl_ref: None,
-                transcript_ref: None,
-                last_message_ref: None,
-                exit_code: None,
-                started_at: "unix-ms:1".into(),
-                ended_at: None,
-                evidence_ids: Vec::new(),
-            })
-            .expect("append running provider session");
+        append_test_delivery_attempt(
+            &store,
+            "agent-1",
+            Some("task-1"),
+            ProviderExecutionStatus::Running,
+            Some("thread-1"),
+            None,
+        );
 
-        reconcile_running_provider_sessions(
+        reconcile_running_delivery_attempts(
             &store,
             "agent-1",
             Some("task-1"),
@@ -26083,67 +25124,12 @@ mod tests {
         )
         .expect("reconcile session with missing stored turn id");
 
-        let latest = store
-            .provider_sessions()
-            .expect("provider sessions")
+        let latest = latest_messages_in_append_order(&store)
+            .expect("messages")
             .into_iter()
-            .rev()
-            .find(|session| session.id == "delivery-1")
-            .expect("latest session");
-        assert_eq!(latest.status, ProviderSessionStatus::Succeeded);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn dashboard_snapshot_uses_latest_provider_session_per_id() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("snapshot")));
-        let store = HarnessStore::new(&root);
-        let mut session = ProviderSession {
-            id: "delivery-1".into(),
-            provider: "codex".into(),
-            agent_member_id: "agent-1".into(),
-            task_id: Some("task-1".into()),
-            workspace_ref: None,
-            provider_thread_id: Some("thread-1".into()),
-            provider_turn_id: Some("turn-1".into()),
-            terminal_source: Some(MessageTerminalSource::Unknown),
-            status: ProviderSessionStatus::Running,
-            command: "harness".into(),
-            args: Vec::new(),
-            prompt_ref: None,
-            prompt_summary: None,
-            provider_session_ref: None,
-            stdout_ref: None,
-            jsonl_ref: None,
-            transcript_ref: None,
-            last_message_ref: None,
-            exit_code: None,
-            started_at: "unix-ms:1".into(),
-            ended_at: None,
-            evidence_ids: Vec::new(),
-        };
-        store
-            .append_provider_session(&session)
-            .expect("append running session");
-        session.status = ProviderSessionStatus::Succeeded;
-        session.terminal_source = Some(MessageTerminalSource::TurnCompleted);
-        session.ended_at = Some("unix-ms:2".into());
-        store
-            .append_provider_session(&session)
-            .expect("append succeeded session");
-
-        let snapshot = dashboard_snapshot(&store).expect("dashboard snapshot");
-        let sessions = snapshot
-            .get("provider_sessions")
-            .and_then(|value| value.as_array())
-            .expect("provider sessions");
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(
-            sessions[0].get("status").and_then(|value| value.as_str()),
-            Some("succeeded")
-        );
+            .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
+            .expect("latest delivery message");
+        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -26234,7 +25220,7 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_delivery_claims_and_finishes_provider_session() {
+    fn dry_run_delivery_claims_and_finishes_delivery_attempt() {
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("dry-claim")));
         let store = HarnessStore::new(&root);
@@ -26267,20 +25253,20 @@ mod tests {
         let latest = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
         let delivery = latest.delivery.expect("delivery");
-        let session_id = delivery
-            .provider_session_id
-            .expect("claimed provider session id");
+        assert!(delivery.delivery_id.is_some());
+        assert_eq!(
+            delivery.execution_status,
+            Some(ProviderExecutionStatus::Succeeded)
+        );
         assert_eq!(
             delivery.terminal_source,
             Some(MessageTerminalSource::DryRun)
         );
 
-        let session = latest_provider_session(&store, &session_id)
-            .expect("session lookup")
-            .expect("provider session");
-        assert_eq!(session.status, ProviderSessionStatus::Succeeded);
-        assert_eq!(session.terminal_source, Some(MessageTerminalSource::DryRun));
-        assert!(!session.evidence_ids.is_empty());
+        assert!(
+            !store.root().join("provider_sessions.jsonl").exists(),
+            "delivery coordination must not create a Harness provider-session mirror"
+        );
 
         let reports: Vec<_> = store
             .messages()
@@ -26289,7 +25275,7 @@ mod tests {
             .filter(|message| message.kind == MessageKind::Report)
             .collect();
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].evidence_ids, session.evidence_ids);
+        assert!(!reports[0].evidence_ids.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -26335,13 +25321,9 @@ mod tests {
             MessageDeliveryStatus::Queued
         );
         assert!(latest_message.delivery.is_none());
-        let latest_session = latest_provider_session(&store, "delivery-1")
-            .expect("session lookup")
-            .expect("session");
-        assert_eq!(latest_session.status, ProviderSessionStatus::Canceled);
-        assert_eq!(
-            latest_session.terminal_source,
-            Some(MessageTerminalSource::Failed)
+        assert!(
+            !store.root().join("provider_sessions.jsonl").exists(),
+            "retrying a delivery attempt must not create a provider-session mirror"
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -26372,13 +25354,13 @@ mod tests {
         claim_message_for_delivery(&store, &member, None, &message, "delivery-1")
             .expect("claim")
             .expect("claimed message");
-        let mut old_session = latest_provider_session(&store, "delivery-1")
-            .expect("session lookup")
-            .expect("session");
-        old_session.started_at = "unix-ms:1".into();
-        store
-            .append_provider_session(&old_session)
-            .expect("append old session");
+        let mut old_claim = latest_message(&store, "message-1").expect("claimed message");
+        old_claim
+            .delivery
+            .as_mut()
+            .expect("delivery attempt")
+            .started_at = Some("unix-ms:1".into());
+        store.append_message(&old_claim).expect("append old claim");
 
         let result = provider_gateway_tick_value(
             &store,
@@ -26397,10 +25379,7 @@ mod tests {
             latest_message.delivery_status,
             MessageDeliveryStatus::Failed
         );
-        let sessions = latest_provider_sessions_in_append_order(&store).expect("sessions");
-        assert!(sessions.iter().any(|session| {
-            session.id == "delivery-1" && session.status == ProviderSessionStatus::Canceled
-        }));
+        assert!(!store.root().join("provider_sessions.jsonl").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -26453,7 +25432,7 @@ mod tests {
             assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
             assert!(latest
                 .delivery
-                .and_then(|delivery| delivery.provider_session_id)
+                .and_then(|delivery| delivery.delivery_id)
                 .is_some());
         }
 
@@ -26494,7 +25473,7 @@ mod tests {
         let latest = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
         assert!(latest.delivery.is_none());
-        assert!(store.provider_sessions().expect("sessions").is_empty());
+        assert!(!store.root().join("provider_sessions.jsonl").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -26541,7 +25520,7 @@ mod tests {
         let body = serde_json::json!({
             "name": "Platform Squad",
             "description": "Owns the dashboard",
-            "owner": "lead-1",
+            "lead_agent_id": "lead-1",
             "member": ["worker-1", "worker-2"]
         });
 
@@ -26714,6 +25693,159 @@ mod sse_tests {
     }
 
     #[test]
+    fn codex_team_sandbox_uses_temporary_full_access_policy() {
+        assert_eq!(codex_team_sandbox(), "danger-full-access");
+        assert_eq!(claude_team_permission_mode(), "bypassPermissions");
+    }
+
+    #[test]
+    fn member_spawn_cwd_keeps_execution_root_separate_from_store_root() {
+        let project_root = std::env::temp_dir().join(generated_id("team-project"));
+        let store_root = std::env::temp_dir().join(generated_id("team-store"));
+        let execution_root = std::env::temp_dir().join(generated_id("team-execution"));
+        let worktree_root = std::env::temp_dir().join(generated_id("team-worktree"));
+        let context = ProjectContext {
+            id: "team-project".into(),
+            project_root: project_root.clone(),
+            store_root: store_root.clone(),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        let mut member = MemberRun {
+            id: "member-cwd".into(),
+            team_run_id: "team-cwd".into(),
+            slot_id: None,
+            name: "RuntimeFixer".into(),
+            role: "implementer".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_profile: None,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: now_string(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        let run = AgentTeamRun {
+            id: "team-cwd".into(),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            host_surface: "test".into(),
+            host_thread_id: None,
+            objective: "test cwd precedence".into(),
+            execution_root: Some(execution_root.display().to_string()),
+            status: TeamRunStatus::Planning,
+            member_run_ids: vec![member.id.clone()],
+            budget_limit_usd: None,
+            created_at: now_string(),
+            updated_at: now_string(),
+            completed_at: None,
+        };
+
+        assert_eq!(
+            member_spawn_cwd(Some(&context), &run, &member),
+            execution_root
+        );
+        assert_ne!(member_spawn_cwd(Some(&context), &run, &member), store_root);
+        member.worktree_ref = Some(worktree_root.display().to_string());
+        assert_eq!(
+            member_spawn_cwd(Some(&context), &run, &member),
+            worktree_root
+        );
+    }
+
+    #[test]
+    fn workspace_override_accepts_external_same_repo_worktree_and_rejects_unrelated_dir() {
+        let base = std::env::temp_dir().join(generated_id("workspace-contract"));
+        let project_root = base.join("project");
+        let external_worktree = base.join("external-codex-worktree");
+        let unrelated = base.join("unrelated");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        std::fs::create_dir_all(&unrelated).expect("unrelated root");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .output()
+                .expect("run git fixture command");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", project_root.to_str().expect("project path")]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "config",
+            "user.email",
+            "workspace-test@example.invalid",
+        ]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "config",
+            "user.name",
+            "Workspace Test",
+        ]);
+        std::fs::write(project_root.join("README.md"), "workspace fixture\n").expect("seed");
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "add",
+            ".",
+        ]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "commit",
+            "-m",
+            "seed",
+        ]);
+        git(&[
+            "-C",
+            project_root.to_str().expect("project path"),
+            "worktree",
+            "add",
+            "-b",
+            "workspace-contract-test",
+            external_worktree.to_str().expect("worktree path"),
+        ]);
+        let context = ProjectContext {
+            id: "workspace-contract".into(),
+            project_root: project_root.clone(),
+            store_root: base.join("central-store"),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        assert_eq!(
+            validate_workspace_override(
+                Some(&context),
+                external_worktree.to_str().expect("worktree path"),
+                "execution_root",
+            )
+            .expect("external same-repository worktree"),
+            project::canonicalize_best_effort(&external_worktree)
+                .display()
+                .to_string()
+        );
+        assert!(validate_workspace_override(
+            Some(&context),
+            unrelated.to_str().expect("unrelated path"),
+            "execution_root",
+        )
+        .is_err());
+        std::fs::remove_dir_all(&base).expect("cleanup workspace fixture");
+    }
+
+    #[test]
     fn test_sse_manager_multiple_subscribers() {
         let manager = sse::SseManager::new();
         let rx1 = manager.subscribe("_test");
@@ -26777,12 +25909,8 @@ mod sse_tests {
                 default_store: serve_store.clone(),
             };
             let watcher_projects = projects.clone();
-            sse::start_sse_watcher(
-                move || watcher_projects.watch_map(),
-                |_root| Box::new(|_: &str, _: &serde_json::Value| Vec::new()) as sse::Normalizer,
-                sse_manager.clone(),
-            )
-            .expect("watcher");
+            sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
+                .expect("watcher");
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let conn_projects = projects.clone();
@@ -26957,7 +26085,7 @@ invalid json line
 
     // Stage 1: Status inference tests
     #[test]
-    fn test_infer_provider_session_status_succeeded() {
+    fn test_infer_provider_execution_status_succeeded() {
         let events = vec![
             CodexExecEvent {
                 event_type: "tool_call".into(),
@@ -26969,12 +26097,12 @@ invalid json line
             },
         ];
 
-        let status = infer_provider_session_status(&events, true);
-        assert_eq!(status, ProviderSessionStatus::Succeeded);
+        let status = infer_provider_execution_status(&events, true);
+        assert_eq!(status, ProviderExecutionStatus::Succeeded);
     }
 
     #[test]
-    fn test_infer_provider_session_status_succeeded_real_codex_stream() {
+    fn test_infer_provider_execution_status_succeeded_real_codex_stream() {
         // Mirrors a real codex 0.13x exec --json stream.
         let events = vec![
             CodexExecEvent {
@@ -27002,8 +26130,8 @@ invalid json line
         ];
 
         assert_eq!(
-            infer_provider_session_status(&events, true),
-            ProviderSessionStatus::Succeeded
+            infer_provider_execution_status(&events, true),
+            ProviderExecutionStatus::Succeeded
         );
         assert_eq!(
             extract_thread_id_from_exec_events(&events).as_deref(),
@@ -27012,41 +26140,41 @@ invalid json line
     }
 
     #[test]
-    fn test_infer_provider_session_status_failed_exit() {
+    fn test_infer_provider_execution_status_failed_exit() {
         let events = vec![CodexExecEvent {
             event_type: "tool_call".into(),
             payload: serde_json::json!({}),
         }];
 
-        let status = infer_provider_session_status(&events, false);
-        assert_eq!(status, ProviderSessionStatus::Failed);
+        let status = infer_provider_execution_status(&events, false);
+        assert_eq!(status, ProviderExecutionStatus::Failed);
     }
 
     #[test]
-    fn test_infer_provider_session_status_stale() {
+    fn test_infer_provider_execution_status_stale() {
         let events = vec![CodexExecEvent {
             event_type: "tool_call".into(),
             payload: serde_json::json!({}),
         }];
 
-        let status = infer_provider_session_status(&events, true);
-        assert_eq!(status, ProviderSessionStatus::Stale);
+        let status = infer_provider_execution_status(&events, true);
+        assert_eq!(status, ProviderExecutionStatus::Stale);
     }
 
     #[test]
-    fn test_infer_provider_session_status_no_events_and_failed() {
+    fn test_infer_provider_execution_status_no_events_and_failed() {
         let events = vec![];
 
-        let status = infer_provider_session_status(&events, false);
-        assert_eq!(status, ProviderSessionStatus::Failed);
+        let status = infer_provider_execution_status(&events, false);
+        assert_eq!(status, ProviderExecutionStatus::Failed);
     }
 
     #[test]
-    fn test_infer_provider_session_status_empty_success() {
+    fn test_infer_provider_execution_status_empty_success() {
         let events = vec![];
 
-        let status = infer_provider_session_status(&events, true);
-        assert_eq!(status, ProviderSessionStatus::Failed);
+        let status = infer_provider_execution_status(&events, true);
+        assert_eq!(status, ProviderExecutionStatus::Failed);
     }
 
     // Stage 3: Delivery selector tests

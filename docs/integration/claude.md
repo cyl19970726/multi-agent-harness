@@ -2,8 +2,8 @@
 
 本文档定义 Star Harness 如何集成 Claude Code。重点是把 Claude 变成
 harness 里的持久 `AgentMember` provider：可以创建、投递消息、观察状态、回收
-运行时，并把执行过程转成 harness 的 `AgentEvent`、`Proposal`、`Evidence`、
-`Message` 和 `Decision`。
+运行时，并将 Claude 原生 session 作为 transcript、tool activity 与 resume
+真相；Harness 只保存 binding、协调、显式 outcome 和 artifact/check refs。
 
 Provider-neutral runtime contracts live in [../agent-runtime.md](../agent-runtime.md).
 This file should explain only how Claude implements those contracts. Shared
@@ -19,10 +19,19 @@ AgentMember(provider=claude)
   -> AgentRuntime(claude CLI, request-response shape, one spawned per delivery)
   -> provider session
   -> Message delivery through claude CLI with injected harness context
-  -> claude agent output parsing
-  -> harness store and Agent Dashboard
+  -> Claude native session (execution truth and resume)
+  -> ephemeral output projection + Harness coordination store
+  -> Agent Dashboard joined view
   -> optional Claude Code plugin packaging after contracts stabilize
 ```
+
+Agent Team 也使用同一原生真相边界：`provider=claude` 默认
+`execution_mode=claude_cli`。adapter 以内存方式消费
+`claude -p --output-format stream-json --verbose`，从 `system(init)` 绑定真实
+session id；显式重试通过 `resume_native_session_id` 调用 `--resume`。工具、
+命令、文件活动与对话不写入 `MemberAction`，Member 详情页通过
+`GET /v1/member-runs/{id}/native-activity` 读取 Claude 自己的 project JSONL。
+thinking 在 reader 层直接丢弃。
 
 也就是说：
 
@@ -30,7 +39,8 @@ AgentMember(provider=claude)
   resident 模式（`HARNESS_CLAUDE_RESIDENT=1`，ADR-0021）可把
   `claude --input-format stream-json` 进程保持常驻、逐 turn 喂 stdin frame；
 - 每次消息投递会通过 harness 的消息上下文生成 Claude 输入 prompt；
-- Claude 执行输出被解析为 harness 的事件、提议、证据、决策；
+- Claude 执行输出由 adapter 临时解析；只有显式 handoff、outcome、artifact /
+  check ref、PendingInteraction 与控制确认进入 Harness；
 - 子代理（native Claude subagents via threads）自动成为 child threads，
   而非升级为新 members；
 - fallback 和 CI/review helper 与 Codex 类似但使用 claude API；
@@ -77,7 +87,7 @@ AgentRuntime
 
 ```text
 endpoint: runtime directory exists + last_session within acceptable time
-session: most recent ProviderSession exists + has terminal event
+session: NativeSessionRef resolves and native terminal state is readable
 delivery: latest message delivery has proof of receipt from Claude
 ```
 
@@ -101,21 +111,16 @@ claude -p "{harness_message_envelope}" --output-format stream-json --verbose \
   [--add-dir {root}]
 ```
 
-Claude 执行后返回：
-- 新的 `ProviderSession` 记录（row id = delivery id；真实 session id 记入
-  `provider_thread_id`，供下次 `--resume`）
-- `AgentEvent` 流（system/init、assistant/user、stream_event、result）
-- 可选的 `ProviderChildThread` 产生（subagents）
-- `Message` 回复（harness 解析 stdout：优先 `result.result`，回退拼接
-  assistant text blocks）
-- `Evidence` / `Proposal` / `Decision` graduation（从 claude output）
+Claude 执行后由 adapter 绑定真实 session id，供原生 `--resume` 使用，并
+提供临时 activity projection。只有明确的跨 actor 消息、结果摘要、artifact /
+check 引用或治理动作会被提升为 Harness 记录。
 
 ## Event Sources
 
 Claude 产生的事件通过以下源进来：
 
-1. **Claude stdout stream-json (NDJSON)** — 直接解析
-   `claude -p --output-format stream-json --verbose` 输出，转成 `AgentEvent`
+1. **Claude native session / stdout stream-json** — 通过 provider adapter
+   读取并在内存中归一化；不复制成 Harness execution ledger
    - `system`（subtype `init`）：新会话打开，携带 `session_id`（resume 用）
    - `assistant` / `user`：消息帧（content blocks：text/tool_use/tool_result）
    - `stream_event`：细粒度增量事件（按 subtype 归约）
@@ -123,27 +128,24 @@ Claude 产生的事件通过以下源进来：
      schema-validated `structured_output`
    - native subagents（Task tool）出现在转录帧里，不是独立事件类型
 
-2. **ProviderSession record** — harness-store 记录的会话
+2. **NativeSessionRef（implemented）** — Harness 记录的 mode-aware 引用
    - provider = "claude"
    - provider_thread_id：从 `system(init)` 帧解析的真实 session id
      （下一次 delivery 用 `--resume` 延续）
-   - terminal_source：turn_completed（成功）/ failed
-   - jsonl_ref：`claude.stream-json.ndjson`
+   - availability / provider version / adapter contract / resume capability
 
-3. **Evidence ingest** — Claude delivery session 的实证
-   - source_type = "claude_delivery_session"
-   - source_ref = "provider-session:{session_id}"
-   - summary：delivery 摘要（session、message、事件数）
+3. **Explicit promotion** — Harness 只保存 assignment、handoff、outcome、
+   artifact/check refs、PendingInteraction 与控制确认；完整 session 留在 Claude。
 
-## Reducer Mapping
+## Runtime Mapping
 
-Claude 事件 → harness objects（`ingest_claude_stream_json` reducer）：
+Claude 事件在进程内归约，不写第二份 provider history：
 
 ```text
 (provider = "claude")
-  system(init)   → ProviderSession { provider_thread_id = session_id } + AgentEvent { stream_system_init }
-  stream_event   → AgentEvent { event_type = subtype }
-  result         → AgentEvent { stream_result }；status = Succeeded（无 error）/ Failed
+  system(init)   → NativeSessionRef.native_session_id
+  stream_event   → transient NativeActivityProjection
+  result         → explicit delivery outcome；status = Succeeded（无 error）/ Failed
   无 result 帧    → status = Stale（有事件）/ Failed（空输出或进程失败）
   assistant text → DeliveryOutcome.summary（report 内容）+ Evidence
 ```
@@ -185,18 +187,16 @@ mapping 在 CLI 层）。
 
 ## Workspace Model
 
-Claude 和 Codex 都假设一个隔离的工作目录：
+Claude 和 Codex 都假设一个隔离的工作目录。Harness 仅保留短生命周期的
+进程传输目录，归约出 outcome 后删除：
 
 ```text
-{harness_root}/runtimes/{member_id}/       # runtime 目录标记（无持久 pid）
-
-{harness_root}/provider-sessions/{delivery_id}/
-  claude.stream-json.ndjson  # 该次 delivery 的完整 NDJSON 流（jsonl_ref）
-  claude.stderr              # 仅当 stderr 非空时写入
+{harness_root}/runtimes/{member_id}/       # runtime 目录标记
+{harness_root}/runtimes/deliveries/{delivery_id}/  # ephemeral transport
 ```
 
 会话延续通过 `--resume`：delivery 从 `system(init)` 帧解析真实 session id，
-记入 `ProviderSession.provider_thread_id`；下一次对同一 member 的 delivery
+目标写入 `NativeSessionRef`；下一次对同一 member 的 delivery
 用 `--resume <session_id>` 延续同一对话（记忆跨 delivery 保留）。worker cwd
 取 member.worktree_ref → project root → process cwd（Claude 从 cwd 发现
 CLAUDE.md / .claude/）。

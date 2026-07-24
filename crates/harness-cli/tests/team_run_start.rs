@@ -144,6 +144,26 @@ fn team_run_start_completes_kimi_members() {
         "summary line: {stdout}"
     );
 
+    let expected_cwd = std::fs::canonicalize(home.base().join("alpha"))
+        .expect("canonical project cwd")
+        .display()
+        .to_string();
+    let runs = store_rows(&home, &project_id, "team_runs.jsonl");
+    assert_eq!(
+        runs[0]["execution_root"].as_str(),
+        Some(expected_cwd.as_str())
+    );
+    let store_root = home
+        .projects_dir()
+        .join(&project_id)
+        .to_string_lossy()
+        .to_string();
+    assert_ne!(
+        runs[0]["execution_root"].as_str(),
+        Some(store_root.as_str()),
+        "provider execution root must never be the centralized store root"
+    );
+
     // Member runs: terminal completed, ACP session id written back, finished.
     let members = store_rows(&home, &project_id, "member_runs.jsonl");
     assert_eq!(members.len(), 2, "members: {members:?}");
@@ -153,9 +173,9 @@ fn team_run_start_completes_kimi_members() {
             Some("completed"),
             "member: {member:?}"
         );
-        let session = member["acp_session_id"]
+        let session = member["native_session"]["native_session_id"]
             .as_str()
-            .unwrap_or_else(|| panic!("acp_session_id written: {member:?}"));
+            .unwrap_or_else(|| panic!("native session written: {member:?}"));
         assert!(
             session.starts_with("session_fake_"),
             "shim session id: {session}"
@@ -168,6 +188,25 @@ fn team_run_start_completes_kimi_members() {
             member["last_event_at"].is_string(),
             "last_event_at set: {member:?}"
         );
+        assert_eq!(
+            member["workspace_snapshot"]["cwd"].as_str(),
+            Some(expected_cwd.as_str()),
+            "actual spawn cwd is durably snapshotted"
+        );
+        assert!(member["workspace_snapshot"]["instruction_roots"].is_array());
+        assert!(member["workspace_snapshot"]["skill_roots"].is_array());
+        for prohibited in [
+            "config_contents",
+            "credentials",
+            "provider_transcript",
+            "tool_stream",
+            "thinking",
+        ] {
+            assert!(
+                member["workspace_snapshot"].get(prohibited).is_none(),
+                "snapshot must not persist {prohibited}: {member:?}"
+            );
+        }
     }
 
     // Messages: the two assignments are delivered, and each member handed off
@@ -209,8 +248,8 @@ fn team_run_start_completes_kimi_members() {
         assert!(body.contains("## RESULT"), "handoff carries report: {body}");
     }
 
-    // Actions: per member a tool_started + tool_completed + completed, plus
-    // throttled progress. Provider reasoning is deliberately not durable.
+    // Harness keeps only the explicit round outcome. Provider progress, tool
+    // activity, command details, and reasoning remain in Kimi's native session.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     for member_id in &member_ids {
         let of_member: Vec<&str> = actions
@@ -218,15 +257,10 @@ fn team_run_start_completes_kimi_members() {
             .filter(|a| a["member_run_id"].as_str() == Some(member_id))
             .filter_map(|a| a["action_type"].as_str())
             .collect();
-        for expected in ["progress", "tool_started", "tool_completed", "completed"] {
-            assert!(
-                of_member.contains(&expected),
-                "member {member_id} missing action {expected}: {of_member:?}"
-            );
-        }
-        assert!(
-            !of_member.contains(&"thinking"),
-            "member {member_id} persisted thinking: {of_member:?}"
+        assert_eq!(
+            of_member,
+            vec!["completed"],
+            "coordination-only actions: {of_member:?}"
         );
     }
     assert!(
@@ -257,6 +291,219 @@ fn team_run_start_completes_kimi_members() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["status"].as_str(), Some("completed"));
     assert!(runs[0]["completed_at"].is_string(), "run: {:?}", runs[0]);
+}
+
+#[test]
+fn kimi_member_explicitly_resumes_provider_native_session() {
+    let home = TempHome::new("team-run-kimi-native-resume");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Continue provider-owned work",
+            "--member",
+            "worker:implementer:kimi/acp:k2.5",
+            "--resume-member",
+            "worker:session_prior_native",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(out.status.success(), "resume start failed: {out:?}");
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    let member = members
+        .iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .unwrap();
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        "session_prior_native"
+    );
+    assert_eq!(
+        member["native_session"]["parent_native_session_id"],
+        "session_prior_native"
+    );
+    assert_eq!(member["native_session"]["availability"], "available");
+    assert_eq!(member["native_session"]["supports_resume"], true);
+}
+
+#[test]
+fn claude_member_uses_native_session_without_provider_activity_mirror() {
+    let home = TempHome::new("team-run-claude-native");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_claude_team_shim(&home.base().join("fakebin-claude-team"));
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Review native session contract",
+            "--member",
+            "reviewer:reviewer:claude/cli",
+            "--resume-member",
+            "reviewer:session_prior_claude",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(out.status.success(), "Claude start failed: {out:?}");
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    let member = members
+        .iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .unwrap();
+    assert_eq!(member["status"], "completed");
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        "session_prior_claude"
+    );
+    assert_eq!(
+        member["native_session"]["parent_native_session_id"],
+        "session_prior_claude"
+    );
+    assert_eq!(
+        member["native_session"]["native_locator_kind"],
+        "claude_project_session"
+    );
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let member_actions: Vec<_> = actions
+        .iter()
+        .filter(|action| action["member_run_id"] == member["id"])
+        .collect();
+    assert_eq!(
+        member_actions.len(),
+        1,
+        "only explicit outcome is durable: {member_actions:?}"
+    );
+    assert_eq!(member_actions[0]["action_type"], "completed");
+    let store_root = home.projects_dir().join(&project_id);
+    for entry in std::fs::read_dir(store_root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("hidden claude reasoning"));
+            assert!(!text.contains("provider-owned output"));
+        }
+    }
+}
+
+#[test]
+fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stream() {
+    let home = TempHome::new("team-run-claude-native-failure");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_claude_failure_shim(
+        &home.base().join("fakebin-claude-team-failure"),
+    );
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Prove failed native session binding",
+            "--member",
+            "reviewer:reviewer:claude/cli",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let out = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "failure is journaled, not a CLI crash: {out:?}"
+    );
+
+    let members = store_rows(&home, &project_id, "member_runs.jsonl");
+    let member = members
+        .iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .unwrap();
+    assert_eq!(member["status"], "failed");
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        "session_fake_claude_failed"
+    );
+    assert_eq!(member["native_session"]["availability"], "available");
+
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let failure = actions
+        .iter()
+        .find(|action| action["member_run_id"] == member["id"])
+        .expect("failure action");
+    assert_eq!(failure["action_type"], "error");
+    assert!(
+        failure["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("401 Invalid authentication credentials")),
+        "provider failure is explicit: {failure:?}"
+    );
+    assert_eq!(
+        store_rows(&home, &project_id, "team_runs.jsonl")[0]["status"],
+        "reviewing"
+    );
+    assert!(!home
+        .projects_dir()
+        .join(&project_id)
+        .join("provider_sessions.jsonl")
+        .exists());
 }
 
 #[test]
@@ -360,7 +607,11 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         .expect("codex member");
     assert_eq!(codex["model"].as_str(), Some("gpt-5.6"));
     assert_eq!(
-        codex["acp_session_id"].as_str(),
+        codex["provider_profile"]["execution_mode"].as_str(),
+        Some("codex_exec")
+    );
+    assert_eq!(
+        codex["native_session"]["native_session_id"].as_str(),
         Some("thread_fake_codex_team")
     );
     let kimi = members
@@ -368,6 +619,18 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         .find(|member| member["provider"].as_str() == Some("kimi"))
         .expect("kimi member");
     assert_eq!(kimi["model"].as_str(), Some("k2.5"));
+    assert_eq!(
+        kimi["provider_profile"]["execution_mode"].as_str(),
+        Some("kimi_acp")
+    );
+    assert_eq!(
+        kimi["provider_profile"]["interaction_mode"].as_str(),
+        Some("pause_and_resume")
+    );
+    assert_eq!(
+        kimi["provider_profile"]["provider_version"].as_str(),
+        Some("0.0.0")
+    );
 
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
     let handoffs: Vec<_> = messages
@@ -393,6 +656,259 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
             path.display()
         );
     }
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(
+        actions.iter().all(|action| {
+            action["provider_call_id"].is_null()
+                && action["provider_status"].is_null()
+                && action["semantic_status"].is_null()
+                && matches!(
+                    action["action_type"].as_str(),
+                    Some("completed" | "blocked" | "error")
+                )
+        }),
+        "provider activity must remain native while explicit outcomes stay durable: {actions:?}"
+    );
+    for member in [codex, kimi] {
+        assert!(member["native_session"]["native_session_id"].is_string());
+        assert_eq!(member["native_session"]["availability"], "available");
+    }
+}
+
+#[test]
+fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
+    let home = TempHome::new("team-run-kimi-question");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let create = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Ask the Lead once",
+            "--member",
+            "kimi-worker:implementer:kimi:k2.5",
+        ],
+    );
+    assert!(
+        create.status.success(),
+        "create: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_ASK", "1")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .spawn()
+        .expect("spawn team run");
+
+    let interaction_path = home
+        .projects_dir()
+        .join(&project_id)
+        .join("pending_interactions.jsonl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !interaction_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        interaction_path.exists(),
+        "Kimi request must create a pending interaction"
+    );
+    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    let pending = interactions.first().expect("pending interaction");
+    assert_eq!(pending["kind"].as_str(), Some("question"));
+    assert_eq!(pending["route"].as_str(), Some("lead"));
+    assert_eq!(pending["status"].as_str(), Some("pending"));
+    let interaction_id = pending["id"].as_str().expect("interaction id");
+
+    let unauthorized = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "resolve-interaction",
+            "--id",
+            &run_id,
+            "--interaction-id",
+            interaction_id,
+            "--option-id",
+            "q0_opt_0",
+            "--resolved-by",
+            "operator",
+        ],
+    );
+    assert!(
+        !unauthorized.status.success(),
+        "operator must not impersonate Lead"
+    );
+    assert!(
+        String::from_utf8_lossy(&unauthorized.stderr).contains("requires lead authority"),
+        "unauthorized error: {}",
+        String::from_utf8_lossy(&unauthorized.stderr)
+    );
+
+    let resolve = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "resolve-interaction",
+            "--id",
+            &run_id,
+            "--interaction-id",
+            interaction_id,
+            "--option-id",
+            "q0_opt_0",
+            "--resolved-by",
+            "lead",
+        ],
+    );
+    assert!(
+        resolve.status.success(),
+        "resolve: {}",
+        String::from_utf8_lossy(&resolve.stderr)
+    );
+    let output = child.wait_with_output().expect("wait team run");
+    assert!(
+        output.status.success(),
+        "start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert_eq!(interactions[0]["status"].as_str(), Some("answered"));
+    assert_eq!(
+        interactions[0]["response_option_id"].as_str(),
+        Some("q0_opt_0")
+    );
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(
+        actions.iter().any(|action| {
+            action["action_type"].as_str() == Some("interaction_resolved")
+                && action["summary"].as_str().is_some_and(|value| value.contains("answered"))
+                && action["provider_call_id"].is_null()
+        }),
+        "PendingInteraction is authoritative; MemberAction records only the coordination resolution: {actions:?}"
+    );
+}
+
+#[test]
+fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
+    let home = TempHome::new("team-run-kimi-policy-interaction");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let create = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Request governed tool permission",
+            "--member",
+            "kimi-worker:implementer:kimi:k2.5",
+        ],
+    );
+    assert!(create.status.success(), "create failed: {create:?}");
+    let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_ASK", "approval")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .spawn()
+        .expect("spawn team run");
+
+    let output = child.wait_with_output().expect("wait team run");
+    assert!(output.status.success(), "start failed: {output:?}");
+
+    let interaction_log = std::fs::read_to_string(
+        home.projects_dir()
+            .join(&project_id)
+            .join("pending_interactions.jsonl"),
+    )
+    .expect("read interaction log");
+    assert_eq!(
+        interaction_log.lines().count(),
+        2,
+        "request and policy resolution are append-only evidence"
+    );
+    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert_eq!(interactions.len(), 1, "latest-wins interaction projection");
+    assert_eq!(interactions[0]["kind"].as_str(), Some("tool_approval"));
+    assert_eq!(interactions[0]["route"].as_str(), Some("policy"));
+    assert_eq!(interactions[0]["status"].as_str(), Some("approved"));
+    assert_eq!(interactions[0]["resolved_by"].as_str(), Some("policy"));
+    assert_eq!(
+        interactions[0]["response_option_id"].as_str(),
+        Some("tool_allow_once")
+    );
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(actions.iter().any(|action| {
+        action["action_type"].as_str() == Some("interaction_resolved")
+            && action["summary"]
+                .as_str()
+                .is_some_and(|value| value.contains("approved"))
+            && action["provider_call_id"].is_null()
+    }));
+    let events = store_rows(&home, &project_id, "team_run_events.jsonl");
+    assert!(events.iter().any(|event| {
+        event["entity_type"].as_str() == Some("pending_interaction")
+            && event["operation"].as_str() == Some("resolved")
+            && event["summary"]
+                .as_str()
+                .is_some_and(|value| value.contains("auto-approved"))
+    }));
 }
 
 #[test]

@@ -7,16 +7,16 @@ outputs, adapters, and the Agent Dashboard.
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent, desired outcome, ordered Wave membership, and closeout |
-| `Wave` | One lightweight ordered objective, executor attempts, outcome/artifacts, and gate |
-| `AgentTeamRun` | One `agent_team` attempt linked to a Mission/Wave |
+| `Mission` | Durable intent/context, linked Agent Teams, ordered Waves, and closeout |
+| `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
+| `AgentTeamRun` | One standalone or Mission-scoped use of an independent Agent Team |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
-| `TeamMessage` | Assignment, correlation/causation, handoff, review, and delivery state |
-| `MemberAction` | Explicit durable work facts; never provider thinking |
+| `TeamMessage` | Assignment, correlation/causation, optional origin Wave, handoff, review, and delivery state |
+| `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
-Dynamic Workflow and Host execution retain their distinct executor-specific
+Dynamic Workflow and Host execution retain their distinct execution-specific
 objects. Existing Goal/Task/Evidence/Proposal/Decision schemas remain supported
 for compatibility and optional stricter governance; they are not required
 inside a native Wave.
@@ -28,7 +28,7 @@ inside a native Wave.
 | Concept | Current maturity | Gateable now |
 | --- | --- | --- |
 | `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
-| `Wave` | Rust + JSON schema + JSONL store + Agent Team attempts/gate | yes for `agent_team`; other executors pending |
+| `Wave` | Rust + JSON schema + JSONL revisions + Host update/advance | yes |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Goal` | Rust + JSON schema | yes |
 | `AgentTeam` | Rust + JSON schema | yes |
@@ -41,7 +41,6 @@ inside a native Wave.
 | `Proposal` | Rust + JSON schema | yes |
 | `Evidence` | Rust + JSON schema | yes |
 | `Decision` | Rust + JSON schema | yes |
-| `ProviderSession` | Rust + JSON schema | yes |
 | `ToolDescriptor` | JSON schema + example descriptor | partially |
 | `DocDescriptor` | JSON schema + docs registry + governance check | yes |
 | `Skill` | markdown skill + metadata check | partially |
@@ -61,8 +60,10 @@ schema contracts are checked with valid and invalid fixtures.
 | Wave | [wave.schema.json](../schemas/wave.schema.json) |
 | Agent Team run | [agent-team-run.schema.json](../schemas/agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
+| Provider-native session locator | [native-session-ref.schema.json](../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
 | Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
+| Pending provider interaction | [pending-interaction.schema.json](../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../schemas/delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../schemas/agent-team.schema.json) |
@@ -74,7 +75,6 @@ schema contracts are checked with valid and invalid fixtures.
 | Proposal | [proposal.schema.json](../schemas/proposal.schema.json) |
 | Evidence | [evidence.schema.json](../schemas/evidence.schema.json) |
 | Decision | [decision.schema.json](../schemas/decision.schema.json) |
-| Provider session | [provider-session.schema.json](../schemas/provider-session.schema.json) |
 | Tool descriptor | [agent-harness-tool-descriptor.schema.json](../schemas/agent-harness-tool-descriptor.schema.json) |
 | Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
 | Review | [review.schema.json](../schemas/review.schema.json) |
@@ -82,6 +82,10 @@ schema contracts are checked with valid and invalid fixtures.
 | Vision | [vision.schema.json](../schemas/vision.schema.json) |
 
 ## Schema Evolution
+
+Provider-native execution history is referenced only by
+`native-session-ref.schema.json`. Harness deliberately has no schema for a
+mirrored transcript, stdout stream, tool stream, or provider turn ledger.
 
 Schemas evolve additively where a current contract permits it; Company OS
 contracts define their own required migration and validation rules.

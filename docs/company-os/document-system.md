@@ -35,7 +35,7 @@ must be manually assembled by humans from generic blocks. Its underlying model m
 ownership, relationships, permissions, evidence, and auditability while
 allowing an Agent to compose a purpose-built core page when the business needs
 one. This product decision is recorded in
-[ADR 0031: Agent-operated Docs and Code-declared Pages](../decisions/0031-agent-operated-docs-and-code-declared-pages.md).
+[ADR 0036: Agent-operated Docs and Code-declared Pages](../decisions/0036-agent-operated-docs-and-code-declared-pages.md).
 The current implementation status of each Docs surface is tracked in the
 [Docs operating surface matrix](docs-operating-surface-matrix.md).
 
@@ -70,7 +70,7 @@ write Store. It should serve Agent-facing query/search/view/health/diff/export
 needs after the CLI/API read contracts stabilize. A SQL row may speed up a
 query, but it must be rebuildable from the canonical ledgers and must not
 authorize a write by itself. The governing decision is
-[ADR 0030: Company OS SQL Read Model](../decisions/0030-company-os-sql-read-model.md).
+[ADR 0035: Company OS SQL Read Model](../decisions/0035-company-os-sql-read-model.md).
 
 ## Operating loop
 

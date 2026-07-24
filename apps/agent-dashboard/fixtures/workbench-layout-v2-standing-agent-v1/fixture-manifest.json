@@ -9,7 +9,6 @@
   "ledgers": [
     "members.jsonl",
     "agent_runtimes.jsonl",
-    "provider_sessions.jsonl",
     "messages.jsonl",
     "agent_events.jsonl"
   ],

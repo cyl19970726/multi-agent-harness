@@ -28,12 +28,12 @@ are not the top-level product information architecture.
 
 ## Current implementation status
 
-The provider-neutral execution foundation is substantially implemented and
-is actively being
-migrated to native `Mission -> ordered Wave -> executor` semantics. The Company
-OS product contracts, document system, mixed human/Agent organization,
-WorkItem/Approval model, and new frontend information architecture are the
-current product-development focus.
+The provider-neutral execution foundation is substantially implemented.
+Mission is durable intent, ordered Waves preserve the Host's evolving plan and
+judgment, and independent Agent Teams can remain active across multiple Waves.
+The Company OS product contracts, document system, mixed human/Agent
+organization, WorkItem/Approval model, and new frontend information
+architecture are the current product-development focus.
 
 The superseded coordination stack is being frozen, exported, verified, and
 removed under ADR 0028. It is not part of the active product model.
@@ -59,8 +59,8 @@ Shared operating views:
 
 Execution tools:
 
-- Missions and ordered Waves;
-- Agent Team attempts and MemberRuns;
+- Missions and ordered Host-plan Waves;
+- independent Agent Teams, Mission-scoped TeamRuns, and MemberRuns;
 - Dynamic Workflows;
 - provider sessions, plugins, MCP, artifacts, and events.
 
@@ -96,6 +96,8 @@ and [getting started](docs/getting-started.md).
 - [Financial relations](docs/company-os/financial-relations.md)
 - [Governance](docs/company-os/governance.md)
 - [Execution foundation](docs/company-os/execution-foundation.md)
+- [Mission/Wave Host-plan product contract](docs/product/mission-wave-host-plan.md)
+- [Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
 - [Product requirements](docs/prd.md)
 - [Architecture map](docs/architecture-map.md)
 - [Provider integrations](docs/integration/README.md)
@@ -111,7 +113,7 @@ and [getting started](docs/getting-started.md).
 | `schemas/` | Stable wire schemas for implemented objects. |
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
 | `apps/agent-dashboard/` | React/Vite Company OS and execution workbench frontend. |
-| `skills/` | Optional capabilities, currently including Dynamic Workflow authoring. |
+| `skills/` | Optional capabilities, including Dynamic Workflow authoring and thin Mission/Wave Host orchestration. |
 | `examples/adapters/` | Domain adapters; business-specific logic stays outside the generic core. |
 
 ## Core boundary

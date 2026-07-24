@@ -23,14 +23,14 @@ export function Avatar({
   name: string;
   identity?: string;
   tone?: StatusTone;
-  size?: "sm" | "lg";
+  size?: "sm" | "lg" | "xl";
 }) {
   const portrait = portraitFor(`${identity ?? ""} ${name}`);
   return (
     <span
       className={cn(
         "relative grid shrink-0 place-items-center overflow-hidden rounded-full bg-secondary font-mono font-semibold text-foreground/80 ring-1 ring-border",
-        size === "lg" ? "size-12 text-sm" : "size-8 text-[11px]",
+        size === "xl" ? "size-16 text-base" : size === "lg" ? "size-12 text-sm" : "size-8 text-[11px]",
       )}
       aria-label={name}
     >

@@ -77,6 +77,9 @@ pub struct AgentMember {
     pub current_task_id: Option<String>,
     pub current_proposal_id: Option<String>,
     pub provider_runtime_id: Option<String>,
+    #[serde(default)]
+    pub native_session: Option<NativeSessionRef>,
+    /// Transitional legacy resume handle. New paths use `native_session`.
     pub provider_thread_id: Option<String>,
     #[serde(default)]
     pub provider_agent_path: Option<String>,
@@ -211,9 +214,9 @@ pub struct LaunchSpec {
     /// `--resume`); `None` = a fresh session.
     #[serde(default)]
     pub resume: Option<String>,
-    /// The event-stream output contract the adapter should request so its native
-    /// output normalizes into [`AgentEvent`] (Codex `--json`, Claude
-    /// `--output-format stream-json`). Free string, neutral.
+    /// The event-stream output contract the adapter should request for
+    /// in-memory reduction and transient live projection (Codex `--json`,
+    /// Claude `--output-format stream-json`). Free string, neutral.
     #[serde(default)]
     pub output: Option<String>,
 }
@@ -349,7 +352,11 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
         // resume of the same session (Codex `exec resume <id>`, Claude
         // `--resume <id>`) instead of a fresh session. `None` (no prior id) = a
         // fresh session.
-        resume: member.provider_thread_id.clone(),
+        resume: member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.clone())
+            .or_else(|| member.provider_thread_id.clone()),
         output: None,
     }
 }
@@ -441,6 +448,10 @@ pub struct AgentTeam {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Stable identity of the Host Agent that created and coordinates this
+    /// team. The wire name is retained for compatibility; product surfaces
+    /// call this actor the Team Lead. A Lead is not a MemberRun unless it
+    /// explicitly joins the team as an executing member.
     pub owner_agent_id: String,
     #[serde(default = "default_agent_team_status")]
     pub status: AgentTeamStatus,
@@ -468,7 +479,7 @@ pub enum MessageDeliveryStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderSessionStatus {
+pub enum ProviderExecutionStatus {
     Queued,
     Running,
     Succeeded,
@@ -504,8 +515,18 @@ pub enum MessageTerminalSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageDelivery {
+    /// Harness-owned id of this delivery attempt. It coordinates claim/control
+    /// lifecycle and is not a provider session id.
     #[serde(default)]
-    pub provider_session_id: Option<String>,
+    pub delivery_id: Option<String>,
+    #[serde(default)]
+    pub execution_status: Option<ProviderExecutionStatus>,
+    #[serde(default)]
+    pub native_session: Option<NativeSessionRef>,
+    /// Harness-owned start time for this delivery attempt. Provider-native
+    /// session timestamps remain in the provider's own store.
+    #[serde(default)]
+    pub started_at: Option<String>,
     #[serde(default)]
     pub provider_request_id: Option<String>,
     #[serde(default)]
@@ -520,39 +541,10 @@ pub struct MessageDelivery {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderSession {
-    pub id: String,
-    pub provider: String,
-    pub agent_member_id: String,
-    pub task_id: Option<String>,
-    pub workspace_ref: Option<String>,
-    #[serde(default)]
-    pub provider_thread_id: Option<String>,
-    #[serde(default)]
-    pub provider_turn_id: Option<String>,
-    #[serde(default)]
-    pub terminal_source: Option<MessageTerminalSource>,
-    pub status: ProviderSessionStatus,
-    pub command: String,
-    pub args: Vec<String>,
-    pub prompt_ref: Option<String>,
-    pub prompt_summary: Option<String>,
-    pub provider_session_ref: Option<String>,
-    pub stdout_ref: Option<String>,
-    pub jsonl_ref: Option<String>,
-    pub transcript_ref: Option<String>,
-    pub last_message_ref: Option<String>,
-    pub exit_code: Option<i32>,
-    pub started_at: String,
-    pub ended_at: Option<String>,
-    pub evidence_ids: Vec<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Multi-project identity (goal-multi-project, Stage 0 — pure layer, no I/O).
 //
-// A project's STORE (the JSONL ledgers + provider-sessions) is centralized under
+// A project's STORE (Harness-owned JSONL ledgers and runtime metadata) is centralized under
 // `~/.harness/projects/<id>/`, but its PROJECT ROOT (the git repo / dir where a
 // worker runs and reads CLAUDE.md / AGENTS.md / memory) stays where it is. These
 // two roots are deliberately distinct — see `ProjectContext`.
@@ -653,99 +645,6 @@ pub fn project_id_for_path(path: &std::path::Path, home: &std::path::Path) -> St
 /// `<harness_home>/projects/<id>`.
 pub fn project_store_root(harness_home: &std::path::Path, id: &str) -> std::path::PathBuf {
     harness_home.join("projects").join(id)
-}
-
-/// Normalized, provider-neutral turn-event kind. Maps both codex
-/// (`type`/`item`) and claude (stream-json `type`/subtype) vocabularies onto
-/// one taxonomy so the dashboard and a 3rd provider need no per-provider branch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessTurnEventKind {
-    TurnStarted,
-    TurnCompleted,
-    MessageDelta,
-    Message,
-    ToolCall,
-    ToolResult,
-    Reasoning,
-    Usage,
-    Error,
-    ProviderMeta,
-    Unknown,
-}
-
-/// A normalized tool invocation (`ToolCall` kind).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HarnessToolCall {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub name: String,
-    pub args: serde_json::Value,
-}
-
-/// A normalized tool result (`ToolResult` kind).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HarnessToolResult {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub content: String,
-    pub is_error: bool,
-}
-
-/// Normalized token usage (`Usage`/`TurnCompleted` kinds).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnessTokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cached_input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_output_tokens: Option<u64>,
-}
-
-/// One normalized turn event. `raw_provider_event` always retains the original
-/// provider JSON for audit / debugging / a "show raw" toggle. `seq` is a
-/// harness-assigned monotonic per-session counter; `ts` is harness-assigned at
-/// ingest. `session_id` is the harness provider-session row id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HarnessTurnEvent {
-    pub session_id: String,
-    pub provider: String,
-    pub seq: u64,
-    pub ts: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_item_id: Option<String>,
-    pub kind: HarnessTurnEventKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delta: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call: Option<HarnessToolCall>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_result: Option<HarnessToolResult>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<HarnessTokenUsage>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    pub raw_provider_event: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1044,13 +943,14 @@ pub struct Vision {
 // ---------------------------------------------------------------------------
 // Mission / Wave product contracts (ADR 0026)
 //
-// A Mission owns durable intent and outcome; each Wave owns a small, ordered
-// execution attempt and delegates its internal execution semantics to its
-// selected executor.
+// A Mission owns durable intent, context, linked independent Teams, and
+// outcome. Each Wave is one versioned Host plan/judgment memo. Execution
+// records remain independently addressable and are related through Mission,
+// assignment messages, correlations, and optional origin_wave_id.
 // ---------------------------------------------------------------------------
 
-/// Lifecycle of a [`Mission`]. Executor-specific progress belongs to Waves and
-/// their runs.
+/// Lifecycle of a [`Mission`]. Execution progress belongs to the selected
+/// TeamRun, WorkflowRun, Host, and provider-native sessions—not to a Wave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MissionStatus {
@@ -1070,6 +970,10 @@ pub struct Mission {
     pub id: String,
     pub title: String,
     pub objective: String,
+    /// Durable Markdown brief used by the Host when planning and revising
+    /// Waves. Older rows deserialize as an empty brief.
+    #[serde(default)]
+    pub context: String,
     #[serde(default)]
     pub desired_outcome: Option<String>,
     #[serde(default)]
@@ -1079,6 +983,11 @@ pub struct Mission {
     /// for reading the Wave ledger by `mission_id`.
     #[serde(default)]
     pub wave_ids: Vec<String>,
+    /// Independent reusable AgentTeam definitions available to this Mission.
+    /// Linking does not transfer ownership or couple team lifecycle to Mission
+    /// closeout.
+    #[serde(default)]
+    pub agent_team_ids: Vec<String>,
     #[serde(default)]
     pub outcome_summary: Option<String>,
     /// Actor that explicitly performed Mission closeout. Wave acceptance does
@@ -1091,9 +1000,10 @@ pub struct Mission {
     pub completed_at: Option<String>,
 }
 
-/// The executor selected for a [`Wave`]. Its execution records live in the
-/// executor's own ledger: `AgentTeamRun`, `WorkflowRun`, or a Host-owned run
-/// reference. This enum intentionally has no task-graph variant.
+/// Compatibility/projection hint retained on [`Wave`] rows. New Host-plan
+/// Waves default to `Host`; they do not own the TeamRun, WorkflowRun, or native
+/// session that informed the Host's plan. This enum intentionally has no
+/// task-graph variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveExecutorKind {
@@ -1128,9 +1038,10 @@ pub enum WaveGateStatus {
     Blocked,
 }
 
-/// One ordered unit of a Mission. Retries and replacement attempts are recorded
-/// in `executor_run_ids`; `accepted_run_id` identifies the attempt accepted by
-/// the Wave gate. A Wave has no task graph or executor-specific child model.
+/// One ordered, versioned Host plan/judgment memo in a Mission. A Wave has no
+/// task graph, runtime children, synchronization barrier, or session lifecycle.
+/// `executor_run_ids` and `accepted_run_id` remain only for reading historical
+/// direct-executor Wave rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Wave {
     pub id: String,
@@ -1138,13 +1049,27 @@ pub struct Wave {
     pub index: u32,
     pub title: String,
     pub objective: String,
+    /// Versioned Markdown operational memo: the Host's current plan, judgment,
+    /// assignments, carry-over, and important deviations.
+    #[serde(default)]
+    pub context: String,
+    /// Monotonic revision within this Wave id. Append-only Wave rows retain the
+    /// prior revisions.
+    #[serde(default)]
+    pub revision: u32,
+    /// Actor that authored the latest revision.
+    #[serde(default)]
+    pub updated_by: Option<String>,
     #[serde(default)]
     pub exit_criteria: Option<String>,
     #[serde(default)]
     pub status: WaveStatus,
+    /// Historical direct-executor hint; new authoring uses `Host`.
     pub executor_kind: WaveExecutorKind,
+    /// Historical direct-executor attempt references.
     #[serde(default)]
     pub executor_run_ids: Vec<String>,
+    /// Historical accepted direct-executor attempt.
     #[serde(default)]
     pub accepted_run_id: Option<String>,
     #[serde(default)]
@@ -1211,16 +1136,6 @@ impl Validate for Message {
         require_non_empty(&self.from_agent_id, "Message.from_agent_id")?;
         require_non_empty(&self.content, "Message.content")?;
         require_non_empty(&self.created_at, "Message.created_at")
-    }
-}
-
-impl Validate for ProviderSession {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "ProviderSession.id")?;
-        require_non_empty(&self.provider, "ProviderSession.provider")?;
-        require_non_empty(&self.agent_member_id, "ProviderSession.agent_member_id")?;
-        require_non_empty(&self.command, "ProviderSession.command")?;
-        require_non_empty(&self.started_at, "ProviderSession.started_at")
     }
 }
 
@@ -1332,8 +1247,8 @@ impl Validate for Wave {
 //
 // A `WorkflowRun` is a standalone object with its own id and lifecycle. Each
 // `WorkflowStep` is the workflow-layer wrapper around one `agent()` call and references the
-// `ProviderSession` that the delivery produced rather than re-recording the
-// execution. Both journal to their own append-only JSONL with latest-wins
+// provider-owned native session rather than re-recording the execution. Both
+// journal to their own append-only JSONL with latest-wins
 // projection, exactly like every other harness object.
 // ---------------------------------------------------------------------------
 
@@ -1460,12 +1375,6 @@ pub struct WorkflowRun {
     /// of the run shape. `None` for registry runs / legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<serde_json::Value>,
-    /// Retention policy for the heavy per-node provider turn-event trace:
-    /// "durable" (default) persists the trace so any completed run can be drilled
-    /// into; "live" streams the trace over SSE during execution but does not
-    /// retain it. Live streaming is independent of this and always happens.
-    #[serde(default = "default_trace_retention")]
-    pub trace_retention: String,
     /// OS process id of the `harness workflow run-script`/`run` invocation that
     /// drives this run, stamped on the initial `running` row. The serve-side
     /// reaper uses it to detect an ABANDONED run: if the run is still `running`
@@ -1490,15 +1399,10 @@ pub struct WorkflowRun {
     pub partial_output_available: bool,
 }
 
-/// Default retention policy for a [`WorkflowRun`]'s turn-event trace. Legacy rows
-/// and registry runs that predate the field deserialize as "durable".
-fn default_trace_retention() -> String {
-    "durable".to_string()
-}
-
 /// One agent step inside a [`WorkflowRun`]. `phase` is the declarative grouping
 /// marker (e.g. "audit", "synthesize"); `label` names the step within the phase.
-/// `provider_session_id` links to the [`ProviderSession`] the delivery produced.
+/// `native_session` links to the provider-owned execution record. Harness keeps
+/// the Workflow outcome and evidence here, but never mirrors the provider turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowStep {
     pub id: String,
@@ -1506,7 +1410,7 @@ pub struct WorkflowStep {
     pub phase: String,
     pub label: String,
     #[serde(default)]
-    pub provider_session_id: Option<String>,
+    pub native_session: Option<NativeSessionRef>,
     pub status: WorkflowStepStatus,
     #[serde(default)]
     pub output_summary: Option<String>,
@@ -1687,6 +1591,11 @@ pub struct AgentTeamRun {
     pub id: String,
     #[serde(default)]
     pub definition_id: Option<String>,
+    /// Stable independent AgentTeam definition used by this run. New writes
+    /// use this field; `definition_id` remains a transitional alias for older
+    /// rows.
+    #[serde(default)]
+    pub agent_team_id: Option<String>,
     #[serde(default)]
     pub previous_run_id: Option<String>,
     /// Optional outer product identity (ADR 0026). Existing v0 team-run rows
@@ -1699,6 +1608,11 @@ pub struct AgentTeamRun {
     #[serde(default)]
     pub host_thread_id: Option<String>,
     pub objective: String,
+    /// Concrete root selected for this attempt's execution. This is distinct
+    /// from both the registered project root and the centralized store root.
+    /// Older rows may omit it; callers then fall back to the project root.
+    #[serde(default)]
+    pub execution_root: Option<String>,
     pub status: TeamRunStatus,
     #[serde(default)]
     pub member_run_ids: Vec<String>,
@@ -1708,6 +1622,27 @@ pub struct AgentTeamRun {
     pub updated_at: String,
     #[serde(default)]
     pub completed_at: Option<String>,
+}
+
+/// Non-secret workspace facts observed when a member runtime starts.
+///
+/// These values make the execution location reconstructable without copying
+/// instruction/skill contents or any provider-native transcript or tool
+/// stream into Harness storage. `git_branch` is absent for detached HEADs and
+/// all Git fields are absent outside a Git worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberWorkspaceSnapshot {
+    pub cwd: String,
+    #[serde(default)]
+    pub git_head: Option<String>,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    /// Directories containing discovered instruction files used for context.
+    #[serde(default)]
+    pub instruction_roots: Vec<String>,
+    /// Directories containing discovered skills used for context.
+    #[serde(default)]
+    pub skill_roots: Vec<String>,
 }
 
 /// Lifecycle of a [`MemberRun`].
@@ -1726,10 +1661,42 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// A provider-owned conversation/runtime that contains the execution truth for
+/// one member. Harness persists this locator and capability snapshot, but does
+/// not copy the provider's transcript, tool stream, command output, or turns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeSessionRef {
+    pub provider: String,
+    pub execution_mode: String,
+    pub native_session_id: String,
+    pub native_locator_kind: String,
+    #[serde(default)]
+    pub provider_version: Option<String>,
+    pub adapter_contract_version: String,
+    #[serde(default)]
+    pub availability: NativeSessionAvailability,
+    pub supports_resume: bool,
+    #[serde(default)]
+    pub last_verified_at: Option<String>,
+    #[serde(default)]
+    pub parent_native_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSessionAvailability {
+    Available,
+    Stale,
+    Missing,
+    Incompatible,
+    #[default]
+    Unknown,
+}
+
 /// One member's session inside an [`AgentTeamRun`]. `provider` is the neutral
-/// provider spelling (codex|claude|kimi). `provider_session_id` links the
-/// harness [`ProviderSession`] while `acp_session_id` is the provider-side
-/// session handle (e.g. a kimi ACP sessionId).
+/// provider spelling (codex|claude|kimi). `native_session` points to the
+/// provider-owned execution record; Harness owns only the surrounding
+/// coordination state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberRun {
     pub id: String,
@@ -1741,13 +1708,20 @@ pub struct MemberRun {
     pub provider: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// Immutable-at-start snapshot of the concrete provider execution path.
+    /// This distinguishes provider-native capability from what this adapter
+    /// and execution mode have actually wired for the run.
+    #[serde(default)]
+    pub provider_profile: Option<ProviderIntegrationProfile>,
     pub status: MemberRunStatus,
     #[serde(default)]
-    pub provider_session_id: Option<String>,
-    #[serde(default)]
-    pub acp_session_id: Option<String>,
+    pub native_session: Option<NativeSessionRef>,
     #[serde(default)]
     pub worktree_ref: Option<String>,
+    /// Facts actually observed from the spawned member's working directory and
+    /// non-secret instruction/skill roots discovered from that environment.
+    #[serde(default)]
+    pub workspace_snapshot: Option<MemberWorkspaceSnapshot>,
     #[serde(default)]
     pub owned_paths: Vec<String>,
     pub started_at: String,
@@ -1755,6 +1729,186 @@ pub struct MemberRun {
     pub last_event_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+}
+
+impl Validate for AgentTeamRun {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "AgentTeamRun.id")?;
+        require_non_empty(&self.host_surface, "AgentTeamRun.host_surface")?;
+        require_non_empty(&self.objective, "AgentTeamRun.objective")?;
+        require_non_empty(&self.created_at, "AgentTeamRun.created_at")?;
+        require_non_empty(&self.updated_at, "AgentTeamRun.updated_at")?;
+        if let Some(execution_root) = &self.execution_root {
+            require_non_empty(execution_root, "AgentTeamRun.execution_root")?;
+        }
+        Ok(())
+    }
+}
+
+impl Validate for MemberWorkspaceSnapshot {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.cwd, "MemberWorkspaceSnapshot.cwd")?;
+        if let Some(git_head) = &self.git_head {
+            require_non_empty(git_head, "MemberWorkspaceSnapshot.git_head")?;
+        }
+        if let Some(git_branch) = &self.git_branch {
+            require_non_empty(git_branch, "MemberWorkspaceSnapshot.git_branch")?;
+        }
+        for root in &self.instruction_roots {
+            require_non_empty(root, "MemberWorkspaceSnapshot.instruction_roots")?;
+        }
+        for root in &self.skill_roots {
+            require_non_empty(root, "MemberWorkspaceSnapshot.skill_roots")?;
+        }
+        Ok(())
+    }
+}
+
+impl Validate for MemberRun {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "MemberRun.id")?;
+        require_non_empty(&self.team_run_id, "MemberRun.team_run_id")?;
+        require_non_empty(&self.name, "MemberRun.name")?;
+        require_non_empty(&self.role, "MemberRun.role")?;
+        require_non_empty(&self.provider, "MemberRun.provider")?;
+        require_non_empty(&self.started_at, "MemberRun.started_at")?;
+        if let Some(worktree_ref) = &self.worktree_ref {
+            require_non_empty(worktree_ref, "MemberRun.worktree_ref")?;
+        }
+        if let Some(snapshot) = &self.workspace_snapshot {
+            snapshot.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// How one provider member is executed by Harness. Capability claims are
+/// mode-specific: `codex_exec` and `kimi_acp` are different products even when
+/// their user-facing provider names are simply Codex and Kimi.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderIntegrationProfile {
+    pub provider: String,
+    pub execution_mode: String,
+    #[serde(default)]
+    pub provider_version: Option<String>,
+    #[serde(default)]
+    pub adapter_contract_version: Option<String>,
+    #[serde(default)]
+    pub reviewed_provider_versions: Vec<String>,
+    #[serde(default)]
+    pub compatibility_status: ProviderCompatibilityStatus,
+    #[serde(default)]
+    pub adapter_reviewed_at: Option<String>,
+    #[serde(default)]
+    pub compatibility_note: Option<String>,
+    pub interaction_mode: ProviderInteractionMode,
+    pub tool_event_fidelity: ProviderEventFidelity,
+    pub artifact_event_fidelity: ProviderEventFidelity,
+    pub supports_cancel: bool,
+    pub supports_resume: bool,
+    pub observes_native_subagents: bool,
+    pub observes_background_tasks: bool,
+    /// Product policy, not a provider claim. Thinking may only appear through
+    /// the sanitized transient live channel and is never durable or replayed.
+    pub thinking_transient_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityStatus {
+    Current,
+    ReviewRequired,
+    Incompatible,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInteractionMode {
+    /// The provider can pause the same turn until the client answers.
+    PauseAndResume,
+    /// The execution mode cannot accept mid-turn input; end the round with a
+    /// blocker and start a follow-up after the Host answers.
+    EndRoundAndFollowUp,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderEventFidelity {
+    None,
+    Summary,
+    Structured,
+}
+
+/// A provider-originated request that pauses or blocks a MemberRun until an
+/// authorized actor responds. It is product state; unlike thinking it is
+/// durable, replayable, and visible to the Host/Dashboard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInteraction {
+    pub id: String,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub provider: String,
+    pub provider_request_id: String,
+    pub method: String,
+    pub kind: PendingInteractionKind,
+    pub route: PendingInteractionRoute,
+    pub status: PendingInteractionStatus,
+    pub title: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<PendingInteractionOption>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub response_option_id: Option<String>,
+    #[serde(default)]
+    pub response_text: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub resolved_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInteractionOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub intent: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingInteractionKind {
+    Question,
+    ToolApproval,
+    PlanReview,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingInteractionRoute {
+    Lead,
+    Human,
+    Policy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingInteractionStatus {
+    Pending,
+    Answered,
+    Approved,
+    Denied,
+    Dismissed,
+    Unsupported,
+    Cancelled,
 }
 
 /// Kind of a routed [`TeamMessage`].
@@ -1811,6 +1965,11 @@ pub struct TeamMessageDelivery {
 pub struct TeamMessage {
     pub id: String,
     pub team_run_id: String,
+    /// Optional Host-plan Wave that explains why this message was authored.
+    /// It is navigation metadata only and never controls message or member
+    /// lifecycle.
+    #[serde(default)]
+    pub origin_wave_id: Option<String>,
     pub from_member_id: String,
     #[serde(default)]
     pub to_member_ids: Vec<String>,
@@ -1839,12 +1998,9 @@ pub enum MemberActionStatus {
 
 /// One journaled action by a member inside an [`AgentTeamRun`]. `seq` is
 /// monotonically increasing per team run and is assigned by the caller.
-/// `action_type` is a free-form string in v0 (conventional values:
-/// plan_updated, message_sent, message_received, tool_started, tool_completed,
-/// file_changed, command_started, command_completed, test_started,
-/// test_completed, delegation_started, delegation_completed, review_started,
-/// review_completed, waiting_for_input, waiting_for_approval, blocked, error,
-/// completed).
+/// `action_type` is a free-form Harness coordination/outcome summary. Provider
+/// tool, command, file, turn, chat, and reasoning streams stay exclusively in
+/// the provider-native session and must not be converted into MemberActions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberAction {
     pub id: String,
@@ -1853,8 +2009,20 @@ pub struct MemberAction {
     pub member_run_id: String,
     #[serde(default)]
     pub task_id: Option<String>,
+    /// Provider-native call/item id for correlating start, progress, result,
+    /// permission, and artifact frames without leaking provider semantics into
+    /// the generic action id.
+    #[serde(default)]
+    pub provider_call_id: Option<String>,
     pub action_type: String,
     pub status: MemberActionStatus,
+    /// Raw lifecycle status reported by the provider transport.
+    #[serde(default)]
+    pub provider_status: Option<String>,
+    /// Harness interpretation after interaction/result semantics are known.
+    /// `provider_status=completed` must not imply `semantic_status=succeeded`.
+    #[serde(default)]
+    pub semantic_status: Option<String>,
     pub title: String,
     pub summary: String,
     #[serde(default)]
@@ -2122,43 +2290,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_session_round_trips_json() {
-        let session = ProviderSession {
-            id: "session-1".to_string(),
-            provider: "codex".to_string(),
-            agent_member_id: "agent-1".to_string(),
-            task_id: Some("task-1".to_string()),
-            workspace_ref: Some("../worktrees/task-1".to_string()),
-            provider_thread_id: Some("thread-1".to_string()),
-            provider_turn_id: Some("turn-1".to_string()),
-            terminal_source: Some(MessageTerminalSource::TurnCompleted),
-            status: ProviderSessionStatus::Succeeded,
-            command: "codex".to_string(),
-            args: vec!["exec".to_string()],
-            prompt_ref: Some(".harness/prompts/task-1.md".to_string()),
-            prompt_summary: Some("Implement task-1".to_string()),
-            provider_session_ref: None,
-            stdout_ref: Some(".harness/provider-sessions/session-1/stdout.log".to_string()),
-            jsonl_ref: Some(".harness/provider-sessions/session-1/events.jsonl".to_string()),
-            transcript_ref: None,
-            last_message_ref: Some(
-                ".harness/provider-sessions/session-1/last-message.md".to_string(),
-            ),
-            exit_code: Some(0),
-            started_at: "2026-05-26T00:00:00Z".to_string(),
-            ended_at: Some("2026-05-26T00:05:00Z".to_string()),
-            evidence_ids: vec!["evidence-1".to_string()],
-        };
-
-        let json = serde_json::to_string(&session).expect("serialize provider session");
-        let parsed: ProviderSession =
-            serde_json::from_str(&json).expect("deserialize provider session");
-
-        assert_eq!(parsed, session);
-        assert!(parsed.validate().is_ok());
-    }
-
-    #[test]
     fn project_id_for_path_home_is_global() {
         let home = std::path::Path::new("/Users/me");
         assert_eq!(project_id_for_path(home, home), GLOBAL_PROJECT_ID);
@@ -2226,119 +2357,6 @@ mod tests {
     }
 
     #[test]
-    fn harness_turn_event_round_trips_json_and_omits_absent_optionals() {
-        let tool_event = HarnessTurnEvent {
-            session_id: "session-1".to_string(),
-            provider: "codex".to_string(),
-            seq: 1,
-            ts: "2026-06-13T00:00:00Z".to_string(),
-            provider_thread_id: None,
-            provider_turn_id: Some("turn-1".to_string()),
-            provider_item_id: None,
-            kind: HarnessTurnEventKind::ToolCall,
-            role: None,
-            text: None,
-            delta: None,
-            tool_call: Some(HarnessToolCall {
-                id: Some("call-1".to_string()),
-                name: "shell".to_string(),
-                args: serde_json::json!({ "cmd": "cargo test -p harness-core" }),
-            }),
-            tool_result: None,
-            usage: None,
-            model: Some("gpt-5".to_string()),
-            duration_ms: None,
-            cost_usd: None,
-            status: None,
-            error: None,
-            raw_provider_event: serde_json::json!({
-                "type": "item",
-                "item": { "type": "tool_call", "id": "call-1" }
-            }),
-        };
-
-        let usage_event = HarnessTurnEvent {
-            session_id: "session-1".to_string(),
-            provider: "codex".to_string(),
-            seq: 2,
-            ts: "2026-06-13T00:00:01Z".to_string(),
-            provider_thread_id: None,
-            provider_turn_id: None,
-            provider_item_id: None,
-            kind: HarnessTurnEventKind::Usage,
-            role: None,
-            text: None,
-            delta: None,
-            tool_call: None,
-            tool_result: None,
-            usage: Some(HarnessTokenUsage {
-                input_tokens: 10,
-                output_tokens: 20,
-                total_tokens: 30,
-                cached_input_tokens: None,
-                reasoning_output_tokens: Some(5),
-            }),
-            model: None,
-            duration_ms: None,
-            cost_usd: None,
-            status: None,
-            error: None,
-            raw_provider_event: serde_json::json!({
-                "type": "usage",
-                "input_tokens": 10,
-                "output_tokens": 20
-            }),
-        };
-
-        for event in [tool_event, usage_event] {
-            let json = serde_json::to_value(&event).expect("serialize turn event");
-            let parsed: HarnessTurnEvent =
-                serde_json::from_value(json.clone()).expect("deserialize turn event");
-
-            assert_eq!(parsed, event);
-            assert!(json.get("raw_provider_event").is_some());
-            assert!(json.get("provider_thread_id").is_none());
-            assert!(json.get("provider_item_id").is_none());
-            assert!(json.get("role").is_none());
-            assert!(json.get("text").is_none());
-            assert!(json.get("delta").is_none());
-            assert!(json.get("duration_ms").is_none());
-            assert!(json.get("cost_usd").is_none());
-            assert!(json.get("status").is_none());
-            assert!(json.get("error").is_none());
-        }
-    }
-
-    #[test]
-    fn harness_turn_event_kind_wire_spellings_are_snake_case() {
-        // These wire strings are the API contract the SSE stream, the
-        // /v1/.../events endpoints, and the dashboard key on — pin every variant.
-        let cases = [
-            (HarnessTurnEventKind::TurnStarted, "turn_started"),
-            (HarnessTurnEventKind::TurnCompleted, "turn_completed"),
-            (HarnessTurnEventKind::MessageDelta, "message_delta"),
-            (HarnessTurnEventKind::Message, "message"),
-            (HarnessTurnEventKind::ToolCall, "tool_call"),
-            (HarnessTurnEventKind::ToolResult, "tool_result"),
-            (HarnessTurnEventKind::Reasoning, "reasoning"),
-            (HarnessTurnEventKind::Usage, "usage"),
-            (HarnessTurnEventKind::Error, "error"),
-            (HarnessTurnEventKind::ProviderMeta, "provider_meta"),
-            (HarnessTurnEventKind::Unknown, "unknown"),
-        ];
-        for (kind, wire) in cases {
-            assert_eq!(
-                serde_json::to_value(&kind).expect("serialize kind"),
-                serde_json::Value::String(wire.to_string()),
-                "kind {kind:?} should serialize to {wire:?}"
-            );
-            let back: HarnessTurnEventKind =
-                serde_json::from_value(serde_json::json!(wire)).expect("deserialize kind");
-            assert_eq!(back, kind);
-        }
-    }
-
-    #[test]
     fn validation_rejects_missing_required_id() {
         let member = AgentMember {
             id: "".to_string(),
@@ -2361,6 +2379,7 @@ mod tests {
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
+            native_session: None,
             provider_thread_id: None,
             provider_agent_path: None,
             provider_agent_nickname: None,
@@ -2449,6 +2468,7 @@ mod tests {
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
+            native_session: None,
             provider_thread_id: None,
             provider_agent_path: None,
             provider_agent_nickname: None,
@@ -2812,6 +2832,77 @@ mod tests {
             !cap.supports_streaming_exec(),
             "mid-turn approval blocks streaming exec"
         );
+    }
+
+    #[test]
+    fn workspace_observability_fields_round_trip_without_contents() {
+        let snapshot = MemberWorkspaceSnapshot {
+            cwd: "/projects/harness/worktrees/member-1".into(),
+            git_head: Some("0123456789abcdef".into()),
+            git_branch: Some("feature/member-1".into()),
+            instruction_roots: vec!["/projects/harness".into()],
+            skill_roots: vec!["/projects/harness/.agents/skills".into()],
+        };
+        assert!(snapshot.validate().is_ok());
+
+        let json = serde_json::to_value(&snapshot).expect("serialize workspace snapshot");
+        assert_eq!(json["cwd"], "/projects/harness/worktrees/member-1");
+        assert!(json.get("instruction_contents").is_none());
+        assert!(json.get("skill_contents").is_none());
+        assert!(json.get("credentials").is_none());
+        assert!(json.get("transcript").is_none());
+        assert!(json.get("thinking").is_none());
+        assert_eq!(
+            serde_json::from_value::<MemberWorkspaceSnapshot>(json).expect("deserialize snapshot"),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn workspace_observability_validation_rejects_empty_locators() {
+        let snapshot = MemberWorkspaceSnapshot {
+            cwd: " ".into(),
+            git_head: None,
+            git_branch: None,
+            instruction_roots: Vec::new(),
+            skill_roots: Vec::new(),
+        };
+        assert_eq!(
+            snapshot.validate(),
+            Err(ValidationError::Required {
+                field: "MemberWorkspaceSnapshot.cwd"
+            })
+        );
+
+        let snapshot = MemberWorkspaceSnapshot {
+            cwd: "/projects/harness".into(),
+            git_head: None,
+            git_branch: None,
+            instruction_roots: vec![String::new()],
+            skill_roots: Vec::new(),
+        };
+        assert_eq!(
+            snapshot.validate(),
+            Err(ValidationError::Required {
+                field: "MemberWorkspaceSnapshot.instruction_roots"
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_rows_deserialize_with_absent_new_fields() {
+        let team: AgentTeamRun = serde_json::from_str(
+            r#"{"id":"tr-legacy","host_surface":"codex-app","objective":"work","status":"planning","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#,
+        )
+        .expect("deserialize legacy team run");
+        assert!(team.execution_root.is_none());
+
+        let member: MemberRun = serde_json::from_str(
+            r#"{"id":"mr-legacy","team_run_id":"tr-legacy","name":"worker","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:1"}"#,
+        )
+        .expect("deserialize legacy member run");
+        assert!(member.worktree_ref.is_none());
+        assert!(member.workspace_snapshot.is_none());
     }
 }
 

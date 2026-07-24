@@ -22,4 +22,3 @@ Right rail sections: "Context" with source and result Documents; "Milestone";
 Constraints: activity does not replace source-of-truth fields; never show raw thinking;
              Wave gate is not an Approval; calm readable workbench, not a form wall
 ```
-

@@ -15,16 +15,6 @@
   "allOf": [
     {
       "if": {
-        "required": ["mission_id"],
-        "properties": { "mission_id": { "type": "string" } }
-      },
-      "then": {
-        "required": ["wave_id"],
-        "properties": { "wave_id": { "type": "string" } }
-      }
-    },
-    {
-      "if": {
         "required": ["wave_id"],
         "properties": { "wave_id": { "type": "string" } }
       },
@@ -40,6 +30,13 @@
       "minLength": 1
     },
     "definition_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "agent_team_id": {
       "type": [
         "string",
         "null"
@@ -80,6 +77,13 @@
     },
     "objective": {
       "type": "string",
+      "minLength": 1
+    },
+    "execution_root": {
+      "type": [
+        "string",
+        "null"
+      ],
       "minLength": 1
     },
     "status": {

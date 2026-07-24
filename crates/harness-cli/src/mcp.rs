@@ -24,10 +24,14 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, close_mission, create_mission, create_team_run, create_wave,
-    drive_prepared_team_run, gate_wave, latest_member_runs_in_append_order,
-    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start, send_team_message,
+    acknowledge_team_message, add_team_run_member, advance_wave, close_mission, create_mission,
+    create_team_run, create_wave, deactivate_team_run_member, drive_prepared_team_run, gate_wave,
+    interrupt_team_member_value, latest_member_runs_in_append_order,
+    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
+    latest_team_run, latest_team_runs_in_append_order, parse_team_message_kind,
+    parse_wave_executor_kind, prepare_team_run_start, rename_team_run_member,
+    resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
+    revise_wave, send_team_message, steer_team_member_value, team_member_specs_from_definition,
     team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
     ResolvedStore, TeamMemberSpec,
 };
@@ -36,17 +40,21 @@ use crate::{
 /// (the simple end of "reply with the client's version or the lower one").
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Where the default `harness serve` surface renders the Agent Team console;
-/// the tools return it so the host can point a human at the live view.
-const DASHBOARD_URL: &str = "http://127.0.0.1:8787";
+/// The Vite Dashboard is the human UI. Its development proxy exposes the
+/// Harness API at the same origin, so deep links must not point at the
+/// API-only `harness serve` root on port 8787.
+const DASHBOARD_UI_ORIGIN: &str = "http://127.0.0.1:5173";
+const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(resolved: &ResolvedStore, team_run_id: &str) -> String {
     match resolved.context.as_ref() {
         Some(context) => format!(
-            "{DASHBOARD_URL}/?surface=team&team={team_run_id}&project={}",
+            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}&project={}",
             context.id
         ),
-        None => format!("{DASHBOARD_URL}/?surface=team&team={team_run_id}"),
+        None => format!(
+            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}"
+        ),
     }
 }
 
@@ -126,18 +134,29 @@ fn call_tool(
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
         "mission_create" => tool_mission_create(store, &arguments),
+        "mission_update_context" => tool_mission_update_context(store, &arguments),
+        "mission_link_team" => tool_mission_team_link(store, &arguments, true),
+        "mission_unlink_team" => tool_mission_team_link(store, &arguments, false),
         "mission_close" => tool_mission_close(store, &arguments),
         "mission_list" => tool_mission_list(store),
         "wave_create" => tool_wave_create(store, &arguments),
+        "wave_update" => tool_wave_update(store, &arguments),
+        "wave_advance" => tool_wave_advance(store, &arguments),
         "wave_list" => tool_wave_list(store, &arguments),
         "wave_gate" => tool_wave_gate(store, &arguments),
         "team_run_create" => tool_team_run_create(store, resolved, &arguments),
+        "team_run_add_member" => tool_team_run_add_member(store, resolved, &arguments),
+        "team_run_rename_member" => tool_team_run_rename_member(store, &arguments),
+        "team_run_deactivate_member" => tool_team_run_deactivate_member(store, &arguments),
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
         "team_run_cancel" => tool_team_run_cancel(store, resolved, &arguments),
         "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
+        "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
+        "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
+        "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
     };
@@ -149,6 +168,33 @@ fn call_tool(
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
     }))
+}
+
+fn tool_team_run_steer_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    steer_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_interrupt_member(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    interrupt_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_resolve_interaction(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let interaction_id = required_str(arguments, "interaction_id")?;
+    resolve_pending_interaction_value(store, team_run_id, interaction_id, arguments)
+        .map_err(|error| error.to_string())
 }
 
 fn tool_team_run_start(
@@ -254,6 +300,7 @@ fn tool_mission_create(store: &HarnessStore, arguments: &Value) -> Result<Value,
         required_str(arguments, "title")?,
         required_str(arguments, "objective")?,
         optional_str(arguments, "desired_outcome")?,
+        optional_str(arguments, "context")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!(mission))
@@ -270,6 +317,31 @@ fn tool_mission_close(store: &HarnessStore, arguments: &Value) -> Result<Value, 
     )
     .map_err(|error| error.to_string())?;
     Ok(json!(mission))
+}
+
+fn tool_mission_update_context(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    revise_mission_context(
+        store,
+        required_str(arguments, "mission_id")?,
+        required_str(arguments, "context")?,
+    )
+    .map(|mission| json!(mission))
+    .map_err(|error| error.to_string())
+}
+
+fn tool_mission_team_link(
+    store: &HarnessStore,
+    arguments: &Value,
+    link: bool,
+) -> Result<Value, String> {
+    revise_mission_team_link(
+        store,
+        required_str(arguments, "mission_id")?,
+        required_str(arguments, "team_id")?,
+        link,
+    )
+    .map(|mission| json!(mission))
+    .map_err(|error| error.to_string())
 }
 
 fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
@@ -295,10 +367,16 @@ fn tool_wave_create(store: &HarnessStore, arguments: &Value) -> Result<Value, St
         index,
         required_str(arguments, "title")?,
         required_str(arguments, "objective")?,
-        parse_wave_executor_kind(required_str(arguments, "executor_kind")?)
-            .map_err(|error| error.to_string())?,
+        parse_wave_executor_kind(
+            optional_str(arguments, "executor_kind")?
+                .as_deref()
+                .unwrap_or("host"),
+        )
+        .map_err(|error| error.to_string())?,
         optional_str(arguments, "exit_criteria")?,
         optional_str(arguments, "plan_note")?,
+        optional_str(arguments, "context")?,
+        optional_str(arguments, "updated_by")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!(wave))
@@ -312,6 +390,33 @@ fn tool_wave_list(store: &HarnessStore, arguments: &Value) -> Result<Value, Stri
         .into_iter()
         .filter(|wave| mission_id.as_deref().is_none_or(|id| wave.mission_id == id))
         .collect::<Vec<_>>()))
+}
+
+fn tool_wave_update(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    revise_wave(
+        store,
+        required_str(arguments, "wave_id")?,
+        required_str(arguments, "context")?,
+        optional_str(arguments, "updated_by")?
+            .as_deref()
+            .unwrap_or("host"),
+    )
+    .map(|wave| json!(wave))
+    .map_err(|error| error.to_string())
+}
+
+fn tool_wave_advance(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    advance_wave(
+        store,
+        required_str(arguments, "wave_id")?,
+        required_str(arguments, "outcome")?,
+        optional_str(arguments, "advanced_by")?
+            .as_deref()
+            .unwrap_or("host"),
+        optional_string_array(arguments, "artifact_refs")?,
+    )
+    .map(|wave| json!(wave))
+    .map_err(|error| error.to_string())
 }
 
 fn tool_wave_gate(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -356,7 +461,8 @@ fn tool_team_run_create(
     let member_values = arguments
         .get("members")
         .and_then(Value::as_array)
-        .ok_or_else(|| "missing required array argument `members`".to_string())?;
+        .cloned()
+        .unwrap_or_default();
     let mut members = Vec::new();
     for (index, member) in member_values.iter().enumerate() {
         let member_str = |key: &str| {
@@ -384,17 +490,30 @@ fn tool_team_run_create(
             name: member_str("name")?.to_string(),
             role: member_str("role")?.to_string(),
             provider: member_str("provider")?.to_string(),
+            execution_mode: optional_str(member, "execution_mode")?,
             model: optional_str(member, "model")?,
+            worktree_ref: optional_str(member, "worktree_ref")?,
             owned_paths,
+            resume_native_session_id: optional_str(member, "resume_native_session_id")?,
         });
+    }
+    let agent_team_id = optional_str(arguments, "agent_team_id")?;
+    if members.is_empty() {
+        if let Some(team_id) = agent_team_id.as_deref() {
+            members = team_member_specs_from_definition(store, team_id)
+                .map_err(|error| error.to_string())?;
+        }
     }
     let created = create_team_run(
         store,
+        resolved.context.as_ref(),
+        optional_str(arguments, "execution_root")?,
         objective,
         budget_limit_usd,
         "mcp",
         None,
         optional_str(arguments, "previous_run_id")?,
+        agent_team_id,
         optional_str(arguments, "mission_id")?,
         optional_str(arguments, "wave_id")?,
         &members,
@@ -405,9 +524,98 @@ fn tool_team_run_create(
         "member_run_ids": created.team_run.member_run_ids,
         "mission_id": created.team_run.mission_id,
         "wave_id": created.team_run.wave_id,
+        "execution_root": created.team_run.execution_root,
+        "member_runs": created.member_runs,
         "assignment_messages": created.assignment_messages,
         "dashboard_url": team_dashboard_url(resolved, &created.team_run.id),
     }))
+}
+
+/// `team_run_add_member` — extend an active long-lived run and create the new
+/// member's first correlated assignment.
+fn tool_team_run_add_member(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let assignment = required_str(arguments, "assignment")?;
+    let member = arguments
+        .get("member")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "member must be an object".to_string())?;
+    let member_str = |key: &str| {
+        member
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("member.{key} must be a string"))
+    };
+    let owned_paths = match member.get("owned_paths") {
+        None => Vec::new(),
+        Some(Value::Array(paths)) => paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                path.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("member.owned_paths[{index}] must be a string"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err("member.owned_paths must be an array".to_string()),
+    };
+    let member = TeamMemberSpec {
+        name: member_str("name")?.to_string(),
+        role: member_str("role")?.to_string(),
+        provider: member_str("provider")?.to_string(),
+        execution_mode: optional_str(&Value::Object(member.clone()), "execution_mode")?,
+        model: optional_str(&Value::Object(member.clone()), "model")?,
+        worktree_ref: optional_str(&Value::Object(member.clone()), "worktree_ref")?,
+        owned_paths,
+        resume_native_session_id: optional_str(
+            &Value::Object(member.clone()),
+            "resume_native_session_id",
+        )?,
+    };
+    let (run, member_run, assignment_message) = add_team_run_member(
+        store,
+        resolved.context.as_ref(),
+        team_run_id,
+        &member,
+        assignment,
+        optional_str(arguments, "origin_wave_id")?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "team_run": run,
+        "member_run": member_run,
+        "assignment_message": assignment_message,
+        "dashboard_url": team_dashboard_url(resolved, team_run_id),
+    }))
+}
+
+fn tool_team_run_rename_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    rename_team_run_member(
+        store,
+        required_str(arguments, "team_run_id")?,
+        required_str(arguments, "member_run_id")?,
+        required_str(arguments, "name")?,
+    )
+    .map(|member| json!(member))
+    .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_deactivate_member(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    deactivate_team_run_member(
+        store,
+        required_str(arguments, "team_run_id")?,
+        required_str(arguments, "member_run_id")?,
+        required_str(arguments, "reason")?,
+    )
+    .map(|member| json!(member))
+    .map_err(|error| error.to_string())
 }
 
 /// `team_run_list` — the latest projection of every run, trimmed to the
@@ -451,6 +659,11 @@ fn tool_team_run_status(
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
     let messages =
         latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
+    let pending_interactions: Vec<_> = latest_pending_interactions_in_append_order(store)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|interaction| interaction.team_run_id == id)
+        .collect();
     let members: Vec<Value> = member_runs
         .iter()
         .map(|member| {
@@ -478,6 +691,7 @@ fn tool_team_run_status(
         "team_run": run,
         "wave_index": wave_index,
         "members": members,
+        "pending_interactions": pending_interactions,
         "unacked_messages": unacked_messages,
         "dashboard_url": team_dashboard_url(resolved, id),
     }))
@@ -519,6 +733,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         body,
         correlation_id,
         causation_id,
+        optional_str(arguments, "origin_wave_id")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
@@ -551,21 +766,58 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "mission_create",
-            "description": "Create a native durable Mission for ordered Wave execution.",
+            "description": "Create durable Mission intent and optional Markdown context. CLI owns the same operation; this MCP tool is a thin adapter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "Optional stable Mission id; generated when omitted."},
                     "title": {"type": "string"},
                     "objective": {"type": "string"},
-                    "desired_outcome": {"type": "string"}
+                    "desired_outcome": {"type": "string"},
+                    "context": {"type": "string", "description": "Durable Markdown Mission brief."}
                 },
                 "required": ["title", "objective"]
             }
         },
         {
+            "name": "mission_update_context",
+            "description": "Replace a Mission's durable Markdown context using the shared CLI/store service.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {"type": "string"},
+                    "context": {"type": "string", "minLength": 1}
+                },
+                "required": ["mission_id", "context"]
+            }
+        },
+        {
+            "name": "mission_link_team",
+            "description": "Link an independent reusable AgentTeam to a Mission without transferring lifecycle ownership.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {"type": "string"},
+                    "team_id": {"type": "string"}
+                },
+                "required": ["mission_id", "team_id"]
+            }
+        },
+        {
+            "name": "mission_unlink_team",
+            "description": "Detach a Mission relation without closing, archiving, or deleting the AgentTeam.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {"type": "string"},
+                    "team_id": {"type": "string"}
+                },
+                "required": ["mission_id", "team_id"]
+            }
+        },
+        {
             "name": "mission_close",
-            "description": "Complete a Mission with an explicit outcome. Closeout succeeds only when the Mission has at least one Wave and every ordered Wave is completed with an accepted gate; completed Missions are immutable.",
+            "description": "Complete a Mission with an explicit outcome after every ordered Wave has an explicit Host advance outcome. Completed Missions are immutable; linked Team lifecycle is unchanged.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -583,7 +835,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "wave_create",
-            "description": "Create a lightweight ordered Wave for a native Mission.",
+            "description": "Create an ordered Host-plan Wave with Markdown context. executor_kind is an optional legacy direct-executor compatibility hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -595,8 +847,37 @@ fn tool_definitions() -> Value {
                     "executor_kind": {"type": "string", "enum": ["agent_team", "dynamic_workflow", "host"]},
                     "exit_criteria": {"type": "string"},
                     "plan_note": {"type": "string"}
+                    ,"context": {"type": "string", "description": "Host operational memo in Markdown."}
+                    ,"updated_by": {"type": "string", "description": "Defaults to host."}
                 },
-                "required": ["mission_id", "title", "objective", "executor_kind"]
+                "required": ["mission_id", "title", "objective"]
+            }
+        },
+        {
+            "name": "wave_update",
+            "description": "Append a new revision of the selected Wave's Host operational memo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wave_id": {"type": "string"},
+                    "context": {"type": "string", "minLength": 1},
+                    "updated_by": {"type": "string", "description": "Defaults to host."}
+                },
+                "required": ["wave_id", "context"]
+            }
+        },
+        {
+            "name": "wave_advance",
+            "description": "Record the Host decision to advance. Active members, assignments, and provider sessions continue unchanged.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wave_id": {"type": "string"},
+                    "outcome": {"type": "string", "minLength": 1},
+                    "advanced_by": {"type": "string", "description": "Defaults to host."},
+                    "artifact_refs": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["wave_id", "outcome"]
             }
         },
         {
@@ -623,15 +904,17 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_create",
-            "description": "Create an Agent Team run with at least one member: journals the planning run, member rows, canonical queued Assignment messages, and events. Returns run/member ids, assignment correlations, and a run-specific Dashboard URL. Call team_run_start to execute it.",
+            "description": "Create a standalone or Mission-scoped Agent Team run. Prefer agent_team_id + mission_id with no wave_id; members can come from the stable team definition. wave_id is legacy direct-Wave compatibility only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "objective": {"type": "string", "minLength": 1, "description": "What the team should accomplish; also seeds each member's assignment message body."},
                     "budget_limit_usd": {"type": "number", "minimum": 0, "description": "Optional budget cap in USD, recorded on the run."},
                     "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
-                    "mission_id": {"type": "string", "description": "Optional durable Mission id. New native linkage requires a concrete wave_id; omit both ids only for an unlinked compatibility run."},
-                    "wave_id": {"type": "string", "description": "Optional durable Wave id for this run. The run inherits that Wave's Mission when mission_id is omitted; a supplied mission_id must match."},
+                    "agent_team_id": {"type": "string", "description": "Stable independent AgentTeam definition. It must be linked when mission_id is supplied."},
+                    "mission_id": {"type": "string", "description": "Optional durable Mission relation. Mission-only is the primary long-lived team path."},
+                    "wave_id": {"type": "string", "description": "Legacy direct-Wave executor compatibility only."},
+                    "execution_root": {"type": "string", "minLength": 1, "description": "Optional TeamRun execution root. Must be the selected project_root or a Git worktree sharing its git common directory; defaults to project_root."},
                     "members": {
                         "type": "array",
                         "description": "One entry per team member.",
@@ -641,20 +924,76 @@ fn tool_definitions() -> Value {
                             "properties": {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
-                                "provider": {"type": "string", "minLength": 1, "description": "Provider id (kimi is the v0 adapter)."},
+                                "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
+                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"], "description": "Optional provider-specific execution mode."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
-                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."}
+                                "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
+                                "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
+                                "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
                             "required": ["name", "role", "provider"]
                         }
                     }
                 },
-                "required": ["objective", "members"]
+                "required": ["objective"]
+            }
+        },
+        {
+            "name": "team_run_add_member",
+            "description": "Add one member to an active planning/running/waiting TeamRun and create its first correlated assignment. origin_wave_id is optional Host-plan provenance and does not bind the member lifecycle to a Wave.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "assignment": {"type": "string", "minLength": 1},
+                    "origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only."},
+                    "member": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "minLength": 1},
+                            "role": {"type": "string", "minLength": 1},
+                            "provider": {"type": "string", "minLength": 1},
+                            "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"]},
+                            "model": {"type": "string", "minLength": 1},
+                            "worktree_ref": {"type": "string", "minLength": 1},
+                            "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                            "resume_native_session_id": {"type": "string", "minLength": 1}
+                        },
+                        "required": ["name", "role", "provider"]
+                    }
+                },
+                "required": ["team_run_id", "member", "assignment"]
+            }
+        },
+        {
+            "name": "team_run_rename_member",
+            "description": "Rename one MemberRun for future coordination and Dashboard display without replacing its provider-native session or historical id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "name": {"type": "string", "minLength": 1}
+                },
+                "required": ["team_run_id", "member_run_id", "name"]
+            }
+        },
+        {
+            "name": "team_run_deactivate_member",
+            "description": "Deactivate an idle, queued, waiting, reviewing, or blocked MemberRun while preserving its history. An active provider turn must be interrupted first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string", "minLength": 1}
+                },
+                "required": ["team_run_id", "member_run_id", "reason"]
             }
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped Dashboard URL immediately. The current executable member adapter is Kimi ACP; unsupported providers fail honestly.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Executable modes are Codex batch (codex_exec), Codex interactive (codex_app_server), Kimi ACP (kimi_acp), and Claude CLI (claude_cli); unregistered providers or modes fail honestly. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -693,7 +1032,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction (null when the member has not acted yet), the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions including exact option ids, the count of messages with at least one unacknowledged delivery, and the live dashboard URL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -715,8 +1054,52 @@ fn tool_definitions() -> Value {
                     "body": {"type": "string"},
                     "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
+                    ,"origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
+            }
+        },
+        {
+            "name": "team_run_resolve_interaction",
+            "description": "Resolve one provider-originated pending interaction using its exact provider option id. Lead-routed interactions require resolved_by=host|lead; human-routed interactions require operator|human; policy-routed interactions require policy. Kimi ACP can resume the same provider request after resolution.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "interaction_id": {"type": "string"},
+                    "option_id": {"type": "string", "description": "Exact option id exposed by the provider interaction."},
+                    "response_text": {"type": "string", "description": "Free-form response when the provider contract supports it."},
+                    "resolved_by": {"type": "string", "enum": ["host", "lead", "operator", "human", "policy"]}
+                },
+                "required": ["team_run_id", "interaction_id", "resolved_by"]
+            }
+        },
+        {
+            "name": "team_run_steer_member",
+            "description": "Inject operator or Lead input into a currently active provider turn. This is capability-gated and currently requires codex_app_server; batch modes must use team_run_send_message for the next round.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "content": {"type": "string", "minLength": 1},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id", "content"]
+            }
+        },
+        {
+            "name": "team_run_interrupt_member",
+            "description": "Cooperatively interrupt one active provider turn when its execution mode advertises supports_cancel. Codex app-server uses turn/interrupt; Kimi ACP uses session/cancel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id"]
             }
         },
         {

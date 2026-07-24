@@ -1,0 +1,14 @@
+{
+  "id": "mrun-secret-content",
+  "team_run_id": "trun-1",
+  "name": "worker-1",
+  "role": "worker",
+  "provider": "codex",
+  "status": "running",
+  "workspace_snapshot": {
+    "cwd": "/projects/harness",
+    "instruction_roots": ["/projects/harness"],
+    "instruction_contents": ["secret or copied instruction text is forbidden"]
+  },
+  "started_at": "2026-07-18T00:00:00Z"
+}

@@ -49,7 +49,7 @@ Verification: CLI/API first, UI as review evidence
 UI editing: secondary, low-risk, and never the only implementation proof
 ```
 
-ADR 0031 fixes the product center: Docs is not a Notion editor clone. It is an
+ADR 0036 fixes the product center: Docs is not a Notion editor clone. It is an
 Agent-operated memory substrate with code-declared custom business pages and
 Human-facing review UI. `CustomPageDefinition` and `CustomPagePackage` are
 therefore core product contracts for important pages, not decorative metadata.
@@ -58,7 +58,7 @@ Therefore this matrix treats CLI/skill coverage as the first operating
 surface. UI status is evidence that Humans can understand the state; it does
 not replace the Agent-facing command surface.
 
-Storage posture follows [ADR 0030](../decisions/0030-company-os-sql-read-model.md):
+Storage posture follows [ADR 0035](../decisions/0035-company-os-sql-read-model.md):
 canonical writes remain append-only JSONL ledgers and latest projections.
 SQL is introduced only as a derived read/query/index layer after CLI/API read
 contracts stabilize; it is not the current canonical Docs Store.

@@ -15,9 +15,9 @@
         "contract": [
         "docs/company-os/document-system.md",
           "docs/company-os/docs-operating-surface-matrix.md",
-          "docs/decisions/0030-company-os-sql-read-model.md"
+          "docs/decisions/0035-company-os-sql-read-model.md"
           ,
-          "docs/decisions/0031-agent-operated-docs-and-code-declared-pages.md"
+          "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md"
         ],
         "schema": [
           "schemas/company-os/knowledge.schema.json"
@@ -79,9 +79,9 @@
         "Document Health Review exposes a high-judgment cleanup queue that routes rename, split, merge, archive, and migration candidates to corrective WorkItems instead of direct mutation",
         "Company Docs Operator skill documents the complete governed Docs CLI surface and truth-boundary operating rules",
         "Docs Workspace exposes the complete CLI/Skill command set for query/search/traverse/refs/related, health, module, page scaffold/verify/publish, page-definition, document create/rename/move/archive, template create/status, block append/update/archive/remove/reorder, typed-record append/update/validate, view create/update, relation link/unlink/relink, diff, snapshot, and change-report",
-        "ADR 0031 records Docs as an Agent-operated substrate with code-declared custom business pages and Human-facing review UI, not a Notion editor clone",
+        "ADR 0036 records Docs as an Agent-operated substrate with code-declared custom business pages and Human-facing review UI, not a Notion editor clone",
         "Docs operating surface matrix maps Docs Workspace, Document Focus, Business Module Focus, and Document Health Review to native objects, UI, CLI/skill coverage, visual/Store-live evidence, and gaps",
-        "ADR 0030 records SQL as a future derived Docs read/query/index layer while keeping append-only JSONL ledgers and latest projections as the current canonical write/audit Store",
+        "ADR 0035 records SQL as a future derived Docs read/query/index layer while keeping append-only JSONL ledgers and latest projections as the current canonical write/audit Store",
         "routed standard module page at ?surface=docs&module=<id> over native BusinessModule TypedRecords",
         "Store-live standard module browser authoring creates TypedRecord, View, and Relation records using governed typed_record.append, view.append, and relation.append Actions without Work, Approval, or Finance side effects",
         "Store-live Docs Health corrective WorkItem routing without Finance, Approval, or Payment side effects",
@@ -99,30 +99,15 @@
       "id": "organization",
       "implementationState": "partial",
       "truthRefs": {
-        "contract": [
-          "docs/company-os/organization-and-actors.md"
-        ],
-        "schema": [
-          "schemas/company-os/actors.schema.json"
-        ],
-        "store": [
-          "crates/harness-store/src/company_os.rs"
-        ],
-        "api": [
-          "crates/harness-cli/src/company_os_api.rs"
-        ],
-        "ui": [
-          "apps/agent-dashboard/src/company-os/operations/pages.tsx"
-        ],
-        "acceptance": [
-          "crates/harness-core/tests/company_os.rs",
-          "crates/harness-store/tests/company_os.rs"
-        ]
+        "contract": ["docs/company-os/organization-and-actors.md"],
+        "schema": ["schemas/company-os/actors.schema.json"],
+        "store": ["crates/harness-store/src/company_os.rs"],
+        "api": ["crates/harness-cli/src/company_os_api.rs"],
+        "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
+        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "pnpm check:dashboard"]
       },
-      "blockingGaps": [
-        "governed organization-change lifecycle",
-        "governance-led Organization Actual"
-      ]
+      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace"],
+      "blockingGaps": ["governed organization-change lifecycle", "governance-led Organization Actual"]
     },
     {
       "id": "work",
@@ -149,12 +134,8 @@
           "apps/agent-dashboard/tests/company-os-operations-check.mjs"
         ]
       },
-      "verifiedSlices": [
-        "source Document to WorkItem and Assignment through governed Actions"
-      ],
-      "blockingGaps": [
-        "additional business-specific lifecycle policies"
-      ]
+      "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions", "Lead request to Work Governance submission to Business Agent completion and Docs return", "non-financial work creates no Commitment or Approval"],
+      "blockingGaps": ["additional business-specific lifecycle policies"]
     },
     {
       "id": "finance",
@@ -225,5 +206,15 @@
         "visual_fidelity": "pass"
       }
     }
+  },
+  "standingAgentWorkLoop": {
+    "implementationState": "verified",
+    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/src/company-os/operations/pages.tsx"],
+    "route": ["Lead Agent", "Work Governance Agent", "Business Agent", "accountable Human", "Docs result return"],
+    "conditionalFinance": {
+      "nonFinancial": "zero Commitment and zero Approval",
+      "monetary": "Finance-owned Commitment plus named Human Approval"
+    },
+    "blockingGaps": ["governed OrgChangeProposal and Standing Agent provisioning lifecycle", "live Standing Agent message transport"]
   }
 }

@@ -31,13 +31,16 @@ import {
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { acknowledgeTeamMessage, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
-import type { MemberRun, TeamMessage, Wave } from "../types";
+import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
+import type { MemberRun, PendingInteraction, TeamMessage, Wave } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
   model: WorkbenchModel;
   teamRunId?: string;
+  /** Optional navigation context. A Mission-scoped TeamRun is not owned by it. */
+  missionId?: string;
+  waveId?: string;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
@@ -55,13 +58,16 @@ const FILTERS: Array<{ id: StreamFilter; label: string }> = [
 ];
 
 /**
- * One operational view of one AgentTeamRun attempt.  Its durable input is the
- * native Mission → Wave → TeamRun hierarchy; it deliberately has no inferred dependency graph
- * projection and keeps Wave acceptance visibly separate from attempt status.
+ * One operational view of one AgentTeamRun. New runs are independent or
+ * Mission-scoped and may span Host-plan Waves; a selected Wave is navigation
+ * context only. Legacy direct-Wave attempts remain readable without inventing
+ * a dependency graph.
  */
 export function TeamWarRoom({
   model,
   teamRunId,
+  missionId,
+  waveId,
   onSelectionChange,
   actionsEnabled = false,
   onAction,
@@ -99,6 +105,13 @@ export function TeamWarRoom({
   }
 
   const { run, mission, wave, attempts, members, memberById, messages, actions, delegations, events, liveActivityByMember, needsYou } = context;
+  const navigationMission = mission ?? model.snapshot.missions?.find((item) => item.id === missionId);
+  const navigationWave = wave ?? model.snapshot.waves?.find(
+    (item) =>
+      item.id === waveId &&
+      (!navigationMission || item.mission_id === navigationMission.id),
+  );
+  const stableTeam = model.snapshot.teams?.find((item) => item.id === run.agent_team_id);
   const orderedMembers = [...members].sort(
     (left, right) => memberPressureRank(left.status) - memberPressureRank(right.status),
   );
@@ -107,6 +120,9 @@ export function TeamWarRoom({
     needsYou.blockedMembers[0] ??
     needsYou.waitingMembers[0] ??
     orderedMembers[0];
+  const pendingInteractions = context.interactions
+    .filter((interaction) => interaction.status === "pending")
+    .sort((left, right) => timestamp(left.created_at) - timestamp(right.created_at));
   const activityItems = toActivityItems(context.activity, memberById).map((item) => {
     if (!item.id.startsWith("message:")) return item;
     const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
@@ -128,6 +144,19 @@ export function TeamWarRoom({
         </Button>
       ),
     };
+  });
+  [...pendingInteractions].reverse().forEach((interaction) => {
+    activityItems.unshift(toInteractionActivity(
+      interaction,
+      memberById,
+      actionsEnabled,
+      (optionId) => dispatch(onAction, resolvePendingInteraction(
+        run.id,
+        interaction.id,
+        optionId,
+        interaction.route === "human" ? "operator" : "host",
+      )),
+    ));
   });
   const pressureActivityIndex = selectedMember?.status === "blocked"
     ? activityItems.map((item) => item.kind).lastIndexOf("decision")
@@ -207,22 +236,23 @@ export function TeamWarRoom({
             <button
               type="button"
               onClick={() => onSelectionChange(
-                run.mission_id && run.wave_id
-                  ? { surface: "missions", missionId: run.mission_id, waveId: run.wave_id, teamId: undefined }
+                navigationMission
+                  ? { surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined }
                   : { surface: "team", teamId: undefined },
               )}
               className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
             >
               <ChevronLeft className="size-3.5" />
-              {mission?.title ?? "Mission"} <span className="text-border">/</span> {wave ? `Wave ${wave.index}` : "Agent Teams"}
+              {navigationMission?.title ?? "Agent Teams"} <span className="text-border">/</span> {navigationWave ? `Wave ${navigationWave.index}` : "Team"}
             </button>
           }
-          title={wave ? `${wave.title} · Agent Team` : "Agent Team attempt"}
+          title={stableTeam?.name ?? "Agent Team attempt"}
           meta={
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
               <Badge tone="muted">attempt {attemptNumber(attempts, run.id)}</Badge>
-              {wave && <Badge tone={gateTone(wave.gate_status)}>Wave gate: {wave.gate_status ?? "pending"}</Badge>}
+              <Badge tone="muted">Lead · {teamLeadLabel(stableTeam?.owner_agent_id)}</Badge>
+              {navigationWave && <Badge tone={gateTone(navigationWave.gate_status)}>Host plan: Wave {navigationWave.index}</Badge>}
             </>
           }
           actions={
@@ -273,7 +303,7 @@ export function TeamWarRoom({
               <option value="blocker">Blocker</option>
               <option value="review_request">Review request</option>
             </Select>
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Host / operator</span>
+            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Team Lead · current Host</span>
           </div>
           <div className="flex items-end gap-2">
             <TextArea
@@ -293,9 +323,20 @@ export function TeamWarRoom({
       }
       context={
         <ContextRail quiet label="Team context">
-          <WaveModule wave={wave} onOpen={() => wave && onSelectionChange({ surface: "missions", missionId: wave.mission_id, waveId: wave.id, teamId: undefined })} />
-          <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />
-          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} createdAt={run.created_at} completedAt={run.completed_at} />
+          <MissionTeamModule
+            missionTitle={navigationMission?.title}
+            teamName={stableTeam?.name}
+            leadAgentId={stableTeam?.owner_agent_id}
+            missionScoped={Boolean(run.mission_id && !run.wave_id)}
+            onOpen={() => navigationMission && onSelectionChange({ surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined })}
+          />
+          <WaveModule
+            wave={navigationWave}
+            directExecutor={Boolean(wave && wave.id === navigationWave?.id)}
+            onOpen={() => navigationWave && onSelectionChange({ surface: "missions", missionId: navigationWave.mission_id, waveId: navigationWave.id, teamId: undefined })}
+          />
+          {wave && <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />}
+          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
           <SelectedMemberModule
             member={selectedMember}
             assignment={selectedAssignment?.body}
@@ -404,6 +445,51 @@ export function TeamWarRoom({
   );
 }
 
+function toInteractionActivity(
+  interaction: PendingInteraction,
+  members: Map<string, MemberRun>,
+  actionsEnabled: boolean,
+  onResolve: (optionId: string) => void,
+): WorkbenchActivityItem {
+  return {
+    id: `interaction:${interaction.id}`,
+    kind: "decision",
+    glyph: interaction.kind === "question" ? "message" : "decision",
+    title: (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <span>{interaction.title}</span>
+        <Badge tone="warn">{interaction.route} decision</Badge>
+      </span>
+    ),
+    body: interaction.prompt,
+    actor: memberLabel(members, interaction.member_run_id),
+    timestamp: formatTime(interaction.created_at),
+    tone: "warn",
+    prominence: "pressure",
+    action: (
+      <div className="flex max-w-72 flex-wrap justify-end gap-1.5 rounded-lg border border-status-warn/25 bg-status-warn/[0.055] p-2">
+        {interaction.options.map((option) => (
+          <Button
+            key={option.id}
+            size="sm"
+            variant={option.intent?.startsWith("reject") ? "secondary" : "default"}
+            disabled={!actionsEnabled || interaction.route === "policy"}
+            onClick={() => onResolve(option.id)}
+          >
+            {option.label}
+          </Button>
+        ))}
+        {interaction.route === "policy" && (
+          <span className="self-center text-[10px] text-muted-foreground">Awaiting governed policy decision</span>
+        )}
+        {interaction.options.length === 0 && (
+          <span className="text-[10px] text-muted-foreground">No compatible response option</span>
+        )}
+      </div>
+    ),
+  };
+}
+
 function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, onComplete }: {
   status: string;
   actionsEnabled: boolean;
@@ -484,12 +570,50 @@ function memberPressureRank(status?: string | null): number {
   return 5;
 }
 
-function WaveModule({ wave, onOpen }: { wave?: Wave; onOpen: () => void }) {
-  if (!wave) return <ContextModule title="Wave unavailable" kicker="Wave"><p className="text-[11px] text-muted-foreground">This attempt has no resolved parent Wave in the snapshot.</p></ContextModule>;
+function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped, onOpen }: {
+  missionTitle?: string;
+  teamName?: string;
+  leadAgentId?: string;
+  missionScoped: boolean;
+  onOpen: () => void;
+}) {
   return (
-    <ContextModule title={`Wave ${wave.index} · ${wave.title}`} kicker="Wave" tone={waveTone(wave.status)} action={<button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open</button>}>
+    <ContextModule
+      title={teamName ?? "Independent Agent Team"}
+      kicker={missionScoped ? "Mission-linked team" : "Agent Team"}
+      tone="good"
+      action={missionTitle ? <button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open Mission</button> : undefined}
+    >
+      <p className="text-[12px] leading-relaxed text-foreground">
+        {missionTitle ? `Linked to ${missionTitle}.` : "This Team is running independently."}
+      </p>
+      <div className="mt-2">
+        <Fact label="Team Lead" value={teamLeadLabel(leadAgentId)} />
+      </div>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+        {missionScoped
+          ? "Its members and provider-native sessions may continue across multiple Host-plan Waves."
+          : "The Team remains an independent capability and can be linked to a Mission when useful."}
+      </p>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+        The Lead coordinates the Team and is outside MemberRuns unless it explicitly joins as an executing member.
+      </p>
+    </ContextModule>
+  );
+}
+
+function teamLeadLabel(leadAgentId?: string | null): string {
+  if (!leadAgentId || leadAgentId === "host") return "Current Host Agent";
+  return leadAgentId;
+}
+
+function WaveModule({ wave, directExecutor, onOpen }: { wave?: Wave; directExecutor: boolean; onOpen: () => void }) {
+  if (!wave) return <ContextModule title="No Wave selected" kicker="Host plan"><p className="text-[11px] text-muted-foreground">Open this Team from a Mission Wave to carry that planning context into the console.</p></ContextModule>;
+  return (
+    <ContextModule title={`Wave ${wave.index} · ${wave.title}`} kicker={directExecutor ? "Legacy direct executor" : "Current Host plan"} tone={waveTone(wave.status)} action={<button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open</button>}>
       <p className="text-[12px] leading-relaxed text-foreground">{wave.objective}</p>
-      <div className="mt-2 flex flex-wrap gap-1"><Badge tone="muted">{wave.executor_kind}</Badge><Badge tone={gateTone(wave.gate_status)}>gate {wave.gate_status ?? "pending"}</Badge></div>
+      <div className="mt-2 flex flex-wrap gap-1"><Badge tone={gateTone(wave.gate_status)}>decision {wave.gate_status ?? "pending"}</Badge><Badge tone="muted">revision {wave.revision ?? 1}</Badge></div>
+      {!directExecutor && <p className="mt-2 text-[11px] text-muted-foreground">Navigation context only: assignments and messages tell this long-lived Team what to do; the Wave does not own its runtime.</p>}
       {wave.exit_criteria && <p className="mt-2 text-[11px] text-muted-foreground">Exit: {wave.exit_criteria}</p>}
     </ContextModule>
   );
@@ -527,8 +651,8 @@ function teamGateReadiness(wave: Wave | undefined, total: number): number | unde
   return spelled ? Math.min(total, words[spelled[1]]) : undefined;
 }
 
-function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; createdAt?: string; completedAt?: string | null }) {
-  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
+function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, executionRoot, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; executionRoot?: string | null; createdAt?: string; completedAt?: string | null }) {
+  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Execution root" value={executionRoot ?? "Not recorded (legacy run)"} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
 }
 
 function SelectedMemberModule({ member, assignment, currentAction, onMessage, onOpen }: { member?: MemberRun; assignment?: string; currentAction?: string; onMessage: () => void; onOpen: () => void }) {
@@ -536,14 +660,14 @@ function SelectedMemberModule({ member, assignment, currentAction, onMessage, on
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
       <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Session" value={member.provider_session_id ?? member.acp_session_id ?? "Not recorded"} mono /></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
 }
 
 function ResourcesModule({ members, delegationCount, liveCount }: { members: MemberRun[]; delegationCount: number; liveCount: number }) {
-  const sessions = members.filter((member) => member.provider_session_id || member.acp_session_id).length;
+  const sessions = members.filter((member) => member.native_session).length;
   const worktrees = members.filter((member) => member.worktree_ref).length;
   return <ContextModule title="Resources" kicker="Observed runtime"><div className="space-y-1.5 text-[11px]"><Fact label="Sessions" value={`${sessions} / ${members.length}`} /><Fact label="Worktrees" value={String(worktrees)} /><Fact label="Delegations" value={String(delegationCount)} /><Fact label="Live previews" value={String(liveCount)} /></div><p className="mt-2 text-[10px] text-muted-foreground">Observed resources only; no termination control is implied.</p></ContextModule>;
 }
@@ -575,7 +699,8 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
     if (item.kind === "action") {
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
+      const status = [action.provider_status, action.semantic_status].filter(Boolean).join(" · ");
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: status ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">provider {action.provider_status ?? "unknown"} · semantic {action.semantic_status ?? "not classified"}</span></> : action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");

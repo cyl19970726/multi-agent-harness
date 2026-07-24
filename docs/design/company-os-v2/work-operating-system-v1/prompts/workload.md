@@ -18,4 +18,3 @@ Right rail: selected actor "Iris" with accountable versus assigned work separate
 Constraints: capacity can be "Unknown"; do not pretend temporary Agent Team members are Standing Agents;
              accountability and execution assignment are visually distinct
 ```
-

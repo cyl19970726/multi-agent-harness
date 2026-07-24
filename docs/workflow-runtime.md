@@ -4,8 +4,9 @@ This document defines the canonical workflow runtime for `crates/harness-workflo
 
 ## Vision Link
 
-The product needs a programmable executor between a Wave and provider-specific
-worker CLIs. A workflow is useful only after the harness can explain:
+The product needs a programmable executor the Host can invoke while pursuing a
+Mission, without making the Wave own that runtime. A workflow is useful only
+after the harness can explain:
 
 ```text
 Starlark program
@@ -17,9 +18,10 @@ Starlark program
   -> explicit patch apply/reject when writable
 ```
 
-The workflow runtime is the canonical internal executor for a
-`Wave(executor_kind=dynamic_workflow)`. A Lead-authored `.star` program owns its
-steps and records its result without creating a task graph.
+The workflow runtime is the canonical engine for `dynamic_workflow`.
+A Lead-authored `.star` program owns its steps and records its result without
+creating a task graph. Mission/Wave context may cite the `WorkflowRun` and its
+outcome, but the run remains independent of the Wave lifecycle.
 
 ## Boundary
 
@@ -69,13 +71,13 @@ The fields are defined in `crates/harness-workflow/src/lib.rs:40` through `crate
 
 ### `StepResult`
 
-`StepResult` is the runtime result for one leaf. It records phase, label, provider, isolation, success, provider session linkage, output summary, optional started/step ids, details telemetry, optional structured output, and ordinal (`crates/harness-workflow/src/lib.rs:85`, `crates/harness-workflow/src/lib.rs:88`, `crates/harness-workflow/src/lib.rs:89`, `crates/harness-workflow/src/lib.rs:97`, `crates/harness-workflow/src/lib.rs:99`, `crates/harness-workflow/src/lib.rs:101`, `crates/harness-workflow/src/lib.rs:117`, `crates/harness-workflow/src/lib.rs:124`, `crates/harness-workflow/src/lib.rs:132`). `StepResult::step_status()` maps `ok=true` to `WorkflowStepStatus::Completed` and `ok=false` to `Failed` (`crates/harness-workflow/src/lib.rs:135`, `crates/harness-workflow/src/lib.rs:137`).
+`StepResult` is the runtime result for one leaf. It records phase, label, provider, isolation, success, output summary, optional started/step ids, details telemetry, optional structured output, and ordinal. Provider-native identity is attached to the durable `WorkflowStep.native_session`, not duplicated inside the runtime result. `StepResult::step_status()` maps `ok=true` to `WorkflowStepStatus::Completed` and `ok=false` to `Failed`.
 
 ### `WorkflowOutcome`
 
 `WorkflowOutcome` is the runtime's whole-run value: ordered steps, terminal status, summary, spawned-agent count, and optional final JSON output (`crates/harness-workflow/src/lib.rs:463`, `crates/harness-workflow/src/lib.rs:465`, `crates/harness-workflow/src/lib.rs:466`, `crates/harness-workflow/src/lib.rs:477`). `outcome_from_steps()` is shared by registry workflows and Starlark runs so all front-ends derive status, summary, and final output identically (`crates/harness-workflow/src/lib.rs:657`, `crates/harness-workflow/src/lib.rs:659`). A run with steps but zero successful leaves fails; otherwise partial success completes unless a Starlark `verdict()` overrides the outcome (`crates/harness-workflow/src/lib.rs:665`, `crates/harness-workflow/src/lib.rs:677`).
 
-`step_result_json()` is the machine-facing projection stored on `WorkflowStep.result` and inside final output. It includes phase, label, provider, isolation, ok, provider session id, output summary, structured payload, ordinal, and merged telemetry details such as model, exit code, duration, tokens, failures, and worktree diffs (`crates/harness-workflow/src/lib.rs:624`, `crates/harness-workflow/src/lib.rs:627`, `crates/harness-workflow/src/lib.rs:628`, `crates/harness-workflow/src/lib.rs:643`).
+`step_result_json()` is the machine-facing projection stored on `WorkflowStep.result` and inside final output. It includes phase, label, provider, isolation, ok, output summary, structured payload, ordinal, and merged telemetry details such as model, exit code, duration, tokens, failures, and worktree diffs. It does not embed provider transcript or session-history data.
 
 ## Host API
 
@@ -128,7 +130,7 @@ else:
     verdict(first["ok"], first["detail"] or "")
 ```
 
-The status dict carries `ok`, `reason`, `detail`, `failure`, `text`, `structured`, `provider_session_id`, `label`, `phase`, `provider`, `isolation`, and `ordinal`. `reason` and `detail` come from `StepResult.details.failure.reason/detail` when the provider classified the failure. If a failed step has no classified failure object, `reason` falls back to `"failed"` and `detail` falls back to the step output summary. Successful steps return `reason=None`, `detail=None`, and still carry `text` plus any parsed `structured` payload.
+The status dict carries `ok`, `reason`, `detail`, `failure`, `text`, `structured`, `label`, `phase`, `provider`, `isolation`, and `ordinal`. `reason` and `detail` come from `StepResult.details.failure.reason/detail` when the provider classified the failure. If a failed step has no classified failure object, `reason` falls back to `"failed"` and `detail` falls back to the step output summary. Successful steps return `reason=None`, `detail=None`, and still carry `text` plus any parsed `structured` payload.
 
 Patch and artifact host calls:
 
@@ -234,7 +236,9 @@ The dynamic authoring command is:
 harness workflow run-script <prog.star> [flags]
 ```
 
-The script path can be positional or supplied as `--script <path>` (`crates/harness-cli/src/main.rs:9604`). The command is routed through `workflow_command`, which also exposes `workflow run`, `get-output`, `patch`, `list`, `reap`, `gc-worktrees`, and `gc-trace` (`crates/harness-cli/src/main.rs:9333`, `crates/harness-cli/src/main.rs:9336`, `crates/harness-cli/src/main.rs:9393`).
+The script path can be positional or supplied as `--script <path>`. The command
+is routed through `workflow_command`, which also exposes `workflow run`,
+`get-output`, `patch`, `list`, `reap`, and `gc-worktrees`.
 
 Writable patch commands:
 
@@ -255,7 +259,6 @@ Key `run-script` flags:
 | `--name <name>` | Initial/default workflow name; the Starlark `workflow(...)` header overrides it |
 | `--args <json>` | JSON value injected as global `args` |
 | `--resume <run_id>` | Re-run identical script and replay prior completed leaves by deterministic ordinal |
-| `--trace durable\|live` | Retain provider turn trace durably, or stream live only |
 | `--dry-run` | Use mock provider results while journaling the same run/step shape |
 | `--start-runtime` | Accepted in options; ephemeral workflow leaves do not require resident runtimes |
 | `--timeout-ms <ms>` | Per-node idle timeout; default is 900000 ms |
@@ -283,9 +286,9 @@ append WorkflowRun(status=running)
   -> append terminal WorkflowRun(status=completed|failed)
 ```
 
-The run id is minted before evaluation so real leaves can journal live step rows as they start (`crates/harness-cli/src/main.rs:9709`, `crates/harness-cli/src/main.rs:9711`). The initial `WorkflowRun` row is appended with status `Running`, args, initiator, script spec, trace retention, host pid, and dry-run marker (`crates/harness-cli/src/main.rs:9713`, `crates/harness-cli/src/main.rs:9716`, `crates/harness-cli/src/main.rs:9722`, `crates/harness-cli/src/main.rs:9729`, `crates/harness-cli/src/main.rs:9733`, `crates/harness-cli/src/main.rs:9741`, `crates/harness-cli/src/main.rs:9744`, `crates/harness-cli/src/main.rs:9747`, `crates/harness-cli/src/main.rs:9749`).
+The run id is minted before evaluation so real leaves can journal live step rows as they start. The initial `WorkflowRun` row is appended with status `Running`, args, initiator, script spec, host pid, and dry-run marker.
 
-The real driver appends a `WorkflowStep(status=Running)` before spawning the provider, stamped with a `provider_session_id` so the dashboard can attach live turn events mid-flight (`crates/harness-cli/src/main.rs:7214`, `crates/harness-cli/src/main.rs:7222`, `crates/harness-cli/src/main.rs:7225`, `crates/harness-cli/src/main.rs:7232`, `crates/harness-cli/src/main.rs:7241`). When the leaf completes, the driver appends the terminal step immediately; finalize recognizes already-journaled step ids and does not double-write them (`crates/harness-cli/src/main.rs:7292`, `crates/harness-cli/src/main.rs:7297`, `crates/harness-cli/src/main.rs:9841`, `crates/harness-cli/src/main.rs:9845`).
+The real driver appends a `WorkflowStep(status=Running)` before spawning the provider. Once the provider exposes its native session, the step receives a mode-aware `native_session` locator; Dashboard activity is read from that provider-owned record. When the leaf completes, the driver appends the terminal step immediately, and finalize recognizes already-journaled step ids so it does not double-write them.
 
 `journal_workflow_outcome()` finalizes the run by appending ordered step ids, terminal status, ended time, summary, agent count, and final output (`crates/harness-cli/src/main.rs:9824`, `crates/harness-cli/src/main.rs:9855`, `crates/harness-cli/src/main.rs:9859`, `crates/harness-cli/src/main.rs:9861`, `crates/harness-cli/src/main.rs:9865`, `crates/harness-cli/src/main.rs:9866`). If `HARNESS_WORKFLOW_ON_COMPLETE` is set, the terminal run is passed to that hook after journaling (`crates/harness-cli/src/main.rs:9548`, `crates/harness-cli/src/main.rs:9551`, `crates/harness-cli/src/main.rs:9867`).
 
@@ -310,7 +313,6 @@ The real driver appends a `WorkflowStep(status=Running)` before spawning the pro
 | `initiated_by` | Agent member id or `operator` |
 | `design_intent` | Required Starlark design intent for dynamic runs |
 | `spec` | Dynamic run spec, usually `{"lang":"starlark","script": ...}` |
-| `trace_retention` | `durable`, `live`, or later retention states |
 | `host_pid` | Driver process id for abandoned-run reaping |
 | `dry_run` | Whether provider execution was mocked |
 
@@ -326,7 +328,7 @@ The fields are defined at `crates/harness-core/src/lib.rs:2612` through `crates/
 | `run_id` | Owning `WorkflowRun.id` |
 | `phase` | Declarative phase |
 | `label` | Step label |
-| `provider_session_id` | Linked provider session, if delivery reached a provider |
+| `native_session` | Mode-aware locator for the provider-owned execution record |
 | `status` | `queued`, `running`, `completed`, `failed`, or `cached` |
 | `output_summary` | Human-facing step output |
 | `result` | Structured machine payload from `step_result_json()` |
@@ -335,7 +337,7 @@ The fields are defined at `crates/harness-core/src/lib.rs:2612` through `crates/
 | `task_id` | Goal task id when the historical phase compiler/linker stamps it |
 | `verdict_outcome` | Phase verdict marker used by the goal orchestrator |
 
-The fields are defined at `crates/harness-core/src/lib.rs:2689` through `crates/harness-core/src/lib.rs:2713`. `WorkflowStep.run_id` points back to the run; `WorkflowRun.step_ids` preserves ordered membership. `provider_session_id` links the step to the provider session produced by the leaf (`crates/harness-core/src/lib.rs:2684`, `crates/harness-core/src/lib.rs:2686`, `crates/harness-core/src/lib.rs:2690`, `crates/harness-core/src/lib.rs:2694`).
+`WorkflowStep.run_id` points back to the run and `WorkflowRun.step_ids` preserves ordered membership. `native_session` locates the provider-owned execution record without copying its transcript, tool calls, command output, or turns into Harness storage.
 
 ## Provider-Neutral Execution
 
@@ -359,7 +361,7 @@ Workflow leaves are read-only by default: `writable=False` is the Starlark defau
 
 Read-only is enforced per provider, not assumed. codex (`--sandbox read-only`) and claude (the `Read,Grep,Glob` tool allowlist) physically prevent a read-only leaf from writing, so they run in the shared cwd. kimi's `kimi -p` has no read-only mode (it rejects every permission flag), so a "read-only" kimi leaf could otherwise edit the live tree. The leaf runner reads each provider's `enforces_read_only` capability and isolates a read-only leaf into a throwaway worktree when its provider can't enforce read-only — so the worktree, not provider trust, is the boundary (`step_needs_isolation`, `provider_enforces_read_only`).
 
-The worktree path is unique per run, node label, and provider session id, so same-label concurrent writable leaves do not collide (`crates/harness-cli/src/main.rs:7409`, `crates/harness-cli/src/main.rs:7415`, `crates/harness-cli/src/main.rs:7419`). The guard removes the worktree and temporary branch on drop (`crates/harness-cli/src/main.rs:7395`, `crates/harness-cli/src/main.rs:7496`, `crates/harness-cli/src/main.rs:7502`, `crates/harness-cli/src/main.rs:7507`). The diff is captured before cleanup and stored as leaf evidence/telemetry (`crates/harness-cli/src/main.rs:7798`, `crates/harness-cli/src/main.rs:7803`, `crates/harness-cli/src/main.rs:7867`).
+The worktree path is unique per run, node label, and Harness worker execution id, so same-label concurrent writable leaves do not collide. The guard removes the worktree and temporary branch on drop. The diff is captured before cleanup and stored as leaf evidence/telemetry.
 
 The writable worktree base is the project-root checkout's HEAD, not the cwd used to launch `run-script`. Keep the selected project root on the intended branch before running writable or isolated workflow leaves.
 
@@ -378,8 +380,8 @@ Security note: the throwaway worktree only contains writes made inside that chec
 `harness workflow run-script` evaluates an authored `.star` file, journals a
 `WorkflowRun` plus `WorkflowStep` rows, saves eligible writable diffs as
 `WorkflowPatch` rows, and discards worktrees after capture. A patch is applied
-or rejected explicitly. A Wave gate may use the WorkflowRun result and artifact
-references, but it never implicitly applies a patch.
+or rejected explicitly. A Host Wave update or advance may cite the WorkflowRun
+result and artifact references, but it never implicitly applies a patch.
 
 ## Invariants
 

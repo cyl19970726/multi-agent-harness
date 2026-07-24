@@ -19,4 +19,3 @@ Right rail: source document, accountable owner, target date, "7 of 10 WorkItems 
 Constraints: Milestone is a business checkpoint, never called Wave or Project;
              progress percentage is secondary to acceptance criteria
 ```
-

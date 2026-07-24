@@ -195,7 +195,7 @@ function PlatformPlaceholder({ surface }: { surface: "providers" | "plugins" | "
  * explicitly labelled prototype fixture. Presentation remains read-only until
  * a governed browser Action transport is connected separately.
  */
-export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAction }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean> }) {
+export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAction, onSelectionChange }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   if (selection.surface === "providers" || selection.surface === "plugins" || selection.surface === "settings") {
     return <PlatformPlaceholder surface={selection.surface} />;
   }
@@ -207,7 +207,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     documentId: selection.documentId,
     moduleId: selection.moduleId,
   });
-  const operations = adaptTrademarkOperationsProjection(resolved.value);
+  const operations = adaptTrademarkOperationsProjection(resolved.value, { workItemId: selection.workItemId });
 
   let content: ReactNode;
   switch (page) {
@@ -219,7 +219,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
     case "agents-organization": content = <OrganizationPage data={operations} />; break;
-    case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} />; break;
+    case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} onSelectionChange={onSelectionChange} />; break;
     case "governance-proposal": content = <GovernanceProposalFocus data={operations} />; break;
     case "approval-focus": content = <ApprovalFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDecision={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "business-module-focus": content = <StructuredDocumentView view={docs.moduleView} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDocsAction={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;

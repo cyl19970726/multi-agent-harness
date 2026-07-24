@@ -147,8 +147,6 @@ pub struct StepResult {
     pub isolation: Option<String>,
     /// Whether the underlying provider delivery succeeded.
     pub ok: bool,
-    /// The `ProviderSession` id this step produced, if a delivery was attempted.
-    pub provider_session_id: Option<String>,
     /// Human-facing summary / report text collected from the delivery.
     pub output_summary: String,
     /// The `WorkflowStep` id the driver journaled at step START (live progress).
@@ -313,7 +311,6 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                         provider: spec.provider.clone(),
                         isolation: spec.isolation.clone(),
                         ok: false,
-                        provider_session_id: None,
                         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
                         step_id: None,
                         started_at: None,
@@ -335,7 +332,6 @@ pub fn parallel(driver: &AgentStepFn<'_>, specs: &[AgentStepSpec]) -> Vec<StepRe
                     provider: spec.provider.clone(),
                     isolation: spec.isolation.clone(),
                     ok: false,
-                    provider_session_id: None,
                     output_summary: "agent step panicked".to_string(),
                     step_id: None,
                     started_at: None,
@@ -444,7 +440,6 @@ fn run_item_through_stages(item: &AgentStepSpec, stages: &[PipelineStage<'_>]) -
                 return match last {
                     Some(mut result) => {
                         result.ok = false;
-                        result.provider_session_id = None;
                         result.output_summary = format!(
                             "pipeline item dropped at a stage: {}",
                             result.output_summary
@@ -468,7 +463,6 @@ fn dropped_result(item: &AgentStepSpec) -> StepResult {
         provider: item.provider.clone(),
         isolation: item.isolation.clone(),
         ok: false,
-        provider_session_id: None,
         output_summary: "pipeline item dropped before producing a result".to_string(),
         step_id: None,
         started_at: None,
@@ -485,7 +479,6 @@ fn capped_result(item: &AgentStepSpec) -> StepResult {
         provider: item.provider.clone(),
         isolation: item.isolation.clone(),
         ok: false,
-        provider_session_id: None,
         output_summary: "workflow lifetime agent cap (1000) exceeded".to_string(),
         step_id: None,
         started_at: None,
@@ -502,7 +495,6 @@ fn panicked_result(item: &AgentStepSpec) -> StepResult {
         provider: item.provider.clone(),
         isolation: item.isolation.clone(),
         ok: false,
-        provider_session_id: None,
         output_summary: "pipeline stage panicked".to_string(),
         step_id: None,
         started_at: None,
@@ -524,7 +516,7 @@ pub struct WorkflowOutcome {
     /// which leaves it for the caller to fill).
     pub agents_spawned: u64,
     /// The collected structured output of the run: one JSON object per step
-    /// (`label` / `phase` / `ok` / `output_summary` / `provider_session_id`).
+    /// (`label` / `phase` / `ok` / `output_summary`).
     /// `None` when the run produced no steps.
     pub final_output: Option<serde_json::Value>,
 }
@@ -713,7 +705,6 @@ pub fn step_result_json(result: &StepResult) -> serde_json::Value {
         "provider": result.provider,
         "isolation": result.isolation,
         "ok": result.ok,
-        "provider_session_id": result.provider_session_id,
         "output_summary": result.output_summary,
         // The parsed structured output (schema mode), or null. Lets the dashboard
         // and `final_output` carry the validated object alongside the summary.
@@ -803,7 +794,6 @@ mod tests {
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: true,
-                provider_session_id: Some(format!("session-{}", spec.label)),
                 output_summary: format!("ok: {}", spec.prompt),
                 step_id: None,
                 started_at: None,
@@ -913,7 +903,6 @@ mod tests {
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: true,
-                provider_session_id: Some("s".to_string()),
                 output_summary: "ok".to_string(),
                 step_id: None,
                 started_at: None,
@@ -968,7 +957,6 @@ mod tests {
                     provider: spec.provider.clone(),
                     isolation: spec.isolation.clone(),
                     ok: false,
-                    provider_session_id: None,
                     output_summary: "delivery failed".to_string(),
                     step_id: None,
                     started_at: None,
@@ -986,7 +974,6 @@ mod tests {
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: true,
-                provider_session_id: Some("s".to_string()),
                 output_summary: "ok".to_string(),
                 step_id: None,
                 started_at: None,
@@ -1041,7 +1028,6 @@ mod tests {
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok,
-                provider_session_id: if ok { Some("s".to_string()) } else { None },
                 output_summary: if ok {
                     "ok".to_string()
                 } else {
@@ -1126,7 +1112,6 @@ mod tests {
                 provider: spec.provider.clone(),
                 isolation: spec.isolation.clone(),
                 ok: true,
-                provider_session_id: Some(format!("{}-{}", name, spec.label)),
                 output_summary: name.to_string(),
                 step_id: None,
                 started_at: None,
@@ -1222,7 +1207,6 @@ mod tests {
                     provider: spec.provider.clone(),
                     isolation: spec.isolation.clone(),
                     ok: true,
-                    provider_session_id: None,
                     output_summary: "s1".to_string(),
                     step_id: None,
                     started_at: None,
@@ -1246,7 +1230,6 @@ mod tests {
                     provider: spec.provider.clone(),
                     isolation: spec.isolation.clone(),
                     ok: true,
-                    provider_session_id: None,
                     output_summary: "s2".to_string(),
                     step_id: None,
                     started_at: None,
@@ -1281,7 +1264,6 @@ mod tests {
                     provider: spec.provider.clone(),
                     isolation: spec.isolation.clone(),
                     ok: true,
-                    provider_session_id: None,
                     output_summary: "s2".to_string(),
                     step_id: None,
                     started_at: None,
@@ -1300,7 +1282,6 @@ mod tests {
                     provider: spec.provider.clone(),
                     isolation: spec.isolation.clone(),
                     ok: true,
-                    provider_session_id: None,
                     output_summary: "s3".to_string(),
                     step_id: None,
                     started_at: None,

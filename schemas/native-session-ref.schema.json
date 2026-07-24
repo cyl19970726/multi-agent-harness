@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/native-session-ref.schema.json",
+  "title": "NativeSessionRef",
+  "description": "A mode-aware locator for provider-owned execution truth. It never embeds transcript or tool activity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["provider", "execution_mode", "native_session_id", "native_locator_kind", "adapter_contract_version", "availability", "supports_resume"],
+  "properties": {
+    "provider": { "type": "string", "minLength": 1 },
+    "execution_mode": { "type": "string", "minLength": 1 },
+    "native_session_id": { "type": "string", "minLength": 1 },
+    "native_locator_kind": { "type": "string", "minLength": 1 },
+    "provider_version": { "type": ["string", "null"], "minLength": 1 },
+    "adapter_contract_version": { "type": "string", "minLength": 1 },
+    "availability": { "type": "string", "enum": ["available", "stale", "missing", "incompatible", "unknown"] },
+    "supports_resume": { "type": "boolean" },
+    "last_verified_at": { "type": ["string", "null"], "minLength": 1 },
+    "parent_native_session_id": { "type": ["string", "null"], "minLength": 1 }
+  }
+}

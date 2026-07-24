@@ -5,10 +5,11 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:tool-descriptors && pnpm check:dashboard && pnpm check:company-os",
+    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:dashboard && pnpm check:company-os",
     "validate:json": "node scripts/validate-json.mjs",
     "check:schema-fixtures": "node scripts/check-schema-fixtures.mjs",
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
+    "check:native-session-boundary": "node scripts/check-native-session-boundary.mjs",
     "check:dashboard": "tsc -p apps/agent-dashboard/tsconfig.json --noEmit && node apps/agent-dashboard/tests/mission-wave-live-merge-check.mjs && node apps/agent-dashboard/tests/team-selectors-check.mjs && node apps/agent-dashboard/tests/workflow-diagnosis-check.mjs && node apps/agent-dashboard/tests/workbench-visual-fixture-check.mjs && node apps/agent-dashboard/tests/operator-controls-check.mjs && vite build --config apps/agent-dashboard/vite.config.ts",
   "check:company-os": "node apps/agent-dashboard/tests/company-os-docs-check.mjs && node scripts/check-company-os-docs-cli-smoke.mjs && node apps/agent-dashboard/tests/company-os-operations-check.mjs && node apps/agent-dashboard/tests/company-os-runtime-check.mjs && node apps/agent-dashboard/tests/company-os-navigation-check.mjs && node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs && node scripts/check-company-os-review-consistency.mjs && node scripts/check-company-os-live-prd.mjs && pnpm check:docs-governance",
   "check:docs-governance": "cargo run -q -p harness-cli -- governance check",

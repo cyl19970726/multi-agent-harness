@@ -47,6 +47,13 @@ fn required_strings(
     Ok(())
 }
 
+fn optional_required(
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<(), CompanyOsValidationError> {
+    value.map_or(Ok(()), |value| required(value, field))
+}
+
 fn required_object(value: &Value, field: &'static str) -> Result<(), CompanyOsValidationError> {
     if value.is_object() {
         Ok(())
@@ -149,9 +156,21 @@ pub struct StandingAgent {
     pub membership_refs: Vec<String>,
     pub responsibility_summary: String,
     pub capability_refs: Vec<String>,
+    /// Durable behavior configuration is addressable content, normally owned
+    /// by Docs. Organization retains only the reference used by this identity.
+    pub system_prompt_ref: Option<String>,
+    #[serde(default)]
+    pub tool_refs: Vec<String>,
+    #[serde(default)]
+    pub skill_refs: Vec<String>,
+    #[serde(default)]
+    pub maintained_document_refs: Vec<String>,
+    #[serde(default)]
+    pub accepted_work_type_refs: Vec<String>,
+    pub escalation_policy_ref: Option<String>,
     pub permission_policy_refs: Vec<String>,
     pub runtime_refs: Vec<String>,
-    pub provider_session_refs: Vec<String>,
+    pub native_session_refs: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -167,14 +186,32 @@ impl ValidateCompanyOs for StandingAgent {
         )?;
         required_strings(&self.membership_refs, "StandingAgent.membership_refs")?;
         required_strings(&self.capability_refs, "StandingAgent.capability_refs")?;
+        optional_required(
+            self.system_prompt_ref.as_deref(),
+            "StandingAgent.system_prompt_ref",
+        )?;
+        required_strings(&self.tool_refs, "StandingAgent.tool_refs")?;
+        required_strings(&self.skill_refs, "StandingAgent.skill_refs")?;
+        required_strings(
+            &self.maintained_document_refs,
+            "StandingAgent.maintained_document_refs",
+        )?;
+        required_strings(
+            &self.accepted_work_type_refs,
+            "StandingAgent.accepted_work_type_refs",
+        )?;
+        optional_required(
+            self.escalation_policy_ref.as_deref(),
+            "StandingAgent.escalation_policy_ref",
+        )?;
         required_strings(
             &self.permission_policy_refs,
             "StandingAgent.permission_policy_refs",
         )?;
         required_strings(&self.runtime_refs, "StandingAgent.runtime_refs")?;
         required_strings(
-            &self.provider_session_refs,
-            "StandingAgent.provider_session_refs",
+            &self.native_session_refs,
+            "StandingAgent.native_session_refs",
         )?;
         if matches!(self.assignment_capacity, Some(0)) {
             return Err(CompanyOsValidationError::Invalid {

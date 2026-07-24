@@ -99,8 +99,9 @@ export function MemberRunPanel({
         <MemberFact label="Assignment" value={assignment ?? "No assignment recorded"} />
         {currentAction && <MemberFact label="Current action" value={currentAction} live />}
         {thinkingPreview && <MemberFact label="Thinking preview" value={thinkingPreview} live transient />}
-        <MemberFact label="Runtime" value={member.provider_session_id ?? member.acp_session_id ?? "No session recorded"} mono />
-        {member.worktree_ref && <MemberFact label="Worktree" value={member.worktree_ref} mono />}
+        <MemberFact label="Native session" value={member.native_session?.native_session_id ?? "No session recorded"} mono />
+        <MemberFact label="Worktree override" value={member.worktree_ref ?? "None"} mono />
+        <MemberFact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono />
       </dl>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {outputCount !== undefined && <Badge tone="muted">{outputCount} outputs</Badge>}

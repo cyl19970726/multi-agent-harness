@@ -12,8 +12,8 @@ const docsOperatorAgent = await readFile(join(repoRoot, "skills", "company-docs-
 const docsSurfaceMatrix = await readFile(join(repoRoot, "docs", "company-os", "docs-operating-surface-matrix.md"), "utf8");
 const documentSystem = await readFile(join(repoRoot, "docs", "company-os", "document-system.md"), "utf8");
 const decisionsIndex = await readFile(join(repoRoot, "docs", "decisions", "README.md"), "utf8");
-const sqlReadModelAdr = await readFile(join(repoRoot, "docs", "decisions", "0030-company-os-sql-read-model.md"), "utf8");
-const agentOperatedDocsAdr = await readFile(join(repoRoot, "docs", "decisions", "0031-agent-operated-docs-and-code-declared-pages.md"), "utf8");
+const sqlReadModelAdr = await readFile(join(repoRoot, "docs", "decisions", "0035-company-os-sql-read-model.md"), "utf8");
+const agentOperatedDocsAdr = await readFile(join(repoRoot, "docs", "decisions", "0036-agent-operated-docs-and-code-declared-pages.md"), "utf8");
 const healthStart = source.indexOf("fn company_docs_health_command");
 const healthEnd = source.indexOf("fn company_docs_module_create_command");
 const healthSource = healthStart >= 0 && healthEnd > healthStart ? source.slice(healthStart, healthEnd) : "";
@@ -91,8 +91,8 @@ check(["query", "search", "traverse", "refs", "related", "health", "module creat
 check(["Document", "Block", "TypedRecord", "Relation", "View", "BusinessModule"].every((object) => docsSurfaceMatrix.includes(`\`${object}\``)), "Docs operating surface matrix names the native Docs objects");
 check(["Store-live", "company-docs-operator", "visual contract", "Current gaps", "No Docs page, CLI command, or skill may infer approval"].every((token) => docsSurfaceMatrix.includes(token)), "Docs operating surface matrix records UI/skill/visual evidence and cross-system boundaries");
 check(documentSystem.includes("Agent-operated, Human-reviewed") && /authoritative machine\s+interface is CLI\/API/.test(documentSystem) && docsSurfaceMatrix.includes("Agent primary interface: CLI/API") && docsSurfaceMatrix.includes("CLI-first backlog"), "Docs contracts preserve Agent-operated, Human-reviewed and CLI-first posture");
-check(decisionsIndex.includes("0030-company-os-sql-read-model.md") && documentSystem.includes("ADR 0030") && docsSurfaceMatrix.includes("SQL is introduced only as a derived read/query/index layer") && sqlReadModelAdr.includes("Do **not** replace the canonical Company OS Store with SQL now") && sqlReadModelAdr.includes("JSONL ledgers remain canonical"), "Docs storage contract preserves SQL as a derived read/query/index layer, not the current canonical Store");
-check(decisionsIndex.includes("0031-agent-operated-docs-and-code-declared-pages.md") && documentSystem.includes("ADR 0031") && docsSurfaceMatrix.includes("code-declared custom business pages") && agentOperatedDocsAdr.includes("Docs is not a Notion editor clone") && agentOperatedDocsAdr.includes("PageDefinition") && agentOperatedDocsAdr.includes("PagePackage"), "Docs product contract preserves Agent-operated substrate plus code-declared custom pages");
+check(decisionsIndex.includes("0035-company-os-sql-read-model.md") && documentSystem.includes("ADR 0035") && docsSurfaceMatrix.includes("SQL is introduced only as a derived read/query/index layer") && sqlReadModelAdr.includes("Do **not** replace the canonical Company OS Store with SQL now") && sqlReadModelAdr.includes("JSONL ledgers remain canonical"), "Docs storage contract preserves SQL as a derived read/query/index layer, not the current canonical Store");
+check(decisionsIndex.includes("0036-agent-operated-docs-and-code-declared-pages.md") && documentSystem.includes("ADR 0036") && docsSurfaceMatrix.includes("code-declared custom business pages") && agentOperatedDocsAdr.includes("Docs is not a Notion editor clone") && agentOperatedDocsAdr.includes("PageDefinition") && agentOperatedDocsAdr.includes("PagePackage"), "Docs product contract preserves Agent-operated substrate plus code-declared custom pages");
 check(docsSurfaceMatrix.includes("template_ref") && docsSurfaceMatrix.includes("--instantiate-template") && docsSurfaceMatrix.includes("template-to-typed-record relation policy"), "Docs operating surface matrix distinguishes template provenance, Block instantiation, and remaining template gaps");
 
 console.log(`\nCompany OS Docs CLI smoke: ${passed} pass, ${failed} fail`);
