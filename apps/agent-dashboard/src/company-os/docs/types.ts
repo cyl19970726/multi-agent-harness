@@ -237,6 +237,30 @@ export interface CompanyOsRecord {
   fields?: Record<string, ReactNode>;
 }
 
+export interface CompanyOsCustomPageStatus {
+  definitionId: string;
+  moduleId?: string;
+  purpose?: string;
+  ownerLabel?: string;
+  activePackageId?: string;
+  activeVersion?: string;
+  latestPackageId?: string;
+  latestVersion?: string;
+  artifactRef?: string;
+  entrypoint?: string;
+  integrityDigest?: string;
+  fixtureRef?: string;
+  visualContractRef?: string;
+  fallbackViewId?: string;
+  allowedQueries: string[];
+  declaredActions: string[];
+  approvedComponents: string[];
+  policyRefs: string[];
+  status: "active" | "candidate_recorded" | "definition_only" | "fallback_only";
+  statusLabel: string;
+  boundaryNote: string;
+}
+
 export interface CompanyOsStructuredViewData {
   id?: string;
   title: string;
@@ -262,6 +286,7 @@ export interface CompanyOsStructuredViewData {
   sourceLinks?: CompanyOsLink[];
   resultLinks?: CompanyOsLink[];
   authoring?: CompanyOsModuleAuthoringContext;
+  customPage?: CompanyOsCustomPageStatus;
   fixtureId?: string;
 }
 

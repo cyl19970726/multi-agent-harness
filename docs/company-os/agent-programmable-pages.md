@@ -1,7 +1,7 @@
 # Agent-Programmable Pages
 
 ```text
-status: target architecture contract — not yet an implemented runtime
+status: target architecture contract with first metadata/UI inspection slice implemented
 owner_role: product + platform
 canonical_for: page tiers, custom-view boundaries, and governed page actions
 ```
@@ -18,9 +18,12 @@ can be specifically composed in React/HTML by an Agent. The page is then a
 presentation and interaction layer over Company OS truth; it is never an
 alternative database, permission system, or approval mechanism.
 
-This document defines the intended architecture. `CustomPageDefinition`,
-`CustomPagePackage`, the page runtime, and the skills named below are future capabilities; no implementation
-claim follows from this contract.
+This document defines the intended architecture. The first implemented slice
+now covers `CustomPageDefinition` / `CustomPagePackage` metadata creation,
+verification, candidate-package publish records, and Human-visible contract
+inspection in the Docs module page. It is **not** yet a sandboxed custom-page
+runtime and does not claim that generated React/HTML has been executed as a
+trusted plugin.
 
 ## Three page tiers
 
@@ -70,6 +73,16 @@ or a document template. Its registration declares at least:
 
 The registration is a governed product/configuration record. An arbitrary HTML
 file pasted into a document does not receive data or action authority.
+
+Current implementation note: `harness company docs page scaffold` and
+`harness company docs page-definition create` create this registration and an
+initial package metadata row. `harness company docs page verify` checks that
+the module, fallback View, package, declared queries, declared Actions, policy
+refs, and visual contract are present. `harness company docs page publish`
+records a candidate `CustomPagePackage`; it deliberately does not switch the
+active `CustomPageDefinition.package_ref` until a later governed promotion
+command exists. The Docs frontend renders this active/candidate/fallback state
+for Human review.
 
 ### 2. Scoped reads
 

@@ -71,6 +71,7 @@ async function main() {
   check(structured.includes("availableViews") && structured.includes("fallback") && structured.includes("BoardView") && structured.includes("TimelineView"), "structured view exposes standard table, board, timeline, and fallback paths");
   check(structured.includes("StandardViewProvenance") && structured.includes('data-docs-standard-view-provenance="true"') && structured.includes("View is presentation, not a second truth"), "structured view exposes provenance for module scope, native View, source kinds, query, and record count");
   check(structured.includes("StandardViewConfiguration") && structured.includes('data-docs-standard-view-configuration="true"') && structured.includes("Configuration is stored in native View.query") && structured.includes('aria-label="View filter field"') && structured.includes('aria-label="View group by"'), "structured view exposes saved View configuration and Store-live View query authoring controls");
+  check(structured.includes("CustomPageContractCard") && structured.includes('data-docs-custom-page-contract="true"') && structured.includes('data-docs-custom-page-status') && structured.includes("data-docs-custom-page-active-package") && structured.includes("data-docs-custom-page-latest-package") && structured.includes("data-docs-custom-page-boundary"), "structured view exposes code-declared custom page contract, package state markers, and source-of-truth boundary");
   check(structured.includes('data-docs-standard-view-empty="true"') && structured.includes("declared query returned no records") && structured.includes("does not delete the BusinessModule"), "structured view empty state is explicit without fabricating module truth");
   check(structured.includes('data-docs-authoring-panel="business-module-focus"') && structured.includes("buildDocsTypedRecordCommand") && structured.includes("buildDocsViewCommand") && structured.includes("buildDocsRelationCommand"), "Structured module view exposes Store-live TypedRecord, View, and Relation authoring controls");
   check(document.includes("SimpleTable") && document.includes("RelationChips") && document.includes("sourceLinks") && document.includes("resultLinks"), "basic document supports tables, relation chips, source, and result links");
@@ -235,6 +236,43 @@ async function main() {
     work_items: [{ id: "work-live-1", title: "Prepare live brief", source_document_ref: "document-live-1" }],
   });
   check(alternatePages.document.id === "document-live-1" && alternatePages.document.title === "Live operating brief" && alternatePages.home.changes.every((link) => !/trademark|brand a/i.test(link.label)), "a different live projection maps only its supplied records");
+  const customPagePages = adaptCompanyOsDocsProjection({
+    actors: [{ id: "human-docs-owner", actor_type: "human", display_name: "Docs Owner" }],
+    documents: [{ id: "document-custom-root", title: "Custom Root", space_id: "company", block_ids: [] }],
+    typed_records: [{ id: "record-custom-1", record_type: "TrademarkApplication", module_id: "module-custom-page", title: "Custom Application" }],
+    views: [{ id: "view-custom-fallback", module_id: "module-custom-page", title: "Fallback table", mode: "table", source_kinds: ["typed_record"], query: { filters: [{ field: "module_id", value: "module-custom-page" }] } }],
+    business_modules: [{ id: "module-custom-page", name: "Custom Page Module", root_document_ref: "document-custom-root", status: "active", default_view_refs: ["view-custom-fallback"], custom_page_definition_refs: ["page-custom-module"] }],
+    custom_page_definitions: [{
+      id: "page-custom-module",
+      module_id: "module-custom-page",
+      purpose: "Render a governed custom page over module records.",
+      allowed_data_queries: [{ id: "query-custom-module", source_kind: "business_module", source_scope: "module-custom-page", permission_policy_ref: "company.records.write" }],
+      approved_ui_components: ["CodeDeclaredPage", "VisualContractReview"],
+      action_command_refs: ["typed_record.append", "view.append", "relation.append"],
+      standard_view_fallback_ref: "view-custom-fallback",
+      owner: { actor_type: "human", actor_id: "human-docs-owner" },
+      package_ref: "package-custom-active",
+      package_version: "1.0.0",
+      fixture_ref: "docs/design/company-os/custom-pages/custom/fixture.json",
+      visual_contract_ref: "docs/design/company-os/custom-pages/custom/review.html",
+      policy_refs: ["page-custom-module:typed_record.append", "page-custom-module:view.append", "page-custom-module:relation.append"],
+      created_at: "2026-07-24T10:00:00+08:00",
+      updated_at: "2026-07-24T10:00:00+08:00",
+    }],
+    custom_page_packages: [
+      { id: "package-custom-active", definition_id: "page-custom-module", version: "1.0.0", kind: "react", artifact_ref: "apps/agent-dashboard/src/company-os/modules/custom/CustomPage.tsx", entrypoint: "index.tsx", integrity_digest: "sha256:active", built_at: "2026-07-24T10:00:00+08:00" },
+      { id: "package-custom-candidate", definition_id: "page-custom-module", version: "1.0.1", kind: "react", artifact_ref: "apps/agent-dashboard/src/company-os/modules/custom/CustomPage.tsx", entrypoint: "index.tsx", integrity_digest: "sha256:candidate", built_at: "2026-07-24T11:00:00+08:00" },
+    ],
+  }, { moduleId: "module-custom-page" });
+  check(
+    customPagePages.moduleView.customPage?.status === "candidate_recorded" &&
+      customPagePages.moduleView.customPage.activeVersion === "1.0.0" &&
+      customPagePages.moduleView.customPage.latestVersion === "1.0.1" &&
+      customPagePages.moduleView.customPage.fallbackViewId === "view-custom-fallback" &&
+      customPagePages.moduleView.customPage.declaredActions.includes("typed_record.append") &&
+      customPagePages.moduleView.customPage.allowedQueries.some((query) => query.includes("query-custom-module")),
+    "projection adapter exposes CustomPageDefinition active package, candidate package, declared query/action scopes, and fallback View without changing source truth",
+  );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
 
   const pageRefs = {

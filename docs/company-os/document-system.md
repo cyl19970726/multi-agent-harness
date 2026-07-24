@@ -177,6 +177,15 @@ future governed promote/atomic package-switch command exists. These commands
 do not generate a second data store and do not make a visual mock an
 implemented product claim.
 
+The current Docs module UI exposes this as an inspection card rather than as a
+trusted plugin runtime. For a selected `BusinessModule`, Humans can see the
+registered `CustomPageDefinition`, active package, latest candidate package,
+fallback `View`, declared query/action scopes, artifact/digest, and visual
+contract reference. If no definition is registered, the same surface explicitly
+shows the standard View fallback. Agents should still use CLI/API and the
+`company-docs-operator` or `company-page-builder` skills to operate or build
+the page contract.
+
 ## Documents are company memory, not a log dump
 
 Company knowledge includes reviewed documents and typed records, explicit
