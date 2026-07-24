@@ -130,6 +130,20 @@ async function main() {
     "Team War Room exposes a Host-only Lead Inbox and correlation-anchored replies",
   );
   check(
+    teamSource.includes("Plan review")
+      && teamSource.includes('"plan_request"')
+      && teamSource.includes('"plan_feedback"')
+      && teamSource.includes('"plan_approval"')
+      && teamSource.includes("Member proposes → Host challenges → Member revises → Host approves → execution."),
+    "Team War Room exposes the provider-neutral Member plan debate and approval loop",
+  );
+  check(
+    teamSource.includes("KEY_ACTIVITY_MESSAGE_KINDS")
+      && ["assignment", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "handoff"]
+        .every((kind) => teamSource.includes(`"${kind}"`)),
+    "Team Activity keeps the complete plan, coordination, and handoff story visible by default",
+  );
+  check(
     teamSource.includes('starting ? "Starting…" : "Start attempt"'),
     "TeamRun start has an explicit pending state",
   );
@@ -182,6 +196,12 @@ async function main() {
       && memberSource.includes("Host & peer threads")
       && memberSource.includes("Native subagent activity"),
     "Member Focus derives its Goal, collaboration threads, latest steer, peers, and native subagent entry",
+  );
+  check(
+    memberSource.includes("Execution plan")
+      && memberSource.includes("selectMemberPlanNegotiation")
+      && memberSource.includes("provider mode · Assignment correlation retained"),
+    "Member Focus shows native plan capability, revision, feedback, and approval below the Assignment Goal",
   );
 
   console.log(`\n   operator control checks: ${passed} pass, ${failed} fail`);

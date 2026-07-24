@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  BrainCircuit,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -28,7 +29,9 @@ import { Select, TextArea } from "@/components/workbench/OperatorForms";
 
 import {
   selectMemberAssignmentCorrelations,
+  selectMemberPlanNegotiation,
   selectTeamRunContext,
+  type MemberPlanNegotiation,
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
@@ -57,6 +60,17 @@ const FILTERS: Array<{ id: StreamFilter; label: string }> = [
   { id: "decisions", label: "Decisions" },
   { id: "evidence", label: "Evidence" },
 ];
+
+const KEY_ACTIVITY_MESSAGE_KINDS = new Set([
+  "assignment",
+  "plan_request",
+  "plan_proposal",
+  "plan_feedback",
+  "plan_approval",
+  "question",
+  "answer",
+  "handoff",
+]);
 
 /**
  * One operational view of one AgentTeamRun. New runs are independent or
@@ -196,12 +210,18 @@ export function TeamWarRoom({
       && ["question", "blocker", "review_request"].includes(message.kind ?? ""),
     )
     .sort((left, right) => timestamp(right.created_at) - timestamp(left.created_at));
+  const planThreads = orderedMembers
+    .map((member) => ({ member, plan: selectMemberPlanNegotiation(messages, member.id) }))
+    .filter((entry): entry is { member: MemberRun; plan: MemberPlanNegotiation } => Boolean(entry.plan));
   const explicitRecipients = composerTarget === "team" ? members.map((member) => member.id) : [composerTarget];
   const canSend = actionsEnabled
     && Boolean(draft.trim())
     && explicitRecipients.length > 0
     && (!replyAnchor || Boolean(replyAnchor.correlation_id));
   const status = run.status ?? "planning";
+  const activeMemberCount = members.filter((member) =>
+    ["queued", "starting", "running", "waiting", "reviewing"].includes(member.status ?? ""),
+  ).length;
 
   function openMember(member: MemberRun): void {
     onSelectionChange({
@@ -235,6 +255,36 @@ export function TeamWarRoom({
     setSelectedMemberId(message.from_member_id);
     setKind("answer");
     document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function sendPlanMessage(
+    member: MemberRun,
+    plan: MemberPlanNegotiation,
+    messageKind: "plan_request" | "plan_feedback" | "plan_approval",
+    body: string,
+  ): Promise<boolean> {
+    const cause = messageKind === "plan_request" ? plan.assignment : plan.latestProposal;
+    if (!cause) return false;
+    const descriptor = sendTeamMessage(run.id, {
+      fromMemberId: "host",
+      toMemberIds: [member.id],
+      kind: messageKind,
+      body,
+      correlationId: plan.assignment.correlation_id ?? undefined,
+      causationId: cause.id,
+      originWaveId: navigationWave?.id,
+    });
+    const result = dispatch(onAction, descriptor);
+    const accepted = result instanceof Promise ? await result : true;
+    if (
+      accepted
+      && messageKind !== "plan_request"
+      && hostDeliveryStatus(cause) === "delivered"
+    ) {
+      const ack = acknowledgeTeamMessage(run.id, cause.id, "host");
+      await onAction?.(ack.path, ack.body);
+    }
+    return accepted;
   }
 
   function submit(): void {
@@ -295,7 +345,7 @@ export function TeamWarRoom({
           actions={
             <>
               <span className="hidden items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sm:inline-flex">
-                <Users className="size-3.5" /> {members.length} members active
+                <Users className="size-3.5" /> {activeMemberCount} active · {members.length} {members.length === 1 ? "member" : "members"}
               </span>
               <AttemptActions
                 status={status}
@@ -453,6 +503,24 @@ export function TeamWarRoom({
           onAcknowledge={(message) => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
         />
 
+        <PlanReviewBoard
+          threads={planThreads}
+          actionsEnabled={actionsEnabled}
+          onRequest={(member, plan) => sendPlanMessage(
+            member,
+            plan,
+            "plan_request",
+            "Plan this Assignment before execution. Submit a concrete approach, checks, risks, coordination needs, and execution boundary for Host review.",
+          )}
+          onFeedback={(member, plan, body) => sendPlanMessage(member, plan, "plan_feedback", body)}
+          onApprove={(member, plan) => sendPlanMessage(
+            member,
+            plan,
+            "plan_approval",
+            "Approved. Execute this plan in the same MemberRun and provider-native session; report deviations before crossing the agreed boundary.",
+          )}
+        />
+
         <section className="min-h-[28rem] overflow-hidden bg-background">
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
             <div className="flex items-center gap-2">
@@ -550,6 +618,122 @@ function toInteractionActivity(
       </div>
     ),
   };
+}
+
+function PlanReviewBoard({
+  threads,
+  actionsEnabled,
+  onRequest,
+  onFeedback,
+  onApprove,
+}: {
+  threads: Array<{ member: MemberRun; plan: MemberPlanNegotiation }>;
+  actionsEnabled: boolean;
+  onRequest: (member: MemberRun, plan: MemberPlanNegotiation) => void | Promise<boolean> | undefined;
+  onFeedback: (member: MemberRun, plan: MemberPlanNegotiation, body: string) => void | Promise<boolean> | undefined;
+  onApprove: (member: MemberRun, plan: MemberPlanNegotiation) => void | Promise<boolean> | undefined;
+}) {
+  const [feedbackByMember, setFeedbackByMember] = useState<Record<string, string>>({});
+  const active = threads.filter(({ plan }) => plan.status !== "not_requested");
+  return (
+    <section aria-label="Member plan review" className="border-b border-border/70 py-3">
+      <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="grid size-7 place-items-center rounded-lg border border-[#8b5cf6]/20 bg-[#8b5cf6]/[0.07] text-[#7653c6]">
+            <BrainCircuit className="size-3.5" />
+          </span>
+          <div>
+            <h2 className="text-[12px] font-semibold text-foreground">Plan review</h2>
+            <p className="text-[10px] text-muted-foreground">Member proposes → Host challenges → Member revises → Host approves → execution.</p>
+          </div>
+        </div>
+        <Badge tone={active.some(({ plan }) => ["proposed", "changes_requested"].includes(plan.status)) ? "warn" : "muted"}>
+          {active.filter(({ plan }) => plan.status !== "approved").length} open
+        </Badge>
+      </header>
+      <div className="grid gap-2 xl:grid-cols-2">
+        {threads.map(({ member, plan }) => {
+          const capability = member.provider_profile?.plan_mode ?? "unknown";
+          const feedback = feedbackByMember[member.id] ?? "";
+          return (
+            <article
+              key={member.id}
+              className="overflow-hidden rounded-xl border border-border/75 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--muted)/.18))] shadow-[0_16px_38px_-34px_rgba(15,23,42,.65)]"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Avatar name={member.name ?? member.id} tone={memberTone(member.status)} />
+                  <div className="min-w-0">
+                    <p className="truncate text-[11px] font-semibold text-foreground">{member.name ?? member.id}</p>
+                    <p className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                      {capability} plan · revision {plan.revision}
+                    </p>
+                  </div>
+                </div>
+                <Badge tone={planStatusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge>
+              </div>
+              <div className="space-y-2 px-3 py-2.5">
+                <p className="line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">{plan.assignment.body}</p>
+                {plan.latestProposal ? (
+                  <div className="rounded-lg border border-[#8b5cf6]/15 bg-background/80 px-3 py-2">
+                    <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.13em] text-[#7653c6]">Member proposal r{plan.revision}</p>
+                    <p className="line-clamp-5 whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/90">{plan.latestProposal.body}</p>
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-border px-3 py-3 text-[10px] text-muted-foreground">
+                    {plan.status === "requested" ? "Waiting for the provider-native planning turn." : "Planning is optional until Host requests it."}
+                  </p>
+                )}
+                {plan.latestFeedback && (
+                  <p className="rounded-md border border-status-warn/20 bg-status-warn/[0.05] px-2 py-1.5 text-[10px] text-foreground/80">
+                    <span className="font-semibold text-status-warn">Latest challenge · </span>{plan.latestFeedback.body}
+                  </p>
+                )}
+                <div className="flex flex-wrap items-end gap-1.5">
+                  {plan.status === "not_requested" && (
+                    <Button size="sm" disabled={!actionsEnabled} onClick={() => onRequest(member, plan)}>Request plan</Button>
+                  )}
+                  {plan.status === "proposed" && (
+                    <>
+                      <TextArea
+                        aria-label={`Plan feedback for ${member.name ?? member.id}`}
+                        value={feedback}
+                        onChange={(event) => setFeedbackByMember((value) => ({ ...value, [member.id]: event.target.value }))}
+                        placeholder="Challenge assumptions or request a revision…"
+                        className="min-h-9 min-w-[14rem] flex-1 resize-none text-[11px]"
+                        rows={1}
+                        disabled={!actionsEnabled}
+                      />
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={!actionsEnabled || !feedback.trim()}
+                        onClick={() => {
+                          onFeedback(member, plan, feedback.trim());
+                          setFeedbackByMember((value) => ({ ...value, [member.id]: "" }));
+                        }}
+                      >
+                        Request changes
+                      </Button>
+                      <Button size="sm" disabled={!actionsEnabled} onClick={() => onApprove(member, plan)}>
+                        <CheckCircle2 className="size-3.5" /> Approve
+                      </Button>
+                    </>
+                  )}
+                  {plan.status === "changes_requested" && (
+                    <span className="text-[10px] text-muted-foreground">Waiting for revised native plan in the same Assignment chain.</span>
+                  )}
+                  {plan.status === "approved" && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-status-good"><CheckCircle2 className="size-3.5" /> Execution boundary approved</span>
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function LeadInbox({
@@ -828,7 +1012,11 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
         timestamp: formatTime(message.created_at),
         evidenceRefs,
         tone: messageTone(message.kind),
-        prominence: message.kind === "assignment" ? "primary" : ["blocker", "review_request", "review_result"].includes(message.kind ?? "") ? "pressure" : "detail",
+        prominence: KEY_ACTIVITY_MESSAGE_KINDS.has(message.kind ?? "")
+          ? "primary"
+          : ["blocker", "review_request", "review_result"].includes(message.kind ?? "")
+            ? "pressure"
+            : "detail",
       };
     }
     if (item.kind === "action") {
@@ -880,6 +1068,8 @@ function relativeTime(value?: string | null): string { const ms = timestamp(valu
 function pressureLabel(status?: string | null): string { if (["blocked", "failed"].includes(status ?? "")) return "blocked"; if (["waiting", "reviewing"].includes(status ?? "")) return "waiting"; if (status === "running") return "active"; return status ?? "idle"; }
 function teamTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (status === "planning") return "info"; return "idle"; }
 function memberTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["blocked", "failed", "stopped"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (["queued", "starting"].includes(status ?? "")) return "info"; return "idle"; }
+function planStatusTone(status: MemberPlanNegotiation["status"]): StatusTone { if (status === "approved") return "good"; if (status === "changes_requested") return "warn"; if (status === "proposed") return "decision"; if (status === "requested") return "info"; return "idle"; }
+function planStatusLabel(status: MemberPlanNegotiation["status"]): string { return status === "not_requested" ? "optional" : status.replace(/_/g, " "); }
 function waveTone(status?: string | null): StatusTone { if (status === "completed") return "good"; if (["blocked", "failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting"].includes(status ?? "")) return "warn"; if (status === "running") return "running"; return "info"; }
 function gateTone(status?: string | null): StatusTone { if (status === "accepted") return "good"; if (status === "blocked") return "bad"; if (status === "revise") return "warn"; return "decision"; }
-function messageTone(kind?: string | null): StatusTone { if (kind === "blocker") return "bad"; if (["review_request"].includes(kind ?? "")) return "warn"; if (["review_result", "answer"].includes(kind ?? "")) return "good"; if (["handoff", "question"].includes(kind ?? "")) return "decision"; if (kind === "progress") return "running"; if (["assignment", "broadcast"].includes(kind ?? "")) return "info"; return "idle"; }
+function messageTone(kind?: string | null): StatusTone { if (kind === "blocker") return "bad"; if (["review_request", "plan_feedback"].includes(kind ?? "")) return "warn"; if (["review_result", "answer", "plan_approval"].includes(kind ?? "")) return "good"; if (["handoff", "question", "plan_proposal"].includes(kind ?? "")) return "decision"; if (kind === "progress") return "running"; if (["assignment", "broadcast", "plan_request"].includes(kind ?? "")) return "info"; return "idle"; }

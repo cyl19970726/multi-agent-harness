@@ -31,6 +31,7 @@
     "The Mission-scoped TeamRun has agent_team_id and mission_id but no wave_id.",
     "Four MemberRuns include running, reviewing, and blocked pressure states and remain eligible to carry forward.",
     "Assignments use stable correlation ids and optional origin_wave_id provenance without a task graph.",
+    "The selected Member exposes a native plan request, Host challenge, revised proposal, and approval in one Assignment correlation.",
     "The current TeamRun records execution root; member snapshots record actual cwd, Git identity, and discovered path roots only.",
     "No durable thinking row exists; live preview must be injected after SSE connects."
   ]

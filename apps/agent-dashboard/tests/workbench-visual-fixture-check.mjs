@@ -136,6 +136,12 @@ async function main() {
   check(members.some((item) => item.status === "blocked") && members.some((item) => item.status === "reviewing"), "Member states include blocked and reviewing pressure");
   check(messages.filter((item) => item.kind === "assignment").every((item) => item.correlation_id), "Every assignment has a stable correlation anchor");
   check(messages.some((item) => item.kind === "blocker") && messages.some((item) => item.kind === "review_request"), "Durable activity contains blocker and review request signals");
+  check(
+    ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].every(
+      (kind) => messages.some((item) => item.kind === kind),
+    ),
+    "Fixture exposes a complete Member plan debate and approval chain",
+  );
   check(messages.some((item) => item.deliveries?.some((delivery) => ["queued", "delivered"].includes(delivery.status))), "Fixture includes a concrete unacknowledged delivery");
   check(actions.some((item) => item.evidence_refs?.length) && events.length > 0, "Activity contains evidence-backed actions and folded events");
   check(!actions.some((item) => item.action_type === "thinking"), "No raw thinking is persisted in the fixture");

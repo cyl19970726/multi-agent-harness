@@ -369,6 +369,8 @@ export interface ProviderIntegrationProfile {
   adapter_reviewed_at?: string | null;
   compatibility_note?: string | null;
   interaction_mode: "pause_and_resume" | "end_round_and_follow_up" | "unsupported" | string;
+  plan_mode?: "native" | "emulated" | "unsupported" | "unknown" | string;
+  goal_mode?: "native" | "emulated" | "unsupported" | "unknown" | string;
   tool_event_fidelity: "none" | "summary" | "structured" | string;
   artifact_event_fidelity: "none" | "summary" | "structured" | string;
   supports_cancel: boolean;
@@ -405,6 +407,10 @@ export interface TeamMessageDelivery {
 /** Kind of a {@link TeamMessage} (open enum; rendered as a colored pill). */
 export type TeamMessageKind =
   | "assignment"
+  | "plan_request"
+  | "plan_proposal"
+  | "plan_feedback"
+  | "plan_approval"
   | "question"
   | "answer"
   | "progress"
