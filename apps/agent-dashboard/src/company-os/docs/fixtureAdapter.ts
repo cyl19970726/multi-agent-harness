@@ -614,6 +614,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const blocks = items(root.blocks);
   const views = items(root.views);
   const pageDefinitions = items(root.custom_page_definitions);
+  const pagePackages = items(root.custom_page_packages);
   const proposals = [
     ...items(root.governance_proposals),
     ...typedRecords.filter((entry) => text(entry.record_type).toLowerCase() === "governance_proposal"),
@@ -1003,6 +1004,64 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const moduleNativeView = views.find((entry) => text(entry.module_id) === text(module?.id))
     ?? views.find((entry) => strings(module?.default_view_refs).includes(text(entry.id)))
     ?? views[0];
+  const moduleDefinitionRefs = strings(module?.custom_page_definition_refs);
+  const modulePageDefinition = pageDefinitions.find((definition) => moduleDefinitionRefs.includes(text(definition.id)))
+    ?? pageDefinitions.find((definition) => text(definition.module_id) === text(module?.id));
+  const activeCustomPagePackage = pagePackages.find((entry) =>
+    text(entry.id) === text(modulePageDefinition?.package_ref)
+    && text(entry.definition_id) === text(modulePageDefinition?.id)
+  );
+  const candidateCustomPagePackages = pagePackages
+    .filter((entry) =>
+      text(entry.definition_id) === text(modulePageDefinition?.id)
+      && text(entry.id) !== text(modulePageDefinition?.package_ref)
+    )
+    .sort((left, right) => text(right.built_at).localeCompare(text(left.built_at)));
+  const latestCustomPagePackage = candidateCustomPagePackages[0] ?? activeCustomPagePackage;
+  const customPageStatus: CompanyOsStructuredViewData["customPage"] = modulePageDefinition
+    ? {
+        definitionId: text(modulePageDefinition.id),
+        moduleId: text(modulePageDefinition.module_id) || undefined,
+        purpose: text(modulePageDefinition.purpose) || undefined,
+        ownerLabel: actorLink(actors, modulePageDefinition.owner)?.label,
+        activePackageId: text(activeCustomPagePackage?.id) || text(modulePageDefinition.package_ref) || undefined,
+        activeVersion: text(activeCustomPagePackage?.version) || text(modulePageDefinition.package_version) || undefined,
+        latestPackageId: text(latestCustomPagePackage?.id) || undefined,
+        latestVersion: text(latestCustomPagePackage?.version) || undefined,
+        artifactRef: text(latestCustomPagePackage?.artifact_ref, text(activeCustomPagePackage?.artifact_ref)) || undefined,
+        entrypoint: text(latestCustomPagePackage?.entrypoint, text(activeCustomPagePackage?.entrypoint)) || undefined,
+        integrityDigest: text(latestCustomPagePackage?.integrity_digest, text(activeCustomPagePackage?.integrity_digest)) || undefined,
+        fixtureRef: text(modulePageDefinition.fixture_ref) || undefined,
+        visualContractRef: text(modulePageDefinition.visual_contract_ref) || undefined,
+        fallbackViewId: text(modulePageDefinition.standard_view_fallback_ref) || undefined,
+        allowedQueries: items(modulePageDefinition.allowed_data_queries).map((query) =>
+          [text(query.id), text(query.source_kind), text(query.source_scope)].filter(Boolean).join(" · "),
+        ).filter(Boolean),
+        declaredActions: strings(modulePageDefinition.action_command_refs),
+        approvedComponents: strings(modulePageDefinition.approved_ui_components),
+        policyRefs: strings(modulePageDefinition.policy_refs),
+        status: activeCustomPagePackage
+          ? candidateCustomPagePackages.length ? "candidate_recorded" : "active"
+          : "definition_only",
+        statusLabel: activeCustomPagePackage
+          ? candidateCustomPagePackages.length ? "Candidate package recorded" : "Active package bound"
+          : "Definition has no active package",
+        boundaryNote: "Custom page is a governed presentation over native Docs records. It is not a second truth, and writes still go through declared Actions.",
+      }
+    : module
+      ? {
+          definitionId: "<custom-page-definition-id>",
+          moduleId: text(module.id),
+          fallbackViewId: text(moduleNativeView?.id) || undefined,
+          allowedQueries: [],
+          declaredActions: [],
+          approvedComponents: [],
+          policyRefs: [],
+          status: "fallback_only",
+          statusLabel: "Standard View fallback only",
+          boundaryNote: "No CustomPageDefinition is registered for this module; the standard View remains the readable UI.",
+        }
+      : undefined;
   const moduleViewSourceKinds = strings(moduleNativeView?.source_kinds);
   const moduleViewQueryRecord = moduleNativeView?.query && typeof moduleNativeView.query === "object" && !Array.isArray(moduleNativeView.query)
     ? moduleNativeView.query as JsonRecord
@@ -1095,6 +1154,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       sourceLinks: linkEntries([sourceLink, applicationLink, proposalLink, ...moduleActors]),
       resultLinks: linkEntries([workLink, financeLink, ...moduleConnectedLinks.filter((link) => ["work", "approval", "finance"].includes(link.kind ?? ""))]),
       authoring: moduleAuthoring,
+      customPage: customPageStatus,
       fallback: { label: "Open standard record view", description: "The standard record view remains available if a custom module page is unavailable." },
     },
     home: {

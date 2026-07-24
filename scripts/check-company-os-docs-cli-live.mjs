@@ -807,6 +807,7 @@ async function main() {
     const relations = snapshot.relations ?? [];
     const modules = snapshot.business_modules ?? [];
     const definitions = snapshot.custom_page_definitions ?? [];
+    const packages = snapshot.custom_page_packages ?? [];
     const policies = snapshot.action_policy_definitions ?? [];
     const child = documents.find((document) => document.id === "document-cli-child");
     const reusableTemplateDocument = documents.find((document) => document.id === "template-cli-reusable");
@@ -819,6 +820,9 @@ async function main() {
     const createdView = views.find((entry) => entry.id === "view-cli-child-records");
     const createdModule = modules.find((entry) => entry.id === "module-docs-cli");
     const createdDefinition = definitions.find((entry) => entry.id === "page-docs-cli");
+    const scaffoldedDefinition = definitions.find((entry) => entry.id === "page-docs-cli-custom");
+    const activeScaffoldPackage = packages.find((entry) => entry.id === scaffoldedDefinition?.package_ref);
+    const candidateScaffoldPackage = packages.find((entry) => entry.definition_id === "page-docs-cli-custom" && entry.version === "1.0.1");
     const linkedRelation = relations.find((entry) => entry.id === "relation-cli-child-to-record");
     const structureFolder = documents.find((document) => document.id === "document-cli-structure-parent");
     if (!child || child.parent_document_id !== "document-cli-structure-parent" || child.title !== "CLI Child Renamed" || child.lifecycle_status !== "archived") {
@@ -865,8 +869,17 @@ async function main() {
     if (!createdModule || !createdModule.default_view_refs?.includes("view-docs-cli") || !createdModule.custom_page_definition_refs?.includes("page-docs-cli")) {
       throw new Error("CLI BusinessModule is missing its fallback View or CustomPageDefinition reference");
     }
+    if (!createdModule.custom_page_definition_refs?.includes("page-docs-cli-custom")) {
+      throw new Error("CLI BusinessModule is missing the scaffolded custom page definition reference");
+    }
     if (!createdDefinition || !createdDefinition.action_command_refs?.includes("relation.append")) {
       throw new Error("CLI CustomPageDefinition is missing or does not declare relation.append");
+    }
+    if (!scaffoldedDefinition || scaffoldedDefinition.standard_view_fallback_ref !== "view-docs-cli" || scaffoldedDefinition.package_ref !== activeScaffoldPackage?.id || scaffoldedDefinition.package_version !== activeScaffoldPackage?.version) {
+      throw new Error(`CLI scaffolded CustomPageDefinition is missing active package/fallback linkage: ${JSON.stringify({ scaffoldedDefinition, activeScaffoldPackage })}`);
+    }
+    if (!candidateScaffoldPackage || candidateScaffoldPackage.id === scaffoldedDefinition.package_ref || candidateScaffoldPackage.artifact_ref !== "apps/agent-dashboard/src/company-os/modules/docs-cli/DocsCliCustomConsole.tsx") {
+      throw new Error(`CLI page publish did not preserve a candidate package without switching the active definition pointer: ${JSON.stringify({ scaffoldedDefinition, candidateScaffoldPackage })}`);
     }
     if (policies.filter((entry) => entry.definition_ref === "page-docs-cli").length !== 5) {
       throw new Error("CLI CustomPageDefinition did not install the five expected ActionPolicyDefinition records");

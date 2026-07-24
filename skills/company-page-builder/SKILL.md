@@ -48,6 +48,13 @@ does not define a fallback view.
 10. Create a labeled expected-versus-actual comparison and record deviations.
     Do not mark the page accepted until P0 findings are closed.
 
+Current Harness implementation boundary: `harness company docs page publish`
+records candidate `CustomPagePackage` metadata only. It does not switch the
+active `CustomPageDefinition.package_ref`. The Docs module UI should be used
+to inspect active package, candidate package, fallback View, declared queries,
+declared Actions, and visual contract before a future governed promotion path
+exists.
+
 ## Package and validate
 
 Start from
