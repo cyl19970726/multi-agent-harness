@@ -25,6 +25,10 @@ Provider-native sessions are already the execution truth under ADR 0032.
 Harness therefore does not need a Wave boundary to manufacture execution
 ownership or transcript history.
 
+ADR 0035 extends this relation with the autonomous Member contract, direct
+same-run collaboration, provider-native subagent boundary, and Host replan
+loop.
+
 ## Decision
 
 ### Mission is durable intent and the team relation boundary

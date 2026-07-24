@@ -1,0 +1,106 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Loading active Star Harness context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness lifecycle event"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness permission boundary"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness tool lifecycle"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness tool lifecycle"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness subagent attribution"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness subagent attribution"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "timeout": 10,
+            "statusMessage": "Recording Harness session stop"
+          }
+        ]
+      }
+    ]
+  }
+}

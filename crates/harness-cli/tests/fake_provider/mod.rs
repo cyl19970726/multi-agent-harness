@@ -105,6 +105,9 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
 ask="${FAKE_KIMI_ASK:-0}"
+if [ -n "${FAKE_KIMI_ENV_MARKER:-}" ]; then
+  env | grep '^HARNESS_' | sort > "$FAKE_KIMI_ENV_MARKER"
+fi
 if [ "$1" != "acp" ]; then
   echo "fake kimi: only 'acp' is implemented" >&2
   exit 2
@@ -191,6 +194,9 @@ pub fn install_codex_team_shim(bin_dir: &Path) -> PathBuf {
     fs::create_dir_all(bin_dir).expect("mk fake codex team bin dir");
     let shim_path = bin_dir.join("codex");
     let script = r###"#!/bin/sh
+if [ -n "${FAKE_CODEX_ENV_MARKER:-}" ]; then
+  env | grep '^HARNESS_' | sort > "$FAKE_CODEX_ENV_MARKER"
+fi
 if [ "$1" = "--version" ]; then
   printf '%s\n' 'codex-cli 0.145.0-alpha.18'
   exit 0
@@ -214,7 +220,9 @@ if [ "$1" = "app-server" ]; then
       *'"method":"turn/start"'*)
         printf '{"id":%s,"result":{"turn":{"id":"%s","status":"inProgress","items":[]}}}\n' "$id" "$turn_id"
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
-        if [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
+        if [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+        elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
           printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
         fi
         ;;
@@ -262,6 +270,9 @@ pub fn install_claude_team_shim(bin_dir: &Path) -> PathBuf {
     fs::create_dir_all(bin_dir).expect("mk fake claude team bin dir");
     let shim_path = bin_dir.join("claude");
     let script = r###"#!/bin/sh
+if [ -n "${FAKE_CLAUDE_ENV_MARKER:-}" ]; then
+  env | grep '^HARNESS_' | sort > "$FAKE_CLAUDE_ENV_MARKER"
+fi
 if [ "$1" = "--version" ]; then
   printf '%s\n' '2.1.181 (Claude Code)'
   exit 0

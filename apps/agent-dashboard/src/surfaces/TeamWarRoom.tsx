@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Inbox,
   ListFilter,
   MessageSquare,
   Play,
@@ -78,6 +79,7 @@ export function TeamWarRoom({
   const [composerTarget, setComposerTarget] = useState<ComposerTarget>("team");
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("broadcast");
+  const [replyAnchor, setReplyAnchor] = useState<TeamMessage>();
   const [showAllMembers, setShowAllMembers] = useState(false);
   const [showFullActivity, setShowFullActivity] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -188,8 +190,17 @@ export function TeamWarRoom({
   const selectedAssignment = selectedMember
     ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
     : undefined;
+  const leadInbox = messages
+    .filter((message) =>
+      (message.to_member_ids ?? []).includes("host")
+      && ["question", "blocker", "review_request"].includes(message.kind ?? ""),
+    )
+    .sort((left, right) => timestamp(right.created_at) - timestamp(left.created_at));
   const explicitRecipients = composerTarget === "team" ? members.map((member) => member.id) : [composerTarget];
-  const canSend = actionsEnabled && Boolean(draft.trim()) && explicitRecipients.length > 0;
+  const canSend = actionsEnabled
+    && Boolean(draft.trim())
+    && explicitRecipients.length > 0
+    && (!replyAnchor || Boolean(replyAnchor.correlation_id));
   const status = run.status ?? "planning";
 
   function openMember(member: MemberRun): void {
@@ -197,6 +208,8 @@ export function TeamWarRoom({
       surface: "team",
       teamId: run.id,
       memberRunId: member.id,
+      missionId: navigationMission?.id,
+      waveId: navigationWave?.id,
     });
   }
 
@@ -205,6 +218,7 @@ export function TeamWarRoom({
   }
 
   function messageMember(member?: MemberRun): void {
+    setReplyAnchor(undefined);
     if (member) {
       setSelectedMemberId(member.id);
       setComposerTarget(member.id);
@@ -214,16 +228,39 @@ export function TeamWarRoom({
     document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
+  function answerMessage(message: TeamMessage): void {
+    if (!message.correlation_id || !message.from_member_id || message.from_member_id === "host") return;
+    setReplyAnchor(message);
+    setComposerTarget(message.from_member_id);
+    setSelectedMemberId(message.from_member_id);
+    setKind("answer");
+    document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
   function submit(): void {
+    void submitMessage();
+  }
+
+  async function submitMessage(): Promise<void> {
     if (!canSend) return;
     const descriptor = sendTeamMessage(run.id, {
       fromMemberId: "host",
       toMemberIds: explicitRecipients,
       kind,
       body: draft.trim(),
+      correlationId: replyAnchor?.correlation_id ?? undefined,
+      causationId: replyAnchor?.id,
+      originWaveId: navigationWave?.id,
     });
-    onAction?.(descriptor.path, descriptor.body);
+    const result = onAction?.(descriptor.path, descriptor.body);
+    const accepted = result instanceof Promise ? await result : true;
+    if (!accepted) return;
+    if (replyAnchor && hostDeliveryStatus(replyAnchor) === "delivered") {
+      const ack = acknowledgeTeamMessage(run.id, replyAnchor.id, "host");
+      await onAction?.(ack.path, ack.body);
+    }
     setDraft("");
+    setReplyAnchor(undefined);
   }
 
   return (
@@ -284,6 +321,20 @@ export function TeamWarRoom({
       }
       composer={
         <section id="team-war-room-composer" className="space-y-2">
+          <div className="flex min-h-6 items-center justify-between gap-3">
+            {replyAnchor ? (
+              <div className="flex min-w-0 items-center gap-2 text-[11px]">
+                <Badge tone="decision">Reply in work chain</Badge>
+                <span className="truncate text-muted-foreground">
+                  {memberLabel(memberById, replyAnchor.from_member_id ?? "")} · {shortId(replyAnchor.correlation_id ?? "")}
+                </span>
+                <button type="button" onClick={() => setReplyAnchor(undefined)} className="text-primary hover:underline">New message</button>
+              </div>
+            ) : (
+              <p className="text-[10px] text-muted-foreground">New Host message · choose a Lead Inbox item to reply in an existing Assignment chain.</p>
+            )}
+            <span className="shrink-0 text-[10px] text-muted-foreground">Operator acts as Host Lead, never as a Member.</span>
+          </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="hidden text-[11px] font-medium text-muted-foreground sm:inline">Message</span>
             <Select
@@ -291,11 +342,12 @@ export function TeamWarRoom({
               value={composerTarget}
               onChange={(event) => setComposerTarget(event.target.value)}
               className="h-8 w-44"
+              disabled={Boolean(replyAnchor)}
             >
               <option value="team">Team · all members</option>
               {members.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}
             </Select>
-            <Select aria-label="Message kind" value={kind} onChange={(event) => setKind(event.target.value)} className="h-8 w-32">
+            <Select aria-label="Message kind" value={kind} onChange={(event) => setKind(event.target.value)} className="h-8 w-32" disabled={Boolean(replyAnchor)}>
               <option value="broadcast">Broadcast</option>
               <option value="question">Question</option>
               <option value="answer">Answer</option>
@@ -310,7 +362,9 @@ export function TeamWarRoom({
               aria-label="Team message"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder={composerTarget === "team" ? "Message team or @member…" : `Message ${memberById.get(composerTarget)?.name ?? "member"}…`}
+              placeholder={replyAnchor
+                ? `Answer ${memberLabel(memberById, replyAnchor.from_member_id ?? "")} in this Assignment chain…`
+                : composerTarget === "team" ? "Message team or @member…" : `Message ${memberById.get(composerTarget)?.name ?? "member"}…`}
               className="min-h-12 flex-1 resize-none"
               rows={2}
               disabled={!actionsEnabled}
@@ -390,6 +444,14 @@ export function TeamWarRoom({
           {members.length === 0 && <EmptyState icon={Users} title="No member runs" description="This attempt did not create any runnable member instances." />}
           </div>
         </section>
+
+        <LeadInbox
+          messages={leadInbox}
+          members={memberById}
+          actionsEnabled={actionsEnabled}
+          onAnswer={answerMessage}
+          onAcknowledge={(message) => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
+        />
 
         <section className="min-h-[28rem] overflow-hidden bg-background">
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
@@ -488,6 +550,79 @@ function toInteractionActivity(
       </div>
     ),
   };
+}
+
+function LeadInbox({
+  messages,
+  members,
+  actionsEnabled,
+  onAnswer,
+  onAcknowledge,
+}: {
+  messages: TeamMessage[];
+  members: Map<string, MemberRun>;
+  actionsEnabled: boolean;
+  onAnswer: (message: TeamMessage) => void;
+  onAcknowledge: (message: TeamMessage) => void;
+}) {
+  return (
+    <section aria-label="Lead Inbox" className="border-b border-border/70 py-3">
+      <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="grid size-7 place-items-center rounded-lg border border-primary/20 bg-primary/[0.06] text-primary">
+            <Inbox className="size-3.5" />
+          </span>
+          <div>
+            <h2 className="text-[12px] font-semibold text-foreground">Lead Inbox</h2>
+            <p className="text-[10px] text-muted-foreground">Member questions, blockers, and review requests addressed to the Host.</p>
+          </div>
+        </div>
+        <Badge tone={messages.some((message) => hostDeliveryStatus(message) === "delivered") ? "warn" : "muted"}>
+          {messages.filter((message) => hostDeliveryStatus(message) === "delivered").length} unread
+        </Badge>
+      </header>
+      {messages.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-border px-3 py-3 text-[11px] text-muted-foreground">Inbox is clear. Provider pauses remain in PendingInteraction, not this coordination queue.</p>
+      ) : (
+        <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/70 bg-card">
+          {messages.slice(0, 8).map((message) => {
+            const delivery = hostDelivery(message);
+            const canAnswer = Boolean(message.correlation_id && message.from_member_id && message.from_member_id !== "host");
+            return (
+              <article key={message.id} className="grid gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>
+                    <span className="text-[11px] font-semibold text-foreground">{memberLabel(members, message.from_member_id ?? "")}</span>
+                    <span className="text-[10px] text-muted-foreground">{formatTime(message.created_at)}</span>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-foreground/85">{message.body || "No message body"}</p>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+                    <span>correlation · {message.correlation_id ? shortId(message.correlation_id) : "missing"}</span>
+                    <span>delivery · {delivery?.policy ?? "unknown"} / {delivery?.status ?? "unknown"}</span>
+                    {delivery?.status === "acknowledged" && <span className="text-status-good">ACK</span>}
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-1.5">
+                  {delivery?.status === "delivered" && (
+                    <Button size="sm" variant="secondary" disabled={!actionsEnabled} onClick={() => onAcknowledge(message)}>ACK</Button>
+                  )}
+                  <Button
+                    size="sm"
+                    disabled={!actionsEnabled || !canAnswer}
+                    title={canAnswer ? "Reply using this Assignment correlation" : "Cannot answer until this message has an Assignment correlation"}
+                    onClick={() => onAnswer(message)}
+                  >
+                    <MessageSquare className="size-3.5" /> Answer
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, onComplete }: {
@@ -736,6 +871,8 @@ function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string
 function attemptNumber(attempts: Array<{ id: string }>, id: string): number { return Math.max(1, attempts.findIndex((attempt) => attempt.id === id) + 1); }
 function memberLabel(members: Map<string, MemberRun>, id: string): string { return id === "host" ? "Host" : members.get(id)?.name ?? id; }
 function shortId(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-5)}` : value; }
+function hostDelivery(message: TeamMessage) { return message.deliveries?.find((delivery) => delivery.member_id === "host"); }
+function hostDeliveryStatus(message: TeamMessage): string | undefined { return hostDelivery(message)?.status; }
 function timestamp(value?: string | null): number { if (!value) return 0; return value.startsWith("unix-ms:") ? Number(value.slice(8)) || 0 : Date.parse(value) || 0; }
 function formatDate(value?: string | null): string { if (!value) return "Not recorded"; const ms = timestamp(value); return ms ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(ms) : value; }
 function formatTime(value?: string | null): string { if (!value) return "—"; const ms = timestamp(value); return ms ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(ms) : value; }

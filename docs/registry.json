@@ -3134,7 +3134,10 @@
    ],
    "reviewAfter": "2026-09-30",
    "lastVerifiedWith": [
-    "npx pnpm@9.15.4 acceptance:mission-wave"
+    "cargo test -p harness-cli -- --test-threads=1",
+    "npx pnpm@9.15.4 check",
+    "npx pnpm@9.15.4 acceptance:mission-wave",
+    "npx pnpm@9.15.4 check:star-harness-plugin"
    ],
    "reorgTrigger": "Mission context, Host-plan Wave semantics, Mission-Team cardinality, TeamRun lifecycle, or the CLI/MCP authority boundary changes.",
    "authorityClass": "canonical_contract",
@@ -3165,6 +3168,7 @@
    ],
    "dependsOn": [
     "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+    "docs/decisions/0035-agent-member-autonomy-and-collaboration.md",
     "docs/dashboard/pages/mission-wave-canvas.md",
     "docs/dashboard/pages/team-run-war-room.md"
    ],
@@ -3188,6 +3192,54 @@
     {
      "kind": "test",
      "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0035-agent-member-autonomy-and-collaboration.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Agent Team Member autonomy and assignment acceptance boundary",
+    "Agent Team Member versus provider-native subagent selection",
+    "Host, Member and peer collaboration message protocol",
+    "Host observe, integrate, replan and advance loop"
+   ],
+   "dependsOn": [
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+    "docs/agent-runtime.md",
+    "docs/product/mission-wave-host-plan.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 acceptance:mission-wave"
+   ],
+   "reorgTrigger": "Member autonomy, Inbox delivery, peer messaging, provider subagent attribution, Steer truth, or Host replan semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/team-message.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/mcp_stdio.rs"
     }
    ]
   }

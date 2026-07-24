@@ -109,6 +109,9 @@ path as an execution root is a routing defect.
    assignments remain tracked by issue
    [#231](https://github.com/cyl19970726/multi-agent-harness/issues/231).
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
+   For a Mission-scoped long-lived TeamRun, the URL includes the Mission and
+   the Host's current Wave as navigation context even though the run itself has
+   no Wave owner. Direct legacy Wave runs use their stored Wave id.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
    receives durable Harness coordination plus transient/on-demand activity
    projected from provider-native sessions through SSE/API. Its compatibility

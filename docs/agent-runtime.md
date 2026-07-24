@@ -38,7 +38,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
-| How does a member receive work? | `MessageDelivery` maps harness messages to provider turns or native inputs. |
+| How does a member receive work? | A correlated Assignment and member Inbox are projected into provider turns by `MessageDelivery`. |
 | How does it receive work? | Delivery maps the requesting executor's assignment or Host request to provider input. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
@@ -56,6 +56,32 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
 | `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
+
+## Agent Team Collaboration Boundary
+
+An Agent Team member is an accountable, multi-turn actor with a stable
+`MemberRun`, Workspace, mailbox address, Assignment correlation, and
+provider-native session. Its provider-native subagents are child execution
+threads, not additional Harness members. The parent member retains permission,
+evidence, and acceptance responsibility.
+
+Harness owns ordinary coordination through `TeamMessage`. Members may send
+question, progress, blocker, review, and handoff messages to the Host, or direct
+peer messages to active members in the same TeamRun. Member-to-Host messages
+are delivered when appended because the control plane already received them.
+Messages addressed to a member remain queued until the adapter claims and
+injects them into the next eligible turn.
+
+The member Inbox is a latest-row projection over messages addressed to that
+MemberRun. Its default view contains actionable queued/delivered coordination;
+the historical view contains the complete same-run coordination lineage. It
+does not read or copy provider-native chat.
+
+`PendingInteraction` is reserved for a provider turn paused on a question,
+approval, or plan review. It is not a replacement for ordinary peer or Host
+chat. Steer, interrupt, and resume must reflect the real selected execution
+mode: unsupported live steer degrades to a clearly labeled queued next-round
+message, never a fake current-turn ACK.
 
 ## Provider Interfaces
 

@@ -8,6 +8,7 @@ import {
   FileCheck2,
   Flag,
   PanelsTopLeft,
+  PencilLine,
   Plus,
   Rocket,
   ShieldCheck,
@@ -47,6 +48,7 @@ import {
   createTeamRun,
   createWave,
   gateWave,
+  updateWaveContext,
   type ActionDescriptor,
 } from "../api/actions";
 import type { SelectionState } from "../app/selection";
@@ -362,9 +364,15 @@ function MissionDetail({
   const linkedMissionTeams = (model.snapshot.teams ?? []).filter((team) =>
     (mission.agent_team_ids ?? []).includes(team.id),
   );
-  const latestMissionTeam = latestMissionRun?.agent_team_id
-    ? linkedMissionTeams.find((team) => team.id === latestMissionRun.agent_team_id)
-    : linkedMissionTeams[0];
+  const linkedTeamSummaries = (mission.agent_team_ids ?? []).map((teamId) => {
+    const team = linkedMissionTeams.find((candidate) => candidate.id === teamId);
+    const runs = missionRuns.filter((run) => run.agent_team_id === teamId);
+    const latestRun = runs[runs.length - 1];
+    const members = latestRun
+      ? (model.snapshot.member_runs ?? []).filter((member) => member.team_run_id === latestRun.id)
+      : [];
+    return { teamId, team, latestRun, members, attemptCount: runs.length };
+  });
   const missionRunIds = new Set(missionRuns.map((run) => run.id));
   const selectedMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id && missionRunIds.has(member.team_run_id),
@@ -627,32 +635,41 @@ function MissionDetail({
               tone={latestMissionRun ? waveTone(latestMissionRun.status) : "idle"}
               live={latestMissionRun?.status === "running"}
             >
-              <dl className="space-y-2 text-[11px] leading-relaxed">
-                <ContextFact label="Linked" value={`${mission.agent_team_ids?.length ?? 0} reusable team${mission.agent_team_ids?.length === 1 ? "" : "s"}`} />
-                <ContextFact label="Team Lead" value={!latestMissionTeam?.owner_agent_id || latestMissionTeam.owner_agent_id === "host" ? "Current Host Agent" : latestMissionTeam.owner_agent_id} />
-                <ContextFact label="Run" value={latestMissionRun ? `${latestMissionRun.status ?? "planning"} · ${latestMissionRun.objective ?? latestMissionRun.id}` : "Not yet started"} />
-                <ContextFact label="Members" value={selectedMembers.length ? `${selectedMembers.length} linked members` : "No members yet"} />
+              <div className="space-y-2">
+                {linkedTeamSummaries.map(({ teamId, team, latestRun, members, attemptCount }) => (
+                  <button
+                    key={teamId}
+                    type="button"
+                    disabled={!latestRun}
+                    onClick={() => latestRun && onSelectionChange({
+                      surface: "team",
+                      teamId: latestRun.id,
+                      missionId: mission.id,
+                      waveId: selectedWave?.id,
+                    })}
+                    className="w-full rounded-lg border border-border/70 bg-background/70 p-2.5 text-left transition-colors enabled:hover:border-primary/30 enabled:hover:bg-primary/[0.035] disabled:cursor-default"
+                  >
+                    <span className="flex items-start justify-between gap-2">
+                      <span className="min-w-0">
+                        <span className="block truncate text-[11px] font-semibold text-foreground">{team?.name ?? teamId}</span>
+                        <span className="mt-0.5 block text-[10px] leading-relaxed text-muted-foreground">
+                          {!team?.owner_agent_id || team.owner_agent_id === "host" ? "Current Host Agent" : team.owner_agent_id}
+                          {" · "}{members.length} member{members.length === 1 ? "" : "s"}
+                          {" · "}{attemptCount} attempt{attemptCount === 1 ? "" : "s"}
+                        </span>
+                      </span>
+                      <Badge tone={latestRun ? waveTone(latestRun.status) : "idle"}>{latestRun?.status ?? "not started"}</Badge>
+                    </span>
+                    <span className="mt-2 block line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">
+                      {latestRun?.objective ?? "Linked and reusable; no TeamRun has started yet."}
+                    </span>
+                  </button>
+                ))}
                 <ContextFact label="Lifetime" value="Continues across Waves" />
-              </dl>
+              </div>
               <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
                 The current Host is Team Lead; it is not counted as a MemberRun unless explicitly added to execute a lane.
               </p>
-              {latestMissionRun && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onSelectionChange({
-                      surface: "team",
-                      teamId: latestMissionRun.id,
-                      missionId: mission.id,
-                      waveId: selectedWave?.id,
-                    })
-                  }
-                  className="mt-3 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
-                >
-                  Open Mission team <ChevronRight className="size-3.5" />
-                </button>
-              )}
             </ContextModule>
           )}
 
@@ -809,6 +826,7 @@ function WaveCanvasCard({
 }: WaveCanvasCardProps) {
   const [attemptOpen, setAttemptOpen] = useState(false);
   const [gateOpen, setGateOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
   const latest = runs[runs.length - 1];
   const canTeamRun = wave.executor_kind === "agent_team";
   const hasActiveAttempt = runs.some((run) =>
@@ -844,7 +862,18 @@ function WaveCanvasCard({
         <section className="rounded-lg border border-border/70 bg-muted/20 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Host plan context</span>
-            <Badge tone="muted">r{wave.revision ?? 0}</Badge>
+            <span className="flex items-center gap-2">
+              <Badge tone="muted">r{wave.revision ?? 0}</Badge>
+              <ActionButton
+                enabled={actionsEnabled}
+                disabled={wave.status === "completed"}
+                size="sm"
+                variant="secondary"
+                onClick={() => setPlanOpen(true)}
+              >
+                <PencilLine className="size-3.5" /> Update plan
+              </ActionButton>
+            </span>
           </div>
           <MarkdownContext value={wave.context} empty="No detailed Host plan has been recorded for this Wave." />
         </section>
@@ -976,7 +1005,74 @@ function WaveCanvasCard({
         onAction={onAction}
         onClose={() => setGateOpen(false)}
       />
+      <UpdatePlanDialog
+        open={planOpen}
+        wave={wave}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onClose={() => setPlanOpen(false)}
+      />
     </section>
+  );
+}
+
+function UpdatePlanDialog({
+  open,
+  wave,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  wave: Wave;
+  actionsEnabled: boolean;
+  onAction: MissionsProps["onAction"];
+  onClose: () => void;
+}) {
+  const [context, setContext] = useState(wave.context ?? "");
+
+  useEffect(() => {
+    if (open) setContext(wave.context ?? "");
+  }, [open, wave.context]);
+
+  const changed = Boolean(context.trim()) && context.trim() !== (wave.context ?? "").trim();
+  const submit = () => {
+    if (!changed) return;
+    dispatch(onAction, updateWaveContext(wave.id, context.trim(), "host"));
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title={`Update Wave ${wave.index} plan`}
+      description={`Save a lightweight Host revision (next: r${(wave.revision ?? 0) + 1}). Advance to a new Wave when responsibility, team composition, or the decision boundary changes materially.`}
+      onClose={onClose}
+    >
+      <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        <Field
+          label="Host plan context"
+          required
+          hint="Markdown plan, current judgment, member responsibilities, carry-over, blockers, and the next decision."
+        >
+          {(id) => (
+            <TextArea
+              id={id}
+              value={context}
+              onChange={(event) => setContext(event.target.value)}
+              className="min-h-64 font-mono text-[12px]"
+            />
+          )}
+        </Field>
+        <DialogFooter
+          submitLabel="Save revision"
+          actionsEnabled={actionsEnabled}
+          canSubmit={changed}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
   );
 }
 

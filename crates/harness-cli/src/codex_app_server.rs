@@ -59,12 +59,14 @@ impl CodexAppServerClient {
         model: Option<&str>,
         _workspace_write: bool,
         resume_thread_id: Option<&str>,
+        collaboration_env: &[(String, String)],
     ) -> CliResult<Self> {
         let mut command = Command::new("codex");
         command
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")
+            .envs(collaboration_env.iter().cloned())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -49,6 +49,28 @@ async function main() {
       && close.body.completed_by === "lead",
     "Mission closeout action carries durable outcome and actor",
   );
+  const revisePlan = actions.updateWaveContext("wave/a", "# revised plan", "host");
+  check(
+    revisePlan.path === "/v1/waves/wave%2Fa/context"
+      && revisePlan.body.context === "# revised plan"
+      && revisePlan.body.updated_by === "host",
+    "Update plan writes a Wave Markdown revision through the canonical action",
+  );
+  const answer = actions.sendTeamMessage("run/a", {
+    fromMemberId: "host",
+    toMemberIds: ["member/b"],
+    kind: "answer",
+    body: "Proceed",
+    correlationId: "corr/c",
+    causationId: "message/d",
+    originWaveId: "wave/a",
+  });
+  check(
+    answer.body.correlation_id === "corr/c"
+      && answer.body.causation_id === "message/d"
+      && answer.body.origin_wave_id === "wave/a",
+    "Lead reply preserves Assignment correlation, causation, and Wave navigation context",
+  );
   check(
     actions.startTeamRun("run/a").path === "/v1/team-runs/run%2Fa/start",
     "Start action targets the selected TeamRun",
@@ -100,6 +122,14 @@ async function main() {
     "Dashboard offers ACK only for delivered Host recipient rows",
   );
   check(
+    teamSource.includes("Lead Inbox")
+      && teamSource.includes('["question", "blocker", "review_request"]')
+      && teamSource.includes("correlationId: replyAnchor?.correlation_id")
+      && teamSource.includes("causationId: replyAnchor?.id")
+      && teamSource.includes("Operator acts as Host Lead, never as a Member."),
+    "Team War Room exposes a Host-only Lead Inbox and correlation-anchored replies",
+  );
+  check(
     teamSource.includes('starting ? "Starting…" : "Start attempt"'),
     "TeamRun start has an explicit pending state",
   );
@@ -117,11 +147,41 @@ async function main() {
     "Mission closeout and executor-aware Wave Gate controls are rendered",
   );
   check(
-    memberSource.includes('execution_mode === "codex_app_server"')
+    missionSource.includes("UpdatePlanDialog")
+      && missionSource.includes("updateWaveContext(wave.id, context.trim(), \"host\")")
+      && missionSource.includes("Save revision"),
+    "Mission Canvas can revise current Wave Markdown without advancing the Wave",
+  );
+  check(
+    missionSource.includes("linkedTeamSummaries.map")
+      && missionSource.includes("Linked and reusable; no TeamRun has started yet."),
+    "Mission Canvas renders every linked reusable Agent Team instead of collapsing the relation to one latest run",
+  );
+  check(
+    memberSource.includes('messageKind === "steer"')
+      && memberSource.includes('kind: messageKind === "steer" ? "control" : messageKind')
+      && memberSource.includes("Injects only this explicit Steer")
+      && memberSource.includes("queues control guidance for the next provider round")
+      && memberSource.includes('execution_mode === "codex_app_server"')
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
       && memberSource.includes("supports_cancel"),
-    "Member Focus distinguishes same-turn steer from queued chat and gates Interrupt by capability",
+    "Member Focus invokes same-turn steer only for an explicit Steer action and otherwise queues Host coordination",
+  );
+  check(
+    teamSource.includes("missionId: navigationMission?.id")
+      && teamSource.includes("waveId: navigationWave?.id")
+      && memberSource.includes("missionId: navigationMissionId")
+      && memberSource.includes("waveId: navigationWave?.id"),
+    "Team and Member navigation preserve Mission/Wave context across deep links",
+  );
+  check(
+    memberSource.includes("Current Assignment · Member Goal")
+      && memberSource.includes("assignmentCompletionCriteria")
+      && memberSource.includes("latestSteerSummary")
+      && memberSource.includes("Host & peer threads")
+      && memberSource.includes("Native subagent activity"),
+    "Member Focus derives its Goal, collaboration threads, latest steer, peers, and native subagent entry",
   );
 
   console.log(`\n   operator control checks: ${passed} pass, ${failed} fail`);

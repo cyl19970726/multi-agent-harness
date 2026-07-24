@@ -5,7 +5,8 @@ status: implemented
 owner_role: product-design
 canonical_for: one standalone or Mission-scoped AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
-architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle
+architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle +
+              ADR 0035 collaboration
 ```
 
 ## User Problem
@@ -93,15 +94,24 @@ replace status or source labels.
    permission/budget, and honest availability.
 5. **Artifacts** — explicit files/checks/evidence with open/download actions.
 
+The center also contains a **Lead Inbox** projection for member-authored
+`question`, `blocker`, and `review_request` messages addressed to `host`.
+Every item shows sender, Assignment correlation, delivery/ACK state, and the
+responsible next action. Answering reuses the source correlation, records the
+source message as causation, and acknowledges the source delivery.
+
 ## Actions
 
-- Message the whole team or one explicit member.
+- Message the whole team or one explicit member. The composer distinguishes a
+  new work chain from a reply to the selected Assignment correlation.
 - Make it clear that Host-authored coordination comes from the Team Lead;
   Human/operator authorship remains separately attributable where supported.
 - Create a correlated assignment with optional origin Wave metadata.
 - Add, rename, deactivate, steer, interrupt, or resume a member where the
   selected provider mode honestly supports it.
 - Inspect delivery/ACK/correlation lineage and answer PendingInteractions.
+- Answer Lead Inbox items with inherited correlation and causation. The
+  Dashboard may author Host/operator messages; it never impersonates a member.
 - Open Mission, current Wave context, Member Focus, artifact, or native-session
   summary.
 - Complete or stop the TeamRun only through a real acknowledged lifecycle
@@ -122,8 +132,11 @@ restarts this TeamRun.
   do not imply a Mission or Wave completed.
 - Tablet/mobile: collapse sidebar, make member strip keyboard accessible,
   preserve one stream and composer, and move context into sheet/bottom sheet.
-- Navigation preserves filters, selected member, scroll, Mission id, TeamRun id,
-  and project id.
+- Navigation preserves filters, selected member, scroll, Mission id, selected
+  Wave id, TeamRun id, and project id across Team → Member → Team deep links.
+- A canonical MCP Dashboard URL for a Mission-scoped run includes the current
+  Host-plan Wave as cold-link navigation context. This does not attach runtime
+  ownership to that Wave and may change when the Host advances its plan.
 
 ## Screenshot And UX Acceptance
 
@@ -145,5 +158,8 @@ orientation, runtime, and artifacts. Verify:
 - Assignment correlation owns work; Wave prose explains Host intent.
 - Provider-native subagents are observations unless a real orchestrated
   lifecycle exists.
+- A member-to-member message is allowed inside the same TeamRun and remains
+  visible to the Lead. It is queued for the peer's next eligible round rather
+  than interrupting the current turn.
 - TeamRun completion does not advance a Wave; Wave advance does not complete a
   TeamRun.

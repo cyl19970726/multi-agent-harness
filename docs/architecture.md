@@ -76,6 +76,12 @@ Use Agent Team when the Mission needs living collaborators with persistent
 session state, explicit assignment, handoff, review, and role ownership across
 one or more Waves.
 
+Each `MemberRun` owns one end-to-end Assignment and may use provider-native
+subagents for bounded internal work. The subagents return to that member and do
+not gain a Harness mailbox, Workspace identity, Assignment ownership, or
+independent acceptance. Use another Member when those durable properties are
+needed.
+
 The canonical execution proof is message-driven:
 
 ```text
@@ -90,6 +96,11 @@ Assignment-message correlation replaces legacy dependency graph semantics as the
 explanation of who owns what. Automatic handoff preserves the
 assignment correlation; manual CLI, HTTP, and MCP sends can reuse it directly
 or inherit it from a validated same-run causation message.
+
+Ordinary Host/member/peer collaboration stays in `TeamMessage`.
+Provider-pausing questions and approvals use `PendingInteraction`. The Host
+observes handoffs and explicitly sends dependent work; there is no conditional
+delivery graph.
 
 ### `dynamic_workflow`
 

@@ -88,9 +88,11 @@ impl KimiAcpClient {
         cwd: &Path,
         model: Option<&str>,
         resume_session_id: Option<&str>,
+        collaboration_env: &[(String, String)],
     ) -> CliResult<Self> {
         let mut cmd = Command::new(resolve_kimi_bin());
         cmd.arg("acp")
+            .envs(collaboration_env.iter().cloned())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

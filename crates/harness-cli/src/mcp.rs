@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use harness_core::{TeamRunEvent, TeamRunStatus};
+use harness_core::{TeamRunEvent, TeamRunStatus, WaveStatus};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
@@ -32,7 +32,7 @@ use crate::{
     parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start,
     rename_team_run_member, resolve_pending_interaction_value, revise_mission_context,
     revise_mission_team_link, revise_wave, send_team_message, steer_team_member_value,
-    team_member_specs_from_definition, team_run_wave_index, transition_team_run,
+    team_member_specs_from_definition, team_run_inbox, team_run_wave_index, transition_team_run,
     visible_member_actions_in_append_order, ResolvedStore, TeamMemberSpec,
 };
 
@@ -46,16 +46,42 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 const DASHBOARD_UI_ORIGIN: &str = "http://127.0.0.1:5173";
 const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
-fn team_dashboard_url(resolved: &ResolvedStore, team_run_id: &str) -> String {
-    match resolved.context.as_ref() {
-        Some(context) => format!(
+fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_id: &str) -> String {
+    let run = latest_team_run(store, team_run_id).ok();
+    let mission_id = run.as_ref().and_then(|run| run.mission_id.as_deref());
+    let direct_wave_id = run.as_ref().and_then(|run| run.wave_id.as_deref());
+    let current_wave_id = direct_wave_id.map(str::to_string).or_else(|| {
+        let mission_id = mission_id?;
+        let mut waves = store.latest_waves().ok()?;
+        waves.retain(|wave| wave.mission_id == mission_id);
+        waves.sort_by_key(|wave| wave.index);
+        waves
+            .iter()
+            .find(|wave| {
+                matches!(
+                    wave.status,
+                    WaveStatus::Running | WaveStatus::Waiting | WaveStatus::Blocked
+                )
+            })
+            .or_else(|| waves.iter().find(|wave| wave.status == WaveStatus::Planned))
+            .or_else(|| waves.last())
+            .map(|wave| wave.id.clone())
+    });
+    let context = match (mission_id, current_wave_id.as_deref()) {
+        (Some(mission_id), Some(wave_id)) => format!("&mission={mission_id}&wave={wave_id}"),
+        (Some(mission_id), None) => format!("&mission={mission_id}"),
+        _ => String::new(),
+    };
+    let base = match resolved.context.as_ref() {
+        Some(project) => format!(
             "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}&project={}",
-            context.id
+            project.id
         ),
         None => format!(
             "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}"
         ),
-    }
+    };
+    base + &context
 }
 
 /// Serve the stdio MCP loop until stdin closes.
@@ -153,6 +179,7 @@ fn call_tool(
         "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
+        "team_run_inbox" => tool_team_run_inbox(store, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
         "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
@@ -229,7 +256,7 @@ fn tool_team_run_start(
         }
     });
     let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
-    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(resolved, id)}))
+    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(store, resolved, id)}))
 }
 
 fn tool_team_run_cancel(
@@ -240,7 +267,7 @@ fn tool_team_run_cancel(
     let id = required_str(arguments, "team_run_id")?;
     let run = transition_team_run(store, id, TeamRunStatus::Cancelled)
         .map_err(|error| error.to_string())?;
-    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(resolved, id)}))
+    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(store, resolved, id)}))
 }
 
 fn tool_team_message_acknowledge(
@@ -254,7 +281,7 @@ fn tool_team_message_acknowledge(
         .map_err(|error| error.to_string())?;
     Ok(json!({
         "message": message,
-        "dashboard_url": team_dashboard_url(resolved, &message.team_run_id)
+        "dashboard_url": team_dashboard_url(store, resolved, &message.team_run_id)
     }))
 }
 
@@ -527,7 +554,7 @@ fn tool_team_run_create(
         "execution_root": created.team_run.execution_root,
         "member_runs": created.member_runs,
         "assignment_messages": created.assignment_messages,
-        "dashboard_url": team_dashboard_url(resolved, &created.team_run.id),
+        "dashboard_url": team_dashboard_url(store, resolved, &created.team_run.id),
     }))
 }
 
@@ -589,7 +616,7 @@ fn tool_team_run_add_member(
         "team_run": run,
         "member_run": member_run,
         "assignment_message": assignment_message,
-        "dashboard_url": team_dashboard_url(resolved, team_run_id),
+        "dashboard_url": team_dashboard_url(store, resolved, team_run_id),
     }))
 }
 
@@ -689,7 +716,7 @@ fn tool_team_run_status(
         "members": members,
         "pending_interactions": pending_interactions,
         "unacked_messages": unacked_messages,
-        "dashboard_url": team_dashboard_url(resolved, id),
+        "dashboard_url": team_dashboard_url(store, resolved, id),
     }))
 }
 
@@ -736,6 +763,21 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         "message_id": message.id,
         "correlation_id": message.correlation_id,
     }))
+}
+
+/// `team_run_inbox` — latest-wins coordination mail addressed to one member.
+/// The default projection is actionable queued/delivered mail; `all=true`
+/// returns all received messages at their latest stored state.
+fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    let include_all = arguments
+        .get("all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let messages = team_run_inbox(store, team_run_id, member_run_id, include_all)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"messages": messages}))
 }
 
 /// `team_run_events` — the run's folded event log, seq-ordered, optionally
@@ -1035,6 +1077,19 @@ fn tool_definitions() -> Value {
                     "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."}
                 },
                 "required": ["team_run_id"]
+            }
+        },
+        {
+            "name": "team_run_inbox",
+            "description": "Read latest-wins Harness coordination mail addressed to one MemberRun (or the reserved host recipient). By default returns actionable queued/delivered messages; all=true returns every received message at its latest stored state, not raw append revisions. Provider-native transcript and tool history are intentionally excluded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string", "description": "MemberRun id, or `host` for the Lead inbox."},
+                    "all": {"type": "boolean", "default": false}
+                },
+                "required": ["team_run_id", "member_run_id"]
             }
         },
         {

@@ -279,6 +279,26 @@ fn team_run_cli_create_list_status_send_events() {
             .is_empty(),
         "correlation id assigned"
     );
+    let inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            member_ids[0],
+            "--json",
+        ],
+    );
+    assert!(
+        inbox
+            .as_array()
+            .expect("CLI inbox array")
+            .iter()
+            .any(|item| item["id"] == message["id"]),
+        "CLI inbox must expose peer coordination mail: {inbox}"
+    );
 
     // events --json: 5 create-time events + 1 send event, seq 1..=6 in order.
     let events = team_run_json(&home, &project_id, &["events", "--id", &run_id, "--json"]);
@@ -797,6 +817,48 @@ fn post_mission_wave_and_lightweight_gate() {
     assert_eq!(body["result"]["gate_status"].as_str(), Some("revise"));
     assert_eq!(body["result"]["status"].as_str(), Some("planned"));
     assert_eq!(body["result"]["gate_note"].as_str(), Some("clarify scope"));
+}
+
+#[test]
+fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
+    let home = TempHome::new("team-inbox-http");
+    let _project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise member inbox",
+            "members": [
+                {"name": "member-a", "role": "builder", "provider": "codex"},
+                {"name": "member-b", "role": "reviewer", "provider": "codex"}
+            ]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id");
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id");
+    let assignment_id = created["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .expect("assignment id");
+
+    let (status, inbox) =
+        serve.get_json(&format!("/v1/team-runs/{run_id}/members/{member_id}/inbox"));
+    assert_eq!(status, 200, "body: {inbox}");
+    assert_eq!(
+        inbox["messages"].as_array().map(Vec::len),
+        Some(1),
+        "queued assignment is actionable"
+    );
+    assert_eq!(inbox["messages"][0]["id"].as_str(), Some(assignment_id));
+    let (status, all) = serve.get_json(&format!(
+        "/v1/team-runs/{run_id}/members/{member_id}/inbox?all=true"
+    ));
+    assert_eq!(status, 200, "body: {all}");
+    assert_eq!(all["messages"].as_array().map(Vec::len), Some(1));
 }
 
 #[test]
@@ -1375,6 +1437,88 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     assert!(
         stopped,
         "Codex member was marked terminal before/without provider interruption acknowledgement"
+    );
+}
+
+#[test]
+fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
+    let home = TempHome::new("team-run-codex-provider-interrupt");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_codex_team_shim(
+        &home.base().join("fakebin-codex-provider-interrupt"),
+    );
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST", "1"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise provider-reported interruption",
+            "members": [{"name": "codex-provider-stop", "role": "observer", "provider": "codex", "execution_mode": "codex_app_server"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+
+    let mut final_snapshot = serde_json::Value::Null;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        if stopped {
+            final_snapshot = snapshot;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(
+        final_snapshot,
+        serde_json::Value::Null,
+        "provider-reported interruption did not become terminal"
+    );
+    let summary = final_snapshot["member_actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|action| action["member_run_id"].as_str() == Some(member_id.as_str()))
+        .filter_map(|action| action["summary"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        summary.contains("without a Harness control request"),
+        "missing honest provider interruption attribution: {summary}"
+    );
+    assert!(
+        !summary.contains("operator or Lead interrupted"),
+        "provider interruption was falsely attributed to Harness: {summary}"
     );
 }
 

@@ -3,8 +3,8 @@
 ```text
 status: implemented_candidate
 owner_role: dashboard
-canonical_for: one MemberRun working within one AgentTeamRun attempt
-route_or_surface: Missions -> Wave -> Agent Team -> MemberRun
+canonical_for: one autonomous MemberRun working within one AgentTeamRun
+route_or_surface: Agent Teams -> TeamRun -> MemberRun (Mission/Wave optional)
 ```
 
 ## User Problem
@@ -13,7 +13,7 @@ An operator needs to understand one agent's work without reconstructing it
 from separate message, action, session, and evidence tabs. They need to answer
 four questions in the first viewport:
 
-1. What Wave and Team attempt is this member serving?
+1. What Mission/Team context and current Host-plan Wave is this member serving?
 2. What was it assigned to do, and under which boundaries?
 3. What is it doing or waiting for now?
 4. What output supports its contribution to the Wave?
@@ -28,7 +28,7 @@ transcript or a task-management page.
 Required data:
 
 - `Mission`, `Wave`, and Wave exit criteria/gate projection;
-- parent `AgentTeamRun` attempt and retry lineage;
+- parent `AgentTeamRun` and retry lineage;
 - the selected `MemberRun`;
 - `TeamMessage`, especially `kind=assignment` and its `correlation_id`;
 - Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
@@ -122,7 +122,7 @@ than page-specific cards. Its default order is:
 1. **WaveCompact** — the selected Host-plan Wave's title/index, objective,
    revision, judgment state, and open-Wave action. For a Mission-scoped
    TeamRun this is navigation/assignment context, not a parent runtime.
-2. **TeamCompact** — attempt identity, member status roll-up, one blocked or
+2. **TeamCompact** — run identity, member status roll-up, one blocked or
    waiting signal, and open-war-room action.
 3. **AssignmentContract** — assignment sender/time/correlation, requested
    outcome, owned paths, permissions, and applicable constraints.
@@ -133,6 +133,14 @@ than page-specific cards. Its default order is:
    operational context, not the primary page.
 6. **DelegationSummary** — observed provider-native or orchestrated child work,
    with attribution and control limits made explicit.
+7. **CollaborationThread** — Host and same-Team peer messages for the current
+   Assignment correlation, including queued/delivered/acknowledged state.
+
+The first module group is labeled **Current Assignment (Member Goal)**. It is a
+derived projection, not a Goal record: Assignment body and completion standard,
+owned paths, member state, latest progress/blocker, and latest applicable
+Steer. Missing inputs are shown as missing rather than inferred from provider
+chat.
 
 Modules are collapsible. First release uses system ordering; pinning or free
 reordering is not a requirement.
@@ -141,6 +149,13 @@ reordering is not a requirement.
 
 - Send a message, clarification, handoff, or review request directly to this
   member when it is addressable.
+- **Steer** is a separate explicit action. Only that selection may inject into
+  a currently active provider turn; ordinary Clarify/Review messages stay in
+  the coordination queue. If the selected execution mode cannot steer the
+  active turn, Steer degrades visibly to queued control guidance for the next
+  provider round.
+- Select an existing Assignment correlation when replying. A new message chain
+  is visually distinct and never silently loses lineage.
 - Open the assignment anchor and other correlated messages.
 - Open the Team or selected Host-plan Wave without losing navigation context.
 - Open an artifact, check, or provider session summary.
@@ -168,7 +183,7 @@ Wave advance.
   reason from status alone.
 - **Read/model error:** keep the last successful header/context state marked
   stale, show scoped retry, and do not replace the page with an empty shell.
-- **Finished attempt:** render read-only history; composer and lifecycle
+- **Finished run:** render read-only history; composer and lifecycle
   controls are disabled with an explanation.
 
 ## Screenshot Acceptance
@@ -200,6 +215,8 @@ must remain immutable while awaiting explicit user approval.
 - It does not require or display a legacy dependency graph as the ownership model.
 - Provider-native subagents remain observed delegation unless the harness owns
   their lifecycle.
+- Provider-native subagents remain inside this member's responsibility and
+  permission ceiling; they are not independent acceptance.
 - TeamRun completion only says that one run ended. The Host separately records
   `accepted | revise | blocked` judgment or advances the plan; a Wave does not
   own or implicitly stop the MemberRun.

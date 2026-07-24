@@ -11,7 +11,7 @@ lifecycle and archive rules are defined in
 | --- | --- |
 | Understand the AI Company OS | [Company OS product system map](company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](company-os/README.md) |
-| Change Mission/Wave or Agent Team orchestration | [Host-plan product contract](product/mission-wave-host-plan.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), and [Architecture map](architecture-map.md) |
+| Change Mission/Wave or Agent Team orchestration | [Host-plan product contract](product/mission-wave-host-plan.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0035](decisions/0035-agent-member-autonomy-and-collaboration.md), and [Architecture map](architecture-map.md) |
 | Implement or operate the repository | [Getting started](getting-started.md), [Operations](operations.md), [Schemas](schemas.md) |
 | Change frontend visual direction | [Company OS visual inventory](design/company-os-v2/visual-index.md) or [Execution Workbench V3](design/execution-workbench-v3/README.md) |
 | Integrate a provider | [Integration index](integration/README.md) |
@@ -36,6 +36,7 @@ integrating project repository, not in the generic core docs.
 | Skill | Use |
 | --- | --- |
 | [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Thin Host guidance for durable Mission context, versioned Wave memos, Mission-linked long-lived Teams, assignments, and advance/re-plan. CLI remains the authority. |
+| [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for assignment ownership, mailbox collaboration, native subagents, evidence, and review acceptance. |
 | [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not a Mission/Wave planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |
 | [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Reusable mailbox, runtime lifecycle, permission, recovery, and dashboard-proof design guidance. |

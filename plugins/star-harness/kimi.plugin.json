@@ -1,0 +1,41 @@
+{
+  "name": "star-harness",
+  "version": "0.3.0",
+  "description": "Thin Mission/Wave and autonomous Agent Team integration for Kimi Code.",
+  "interface": {
+    "displayName": "Star Harness",
+    "shortDescription": "Plan Missions and coordinate autonomous Agent Teams.",
+    "longDescription": "Adds provider-neutral Host and Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
+    "developerName": "Multi-Agent Harness",
+    "websiteURL": "https://github.com/cyl19970726/multi-agent-harness"
+  },
+  "skills": [
+    "./skills/orchestrate-mission-waves",
+    "./skills/collaborate-as-agent-team-member"
+  ],
+  "sessionStart": {
+    "skill": "orchestrate-mission-waves"
+  },
+  "skillInstructions": "Use the Harness CLI as the complete path. Mission stores durable intent; Wave stores Host plan and judgment; Members own correlated assignments and may use provider-native subagents internally. Ordinary collaboration uses TeamMessage, provider pauses use PendingInteraction, and provider-native sessions remain execution truth.",
+  "mcpServers": {
+    "harness": {
+      "command": "harness",
+      "args": ["mcp"]
+    }
+  },
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "timeout": 10
+    }
+  ],
+  "commands": "./commands/"
+}

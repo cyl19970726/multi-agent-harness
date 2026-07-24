@@ -33,6 +33,7 @@ consequences, affected modules, and validation path.
 | [0032](0032-provider-native-session-is-execution-truth.md) | active, implemented | Provider-native session owns transcript/tool activity/resume; Harness owns coordination, outcomes, refs and gates |
 | [0033](0033-agent-team-workspace-contract.md) | active, implemented | Agent Team store, project, run execution, and member worktree roots are distinct and observable |
 | [0034](0034-host-plan-waves-and-mission-teams.md) | active | Wave is the Host's versioned operational memo; Missions link independent long-lived Agent Teams |
+| [0035](0035-agent-member-autonomy-and-collaboration.md) | active | Members own end-to-end assignments; TeamMessage is the collaboration mailbox; subagents remain member-internal |
 
 ## Split Rule
 

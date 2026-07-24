@@ -43,7 +43,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
-import type { NativeActivityItem, NativeActivityProjection, Wave } from "@/types";
+import type { NativeActivityItem, NativeActivityProjection, TeamMessage, Wave } from "@/types";
 import type { SelectionState } from "@/app/selection";
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to message this member";
@@ -130,7 +130,7 @@ export function MemberRunFocus({
   const livePreview = isCurrentPreview(context.liveActivity?.expires_at, now)
     ? context.liveActivity
     : undefined;
-  const assignment = context.assignments[0];
+  const assignment = context.assignments[context.assignments.length - 1];
   const pendingInteraction = context.interactions.find(
     (interaction) => interaction.member_run_id === context.member.id && interaction.status === "pending",
   );
@@ -152,22 +152,26 @@ export function MemberRunFocus({
       surface: "team",
       teamId: context.run.id,
       memberRunId: undefined,
+      missionId: navigationMission?.id,
+      waveId: navigationWave?.id,
     });
 
   const dispatchMessage = () => {
     const body = draft.trim();
     if (!body || !actionsEnabled || finished) return;
-    const liveSteer = context.member.provider_profile?.execution_mode === "codex_app_server"
+    const liveSteer = messageKind === "steer"
+      && context.member.provider_profile?.execution_mode === "codex_app_server"
       && context.member.status === "running";
     const descriptor = liveSteer
       ? steerTeamMember(context.run.id, context.member.id, body)
       : sendTeamMessage(context.run.id, {
         fromMemberId: "host",
         toMemberIds: [context.member.id],
-        kind: messageKind,
+        kind: messageKind === "steer" ? "control" : messageKind,
         body,
         correlationId: assignment?.correlationId,
         causationId: assignment?.assignment.id,
+        originWaveId: navigationWave?.id,
       });
     dispatch(onAction, descriptor);
     setDraft("");
@@ -192,6 +196,7 @@ export function MemberRunFocus({
         <MemberContextRail
           context={context}
           navigationWave={navigationWave}
+          navigationMissionId={navigationMission?.id}
           teamName={stableTeam?.name}
           evidence={evidence}
           sessionStatus={context.member.native_session?.availability}
@@ -204,9 +209,13 @@ export function MemberRunFocus({
           kind={messageKind}
           disabled={!actionsEnabled || finished}
           disabledReason={finished ? "This member run is finished; its history is read-only." : ACTIONS_DISABLED_HINT}
-          deliveryHint={context.member.provider_profile?.execution_mode === "codex_app_server" && context.member.status === "running"
-            ? "Steers the active Codex turn."
-            : "Queues the message for the member's next provider round."}
+          deliveryHint={messageKind === "steer"
+            && context.member.provider_profile?.execution_mode === "codex_app_server"
+            && context.member.status === "running"
+            ? "Injects only this explicit Steer into the active Codex turn."
+            : messageKind === "steer"
+              ? "This mode cannot steer the active turn; queues control guidance for the next provider round."
+              : "Queues a Host message for the member's next provider round."}
           onChange={setDraft}
           onKindChange={setMessageKind}
           onSend={dispatchMessage}
@@ -249,6 +258,7 @@ export function MemberRunFocus({
             </div>
           </section>
         )}
+        <MemberGoalPanel context={context} />
         <section className="min-h-[18rem] overflow-hidden bg-background" data-native-activity-state={nativeActivityState}>
           <header className="flex h-[58px] items-center justify-between gap-3 border-b border-border/70">
             <h2 className="text-[20px] font-semibold tracking-[-0.025em] text-foreground">Work history</h2>
@@ -394,9 +404,47 @@ function Breadcrumb({
   );
 }
 
+function MemberGoalPanel({ context }: { context: MemberRunContext }) {
+  const assignment = context.assignments[context.assignments.length - 1];
+  const completion = assignmentCompletionCriteria(assignment?.assignment.body);
+  const latestSteer = latestSteerSummary(context);
+  return (
+    <section aria-label="Current Assignment (Member Goal)" className="mb-2 rounded-xl border border-primary/20 bg-[linear-gradient(135deg,hsl(var(--primary)/.055),hsl(var(--background))_52%)] px-4 py-3 shadow-[0_14px_34px_-30px_rgba(15,23,42,.55)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <ShieldCheck className="size-4 text-primary" />
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Current Assignment · Member Goal</p>
+            <Badge tone={memberStatusTone(context.member.status)}>{context.member.status ?? "unknown"}</Badge>
+          </div>
+          <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-[12px] leading-relaxed text-foreground">
+            {assignment?.assignment.body ?? "No assignment message is recorded; observed activity does not prove ownership."}
+          </p>
+        </div>
+        <div className="grid min-w-[15rem] gap-1.5 text-[10px] sm:max-w-[22rem]">
+          <GoalFact label="Completion" value={completion} />
+          <GoalFact label="Owned paths" value={context.member.owned_paths?.join(", ") || "No path ownership recorded"} mono />
+          <GoalFact label="Latest steer" value={latestSteer ?? "No durable steer recorded"} />
+          <GoalFact label="Correlation" value={assignment?.correlationId ?? "Not recorded"} mono />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function GoalFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2 rounded-md border border-border/60 bg-background/80 px-2 py-1.5">
+      <span className="font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className={cn("line-clamp-2 text-foreground", mono && "font-mono text-[9px]")}>{value}</span>
+    </div>
+  );
+}
+
 function MemberContextRail({
   context,
   navigationWave,
+  navigationMissionId,
   teamName,
   evidence,
   sessionStatus,
@@ -404,14 +452,25 @@ function MemberContextRail({
 }: {
   context: MemberRunContext;
   navigationWave?: Wave;
+  navigationMissionId?: string;
   teamName?: string;
   evidence: EvidenceItem[];
   sessionStatus?: string;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
-  const assignment = context.assignments[0];
+  const assignment = context.assignments[context.assignments.length - 1];
   const activeMembers = context.members.filter((member) => member.status === "running").length;
   const gateTone = waveGateTone(navigationWave?.gate_status);
+  const peerMembers = context.members.filter((member) => member.id !== context.member.id);
+  const hostThread = context.messagesForMember.filter((message) =>
+    message.from_member_id === "host" || (message.to_member_ids ?? []).includes("host"),
+  );
+  const peerThread = context.messagesForMember.filter((message) =>
+    message.from_member_id !== "host"
+    && !(message.to_member_ids ?? []).includes("host")
+    && message.kind !== "assignment",
+  );
+  const latestSteer = latestSteerSummary(context);
 
   return (
     <ContextRail label="Member context" hideHeader className="bg-[#fbfaf7]" contentClassName="flex flex-col gap-4 space-y-0 p-5">
@@ -449,13 +508,25 @@ function MemberContextRail({
         icon={<Users className="size-3.5" />}
         tone={teamStatusTone(context.run.status)}
         className="order-1 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
-        action={<RailOpenButton label="Open team" onClick={() => onSelectionChange({ surface: "team", teamId: context.run.id, memberRunId: undefined })} />}
+        action={<RailOpenButton label="Open team" onClick={() => onSelectionChange({
+          surface: "team",
+          teamId: context.run.id,
+          memberRunId: undefined,
+          missionId: navigationMissionId,
+          waveId: navigationWave?.id,
+        })} />}
       >
         <TeamRunCompact
           run={context.run}
           members={context.members}
           needsYouCount={context.needsYou.total}
-          onOpen={() => onSelectionChange({ surface: "team", teamId: context.run.id, memberRunId: undefined })}
+          onOpen={() => onSelectionChange({
+            surface: "team",
+            teamId: context.run.id,
+            memberRunId: undefined,
+            missionId: navigationMissionId,
+            waveId: navigationWave?.id,
+          })}
         />
         <p className="mt-2 text-[11px] text-muted-foreground">
           {activeMembers} active · {context.needsYou.total ? `${context.needsYou.total} needs attention` : "no open signals"}
@@ -463,19 +534,19 @@ function MemberContextRail({
       </ContextModule>
 
       <ContextModule
-        title="Assignment"
+        title="Current Assignment · Member Goal"
         icon={<ShieldCheck className="size-3.5" />}
         tone={assignment ? "info" : "warn"}
-        collapsible
-        defaultOpen={false}
-        className="order-5 hidden rounded-xl bg-card"
+        className="order-2 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
       >
         {assignment ? (
           <div className="space-y-2.5 text-[12px]">
-            <p className="whitespace-pre-wrap text-foreground">{assignment.assignment.body ?? "No assignment body recorded."}</p>
+            <p className="line-clamp-5 whitespace-pre-wrap text-foreground">{assignment.assignment.body ?? "No assignment body recorded."}</p>
+            <RailKeyValue label="Status" value={context.member.status ?? "unknown"} />
             <RailKeyValue label="From" value={assignment.assignment.from_member_id === "host" ? "Host" : assignment.assignment.from_member_id ?? "Unknown"} />
             <RailKeyValue label="Assigned" value={formatTime(assignment.assignment.created_at)} />
             <RailKeyValue label="Correlation" value={assignment.correlationId ?? "Not recorded"} mono />
+            <RailKeyValue label="Latest steer" value={latestSteer ?? "No durable steer recorded"} />
             <div>
               <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Owned paths</p>
               {context.member.owned_paths?.length ? (
@@ -491,7 +562,48 @@ function MemberContextRail({
         )}
       </ContextModule>
 
-      <ContextModule title="Artifacts & evidence" icon={<FileCheck2 className="size-3.5" />} tone={evidence.length ? "good" : "idle"} className="order-4 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]">
+      <ContextModule
+        title="Host & peer threads"
+        icon={<MessageSquare className="size-3.5" />}
+        tone={hostThread.length || peerThread.length ? "decision" : "idle"}
+        collapsible
+        defaultOpen
+        className="order-4 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
+      >
+        <MessageThreadGroup label="Host" messages={hostThread} context={context} />
+        <MessageThreadGroup label="Peers" messages={peerThread} context={context} className="mt-3" />
+      </ContextModule>
+
+      <ContextModule
+        title="Team peers"
+        icon={<Users className="size-3.5" />}
+        tone={peerMembers.some((member) => member.status === "running") ? "running" : "idle"}
+        className="order-5 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
+      >
+        {peerMembers.length ? (
+          <div className="space-y-1">
+            {peerMembers.map((peer) => (
+              <button
+                key={peer.id}
+                type="button"
+                onClick={() => onSelectionChange({
+                  surface: "team",
+                  teamId: context.run.id,
+                  memberRunId: peer.id,
+                  missionId: navigationMissionId,
+                  waveId: navigationWave?.id,
+                })}
+                className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent"
+              >
+                <span className="min-w-0 truncate text-[11px] font-medium text-foreground">{peer.name ?? peer.id}</span>
+                <Badge tone={memberStatusTone(peer.status)}>{peer.status ?? "unknown"}</Badge>
+              </button>
+            ))}
+          </div>
+        ) : <RailEmpty>No peer MemberRuns in this TeamRun.</RailEmpty>}
+      </ContextModule>
+
+      <ContextModule title="Artifacts & evidence" icon={<FileCheck2 className="size-3.5" />} tone={evidence.length ? "good" : "idle"} className="order-7 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]">
         {evidence.length ? (
           <ul className="space-y-2">
             {evidence.slice(0, 6).map((item) => (
@@ -509,7 +621,7 @@ function MemberContextRail({
         )}
       </ContextModule>
 
-      <ContextModule title="Runtime" icon={<Wrench className="size-3.5" />} tone={memberStatusTone(context.member.status)} className="order-3 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]">
+      <ContextModule title="Runtime" icon={<Wrench className="size-3.5" />} tone={memberStatusTone(context.member.status)} className="order-6 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]">
         <div className="space-y-1.5 text-[12px]">
           <RailKeyValue label="Provider" value={context.member.provider ?? "Not recorded"} />
           <RailKeyValue label="Execution mode" value={context.member.provider_profile?.execution_mode ?? "Not recorded"} />
@@ -536,7 +648,7 @@ function MemberContextRail({
         </div>
       </ContextModule>
 
-      <ContextModule title="Delegations" icon={<Bot className="size-3.5" />} tone={context.delegationsForMember.length ? "decision" : "idle"} collapsible defaultOpen={false} className="order-6 hidden rounded-xl bg-card">
+      <ContextModule title="Native subagent activity" icon={<Bot className="size-3.5" />} tone={context.delegationsForMember.length ? "decision" : "idle"} collapsible defaultOpen={context.delegationsForMember.length > 0} className="order-8 rounded-xl bg-card">
         {context.delegationsForMember.length ? (
           <ul className="space-y-2">
             {context.delegationsForMember.map((delegation) => (
@@ -547,10 +659,100 @@ function MemberContextRail({
               </li>
             ))}
           </ul>
-        ) : <RailEmpty>No observed child work for this member.</RailEmpty>}
+        ) : <RailEmpty>No observed native subagent activity. Subagents remain this Member's internal implementation detail.</RailEmpty>}
       </ContextModule>
     </ContextRail>
   );
+}
+
+function MessageThreadGroup({
+  label,
+  messages,
+  context,
+  className,
+}: {
+  label: string;
+  messages: TeamMessage[];
+  context: MemberRunContext;
+  className?: string;
+}) {
+  const recent = messages.slice(-3).reverse();
+  return (
+    <div className={className}>
+      <div className="mb-1 flex items-center justify-between gap-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span>{label}</span><span>{messages.length}</span>
+      </div>
+      {recent.length ? (
+        <div className="space-y-1.5">
+          {recent.map((message) => {
+            const outgoing = message.from_member_id === context.member.id;
+            const counterpart = outgoing
+              ? (message.to_member_ids ?? []).map((id) => memberName(context, id)).join(", ")
+              : memberName(context, message.from_member_id);
+            return (
+              <div key={message.id} className="rounded-md border border-border/60 bg-background/70 px-2 py-1.5">
+                <div className="flex min-w-0 items-center gap-1.5 text-[9px] text-muted-foreground">
+                  <Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>
+                  <span className="min-w-0 flex-1 truncate">{outgoing ? `to ${counterpart}` : `from ${counterpart}`}</span>
+                  <span>{messageDeliverySummary(message, context.member.id)}</span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-foreground">{message.body || "No body"}</p>
+              </div>
+            );
+          })}
+        </div>
+      ) : <p className="text-[10px] text-muted-foreground">No messages in this thread.</p>}
+    </div>
+  );
+}
+
+function memberName(context: MemberRunContext, id?: string): string {
+  if (!id || id === "host") return "Host";
+  return context.memberById.get(id)?.name ?? id;
+}
+
+function messageDeliverySummary(message: TeamMessage, memberId: string): string {
+  const relevant = message.from_member_id === memberId
+    ? message.deliveries ?? []
+    : (message.deliveries ?? []).filter((delivery) => delivery.member_id === memberId);
+  const statuses = [...new Set(relevant.map((delivery) => delivery.status).filter(Boolean))];
+  return statuses.length ? statuses.join("/") : "recorded";
+}
+
+function assignmentCompletionCriteria(body?: string): string {
+  if (!body?.trim()) return "Not declared";
+  const lines = body.split("\n").map((line) => line.trim());
+  const headingIndex = lines.findIndex((line) => /^(?:#{1,6}\s*)?(?:completion criteria|acceptance|done when|完成标准)\s*:?\s*$/i.test(line));
+  if (headingIndex >= 0) {
+    const collected: string[] = [];
+    for (const line of lines.slice(headingIndex + 1)) {
+      if (/^#{1,6}\s+/.test(line)) break;
+      if (/^(?:[-*]|\d+\.)\s+/.test(line)) collected.push(line.replace(/^(?:[-*]|\d+\.)\s+/, ""));
+      else if (line && collected.length === 0) collected.push(line);
+    }
+    if (collected.length) return collected.slice(0, 3).join(" · ");
+  }
+  const inline = body.match(/(?:completion criteria|acceptance|done when|完成标准)\s*:\s*([^\n]+)/i);
+  return inline?.[1]?.trim() || "Not separately declared; Host review_result remains the acceptance boundary";
+}
+
+function latestSteerSummary(context: MemberRunContext): string | undefined {
+  const control = [...context.messagesForMember]
+    .reverse()
+    .find((message) =>
+      message.kind === "control"
+      && (message.to_member_ids ?? []).includes(context.member.id)
+      && /steer/i.test(message.body ?? ""),
+    );
+  if (control?.body) return control.body;
+  const action = [...context.actionsForMember]
+    .reverse()
+    .find((candidate) => /steer/i.test(`${candidate.action_type ?? ""} ${candidate.title ?? ""}`));
+  if (action) return action.summary ?? action.title;
+  const event = [...context.eventsForMember]
+    .reverse()
+    .find((candidate) => /steer/i.test(`${candidate.operation ?? ""} ${candidate.summary ?? ""}`));
+  return event?.summary;
 }
 
 function formatWorkspaceRoots(roots?: string[]): string {
@@ -620,7 +822,7 @@ function MemberComposer({
       >
         <option value="question">Clarify</option>
         <option value="review_request">Review</option>
-        <option value="handoff">Handoff</option>
+        <option value="steer">Steer</option>
       </select>
       <Button type="submit" size="icon" disabled={disabled || !value.trim()} aria-label="Send message">
         <Send className="size-3.5" />

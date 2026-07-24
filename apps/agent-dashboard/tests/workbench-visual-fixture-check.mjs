@@ -170,7 +170,7 @@ async function main() {
       && warRoomSource.includes("Lead · {teamLeadLabel")
       && warRoomSource.includes("from Team Lead · current Host")
       && warRoomSource.includes("outside MemberRuns unless it explicitly joins")
-      && missionSource.includes('label="Team Lead"')
+      && missionSource.includes('"Current Host Agent"')
       && missionSource.includes("not counted as a MemberRun unless explicitly added"),
     "Agent Team surfaces identify the current Host as Team Lead without inventing a Lead MemberRun",
   );
