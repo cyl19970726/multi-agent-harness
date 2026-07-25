@@ -7,7 +7,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use harness_core::TeamDeliveryStatus;
+use harness_core::{TeamDeliveryPolicy, TeamDeliveryStatus};
 use harness_store::HarnessStore;
 
 mod fake_provider;
@@ -185,6 +185,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_message_acknowledge",
             "team_run_list",
             "team_run_status",
+            "team_run_inbox",
             "team_run_send_message",
             "team_run_resolve_interaction",
             "team_run_steer_member",
@@ -294,7 +295,7 @@ fn mcp_stdio_agent_team_tools() {
         .expect("team_run_id")
         .to_string();
     let expected_dashboard = format!(
-        "http://127.0.0.1:5173/?api=.&surface=team&team={team_run_id}&project={project_id}"
+        "http://127.0.0.1:5173/?api=.&surface=team&team={team_run_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp"
     );
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
@@ -326,6 +327,34 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
+    );
+
+    // A Mission-scoped long-lived TeamRun has no runtime-owned Wave id, but
+    // its fresh Dashboard URL still carries the Host's current Wave as
+    // navigation context.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Mission-scoped cold-link proof",
+                "mission_id": "mission-mcp",
+                "members": [
+                    {"name": "cold-link", "role": "observer", "provider": "codex"}
+                ]
+            }
+        }),
+    );
+    let mission_scoped = call_payload(&response);
+    let mission_scoped_id = mission_scoped["team_run_id"]
+        .as_str()
+        .expect("mission-scoped run id");
+    assert_eq!(
+        mission_scoped["dashboard_url"].as_str(),
+        Some(
+            format!("http://127.0.0.1:5173/?api=.&surface=team&team={mission_scoped_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp")
+                .as_str()
+        )
     );
 
     // 5. The thin MCP adapter can extend the same run and records the
@@ -388,8 +417,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert_eq!(call_payload(&response)["status"].as_str(), Some("stopped"));
 
-    // 6. team_run_status → all members + dashboard URL (+ the three queued
-    //    assignment messages count as unacked).
+    // 6. team_run_status → all members + dashboard URL. Queued assignments
+    // are not actionable manual acknowledgements.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -415,7 +444,7 @@ fn mcp_stdio_agent_team_tools() {
         payload["pending_interactions"].as_array().map(Vec::len),
         Some(0)
     );
-    assert_eq!(payload["unacked_messages"].as_u64(), Some(3));
+    assert_eq!(payload["unacked_messages"].as_u64(), Some(0));
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
@@ -450,7 +479,27 @@ fn mcp_stdio_agent_team_tools() {
         "correlation id: {payload}"
     );
 
-    // 8. team_run_events → strictly increasing seq, and the send above is
+    // 8. team_run_inbox reads the same latest-wins coordination projection.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "member_run_id": member_ids[1]
+            }
+        }),
+    );
+    let payload = call_payload(&response);
+    let inbox = payload["messages"].as_array().expect("inbox messages");
+    assert!(
+        inbox
+            .iter()
+            .any(|message| message["id"].as_str() == Some(message_id.as_str())),
+        "peer handoff must be actionable in MCP inbox: {payload}"
+    );
+
+    // 9. team_run_events → strictly increasing seq, and the send above is
     //    journaled as a message/created event. after_seq resumes the tail.
     let response = mcp.request(
         "tools/call",
@@ -491,7 +540,7 @@ fn mcp_stdio_agent_team_tools() {
     let payload = call_payload(&response);
     assert_eq!(payload.as_array().expect("events array").len(), 0);
 
-    // 9. ACK refuses a message that has not actually been delivered.
+    // 10. ACK refuses a message that has not actually been delivered.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -516,10 +565,23 @@ fn mcp_stdio_agent_team_tools() {
         .rev()
         .find(|message| message.id == assignment_id)
         .expect("assignment row");
+    delivered_assignment.deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
     delivered_assignment.deliveries[0].status = TeamDeliveryStatus::Delivered;
     store
         .append_team_message(&delivered_assignment)
-        .expect("mark assignment delivered");
+        .expect("mark assignment as delivered manual ACK");
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": team_run_id}
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["unacked_messages"].as_u64(),
+        Some(1),
+        "MCP status shares the CLI actionable manual-ACK projection"
+    );
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -535,6 +597,18 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_status",
+            "arguments": {"team_run_id": team_run_id}
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["unacked_messages"].as_u64(),
+        Some(0),
+        "acknowledged manual ACKs are no longer actionable"
     );
     let response = mcp.request(
         "tools/call",
@@ -619,7 +693,7 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         started["dashboard_url"].as_str(),
         Some(
-            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&project={project_id}")
+            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp-start")
                 .as_str()
         )
     );

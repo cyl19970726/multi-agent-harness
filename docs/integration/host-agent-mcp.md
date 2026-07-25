@@ -101,14 +101,23 @@ path as an execution root is a routing defect.
 2. Create or select an independent AgentTeam and link it to the Mission. Create
    the next Host-plan Wave with full Markdown context; do not bind Team runtime
    ownership to it.
-3. Call `team_run_create` with `mission_id + agent_team_id`, role-specific
-   supported provider members,
-   disjoint owned paths, and workspace overrides only when needed. Keep the
-   returned execution/member roots, Assignment message ids, and correlations.
+3. Call `team_run_create` with `mission_id + agent_team_id`, supported provider
+   member identities/roles, disjoint owned paths, and workspace overrides only
+   when needed. Keep the returned execution/member roots, Assignment message
+   ids, and correlations. The current create path applies the shared TeamRun
+   objective to every initial member; first-class create-time per-member
+   assignments remain tracked by issue
+   [#231](https://github.com/cyl19970726/multi-agent-harness/issues/231).
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
+   For a Mission-scoped long-lived TeamRun, the URL includes the Mission and
+   the Host's current Wave as navigation context even though the run itself has
+   no Wave owner. Direct legacy Wave runs use their stored Wave id.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
    receives durable Harness coordination plus transient/on-demand activity
-   projected from provider-native sessions through SSE/API.
+   projected from provider-native sessions through SSE/API. Its compatibility
+   `unacked_messages` field counts only actionable deliveries: at least one
+   `manual_ack` delivery in `delivered` status. Queued, injected, failed,
+   expired, and acknowledged deliveries do not increase it.
 6. When a provider pauses for input, inspect its `PendingInteraction` and call
    `team_run_resolve_interaction` with the exact option id and authorized actor.
    Do not treat provider `completed` as proof of semantic approval or answer.
@@ -120,6 +129,68 @@ path as an execution root is a routing defect.
 9. Check outcomes and artifacts, update the current Wave with the Host's actual
    judgment, then `wave advance` or record `accepted | revise | blocked`. Active
    MemberRuns may carry forward; Wave advance never completes them implicitly.
+
+## Message Receipt Boundary
+
+`TeamMessage` persistence, provider delivery, recipient acknowledgement,
+semantic response, and Host acceptance are different facts:
+
+```text
+queued
+  -> delivered to Host surface or provider-native session
+  -> acknowledged by that recipient
+  -> causation-linked answer / review / handoff
+  -> explicit Host resolution or outcome
+```
+
+Today, messages created while a Member is running are delivered at the next
+provider round boundary. A completed or idle Member is not automatically
+resumed by a new message; the Host must explicitly create the follow-up run and
+bind the same provider-native session. Host-bound handoffs require a manual
+ACK. The Host is not automatically woken or injected merely because a durable
+message exists, so the plugin/MCP client must poll the Host inbox/status at safe
+turn boundaries. The complete recipient inbox, wake, response, and resolution
+contract remains tracked by issue
+[#230](https://github.com/cyl19970726/multi-agent-harness/issues/230).
+
+An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
+and not “the Host accepts the work.” A reviewer must receive the actual
+handoffs in its native session before the Host claims cross-lane review.
+Member-to-Member replies retain Host visibility and use `causation_id` plus the
+originating assignment correlation; direct communication never transfers Host
+decision authority.
+
+## Host Acceptance Checklist
+
+Run completion is only the start of Host review. For every standalone or
+Mission-scoped Agent Team, inspect all of the following before describing its
+result as accepted:
+
+1. **Intent:** shared objective, decision boundary, non-goals, permissions,
+   budget, workspace, and provider/version are explicit.
+2. **Responsibility:** each actual Member has one correlation-backed assignment
+   whose scope and deliverable are distinguishable from the other lanes.
+3. **Execution truth:** every provider claim resolves to the expected
+   provider-native session; missing, fresh, resumed, or incompatible state is
+   labelled honestly.
+4. **Receipt:** required Host/Member and Member/Member messages reached their
+   intended native sessions or Host inbox; no queued message is stranded behind
+   a terminal MemberRun.
+5. **Lane outcome:** every required lane has a handoff, blocker, or explicit
+   non-result with useful evidence/artifact/check references.
+6. **Cross-review:** a reviewer receives the completed claims it is supposed to
+   review and separates agreement from independent reproduction.
+7. **Contradictions:** the Host records accepted claims, mandatory corrections,
+   unresolved unknowns, and active work carried forward.
+8. **Semantics:** provider/Member completion is not treated as Host acceptance.
+   Standalone TeamRun semantic closeout remains tracked by issue
+   [#229](https://github.com/cyl19970726/multi-agent-harness/issues/229);
+   Mission work additionally needs an explicit Host Wave judgment.
+9. **Reproducibility:** cited paths, revisions, session locators, checks, and
+   external product/version facts can be reconstructed without copied provider
+   transcripts or persisted thinking.
+10. **Next action:** accept, revise, block, or issue a new assignment against
+    the same persistent Member session; never overwrite the rejected attempt.
 
 ## Experience Acceptance
 

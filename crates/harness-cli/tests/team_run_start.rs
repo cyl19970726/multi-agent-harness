@@ -41,6 +41,18 @@ fn run_with_fake_kimi(
         .envs(home.envs())
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", fake_result)
+        .env(
+            "FAKE_KIMI_ENV_MARKER",
+            home.base().join("kimi-collaboration.env"),
+        )
+        .env(
+            "FAKE_CODEX_ENV_MARKER",
+            home.base().join("codex-collaboration.env"),
+        )
+        .env(
+            "FAKE_CLAUDE_ENV_MARKER",
+            home.base().join("claude-collaboration.env"),
+        )
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
@@ -72,6 +84,29 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
     ids.into_iter()
         .map(|id| by_id.remove(&id).unwrap())
         .collect()
+}
+
+fn assert_collaboration_env(
+    home: &TempHome,
+    provider: &str,
+    project_id: &str,
+    run_id: &str,
+    member_id: &str,
+) {
+    let text = std::fs::read_to_string(home.base().join(format!("{provider}-collaboration.env")))
+        .unwrap_or_else(|error| panic!("{provider} collaboration env missing: {error}"));
+    for expected in [
+        format!("HARNESS_PROJECT={project_id}"),
+        format!("HARNESS_TEAM_RUN_ID={run_id}"),
+        format!("HARNESS_MEMBER_RUN_ID={member_id}"),
+        "HARNESS_ASSIGNMENT_MESSAGE_ID=".to_string(),
+        "HARNESS_ASSIGNMENT_CORRELATION_ID=".to_string(),
+    ] {
+        assert!(
+            text.lines().any(|line| line.starts_with(&expected)),
+            "{provider} missing {expected}: {text}"
+        );
+    }
 }
 
 /// Create a run with two kimi members and return (run_id, member ids).
@@ -407,6 +442,13 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
         member["native_session"]["native_locator_kind"],
         "claude_project_session"
     );
+    assert_collaboration_env(
+        &home,
+        "claude",
+        &project_id,
+        &run_id,
+        member["id"].as_str().expect("claude id"),
+    );
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     let member_actions: Vec<_> = actions
         .iter()
@@ -630,6 +672,20 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(
         kimi["provider_profile"]["provider_version"].as_str(),
         Some("0.0.0")
+    );
+    assert_collaboration_env(
+        &home,
+        "codex",
+        &project_id,
+        &run_id,
+        codex["id"].as_str().expect("codex id"),
+    );
+    assert_collaboration_env(
+        &home,
+        "kimi",
+        &project_id,
+        &run_id,
+        kimi["id"].as_str().expect("kimi id"),
     );
 
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");

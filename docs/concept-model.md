@@ -119,6 +119,11 @@ combination. Wave context explains the choice without owning the runtime.
 Agent Team is for living collaborators with persistent session state, explicit
 assignment, handoff, review, and lane ownership that may span Waves.
 
+A Member is the accountable end-to-end lane owner. Provider-native subagents
+are bounded internal helpers whose results, permissions, evidence, and review
+responsibility return to that Member. A separate Member is required for an
+independent mailbox, Workspace, session, or acceptance role.
+
 The target proof is assignment-message correlation:
 
 ```text
@@ -133,6 +138,11 @@ Automatic handoff preserves this correlation. Manual progress, blocker, review,
 and control messages can explicitly reuse the same-run Assignment correlation;
 a causation-only reply inherits its direct cause's correlation. Cross-run,
 unknown, and mismatched lineage is rejected before persistence.
+
+Members may communicate directly with same-run peers without routine Host
+approval. The Host can observe those messages, answers its own Inbox, and
+explicitly schedules dependent work after handoff. No conditional message or
+Task Graph is introduced.
 
 ### `dynamic_workflow`
 

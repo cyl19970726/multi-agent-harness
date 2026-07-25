@@ -1,0 +1,33 @@
+{
+  "name": "star-harness",
+  "version": "0.3.0",
+  "description": "Thin Mission/Wave and autonomous Agent Team integration for Codex.",
+  "author": {
+    "name": "Multi-Agent Harness",
+    "email": "noreply@example.com",
+    "url": "https://github.com/cyl19970726"
+  },
+  "homepage": "https://github.com/cyl19970726/multi-agent-harness",
+  "repository": "https://github.com/cyl19970726/multi-agent-harness",
+  "license": "MIT",
+  "keywords": ["codex", "agent-team", "mission", "wave", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Star Harness",
+    "shortDescription": "Plan Missions and coordinate autonomous Agent Teams.",
+    "longDescription": "Adds provider-neutral Host and Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
+    "developerName": "Multi-Agent Harness",
+    "category": "Developer Tools",
+    "capabilities": ["Skills", "MCP", "Hooks", "Agent Teams"],
+    "websiteURL": "https://github.com/cyl19970726/multi-agent-harness",
+    "privacyPolicyURL": "https://github.com/cyl19970726/multi-agent-harness",
+    "termsOfServiceURL": "https://github.com/cyl19970726/multi-agent-harness",
+    "defaultPrompt": [
+      "Create a Mission and plan its first Wave.",
+      "Start an Agent Team for this Mission.",
+      "Show the active Team and Lead Inbox."
+    ],
+    "brandColor": "#FF6B5E"
+  },
+  "mcpServers": "./.mcp.json"
+}

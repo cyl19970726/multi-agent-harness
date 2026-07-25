@@ -5,7 +5,8 @@ status: implemented
 owner_role: product-design
 canonical_for: one standalone or Mission-scoped AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
-architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle
+architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle +
+              ADR 0037 collaboration
 ```
 
 ## User Problem
@@ -48,26 +49,29 @@ member with its own native-session binding.
 
 ## Desktop Layout
 
-Use the shared Workbench shell with compact member controls, one chronological
-activity stream, a persistent composer, and flexible context modules.
+Use the shared Workbench shell with the compact execution rail, participant
+mailbox projections, one chronological group conversation, a persistent
+composer, and flexible context modules.
 
 ```text
 +----------------------+--------------------------------------+------------------+
-| Product sidebar      | Team header                          | Mission context  |
+| Compact exec rail    | Team header                          | Mission context  |
 |                      | definition · Lead · run · actions    | Current Wave     |
-| Active context tree  +--------------------------------------+ Selected member  |
-|                      | compact member controls              | Runtime          |
-|                      | role/model/status/action/pressure    | Artifacts        |
+|                      +--------------------------------------+ Selected member  |
+|                      | Host + Member Inbox/Outbox           | Runtime          |
+|                      | delivery and attention projections  | Artifacts        |
 |                      +--------------------------------------+                  |
-|                      | unified Team activity stream         |                  |
-|                      | messages/actions/decisions/evidence  |                  |
+|                      | filtered Team group conversation     |                  |
+|                      | Markdown/messages/actions/evidence   |                  |
 |                      | sticky Team or @member composer      |                  |
 +----------------------+--------------------------------------+------------------+
 ```
 
-Member controls use project-default portraits when no explicit avatar exists.
-They navigate to Member Focus; a blocking details drawer is not a replacement
-for the full page.
+Every Host/Member mailbox is computed from TeamMessage recipients and delivery
+records. It is a read-model projection, not a new stored mailbox object. The
+Host mailbox is visible even though Host is not a fabricated MemberRun. Mailbox
+selection filters sent/received conversation; Member portraits and names open
+Member Focus. A blocking details drawer is not a replacement for the full page.
 
 Activity is one source-aware timeline:
 
@@ -82,6 +86,12 @@ read on demand and remains rebuildable.
 Tool icons are meaningful and consistent; provider and member avatars never
 replace status or source labels.
 
+Participant, message-kind, and text-search filters combine locally without
+mutating coordination truth. The default projection prioritizes assignments,
+plan negotiation, questions, answers and handoffs; the complete durable record
+remains one click away. Large message bodies use the safe shared Markdown
+renderer rather than displaying raw Markdown syntax.
+
 ## Context Modules
 
 1. **MissionCompact** — optional Mission relation and open-Mission action.
@@ -93,15 +103,25 @@ replace status or source labels.
    permission/budget, and honest availability.
 5. **Artifacts** — explicit files/checks/evidence with open/download actions.
 
+The Host mailbox and conversation pressure rows together form the **Lead
+Inbox** projection for member-authored
+`question`, `blocker`, and `review_request` messages addressed to `host`.
+Every item shows sender, Assignment correlation, delivery/ACK state, and the
+responsible next action. Answering reuses the source correlation, records the
+source message as causation, and acknowledges the source delivery.
+
 ## Actions
 
-- Message the whole team or one explicit member.
+- Message the whole team or one explicit member. The composer distinguishes a
+  new work chain from a reply to the selected Assignment correlation.
 - Make it clear that Host-authored coordination comes from the Team Lead;
   Human/operator authorship remains separately attributable where supported.
 - Create a correlated assignment with optional origin Wave metadata.
 - Add, rename, deactivate, steer, interrupt, or resume a member where the
   selected provider mode honestly supports it.
 - Inspect delivery/ACK/correlation lineage and answer PendingInteractions.
+- Answer Lead Inbox items with inherited correlation and causation. The
+  Dashboard may author Host/operator messages; it never impersonates a member.
 - Open Mission, current Wave context, Member Focus, artifact, or native-session
   summary.
 - Complete or stop the TeamRun only through a real acknowledged lifecycle
@@ -120,18 +140,24 @@ restarts this TeamRun.
   source.
 - Completed/stopped: read-only history plus explicit resume/new-run choices;
   do not imply a Mission or Wave completed.
-- Tablet/mobile: collapse sidebar, make member strip keyboard accessible,
+- Tablet/mobile: collapse navigation, make the mailbox strip horizontally
+  scrollable and keyboard accessible,
   preserve one stream and composer, and move context into sheet/bottom sheet.
-- Navigation preserves filters, selected member, scroll, Mission id, TeamRun id,
-  and project id.
+- Navigation preserves filters, selected member, scroll, Mission id, selected
+  Wave id, TeamRun id, and project id across Team → Member → Team deep links.
+- A canonical MCP Dashboard URL for a Mission-scoped run includes the current
+  Host-plan Wave as cold-link navigation context. This does not attach runtime
+  ownership to that Wave and may change when the Host advances its plan.
 
 ## Screenshot And UX Acceptance
 
-Desktop acceptance must show the shared shell, team identity, compact member
-controls with portraits, a source-aware activity stream, composer, Mission/Wave
+Desktop acceptance must show the shared compact execution shell, team identity,
+Host/Member mailbox projections with portraits, a source-aware Markdown group
+conversation, composer, Mission/Wave
 orientation, runtime, and artifacts. Verify:
 
 - member controls open the correct Member Focus and return without state loss;
+- mailbox, participant, message-kind, and search filters preserve Team context;
 - PendingInteraction answer, chat, steer, interrupt, and resume states match
   real adapter acknowledgements;
 - Markdown handoffs and tool activity render with suitable icons and density;
@@ -145,5 +171,8 @@ orientation, runtime, and artifacts. Verify:
 - Assignment correlation owns work; Wave prose explains Host intent.
 - Provider-native subagents are observations unless a real orchestrated
   lifecycle exists.
+- A member-to-member message is allowed inside the same TeamRun and remains
+  visible to the Lead. It is queued for the peer's next eligible round rather
+  than interrupting the current turn.
 - TeamRun completion does not advance a Wave; Wave advance does not complete a
   TeamRun.

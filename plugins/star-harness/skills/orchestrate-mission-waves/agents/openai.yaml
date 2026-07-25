@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orchestrate Mission Waves"
+  short_description: "Drive Host plans and long-lived Agent Teams"
+  default_prompt: "Use $orchestrate-mission-waves to plan this Mission, update its Waves, and coordinate a long-lived Agent Team."

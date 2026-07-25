@@ -136,6 +136,12 @@ async function main() {
   check(members.some((item) => item.status === "blocked") && members.some((item) => item.status === "reviewing"), "Member states include blocked and reviewing pressure");
   check(messages.filter((item) => item.kind === "assignment").every((item) => item.correlation_id), "Every assignment has a stable correlation anchor");
   check(messages.some((item) => item.kind === "blocker") && messages.some((item) => item.kind === "review_request"), "Durable activity contains blocker and review request signals");
+  check(
+    ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].every(
+      (kind) => messages.some((item) => item.kind === kind),
+    ),
+    "Fixture exposes a complete Member plan debate and approval chain",
+  );
   check(messages.some((item) => item.deliveries?.some((delivery) => ["queued", "delivered"].includes(delivery.status))), "Fixture includes a concrete unacknowledged delivery");
   check(actions.some((item) => item.evidence_refs?.length) && events.length > 0, "Activity contains evidence-backed actions and folded events");
   check(!actions.some((item) => item.action_type === "thinking"), "No raw thinking is persisted in the fixture");
@@ -168,9 +174,9 @@ async function main() {
   check(
     agentTeamsHomeSource.includes("Team Lead ·")
       && warRoomSource.includes("Lead · {teamLeadLabel")
-      && warRoomSource.includes("from Team Lead · current Host")
-      && warRoomSource.includes("outside MemberRuns unless it explicitly joins")
-      && missionSource.includes('label="Team Lead"')
+      && warRoomSource.includes("Host coordination only")
+      && warRoomSource.includes("Lead · outside MemberRuns")
+      && missionSource.includes('"Current Host Agent"')
       && missionSource.includes("not counted as a MemberRun unless explicitly added"),
     "Agent Team surfaces identify the current Host as Team Lead without inventing a Lead MemberRun",
   );
@@ -208,14 +214,17 @@ async function main() {
     "Mission V3 renders one continuous Wave journey with live and decision anchors",
   );
   check(
-    warRoomSource.includes('variant="timeline"')
-      && warRoomSource.includes("Team presence")
+    warRoomSource.includes("TeamConversationStream")
+      && warRoomSource.includes("TeamMailboxStrip")
+      && warRoomSource.includes("Team mailboxes")
+      && warRoomSource.includes("Inbox and Outbox are live projections")
       && warRoomSource.includes("Review request")
       && warRoomSource.includes("showFullActivity")
-      && warRoomSource.includes('prominence === "primary"')
-      && activitySource.includes("activity-timeline-row")
-      && cssSource.includes(".activity-timeline::before"),
-    "Agent Team V3 exposes a presence rail, timestamped semantic timeline, key/full projection, and anchored review action",
+      && warRoomSource.includes("Search team activity")
+      && warRoomSource.includes("Markdown")
+      && warRoomSource.includes("ConversationRoute")
+      && warRoomSource.includes("recipientLabels"),
+    "Agent Team V3 exposes mailbox projections, Markdown group activity, participant/type filters, and anchored review action",
   );
   check(
     executionSource.includes('role="progressbar"')
@@ -234,6 +243,15 @@ async function main() {
       && activitySource.includes("activityIconSurface")
       && warRoomSource.includes("teamMessageGlyph"),
     "Team activity uses distinct assignment, handoff, runtime, evidence, review, and decision glyphs",
+  );
+  check(
+    warRoomSource.includes("<ConversationRoute item={item}")
+      && warRoomSource.includes("recipientLabels")
+      && warRoomSource.includes("messagePresentation")
+      && warRoomSource.includes("sender portrait")
+      && warRoomSource.includes('normalized === "plan_proposal"')
+      && warRoomSource.includes('normalized === "handoff"'),
+    "Team conversation makes sender, recipient portraits, and message taxonomy explicit",
   );
   check(
     contextSource.includes("contextIconSurface")

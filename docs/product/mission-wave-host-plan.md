@@ -3,7 +3,7 @@
 ```text
 status: canonical
 owner_role: product
-architecture: ADR 0034
+architecture: ADR 0034 + ADR 0037
 ```
 
 ## Product Promise
@@ -17,6 +17,8 @@ turning that memory into a rigid scheduler.
   and coordinates it.
 - **Assignment messages** say who is doing what.
 - **Provider-native sessions** prove what each member actually executed.
+- **Agent Members** own end-to-end assignments and may use native subagents
+  without giving away responsibility.
 
 ## Example
 
@@ -81,7 +83,10 @@ The existing assignment correlation and provider session continue.
 ### Wave
 
 - Stores Markdown `context`, `revision`, `updated_by`, and append-only history.
-- Supports update and explicit advance.
+- Supports update and explicit advance. Use a revision for a small adjustment
+  inside the same judgment boundary. Advance and create the next Wave when the
+  plan, member composition, responsibility, risk, or decision boundary changes
+  materially.
 - Does not require all assignments or TeamRuns to finish before advance.
 - May cite assignments, members, artifacts, checks, or team runs in prose.
 - Optional legacy executor fields remain read-only-compatible, not required on
@@ -110,8 +115,32 @@ The existing assignment correlation and provider session continue.
 - Assignment ownership uses a correlation id.
 - Question, answer, progress, blocker, handoff, review, and control messages
   preserve the correlation.
+- Members may send direct peer messages inside the same TeamRun. Routine peer
+  collaboration is visible to the Lead but does not require Lead approval.
+- Member-to-Host messages are delivered when the control plane receives them.
+  Host-to-member and peer messages queue for the recipient's next available
+  round.
+- A handoff does not automatically dispatch dependent work. The Host reads it
+  and explicitly sends the next Assignment or review.
 - `origin_wave_id` is optional navigation metadata.
-- Host can query an inbox/status projection without reading every transcript.
+- Host and members can query inbox/status projections without reading provider
+  transcripts.
+
+### Member autonomy
+
+- Member Goal is derived from the active Assignment, completion standard,
+  owned paths, progress/blocker state, and latest Steer. There is no `Goal`
+  object.
+- A member owns its lane until the Lead sends an accepting `review_result`.
+- Provider-native subagents are internal implementation detail. They inherit
+  the member's permissions and evidence obligations and do not become
+  `MemberRun`s.
+- Use another Member when a lane needs its own durable identity, Workspace,
+  mailbox, native session, or independent acceptance.
+- Steer is live only when the execution mode supports real current-turn
+  injection. Otherwise the input is visibly queued for the next round.
+- Provider-pausing questions and approvals are `PendingInteraction`; ordinary
+  team coordination is `TeamMessage`.
 
 ## UX Contract
 
@@ -128,8 +157,31 @@ Keep the approved Mission Canvas layout. Make targeted semantic changes:
   the Wave owns the member.
 - “Advance Wave” is a Host plan decision and remains available while members
   run, with a confirmation summarizing the carry-over.
+- “Update plan” edits the selected Wave Markdown and appends a revision.
+- Lead Inbox groups member questions, blockers, and review requests. Answers
+  reuse correlation and causation and acknowledge the source message.
+- Member Focus shows the derived Current Assignment, completion standard,
+  owned paths, latest Steer, peer/Host thread, and native subagent activity.
 - Legacy direct-executor attempts remain visible in historical Missions with a
   clear compatibility label.
+
+## Standard Two-Module Example
+
+The Host gives two durable collaborators independent end-to-end lanes:
+
+```markdown
+| Member | Role | Responsibility | Deliverable |
+| --- | --- | --- | --- |
+| RuntimeBuilder | Runtime owner | Design, implement, and validate Inbox/delivery; use internal subagents as useful | Patch, tests, handoff |
+| DashboardBuilder | UX owner | Design, implement, and validate Lead Inbox/Member Goal; use internal subagents as useful | UI patch, checks, handoff |
+```
+
+Each member plans its own lane and may delegate bounded design, coding, or test
+work to native subagents. The Host answers correlated questions, integrates a
+completed lane without waiting for the other, and advances the Wave while the
+unfinished member keeps its original MemberRun, Assignment correlation,
+Workspace, and provider session. A separate Reviewer Member is used when
+high-risk acceptance must be independent.
 
 ## Integration Contract
 

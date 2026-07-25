@@ -86,4 +86,3 @@ The first accepted slices must prove:
    dispatching mutations.
 6. Cleanup commands remain governed, dry-run-first, and no-physical-delete by
    default.
-

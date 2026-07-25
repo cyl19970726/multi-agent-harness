@@ -6,7 +6,7 @@ owner_role: product-design
 canonical_for: Mission context, linked Agent Teams, ordered Host-plan Waves,
                Wave revision history, advance decisions, and closeout
 route_or_surface: Missions -> Mission -> selected Wave
-architecture: ADR 0034
+architecture: ADR 0034 + ADR 0037
 ```
 
 ## User Problem
@@ -91,7 +91,9 @@ Compose flexible compact modules:
 1. **MissionBrief** — durable context excerpt, status, source, and closeout.
 2. **NeedsYou** — real PendingInteractions, blockers, or approval requests.
 3. **MissionTeams** — linked Agent Teams, member state, latest run, and open
-   Team action. This is Mission-scoped, not nested under one Wave.
+   Team action. Render every linked reusable team independently; never collapse
+   a one-to-many Mission relation into one global “latest team” summary. This is
+   Mission-scoped, not nested under one Wave.
 4. **SelectedWave** — revision, updated actor, judgment excerpt, carry-over,
    artifacts, and history action.
 5. **LegacyExecutor** — only for historical direct-executor data.
@@ -104,6 +106,8 @@ Cards are quiet structural containers, not a wall of elevated analytics tiles.
 - Link an existing Agent Team or create and link a new one.
 - Open Team War Room or Member Focus from any linked member control.
 - Create, edit, and inspect history for ordered Waves.
+- **Update plan** edits the current Wave Markdown and appends a revision. It is
+  for a small adjustment that stays inside the same judgment boundary.
 - Advance the selected Wave with an explicit Host outcome even while unrelated
   members remain active.
 - Create Wave N+1 and keep the same TeamRun, MemberRun, assignments, and native
@@ -113,6 +117,8 @@ Cards are quiet structural containers, not a wall of elevated analytics tiles.
 
 Advance confirmation summarizes active carry-over but does not require it to
 finish. Sensitive external actions still require their own Human Approval.
+Use Advance, rather than Update plan, when the plan, member composition,
+responsibility, risk, or decision boundary changes materially.
 
 ## Responsive Behavior
 

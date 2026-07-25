@@ -1,0 +1,108 @@
+{
+  "version": 2,
+  "page": "team-war-room",
+  "expected": "/Users/hhh0x/multi-agent-harness/docs/design/execution-workbench-v3/expected/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+  "viewport": {
+    "width": 1536,
+    "height": 1024,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": [
+      { "name": "compact_execution_rail", "x": 0, "y": 0, "width": 72, "height": 1024 },
+      { "name": "team_header", "x": 72, "y": 0, "width": 1464, "height": 96 },
+      { "name": "mailbox_strip", "x": 96, "y": 112, "width": 1118, "height": 116 },
+      { "name": "activity_toolbar", "x": 96, "y": 244, "width": 1118, "height": 48 },
+      { "name": "conversation_stream", "x": 96, "y": 300, "width": 1118, "height": 624 },
+      { "name": "context_rail", "x": 1238, "y": 112, "width": 274, "height": 812 },
+      { "name": "composer", "x": 96, "y": 940, "width": 1118, "height": 68 }
+    ],
+    "grid": {
+      "shell_columns": "72px minmax(0, 1fr)",
+      "workspace_columns": "minmax(0, 1118px) 274px",
+      "mailbox_columns": "repeat(4, minmax(0, 1fr))"
+    },
+    "gutters": { "shell": 24, "workspace": 24, "cards": 12 },
+    "max_content_width": 1440,
+    "scroll_owner": "conversation_stream",
+    "sticky_regions": ["team_header", "mailbox_strip", "activity_toolbar", "composer"]
+  },
+  "vertical_landmarks": [
+    { "y": 96, "meaning": "team identity ends" },
+    { "y": 228, "meaning": "mailbox projection ends" },
+    { "y": 292, "meaning": "filters end" },
+    { "y": 940, "meaning": "composer begins" }
+  ],
+  "typography": [
+    { "role": "page_title", "size": 24, "weight": 650, "line_height": 1.15 },
+    { "role": "section_title", "size": 14, "weight": 650, "line_height": 1.3 },
+    { "role": "message_body", "size": 13, "weight": 400, "line_height": 1.6 },
+    { "role": "metadata", "size": 11, "weight": 500, "line_height": 1.35 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 24, 32],
+  "surfaces": [
+    "warm canvas without giant cards",
+    "thin bordered mailbox tiles",
+    "soft authored-message grouping",
+    "pressure messages use restrained coral",
+    "context cards remain secondary"
+  ],
+  "colors": [
+    { "role": "canvas", "value": "existing warm background token" },
+    { "role": "accent", "value": "coral primary token" },
+    { "role": "info", "value": "blue status token" },
+    { "role": "success", "value": "green status token" },
+    { "role": "muted", "value": "neutral foreground/background tokens" }
+  ],
+  "icons_and_assets": [
+    "existing deterministic agent portrait set",
+    "Lucide icons for mailbox, message kind, delivery state, filter and search",
+    "no raster icon sheets and no decorative icon substitution"
+  ],
+  "message_visual_grammar": {
+    "identity": "Every message uses the sender portrait as its timeline node. The card header repeats sender -> recipient portraits and names.",
+    "direction": "Recipient chips use the same deterministic portrait mapping as mailbox and roster surfaces; Team broadcast remains visibly distinct from one-to-one delivery.",
+    "type": "Every durable message displays an adjacent icon and text label. Assignment/handoff use coral, plan/review negotiation uses purple or amber, accepted decisions use green, runtime activity uses blue, and blockers use red.",
+    "state": "Queued, delivered, acknowledged, failed, provider-native and Harness-evidence states remain visible as text; color never carries state alone.",
+    "supported_types": [
+      "assignment",
+      "broadcast",
+      "question",
+      "answer",
+      "progress",
+      "blocker",
+      "review_request",
+      "review_result",
+      "plan_request",
+      "plan_proposal",
+      "plan_feedback",
+      "plan_approval",
+      "handoff",
+      "action",
+      "evidence"
+    ]
+  },
+  "component_strategy": {
+    "reuse": ["Markdown", "Badge", "StatusDot", "MemberAvatar", "ContextRail", "Composer"],
+    "page_specific": ["TeamMailboxStrip", "TeamConversationStream", "TeamActivityToolbar"],
+    "replace_or_split": [
+      "replace oversized TeamPresence with mailbox projections",
+      "fold LeadInbox and PlanReviewBoard into the chronological conversation",
+      "use compact execution AppRail on Team detail"
+    ]
+  },
+  "responsive_transformations": [
+    "tablet: mailbox strip becomes horizontal scroll; context opens as right sheet",
+    "mobile: compact rail becomes bottom navigation; mailbox strip stays horizontally scrollable",
+    "mobile: one conversation stream and sticky composer; no Chat/Activity tabs",
+    "mobile: filters collapse into a sheet while active filters remain visible as chips"
+  ],
+  "design_risks": [
+    "mailbox counts must remain projections of TeamMessage and delivery records",
+    "provider-native activity must never be presented as Harness-persisted transcript",
+    "Markdown must be sanitized and preserve readable density",
+    "large plan proposals must collapse without hiding their message lineage",
+    "sticky layers must not create nested-scroll traps"
+  ],
+  "unresolved_decisions": []
+}

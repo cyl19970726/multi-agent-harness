@@ -100,6 +100,16 @@ async function publishLivePreview(apiBase, manifest) {
 
 async function main() {
   const outputRoot = resolve(argument("--output", defaultOutput));
+  const desktopWidth = Number(argument("--desktop-width", "1440"));
+  const desktopHeight = Number(argument("--desktop-height", "1000"));
+  if (
+    !Number.isInteger(desktopWidth)
+    || !Number.isInteger(desktopHeight)
+    || desktopWidth < 1024
+    || desktopHeight < 720
+  ) {
+    throw new Error("--desktop-width and --desktop-height must define a desktop viewport of at least 1024x720");
+  }
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
   const captureNowMs = Date.parse(manifest.capture_now);
   const storeRoot = await mkdtemp(join(tmpdir(), "workbench-layout-v2-native-v1-"));
@@ -137,11 +147,11 @@ async function main() {
     const cases = [
       ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
-      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Platform Foundation Team"],
+      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Activity"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
     ];
     const viewports = [
-      [1440, 1000, "desktop-1440x1000", ""],
+      [desktopWidth, desktopHeight, `desktop-${desktopWidth}x${desktopHeight}`, ""],
       [900, 1180, "tablet-900x1180", "responsive"],
       [390, 844, "mobile-390x844", "responsive"],
     ];
@@ -207,7 +217,7 @@ async function main() {
           captures.push({ page: pageName, state: "context-open", viewport: viewportName, route, output: contextOutput });
         }
 
-        if (width === 1440 && pageName === "mission-wave-canvas") {
+        if (width === desktopWidth && pageName === "mission-wave-canvas") {
           const missionRegion = page.getByRole("region", { name: "Mission detail", exact: true });
           const beforeScroll = await missionRegion.evaluate((element) => ({
             top: element.scrollTop,
@@ -253,6 +263,61 @@ async function main() {
           await page.goBack({ waitUntil: "domcontentloaded" });
           await page.getByRole("region", { name: "Mission detail", exact: true }).waitFor({ state: "visible", timeout: 5_000 });
           interactionChecks.push({ page: pageName, action: "member-return-context", result: "passed" });
+        }
+
+        if (width === desktopWidth && pageName === "team-war-room") {
+          const conversationRows = page.locator('[data-testid="team-conversation"] ol > li');
+          const initialCount = await conversationRows.count();
+          await page.getByTestId("mailbox-member-wave2-qa").click();
+          const memberCount = await conversationRows.count();
+          if (memberCount <= 0 || memberCount >= initialCount) {
+            throw new Error(`Team mailbox filter did not narrow activity: ${JSON.stringify({ initialCount, memberCount })}`);
+          }
+          interactionChecks.push({
+            page: pageName,
+            action: "participant-mailbox-filter",
+            participant: "member-wave2-qa",
+            before: initialCount,
+            after: memberCount,
+            result: "passed",
+          });
+
+          await page.getByRole("button", { name: "All activity", exact: true }).click();
+          await page.getByTestId("activity-filter-messages").click();
+          const messageCount = await conversationRows.count();
+          if (messageCount <= 0) throw new Error("Team message-kind filter returned no fixture messages");
+          await page.getByLabel("Search team activity").fill("approved");
+          const searchCount = await conversationRows.count();
+          if (searchCount <= 0 || searchCount > messageCount) {
+            throw new Error(`Team search did not retain a matching plan message: ${JSON.stringify({ messageCount, searchCount })}`);
+          }
+          interactionChecks.push({
+            page: pageName,
+            action: "message-type-and-search-filter",
+            message_count: messageCount,
+            search_count: searchCount,
+            result: "passed",
+          });
+
+          await page.getByTestId("mailbox-open-member-wave2-qa").click();
+          await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
+          const selected = new URL(page.url()).searchParams;
+          if (
+            selected.get("memberRun") !== "member-wave2-qa"
+            || selected.get("team") !== manifest.team_run_id
+            || selected.get("mission") !== manifest.mission_id
+            || selected.get("wave") !== manifest.wave_id
+          ) {
+            throw new Error(`Team mailbox deep link lost execution context: ${page.url()}`);
+          }
+          interactionChecks.push({
+            page: pageName,
+            action: "mailbox-member-deep-link",
+            preserved_team_run_id: manifest.team_run_id,
+            preserved_mission_id: manifest.mission_id,
+            preserved_wave_id: manifest.wave_id,
+            result: "passed",
+          });
         }
       }
       await context.close();

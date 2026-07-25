@@ -105,11 +105,15 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
 ask="${FAKE_KIMI_ASK:-0}"
+if [ -n "${FAKE_KIMI_ENV_MARKER:-}" ]; then
+  env | grep '^HARNESS_' | sort > "$FAKE_KIMI_ENV_MARKER"
+fi
 if [ "$1" != "acp" ]; then
   echo "fake kimi: only 'acp' is implemented" >&2
   exit 2
 fi
 session_id="session_fake_$$"
+mode="default"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
@@ -129,6 +133,10 @@ while IFS= read -r line; do
         *'"configId":"model"'*'"value":"k2.5"'*)
           printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
           ;;
+        *'"configId":"mode"'*'"value":"plan"'*|*'"configId":"mode"'*'"value":"default"'*)
+          mode=$(printf '%s' "$line" | sed -n 's/.*"value":"\\([^"]*\\)".*/\\1/p')
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
         *)
           printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"unexpected fake model selection"}}\n' "$id"
           ;;
@@ -137,6 +145,12 @@ while IFS= read -r line; do
     *'"method":"session/prompt"'*)
       prompt_id="$id"
       if [ "${FAKE_KIMI_WAIT:-0}" = "1" ]; then
+        continue
+      fi
+      if [ "$mode" = "plan" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"plan","entries":[{"content":"Inspect the assignment contract","status":"completed"},{"content":"Implement only after Host approval","status":"pending"},{"content":"Run focused checks","status":"pending"}]}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1. Inspect the assignment contract\\n2. Implement only after Host approval\\n3. Run focused checks\\n"}}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
@@ -191,6 +205,9 @@ pub fn install_codex_team_shim(bin_dir: &Path) -> PathBuf {
     fs::create_dir_all(bin_dir).expect("mk fake codex team bin dir");
     let shim_path = bin_dir.join("codex");
     let script = r###"#!/bin/sh
+if [ -n "${FAKE_CODEX_ENV_MARKER:-}" ]; then
+  env | grep '^HARNESS_' | sort > "$FAKE_CODEX_ENV_MARKER"
+fi
 if [ "$1" = "--version" ]; then
   printf '%s\n' 'codex-cli 0.145.0-alpha.18'
   exit 0
@@ -198,6 +215,7 @@ fi
 if [ "$1" = "app-server" ]; then
   thread_id="thread_fake_codex_app_server"
   turn_id="turn_fake_codex_app_server"
+  turn_seq=0
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
     case "$line" in
@@ -205,16 +223,46 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
         ;;
       *'"method":"thread/start"'*)
-        printf '{"id":%s,"result":{"thread":{"id":"%s"}}}\n' "$id" "$thread_id"
+        printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol"}}}\n' "$id" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
-        printf '{"id":%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id" "$thread_id"
+        printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol","turns":[]}}}\n' "$id" "$thread_id"
+        ;;
+      *'"method":"thread/goal/set"'*)
+        if [ -n "${FAKE_CODEX_PLAN_MARKER:-}" ]; then
+          printf 'goal_set %s\n' "$line" >> "$FAKE_CODEX_PLAN_MARKER"
+        fi
+        printf '{"id":%s,"result":{"goal":{"objective":"fake assignment","status":"active"}}}\n' "$id"
         ;;
       *'"method":"turn/start"'*)
-        printf '{"id":%s,"result":{"turn":{"id":"%s","status":"inProgress","items":[]}}}\n' "$id" "$turn_id"
+        plan_mode=0
+        case "$line" in *'"collaborationMode":{"mode":"plan"'*) plan_mode=1 ;; esac
+        if [ -n "${FAKE_CODEX_PLAN_MARKER:-}" ]; then
+          printf 'turn plan_mode=%s %s\n' "$plan_mode" "$line" >> "$FAKE_CODEX_PLAN_MARKER"
+        fi
+        turn_seq=$((turn_seq + 1))
+        turn_id="turn_fake_codex_app_server_${turn_seq}"
+        response_turn_id="$turn_id"
+        if [ "${FAKE_CODEX_REBIND_EVENT_TURN:-0}" = "1" ]; then
+          response_turn_id="turn_start_response_${turn_seq}"
+        fi
+        printf '{"id":%s,"result":{"turn":{"id":"%s","status":"inProgress","items":[]}}}\n' "$id" "$response_turn_id"
+        if [ "$plan_mode" = "1" ]; then
+          if [ "${FAKE_CODEX_STALE_COMPLETION_ON_SECOND_PLAN:-0}" = "1" ] && [ "$turn_seq" = "2" ]; then
+            printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn_fake_codex_app_server_1","status":"completed","items":[{"id":"stale-plan-app-1","type":"plan","text":"STALE PLAN MUST BE IGNORED"}]}}}\n' "$thread_id"
+          fi
+          printf '{"method":"turn/plan/updated","params":{"threadId":"%s","turnId":"%s","plan":[{"step":"Revision %s: inspect the Assignment contract","status":"completed"},{"step":"Implement only after Host approval","status":"pending"},{"step":"Run focused checks","status":"pending"}]}}\n' "$thread_id" "$turn_id" "$turn_seq"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"plan-app-%s","type":"plan","text":"Revision %s\\n1. Inspect the Assignment contract\\n2. Implement only after Host approval\\n3. Run focused checks"}]}}}\n' "$thread_id" "$turn_id" "$turn_seq" "$turn_seq"
+          continue
+        fi
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
-        if [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
+        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ]; then
+          printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
+        elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+        elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
           printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
         fi
         ;;
@@ -262,6 +310,9 @@ pub fn install_claude_team_shim(bin_dir: &Path) -> PathBuf {
     fs::create_dir_all(bin_dir).expect("mk fake claude team bin dir");
     let shim_path = bin_dir.join("claude");
     let script = r###"#!/bin/sh
+if [ -n "${FAKE_CLAUDE_ENV_MARKER:-}" ]; then
+  env | grep '^HARNESS_' | sort > "$FAKE_CLAUDE_ENV_MARKER"
+fi
 if [ "$1" = "--version" ]; then
   printf '%s\n' '2.1.181 (Claude Code)'
   exit 0
