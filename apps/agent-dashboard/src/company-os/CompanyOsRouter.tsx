@@ -9,12 +9,13 @@ import { resolveCompanyOsData, type ResolvedCompanyOsData } from "./sourceTruth"
 import {
   BasicDocumentPage,
   CompanyHome,
+  DocumentHealthReview,
   DocsWorkspace,
+  StructuredDocumentView,
   adaptCompanyOsDocsProjection,
 } from "./docs";
 import {
   ApprovalFocus,
-  BusinessModuleFocus,
   FinancePage,
   GovernanceProposalFocus,
   HumanMemberFocus,
@@ -28,6 +29,7 @@ import { WorkOperatingPage } from "./work/WorkOperatingPage";
 type CompanyOsPage =
   | "home"
   | "docs-workspace"
+  | "document-health"
   | "document-focus"
   | "workboard"
   | "work-item-focus"
@@ -87,6 +89,7 @@ function selectedPage(selection: SelectionState): CompanyOsPage | undefined {
     case "home":
       return "home";
     case "docs":
+      if (selection.docsHealth) return "document-health";
       if (selection.moduleId) return "business-module-focus";
       if (selection.documentId) return "document-focus";
       return "docs-workspace";
@@ -210,7 +213,8 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
   switch (page) {
     case "home": content = <CompanyHome data={docs.home} />; break;
     case "docs-workspace": content = <DocsWorkspace workspace={docs.workspace} />; break;
-    case "document-focus": content = <BasicDocumentPage document={docs.document} />; break;
+    case "document-health": content = <DocumentHealthReview health={docs.health} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onCreateCorrectiveWork={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} onRepairRelation={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
+    case "document-focus": content = <BasicDocumentPage document={docs.document} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDocsAction={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "workboard": content = <WorkOperatingPage source={resolved.value} />; break;
     case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
@@ -218,7 +222,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} onSelectionChange={onSelectionChange} />; break;
     case "governance-proposal": content = <GovernanceProposalFocus data={operations} />; break;
     case "approval-focus": content = <ApprovalFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDecision={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
-    case "business-module-focus": content = <BusinessModuleFocus data={operations} />; break;
+    case "business-module-focus": content = <StructuredDocumentView view={docs.moduleView} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDocsAction={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "human-member-focus": content = <HumanMemberFocus data={operations} />; break;
   }
 

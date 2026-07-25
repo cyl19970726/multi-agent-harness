@@ -246,6 +246,7 @@ fn document_record_relation_and_view_are_one_substrate() {
             kind: EntityKind::Document,
             id: document.id.clone(),
         }),
+        lifecycle_status: None,
         created_by: agent(),
         created_at: NOW.into(),
     };

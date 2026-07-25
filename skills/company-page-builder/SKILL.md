@@ -8,6 +8,7 @@ description: Design, generate, implement, and visually verify a governed custom 
 Build a custom page only when basic documents and standard views cannot express
 the core workflow clearly. Treat the approved `ModuleDesign`, fixture, and
 visual contract as inputs; never invent business facts to improve the mockup.
+This skill is a procedural capability, not product authority.
 
 ## Load the contracts
 

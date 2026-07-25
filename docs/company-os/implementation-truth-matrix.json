@@ -1,21 +1,99 @@
 {
   "schema": "star_harness.company_os_implementation_truth.v1",
-  "auditedAt": "2026-07-22",
-  "states": ["design_only", "partial", "implemented", "verified"],
+  "auditedAt": "2026-07-23",
+  "states": [
+    "design_only",
+    "partial",
+    "implemented",
+    "verified"
+  ],
   "systems": [
     {
       "id": "docs",
       "implementationState": "partial",
       "truthRefs": {
-        "contract": ["docs/company-os/document-system.md"],
-        "schema": ["schemas/company-os/knowledge.schema.json"],
-        "store": ["crates/harness-store/src/company_os.rs"],
-        "api": ["crates/harness-cli/src/company_os_api.rs"],
-        "ui": ["apps/agent-dashboard/src/company-os/docs"],
-        "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-docs-check.mjs"]
+        "contract": [
+        "docs/company-os/document-system.md",
+          "docs/company-os/docs-operating-surface-matrix.md",
+          "docs/decisions/0035-company-os-sql-read-model.md"
+          ,
+          "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md"
+        ],
+        "schema": [
+          "schemas/company-os/knowledge.schema.json"
+        ],
+        "store": [
+          "crates/harness-store/src/company_os.rs"
+        ],
+        "api": [
+          "crates/harness-cli/src/company_os_api.rs"
+        ],
+        "ui": [
+          "apps/agent-dashboard/src/company-os/docs"
+        ],
+        "skills": [
+          "skills/company-docs-operator/SKILL.md"
+        ],
+        "acceptance": [
+          "crates/harness-cli/tests/company_os_api.rs",
+          "apps/agent-dashboard/tests/company-os-docs-check.mjs",
+          "scripts/check-company-os-docs-cli-smoke.mjs",
+          "scripts/check-company-os-docs-cli-live.mjs",
+          "docs/company-os/docs-operating-surface-matrix.md",
+          ".visual-evidence/company-os-docs-v1/docs-health-review-v1/capture-run.json",
+          ".visual-evidence/company-os-v2/company-os-docs-module-route-v1/capture-run.json",
+          ".visual-evidence/company-os-v2/company-os-docs-module-action-v1/capture-run.json",
+          ".visual-evidence/company-os-v2/company-os-docs-health-action-v1/capture-run.json",
+          ".visual-evidence/company-os-v2/company-os-docs-health-relation-v1/capture-run.json"
+        ]
       },
-      "verifiedSlices": ["trademark result Block, source Document and TypedRecord writeback"],
-      "blockingGaps": ["general-purpose collaborative editor authoring beyond declared module Actions"]
+      "verifiedSlices": [
+        "trademark result Block, source Document and TypedRecord writeback",
+        "CLI-backed projection Docs query returns one read-only Document/module operating context with ordered Blocks, children, templates, TypedRecords, Relations, Views, BusinessModule, health findings, available commands, and explicit no-side-effect boundaries",
+        "CLI-backed Document rename, move, and archive perform governed document.append structure maintenance with dry-run, archive confirmation, parent-cycle rejection, preserved Blocks and references, and no Work, Finance, Organization, or Execution side effects",
+        "CLI-backed Block update, archive, and remove perform governed content maintenance with dry-run, archive/remove confirmation, preserved Block rows, no physical delete, and no Work, Finance, Organization, or Execution side effects",
+        "CLI-backed TypedRecord update and Relation unlink preserve structured record identity/source metadata, support field merge and dry-run, archive Relation latest rows without physical delete, make active query/health ignore archived Relations, and create no Work, Finance, Organization, or Execution side effects",
+        "CLI-backed Docs search, traverse, refs, related, snapshot, diff, and change-report provide read-only Agent context and review evidence from latest projections without dispatching mutations or implying SQL index authority",
+        "CLI-backed PageDefinition/PagePackage scaffold, verify, and publish implement the first code-declared custom page contract metadata slice; publish records candidate package metadata without switching the active definition pointer and without making UI a second data truth",
+        "CLI-backed View update preserves View identity and updates saved presentation/query configuration through governed view.append without mutating TypedRecords",
+        "CLI-backed TypedRecord validate checks explicit schema JSON for required fields and simple field types without claiming persistent module field-schema governance",
+        "CLI-backed Relation relink dry-run exposes archive-plus-link cleanup boundaries without physical delete or broad graph migration",
+        "projection-backed Document Health Review with read-only CLI audit semantics",
+        "CLI-backed Docs health audit, Human-admin BusinessModule and CustomPageDefinition authoring, and governed document.append, block.append, typed_record.append, view.append, and relation.append command wrappers",
+        "CLI-backed and Store-live child Document creation can preserve Document.template_ref provenance; CLI-backed and Store-live opt-in template instantiation copies ordered template Blocks without creating TypedRecords, Work, Approval, or Finance side effects",
+        "CLI-backed reusable template creation creates explicit Document(kind=template) records and can copy ordered Blocks from a source Document through governed Docs Actions without mutating the source or creating TypedRecords, Relations, Work, Approval, or Finance side effects",
+        "CLI-backed template lifecycle status updates change only Document.lifecycle_status for Document(kind=template) through governed document.append while preserving existing child template_ref provenance",
+        "CLI-backed structured Block authoring preserves Block kind/content for rich_text, heading, callout, and simple table variants while keeping Document.block_ids navigable",
+        "Document Focus exposes a governed Block composer with type affordances, empty Document state, template provenance display, Store-live opt-in template Block instantiation controls, and durable-action hinting",
+        "Document Focus exposes slash-menu Block selection, native Document.block_ids order display, governed reorder controls, and authoring permission/error feedback without local fake writes",
+        "CLI-backed and Store-live block reorder preserves exactly the existing Document.block_ids set through governed document.append without editing Block content or non-Docs systems",
+        "Business Module Focus exposes standard View provenance for module scope, native View ref, source kinds, query summary, record count, and empty-state boundaries",
+        "Business Module Focus exposes saved standard View configuration for mode, source kinds, filters, grouping, sorting, and native query display without making View a second truth",
+        "Store-live Document Focus child Document and structured Block authoring controls using governed document.append and block.append Actions",
+        "Store-live Document Focus renders actual Store Blocks when present before using fixture explanatory content",
+        "Docs Workspace exposes a native template library with ordered Block counts and provenance-vs-instantiation boundary copy",
+        "Docs Workspace exposes template lifecycle badges and the governed template status command boundary",
+        "Docs Workspace exposes projection-only filtering for operating areas, template Documents, and recent records without claiming a global full-text index",
+        "BusinessModule creation can preserve explicit Document-to-TypedRecord relation_rules through CLI --relation-rule-json while leaving concrete TypedRecord and Relation creation as separate governed Actions",
+        "Docs Workspace and Document Focus expose template-to-TypedRecord relation policy visibility from native BusinessModule relation_rules without creating TypedRecords or Relations during template instantiation",
+        "Document Health Review exposes a high-judgment cleanup queue that routes rename, split, merge, archive, and migration candidates to corrective WorkItems instead of direct mutation",
+        "Company Docs Operator skill documents the complete governed Docs CLI surface and truth-boundary operating rules",
+        "Docs Workspace exposes the complete CLI/Skill command set for query/search/traverse/refs/related, health, module, page scaffold/verify/publish, page-definition, document create/rename/move/archive, template create/status, block append/update/archive/remove/reorder, typed-record append/update/validate, view create/update, relation link/unlink/relink, diff, snapshot, and change-report",
+        "ADR 0036 records Docs as an Agent-operated substrate with code-declared custom business pages and Human-facing review UI, not a Notion editor clone",
+        "Docs operating surface matrix maps Docs Workspace, Document Focus, Business Module Focus, and Document Health Review to native objects, UI, CLI/skill coverage, visual/Store-live evidence, and gaps",
+        "ADR 0035 records SQL as a future derived Docs read/query/index layer while keeping append-only JSONL ledgers and latest projections as the current canonical write/audit Store",
+        "routed standard module page at ?surface=docs&module=<id> over native BusinessModule TypedRecords",
+        "Store-live standard module browser authoring creates TypedRecord, View, and Relation records using governed typed_record.append, view.append, and relation.append Actions without Work, Approval, or Finance side effects",
+        "Store-live Docs Health corrective WorkItem routing without Finance, Approval, or Payment side effects",
+        "Store-live Docs Health direct Document-to-TypedRecord Relation repair without Work, Finance, Approval, or Payment side effects"
+      ],
+      "blockingGaps": [
+        "general-purpose collaborative editor authoring beyond declared module Actions",
+        "drag/drop layout editing over the governed reorder Action, template versioning, template approval workflow, persistent module field-schema governance, DocumentSpace/module template governance, calendar/chart View modes, advanced field configuration, inline saved-view editing, and collaborative rich editing",
+        "active package promotion for code-declared pages, comments, mentions, attachments, relation migration execution, split, merge, delete, migration cleanup Actions, durable rollback bundles, and Health Review UI dispatch for structure/content maintenance",
+        "derived SQL read/query/index layer for deeper Docs traversal, search, Views, health, diff, export, and permission-filtered reads",
+        "global full-text Docs search index"
+      ]
     },
     {
       "id": "organization",
@@ -35,12 +113,26 @@
       "id": "work",
       "implementationState": "partial",
       "truthRefs": {
-        "contract": ["docs/company-os/work-items-and-approvals.md", "docs/company-os/work-operating-system.md"],
-        "schema": ["schemas/company-os/work.schema.json"],
-        "store": ["crates/harness-store/src/company_os.rs"],
-        "api": ["crates/harness-cli/src/company_os_api.rs"],
-        "ui": ["apps/agent-dashboard/src/company-os/work/WorkOperatingPage.tsx"],
-        "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/tests/company-os-operations-check.mjs"]
+        "contract": [
+          "docs/company-os/work-items-and-approvals.md",
+          "docs/company-os/work-operating-system.md"
+        ],
+        "schema": [
+          "schemas/company-os/work.schema.json"
+        ],
+        "store": [
+          "crates/harness-store/src/company_os.rs"
+        ],
+        "api": [
+          "crates/harness-cli/src/company_os_api.rs"
+        ],
+        "ui": [
+          "apps/agent-dashboard/src/company-os/work/WorkOperatingPage.tsx"
+        ],
+        "acceptance": [
+          "crates/harness-cli/tests/company_os_api.rs",
+          "apps/agent-dashboard/tests/company-os-operations-check.mjs"
+        ]
       },
       "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions", "Lead request to Work Governance submission to Business Agent completion and Docs return", "non-financial work creates no Commitment or Approval"],
       "blockingGaps": ["additional business-specific lifecycle policies"]
@@ -49,29 +141,70 @@
       "id": "finance",
       "implementationState": "partial",
       "truthRefs": {
-        "contract": ["docs/company-os/financial-relations.md"],
-        "schema": ["schemas/company-os/finance.schema.json"],
-        "store": ["crates/harness-store/src/company_os.rs"],
-        "api": ["crates/harness-cli/src/company_os_api.rs"],
-        "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
-        "acceptance": ["crates/harness-cli/tests/company_os_api.rs", "crates/harness-store/tests/company_os.rs"]
+        "contract": [
+          "docs/company-os/financial-relations.md"
+        ],
+        "schema": [
+          "schemas/company-os/finance.schema.json"
+        ],
+        "store": [
+          "crates/harness-store/src/company_os.rs"
+        ],
+        "api": [
+          "crates/harness-cli/src/company_os_api.rs"
+        ],
+        "ui": [
+          "apps/agent-dashboard/src/company-os/operations/pages.tsx"
+        ],
+        "acceptance": [
+          "crates/harness-cli/tests/company_os_api.rs",
+          "crates/harness-store/tests/company_os.rs"
+        ]
       },
-      "verifiedSlices": ["linked WorkItem to ¥3,000 Commitment proposal and Human Approval request/decision"],
-      "blockingGaps": ["finance reporting and reconciliation beyond Commitment/Payment records"]
+      "verifiedSlices": [
+        "linked WorkItem to ¥3,000 Commitment proposal and Human Approval request/decision"
+      ],
+      "blockingGaps": [
+        "finance reporting and reconciliation beyond Commitment/Payment records"
+      ]
     }
   ],
   "trademarkClosure": {
     "implementationState": "verified",
-    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs"],
-    "nativeActions": ["work_item.append", "assignment.append", "commitment.propose", "approval.request", "commitment.append", "approval.decide", "work_item.transition", "block.append", "document.append", "typed_record.append"],
+    "existingEvidence": [
+      "crates/harness-cli/tests/company_os_api.rs"
+    ],
+    "nativeActions": [
+      "work_item.append",
+      "assignment.append",
+      "commitment.propose",
+      "approval.request",
+      "commitment.append",
+      "approval.decide",
+      "work_item.transition",
+      "block.append",
+      "document.append",
+      "typed_record.append"
+    ],
     "missingNativeActions": [],
     "forbiddenShortcut": "Fixture or administrative seed must not create the WorkItem, Assignment, Commitment, Approval, or returned result used as acceptance truth.",
     "visualClosure": {
       "implementationState": "verified",
       "contract": "docs/design/company-os-v3/trademark-native-closure-v1/visual-contract.json",
-      "p0Pages": ["docs-workspace", "business-module", "work-board"],
-      "viewportsVerified": ["1536x1024", "1024x900", "390x844"],
-      "gates": {"product_truth": "pass", "visual_fidelity": "pass"}
+      "p0Pages": [
+        "docs-workspace",
+        "business-module",
+        "work-board"
+      ],
+      "viewportsVerified": [
+        "1536x1024",
+        "1024x900",
+        "390x844"
+      ],
+      "gates": {
+        "product_truth": "pass",
+        "visual_fidelity": "pass"
+      }
     }
   },
   "standingAgentWorkLoop": {

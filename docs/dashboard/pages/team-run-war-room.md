@@ -6,7 +6,7 @@ owner_role: product-design
 canonical_for: one standalone or Mission-scoped AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
 architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle +
-              ADR 0035 collaboration
+              ADR 0037 collaboration
 ```
 
 ## User Problem

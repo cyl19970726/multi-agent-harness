@@ -6,7 +6,7 @@ owner_role: product-design
 canonical_for: Mission context, linked Agent Teams, ordered Host-plan Waves,
                Wave revision history, advance decisions, and closeout
 route_or_surface: Missions -> Mission -> selected Wave
-architecture: ADR 0034 + ADR 0035
+architecture: ADR 0034 + ADR 0037
 ```
 
 ## User Problem

@@ -445,7 +445,7 @@ function FinanceRecordTable({ record, approval }: { record: TrademarkOperationsP
   const rows = [
     ["Record type", humanReadable(record.type, "Unknown")],
     ["Amount", record.amount],
-    ["Project", record.project?.label ?? "No project linked"],
+    ["Cost context", record.costContext?.label ?? "No Milestone or business context linked"],
     ["Source", record.sourceDocument.label],
     ["Approval status", humanReadable(approval.status, "Unknown")],
   ];

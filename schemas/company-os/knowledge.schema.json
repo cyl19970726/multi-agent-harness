@@ -114,6 +114,7 @@
         "relation_type": { "$ref": "#/$defs/string" },
         "to_ref": { "$ref": "#/$defs/entityRef" },
         "provenance_ref": { "oneOf": [{ "$ref": "#/$defs/entityRef" }, { "type": "null" }] },
+        "lifecycle_status": { "$ref": "#/$defs/lifecycle" },
         "created_by": { "$ref": "#/$defs/actorRef" },
         "created_at": { "$ref": "#/$defs/string" }
       }

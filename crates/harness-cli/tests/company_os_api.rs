@@ -396,7 +396,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             }],
             "approved_ui_components": ["FinancialRecordCard", "ApprovalCard"],
             "action_command_refs": [
-                "document.append", "block.append", "typed_record.append",
+                "document.append", "block.append", "typed_record.append", "relation.append",
                 "work_item.append", "work_item.transition", "assignment.append",
                 "commitment.propose", "commitment.append",
                 "approval.request", "approval.decide", "payment.append"
@@ -411,6 +411,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
                 "page-trademark:document.append",
                 "page-trademark:block.append",
                 "page-trademark:typed_record.append",
+                "page-trademark:relation.append",
                 "page-trademark:work_item.append",
                 "page-trademark:approval.decide",
                 "page-trademark:approval.request",
@@ -1655,7 +1656,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         snapshot["result"]["action_policy_definitions"]
             .as_array()
             .map(Vec::len),
-        Some(11)
+        Some(12)
     );
     assert_eq!(
         snapshot["result"]["action_commands"]

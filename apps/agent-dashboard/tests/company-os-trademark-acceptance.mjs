@@ -12,7 +12,15 @@ import {
 } from "../fixtures/company-os-trademark-v1/fixture.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const designRoot = resolve(repoRoot, "docs/design/company-os-v1");
+const designRoot = resolve(repoRoot, "docs/design/company-os-v2");
+const visualPageToFixtureSlice = new Map([
+  ["home", "home"],
+  ["docs", "docs-workspace"],
+  ["organization", "agents-organization"],
+  ["lead-agent", "standing-agent-focus"],
+  ["business-module", "business-module-focus"],
+  ["work", "workboard"],
+]);
 
 let passed = 0;
 let failed = 0;
@@ -78,19 +86,20 @@ async function main() {
   check(fixture.financial_records.every((record) => record.type !== "payment"), "no Payment FinancialRecord exists before approval and settlement");
   check(fixture.negative_assertions?.payment_financial_records?.length === 0 && fixture.negative_assertions?.settlement_evidence?.length === 0, "no settlement evidence is present or implied");
 
-  check(visual.shared_fixture === fixture.fixture_id, "all visual cases use the canonical shared fixture");
-  check(visual.cases.length === 12 && new Set(visual.cases.map((item) => item.page)).size === 12, "visual contract contains twelve distinct core pages");
-  check(Object.keys(fixture.page_slices).length === 12, "fixture provides one fact slice for every core page");
+  check(typeof visual.fixture === "string" && visual.fixture.length > 0, "current visual contract declares its design fixture identity");
+  check(visual.cases.length === 6 && new Set(visual.cases.map((item) => item.page)).size === 6, "current visual contract covers six P0 operating pages");
+  check(Object.keys(fixture.page_slices).length === 12, "legacy fixture still provides one fact slice for every broad core page");
 
   const pageNames = new Set(visual.cases.map((item) => item.page));
-  check(Object.keys(fixture.page_slices).every((page) => pageNames.has(page)), "every fixture page slice is represented by a visual case");
-  check(visual.cases.every((item) => item.viewport.width >= 1440 && item.viewport.height >= 1000), "every core page has a desktop capture contract of at least 1440x1000");
+  check([...pageNames].every((page) => visualPageToFixtureSlice.has(page)), "every current visual case maps to a deterministic fixture slice");
+  check(visual.viewports?.desktop?.width >= 1440 && visual.viewports?.desktop?.height >= 1000, "desktop visual evidence viewport is pinned at implementation scale");
 
   for (const item of visual.cases) {
     const route = resolveContractRoute(item.route, manifest.route_tokens);
     check(!route.includes("<") && route.startsWith("/?surface="), `${item.page} resolves to a concrete deterministic route`);
-    for (const ref of fixture.page_slices[item.page].required_refs) {
-      check(records.has(ref), `${item.page} required reference resolves: ${ref}`);
+    const sliceName = visualPageToFixtureSlice.get(item.page);
+    for (const ref of fixture.page_slices[sliceName].required_refs) {
+      check(records.has(ref), `${sliceName} required reference resolves: ${ref}`);
     }
     const expectedPath = resolve(designRoot, item.expected);
     await access(expectedPath);
@@ -99,7 +108,7 @@ async function main() {
     }
   }
 
-  check(manifest.responsive_pages.every((page) => pageNames.has(page)), "all tablet/mobile focus pages are part of the twelve-page contract");
+  check(manifest.responsive_pages.every((page) => fixture.page_slices[page]), "all tablet/mobile focus pages still have deterministic fixture slices");
   check(manifest.viewports["tablet-900x1180"]?.width === 900 && manifest.viewports["mobile-390x844"]?.width === 390, "tablet and mobile evidence viewports are pinned");
 
   console.log(`\nCompany OS trademark acceptance: ${passed} passed, ${failed} failed`);

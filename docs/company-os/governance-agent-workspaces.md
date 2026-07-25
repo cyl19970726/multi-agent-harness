@@ -38,6 +38,19 @@ of these fields may be inferred from a provider session or rendered page.
 | Finance Governance | What monetary effect is requested and what evidence/authority permits it? | Budget/Commitment/Invoice/Payment/Refund commands and control exceptions |
 | Org / HR Governance | What durable company capability is missing and how should the organization change? | OrgChangeProposal, Agent provisioning, permission placement, evaluation and retirement |
 
+The corresponding optional operator skills are:
+
+| Governance role | Optional skill |
+| --- | --- |
+| Docs Governance | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) |
+| Work Governance | [`company-work-operator`](../../skills/company-work-operator/SKILL.md) |
+| Finance Governance | [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) |
+| Org / HR Governance | [`company-org-operator`](../../skills/company-org-operator/SKILL.md) |
+
+These skill references belong in `skill_refs[]`. They do not replace
+`permission_policy_refs[]`, maintained document refs, WorkType routing, Human
+approval, or governed Actions.
+
 Each role requires a clear decision contract, durable activity, supporting
 evidence, authority, Skills, maintained Docs, linked work, and required gates.
 The shared Standing Agent workspace is now implemented as an Organization

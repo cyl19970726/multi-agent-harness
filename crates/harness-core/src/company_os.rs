@@ -613,6 +613,8 @@ pub struct Relation {
     pub relation_type: String,
     pub to_ref: EntityRef,
     pub provenance_ref: Option<EntityRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<String>,
     pub created_by: ActorRef,
     pub created_at: String,
 }

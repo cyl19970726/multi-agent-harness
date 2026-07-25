@@ -33,7 +33,7 @@ Assignment is projected into its prompt, so the profile reports
 Only the Member's submitted plan and Host coordination are persisted. A Kimi
 ExitPlanMode/approval pause is a `PendingInteraction`; ACP `completed` is not
 semantic Host approval. See
-[ADR 0036](../decisions/0036-provider-native-member-plan-negotiation.md).
+[ADR 0038](../decisions/0038-provider-native-member-plan-negotiation.md).
 
 ## 核心结论
 

@@ -14,6 +14,7 @@ const fixturePath = join(repoRoot, "docs/design/company-os-v1/fixtures/company-o
 const cases = [
   { id: "home--morning-operating-review--desktop", page: "home", route: "/?surface=home", refs: ["approval-trademark-filing-fee-cn-2026-018", "trademark-application-cn-2026-018", "actor-human-brand-owner"] },
   { id: "docs--company-knowledge-workspace--desktop", page: "docs-workspace", route: "/?surface=docs", refs: ["document-trademark-application-cn-2026-018", "module-trademark-management", "governance-proposal-trademark-management"] },
+  { id: "document-health--structure-review--desktop", page: "document-health", route: "/?surface=docs&health=structure", refs: ["document-trademark-application-cn-2026-018", "trademark-application-cn-2026-018", "module-trademark-management"] },
   { id: "organization--lead-first-company--desktop", page: "agents-organization", route: "/?surface=organization", refs: ["org-company", "org-brand-ip", "actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark"] },
   { id: "lead-agent--coordinating-direct-reports--desktop", page: "standing-agent-focus", route: "/?surface=organization&agent=actor-agent-ip-lead", expectedText: "IP Lead Agent", refs: ["actor-agent-trademark", "workitem-trademark-filing-brand-a"] },
   { id: "business-module--trademark-operations--desktop", page: "business-module-focus", route: "/?surface=docs&module=module-trademark-management", refs: ["module-trademark-management", "trademark-application-cn-2026-018", "workitem-trademark-filing-brand-a", "financial-commitment-trademark-filing-fee-cn-2026-018"] },
@@ -130,7 +131,10 @@ async function verifyPage(page, root, item, dataMode) {
     throw new Error(`${item.id} does not render its route-selected subject: ${item.expectedText}`);
   }
   for (const ref of item.refs) {
-    if (await root.locator(`[data-company-os-ref="${ref}"]`).count() === 0) throw new Error(`${item.id} is missing ${ref}`);
+    if (await root.locator(`[data-company-os-ref="${ref}"]`).count() === 0) {
+      const visible = (await root.innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+      throw new Error(`${item.id} is missing ${ref}; visible text: ${visible}`);
+    }
   }
   if (await root.locator('[data-financial-record-type="payment"], [data-financial-type="payment"]').count()) {
     throw new Error(`${item.id} invents a Payment before settlement`);
@@ -157,6 +161,12 @@ async function main() {
   if (approvalActionToken && dataMode !== "live") throw new Error("--approval-action-token requires --data-mode live");
   const workItemActionToken = argument("--workitem-action-token");
   if (workItemActionToken && dataMode !== "live") throw new Error("--workitem-action-token requires --data-mode live");
+  const docsHealthActionToken = argument("--docs-health-action-token");
+  if (docsHealthActionToken && dataMode !== "live") throw new Error("--docs-health-action-token requires --data-mode live");
+  const docsHealthRelationToken = argument("--docs-health-relation-token");
+  if (docsHealthRelationToken && dataMode !== "live") throw new Error("--docs-health-relation-token requires --data-mode live");
+  const docsModuleActionToken = argument("--docs-module-action-token");
+  if (docsModuleActionToken && dataMode !== "live") throw new Error("--docs-module-action-token requires --data-mode live");
   const approvalActionDecision = argument("--approval-action-decision", "approved");
   if (!new Set(["approved", "rejected"]).has(approvalActionDecision)) throw new Error("--approval-action-decision must be approved or rejected");
   const outputRoot = resolve(argument("--output", join(repoRoot, ".visual-evidence/company-os-v2", runId)));
@@ -177,6 +187,8 @@ async function main() {
     await waitFor(base, "Vite dashboard").catch((error) => { throw new Error(`${error.message}\n${vite.failure()}`); });
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: viewportWidth, height: viewportHeight }, deviceScaleFactor: 1, reducedMotion: "reduce" });
+    await context.route((url) => /fonts\.googleapis\.com/.test(url.hostname), (route) => route.fulfill({ status: 200, contentType: "text/css", body: "" }));
+    await context.route((url) => /fonts\.gstatic\.com/.test(url.hostname), (route) => route.fulfill({ status: 204, body: "" }));
     if (dataMode === "fixture") await context.addInitScript((value) => { window.__COMPANY_OS_FIXTURE__ = value; }, fixture);
     const page = await context.newPage();
     const results = [];
@@ -236,6 +248,314 @@ async function main() {
       }
     }
     let workItemAction;
+    let docsHealthAction;
+    let docsHealthRelationAction;
+    let docsModuleAction;
+    if (docsHealthActionToken) {
+      const actionRoot = join(outputRoot, "docs-health-action");
+      await mkdir(actionRoot, { recursive: true });
+      let dispatchedBody;
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname === "/v1/company-os/actions/dispatch" && request.method() === "POST") {
+          const body = request.postDataJSON();
+          if (body?.command_name === "work_item.append" && String(body?.id ?? "").includes("docs-health")) dispatchedBody = body;
+        }
+      });
+      const beforeSnapshot = await readJson(liveSource.snapshot_endpoint, "pre-health-action snapshot");
+      const beforeWorkItems = latestRecords(beforeSnapshot.company_os.work_items);
+      const beforeCommitments = latestRecords(beforeSnapshot.company_os.financial_records).filter((record) => record.type === "commitment");
+      const beforeApprovals = latestRecords(beforeSnapshot.company_os.approvals);
+      const beforePayments = latestRecords(beforeSnapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      const url = new URL("/?surface=docs&health=structure", base);
+      url.searchParams.set("api", base);
+      url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      const root = page.locator('[data-company-os-page="document-health"][data-company-os-ready="true"][data-company-os-data-mode="store-live"]').first();
+      await root.waitFor({ state: "visible", timeout: 15_000 });
+      await root.locator('[data-company-os-action-state="available"]').first().waitFor({ state: "visible", timeout: 15_000 });
+      const beforePath = join(actionRoot, "docs-health-corrective-work--before.png");
+      await page.screenshot({ path: beforePath, fullPage: false, timeout: 60_000 });
+      await root.locator("[data-docs-health-action-token]").fill(docsHealthActionToken);
+      await root.locator("[data-docs-health-corrective-note]").fill("Create a governed WorkItem so Docs Governance can repair the explicit Document-to-TypedRecord relation.");
+      await root.getByRole("button", { name: "Create corrective WorkItem", exact: true }).click();
+      await root.getByText("Corrective WorkItem created in Store truth.", { exact: true }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
+        const failurePath = join(actionRoot, "docs-health-action-failure.png");
+        await page.screenshot({ path: failurePath, fullPage: false, timeout: 60_000 });
+        const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+        throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
+      });
+      const afterPath = join(actionRoot, "docs-health-corrective-work--after.png");
+      await page.screenshot({ path: afterPath, fullPage: false, timeout: 60_000 });
+      const snapshot = await readJson(liveSource.snapshot_endpoint, "post-health-action snapshot");
+      const workItems = latestRecords(snapshot.company_os.work_items);
+      const createdWorkItems = workItems.filter((record) => !beforeWorkItems.some((before) => before.id === record.id));
+      const correctiveWorkItem = createdWorkItems.find((record) => String(record.id).startsWith("work-docs-health-"));
+      const commitments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "commitment");
+      const approvals = latestRecords(snapshot.company_os.approvals);
+      const payments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      const commands = latestRecords(snapshot.company_os.action_commands).filter((record) => record.command_name === "work_item.append" && String(record.id).includes("docs-health"));
+      const command = commands.at(-1);
+      if (!correctiveWorkItem) throw new Error("Docs Health did not create a corrective WorkItem");
+      if (correctiveWorkItem.status !== "submitted" || correctiveWorkItem.work_type !== "governance" || correctiveWorkItem.source_document_ref !== "document-trademark-application-cn-2026-018") {
+        throw new Error(`Docs Health corrective WorkItem has wrong native shape: ${JSON.stringify(correctiveWorkItem)}`);
+      }
+      if (correctiveWorkItem.submitted_by?.actor_id !== "actor-agent-document-architecture" || correctiveWorkItem.requested_by?.actor_id !== "actor-agent-document-architecture") {
+        throw new Error("Docs Health corrective WorkItem is not attributed to the Docs Governance Agent");
+      }
+      if (commitments.length !== beforeCommitments.length || approvals.length !== beforeApprovals.length || payments.length !== beforePayments.length) {
+        throw new Error("Docs Health corrective WorkItem created Finance or Approval side effects");
+      }
+      if (command?.status !== "executed" || command?.requested_by?.actor_id !== "actor-agent-document-architecture") {
+        throw new Error("Docs Health corrective action lacks an executed Docs Governance ActionCommand");
+      }
+      if (!dispatchedBody) throw new Error("Docs Health corrective WorkItem request body was not observed");
+      const replayResponse = await fetch(`${apiBaseUrl}/v1/company-os/actions/dispatch?project=${encodeURIComponent(liveSource.project_id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-harness-company-os-token": docsHealthActionToken },
+        body: JSON.stringify(dispatchedBody),
+      });
+      const replayBody = await replayResponse.json();
+      if (!replayResponse.ok || replayBody?.result?.idempotent_replay !== true) throw new Error(`Docs Health corrective WorkItem replay was not idempotent: ${JSON.stringify(replayBody)}`);
+      docsHealthAction = {
+        status: "passed",
+        work_item_id: correctiveWorkItem.id,
+        work_item_status: correctiveWorkItem.status,
+        command_id: command.id,
+        command_status: command.status,
+        requested_by: command.requested_by,
+        source_document_ref: correctiveWorkItem.source_document_ref,
+        source_record_refs: correctiveWorkItem.source_record_refs,
+        commitment_count_before: beforeCommitments.length,
+        commitment_count_after: commitments.length,
+        approval_count_before: beforeApprovals.length,
+        approval_count_after: approvals.length,
+        payment_count: payments.length,
+        idempotent_replay: true,
+        capability_storage: "browser-session-memory-only; omitted from evidence",
+        before: { file: relative(repoRoot, beforePath), sha256: hash(await readFile(beforePath)) },
+        after: { file: relative(repoRoot, afterPath), sha256: hash(await readFile(afterPath)) },
+      };
+    }
+    if (docsHealthRelationToken) {
+      const actionRoot = join(outputRoot, "docs-health-relation-action");
+      await mkdir(actionRoot, { recursive: true });
+      let dispatchedBody;
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname === "/v1/company-os/actions/dispatch" && request.method() === "POST") {
+          const body = request.postDataJSON();
+          if (body?.command_name === "relation.append" && String(body?.id ?? "").includes("docs-relation")) dispatchedBody = body;
+        }
+      });
+      const beforeSnapshot = await readJson(liveSource.snapshot_endpoint, "pre-health-relation snapshot");
+      const beforeRelations = latestRecords(beforeSnapshot.company_os.relations);
+      const beforeWorkItems = latestRecords(beforeSnapshot.company_os.work_items);
+      const beforeCommitments = latestRecords(beforeSnapshot.company_os.financial_records).filter((record) => record.type === "commitment");
+      const beforeApprovals = latestRecords(beforeSnapshot.company_os.approvals);
+      const beforePayments = latestRecords(beforeSnapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      const url = new URL("/?surface=docs&health=structure", base);
+      url.searchParams.set("api", base);
+      url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      const root = page.locator('[data-company-os-page="document-health"][data-company-os-ready="true"][data-company-os-data-mode="store-live"]').first();
+      await root.waitFor({ state: "visible", timeout: 15_000 });
+      await root.locator('[data-docs-health-direct-action-state="available"]').first().waitFor({ state: "visible", timeout: 15_000 });
+      const beforePath = join(actionRoot, "docs-health-relation--before.png");
+      await page.screenshot({ path: beforePath, fullPage: false, timeout: 60_000 });
+      await root.locator("[data-docs-health-action-token]").fill(docsHealthRelationToken);
+      await root.locator("[data-docs-health-corrective-note]").fill("Create the missing explicit Document-to-TypedRecord relation from Docs Health.");
+      await root.getByRole("button", { name: "Link relation", exact: true }).click();
+      await root.getByText("Relation repair recorded in Store truth.", { exact: true }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
+        const failurePath = join(actionRoot, "docs-health-relation-failure.png");
+        await page.screenshot({ path: failurePath, fullPage: false, timeout: 60_000 });
+        const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+        throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
+      });
+      const afterPath = join(actionRoot, "docs-health-relation--after.png");
+      await page.screenshot({ path: afterPath, fullPage: false, timeout: 60_000 });
+      const snapshot = await readJson(liveSource.snapshot_endpoint, "post-health-relation snapshot");
+      const relations = latestRecords(snapshot.company_os.relations);
+      const createdRelations = relations.filter((record) => !beforeRelations.some((before) => before.id === record.id));
+      const relation = createdRelations.find((record) => String(record.id).startsWith("relation-docs-health-"));
+      const workItems = latestRecords(snapshot.company_os.work_items);
+      const commitments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "commitment");
+      const approvals = latestRecords(snapshot.company_os.approvals);
+      const payments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      const commands = latestRecords(snapshot.company_os.action_commands).filter((record) => record.command_name === "relation.append" && String(record.id).includes("docs-relation"));
+      const command = commands.at(-1);
+      if (!relation) throw new Error("Docs Health did not create a direct Relation repair");
+      if (relation.from_ref?.kind !== "document" || relation.to_ref?.kind !== "typed_record" || relation.relation_type !== "source_for") {
+        throw new Error(`Docs Health Relation repair has wrong native shape: ${JSON.stringify(relation)}`);
+      }
+      if (relation.created_by?.actor_id !== "actor-agent-document-architecture") {
+        throw new Error("Docs Health Relation repair is not attributed to the Docs Governance Agent");
+      }
+      if (workItems.length !== beforeWorkItems.length || commitments.length !== beforeCommitments.length || approvals.length !== beforeApprovals.length || payments.length !== beforePayments.length) {
+        throw new Error("Docs Health Relation repair created Work, Finance, or Approval side effects");
+      }
+      if (command?.status !== "executed" || command?.requested_by?.actor_id !== "actor-agent-document-architecture") {
+        throw new Error("Docs Health Relation repair lacks an executed Docs Governance ActionCommand");
+      }
+      if (!dispatchedBody) throw new Error("Docs Health Relation repair request body was not observed");
+      const replayResponse = await fetch(`${apiBaseUrl}/v1/company-os/actions/dispatch?project=${encodeURIComponent(liveSource.project_id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-harness-company-os-token": docsHealthRelationToken },
+        body: JSON.stringify(dispatchedBody),
+      });
+      const replayBody = await replayResponse.json();
+      if (!replayResponse.ok || replayBody?.result?.idempotent_replay !== true) throw new Error(`Docs Health Relation repair replay was not idempotent: ${JSON.stringify(replayBody)}`);
+      docsHealthRelationAction = {
+        status: "passed",
+        relation_id: relation.id,
+        relation_type: relation.relation_type,
+        from_ref: relation.from_ref,
+        to_ref: relation.to_ref,
+        command_id: command.id,
+        command_status: command.status,
+        requested_by: command.requested_by,
+        work_item_count_before: beforeWorkItems.length,
+        work_item_count_after: workItems.length,
+        commitment_count_before: beforeCommitments.length,
+        commitment_count_after: commitments.length,
+        approval_count_before: beforeApprovals.length,
+        approval_count_after: approvals.length,
+        payment_count: payments.length,
+        idempotent_replay: true,
+        capability_storage: "browser-session-memory-only; omitted from evidence",
+        before: { file: relative(repoRoot, beforePath), sha256: hash(await readFile(beforePath)) },
+        after: { file: relative(repoRoot, afterPath), sha256: hash(await readFile(afterPath)) },
+      };
+    }
+    if (docsModuleActionToken) {
+      const actionRoot = join(outputRoot, "docs-module-action");
+      await mkdir(actionRoot, { recursive: true });
+      const dispatchedBodies = [];
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname === "/v1/company-os/actions/dispatch" && request.method() === "POST") {
+          const body = request.postDataJSON();
+          if (["typed_record.append", "view.append", "relation.append"].includes(body?.command_name) && String(body?.id ?? "").includes("action-browser-docs")) {
+            dispatchedBodies.push(body);
+          }
+        }
+      });
+      const beforeSnapshot = await readJson(liveSource.snapshot_endpoint, "pre-module-action snapshot");
+      const beforeTypedRecords = latestRecords(beforeSnapshot.company_os.typed_records);
+      const beforeViews = latestRecords(beforeSnapshot.company_os.views);
+      const beforeRelations = latestRecords(beforeSnapshot.company_os.relations);
+      const beforeWorkItems = latestRecords(beforeSnapshot.company_os.work_items);
+      const beforeCommitments = latestRecords(beforeSnapshot.company_os.financial_records).filter((record) => record.type === "commitment");
+      const beforeApprovals = latestRecords(beforeSnapshot.company_os.approvals);
+      const beforePayments = latestRecords(beforeSnapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      const url = new URL("/?surface=docs&module=module-trademark-management", base);
+      url.searchParams.set("api", base);
+      url.searchParams.set("project", liveSource.project_id);
+      await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+      const root = page.locator('[data-company-os-page="business-module-focus"][data-company-os-ready="true"][data-company-os-data-mode="store-live"]').first();
+      await root.waitFor({ state: "visible", timeout: 15_000 });
+      await root.locator('[data-docs-authoring-state="available"]').waitFor({ state: "visible", timeout: 15_000 });
+      const beforePath = join(actionRoot, "docs-module-authoring--before.png");
+      await page.screenshot({ path: beforePath, fullPage: false, timeout: 60_000 });
+
+      await root.getByLabel("Company OS session capability").fill(docsModuleActionToken);
+      await root.getByLabel("TypedRecord title").fill("Browser captured vendor shortlist");
+      await root.getByLabel("TypedRecord type").fill("VendorShortlist");
+      await root.getByRole("button", { name: "Create TypedRecord", exact: true }).click();
+      await root.getByText("typed_record.append recorded in Store truth.", { exact: true }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
+        const failurePath = join(actionRoot, "docs-module-typed-record-failure.png");
+        await page.screenshot({ path: failurePath, fullPage: false, timeout: 60_000 });
+        const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+        throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
+      });
+
+      await root.getByLabel("Company OS session capability").fill(docsModuleActionToken);
+      await root.getByLabel("View title").fill("Browser captured vendor records");
+      await root.getByRole("button", { name: "Create View", exact: true }).click();
+      await root.getByText("view.append recorded in Store truth.", { exact: true }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
+        const failurePath = join(actionRoot, "docs-module-view-failure.png");
+        await page.screenshot({ path: failurePath, fullPage: false, timeout: 60_000 });
+        const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+        throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
+      });
+
+      const typedRecordBody = dispatchedBodies.find((body) => body.command_name === "typed_record.append");
+      const createdTypedRecordId = typedRecordBody?.payload?.record?.id;
+      if (!createdTypedRecordId) throw new Error("Docs module TypedRecord action body was not observed");
+      await root.getByLabel("Company OS session capability").fill(docsModuleActionToken);
+      await root.getByLabel("TypedRecord id to link").fill(createdTypedRecordId);
+      await root.getByRole("button", { name: "Link Relation", exact: true }).click();
+      await root.getByText("relation.append recorded in Store truth.", { exact: true }).waitFor({ state: "visible", timeout: 15_000 }).catch(async (error) => {
+        const failurePath = join(actionRoot, "docs-module-relation-failure.png");
+        await page.screenshot({ path: failurePath, fullPage: false, timeout: 60_000 });
+        const visible = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 2_000);
+        throw new Error(`${error.message}\nVisible browser state: ${visible}\nFailure screenshot: ${failurePath}`);
+      });
+
+      const afterPath = join(actionRoot, "docs-module-authoring--after.png");
+      await page.screenshot({ path: afterPath, fullPage: false, timeout: 60_000 });
+      const snapshot = await readJson(liveSource.snapshot_endpoint, "post-module-action snapshot");
+      const typedRecords = latestRecords(snapshot.company_os.typed_records);
+      const views = latestRecords(snapshot.company_os.views);
+      const relations = latestRecords(snapshot.company_os.relations);
+      const workItems = latestRecords(snapshot.company_os.work_items);
+      const commitments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "commitment");
+      const approvals = latestRecords(snapshot.company_os.approvals);
+      const payments = latestRecords(snapshot.company_os.financial_records).filter((record) => record.type === "payment");
+      const createdTypedRecord = typedRecords.find((record) => record.id === createdTypedRecordId);
+      const createdViewId = dispatchedBodies.find((body) => body.command_name === "view.append")?.payload?.record?.id;
+      const createdView = views.find((record) => record.id === createdViewId);
+      const createdRelationId = dispatchedBodies.find((body) => body.command_name === "relation.append")?.payload?.record?.id;
+      const createdRelation = relations.find((record) => record.id === createdRelationId);
+      const commands = latestRecords(snapshot.company_os.action_commands).filter((record) => dispatchedBodies.some((body) => body.id === record.id));
+      if (!createdTypedRecord || createdTypedRecord.module_id !== "module-trademark-management" || createdTypedRecord.record_type !== "VendorShortlist") {
+        throw new Error(`Docs module TypedRecord has wrong native shape: ${JSON.stringify(createdTypedRecord)}`);
+      }
+      if (!createdView || createdView.module_id !== "module-trademark-management" || !createdView.source_kinds?.includes("typed_record")) {
+        throw new Error(`Docs module View has wrong native shape: ${JSON.stringify(createdView)}`);
+      }
+      if (!createdRelation || createdRelation.from_ref?.kind !== "document" || createdRelation.to_ref?.id !== createdTypedRecord.id || createdRelation.relation_type !== "source_for") {
+        throw new Error(`Docs module Relation has wrong native shape: ${JSON.stringify(createdRelation)}`);
+      }
+      if (workItems.length !== beforeWorkItems.length || commitments.length !== beforeCommitments.length || approvals.length !== beforeApprovals.length || payments.length !== beforePayments.length) {
+        throw new Error("Docs module authoring created Work, Finance, or Approval side effects");
+      }
+      if (commands.length !== 3 || commands.some((command) => command.status !== "executed" || command.requested_by?.actor_id !== "actor-agent-document-architecture")) {
+        throw new Error(`Docs module authoring lacks executed Docs Governance ActionCommands: ${JSON.stringify(commands)}`);
+      }
+      const replayResults = [];
+      for (const body of dispatchedBodies) {
+        const replayResponse = await fetch(`${apiBaseUrl}/v1/company-os/actions/dispatch?project=${encodeURIComponent(liveSource.project_id)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-harness-company-os-token": docsModuleActionToken },
+          body: JSON.stringify(body),
+        });
+        const replayBody = await replayResponse.json();
+        if (!replayResponse.ok || replayBody?.result?.idempotent_replay !== true) throw new Error(`Docs module ${body.command_name} replay was not idempotent: ${JSON.stringify(replayBody)}`);
+        replayResults.push({ command_name: body.command_name, idempotent_replay: true });
+      }
+      docsModuleAction = {
+        status: "passed",
+        typed_record_id: createdTypedRecord.id,
+        typed_record_count_before: beforeTypedRecords.length,
+        typed_record_count_after: typedRecords.length,
+        view_id: createdView.id,
+        view_count_before: beforeViews.length,
+        view_count_after: views.length,
+        relation_id: createdRelation.id,
+        relation_count_before: beforeRelations.length,
+        relation_count_after: relations.length,
+        action_command_ids: commands.map((command) => command.id),
+        work_item_count_before: beforeWorkItems.length,
+        work_item_count_after: workItems.length,
+        commitment_count_before: beforeCommitments.length,
+        commitment_count_after: commitments.length,
+        approval_count_before: beforeApprovals.length,
+        approval_count_after: approvals.length,
+        payment_count: payments.length,
+        idempotent_replay: replayResults.every((result) => result.idempotent_replay),
+        capability_storage: "browser-session-memory-only; omitted from evidence",
+        before: { file: relative(repoRoot, beforePath), sha256: hash(await readFile(beforePath)) },
+        after: { file: relative(repoRoot, afterPath), sha256: hash(await readFile(afterPath)) },
+      };
+    }
     if (workItemActionToken) {
       const actionRoot = join(outputRoot, "workitem-action");
       await mkdir(actionRoot, { recursive: true });
@@ -423,6 +743,9 @@ async function main() {
       ...(workViewResults.length ? { work_views: workViewResults } : {}),
       ...(approvalAction ? { approval_action: approvalAction } : {}),
       ...(workItemAction ? { work_item_action: workItemAction } : {}),
+      ...(docsHealthAction ? { docs_health_action: docsHealthAction } : {}),
+      ...(docsHealthRelationAction ? { docs_health_relation_action: docsHealthRelationAction } : {}),
+      ...(docsModuleAction ? { docs_module_action: docsModuleAction } : {}),
     };
     await writeFile(join(outputRoot, "capture-run.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(JSON.stringify(manifest, null, 2));

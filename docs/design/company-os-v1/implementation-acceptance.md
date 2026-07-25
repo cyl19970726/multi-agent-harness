@@ -1,14 +1,16 @@
 # Company OS V1 implementation acceptance
 
-Status: **fixture, live-store truth, and implementation visual gates passed; Human approval of Expected references pending**
+Status: **legacy baseline evidence; active design intent moved to Company OS v2/v3**
 
 Fixture: `company-os-trademark-v1`
 
 Evidence clock: `2026-07-20T09:30:00+08:00`
 
-This document defines the Wave 7 acceptance boundary. Generated expected
-images express design intent. Only screenshots captured from the real browser
-can prove implementation.
+This document records the retired Wave 7 acceptance boundary. Generated v1
+expected images and the v1 visual contract have been removed from the active
+repository because they are no longer product direction. Only the retained v1
+actual screenshots and deterministic fixture remain as legacy comparison
+inputs.
 
 ## One evidence chain
 
@@ -17,7 +19,7 @@ Each visual case has three deliberately separate paths:
 | Evidence | Location | Meaning |
 | --- | --- | --- |
 | Current baseline | `.visual-evidence/company-os-v1/<run-id>/baseline/` | Current real route before implementation. Missing routes are recorded as gaps, not screenshots. |
-| Expected | `docs/design/company-os-v1/expected/` | Generated design intent pinned by `visual-contract.json`; never browser evidence. |
+| Expected | retired | Removed from the active repository; use Company OS v2/v3 visual contracts for current design intent. |
 | Implemented | `.visual-evidence/company-os-v1/<run-id>/implemented/` | Real implementation captured with the declared data source, route, viewport, locale, and readiness contract. |
 
 The capture manifest at `<run-id>/capture-run.json` records all three paths for
@@ -169,44 +171,13 @@ The seven focus/decision pages additionally require `900x1180` tablet and
 `390x844` mobile evidence: Document, WorkItem, Standing Agent, Governance
 Proposal, Approval, Business Module, and Human Member.
 
-## Capture commands
+## Legacy status
 
-Capture current routes before integration when possible:
-
-```bash
-node scripts/capture-company-os-v1.mjs \
-  --data-mode fixture \
-  --stage baseline \
-  --run-id company-os-v1-baseline
-```
-
-Capture the implementation after the twelve routes are mounted:
-
-```bash
-node scripts/capture-company-os-v1.mjs \
-  --data-mode fixture \
-  --stage implemented \
-  --run-id company-os-v1-implemented
-```
-
-Capture real store-backed pages only after the API/store gate is ready:
-
-```bash
-node scripts/capture-company-os-v1.mjs \
-  --data-mode live \
-  --api-base-url http://127.0.0.1:8787 \
-  --project-id <seeded-company-os-project> \
-  --stage implemented \
-  --run-id company-os-v1-live-implemented
-```
-
-Omit `--project-id` only when `GET /v1/projects` reports the intended project as
-current. `--api-base-url` and `--project-id` are rejected in fixture mode so a
-run cannot silently mix sources.
-
-Use `--web-base-url http://127.0.0.1:<port>` to inspect an already running
-dashboard and `--headed` for interactive diagnosis. The default starts an
-isolated Vite dashboard. Only fixture mode starts an isolated fixture API.
+The v1 capture script and v1 design-intent package have been retired. This file
+is retained only to explain the legacy actual screenshots and deterministic
+trademark fixture still used as comparison baselines. New capture, comparison,
+or acceptance work must use the active Company OS v2/v3 visual contracts and
+Store-live checks.
 
 For the canonical acceptance scenario, use the deterministic public-API seed
 orchestrator. It creates a temporary project and Store, starts the real Harness
@@ -271,9 +242,10 @@ projection. The sibling `seed-manifest.json` and
 capture. The browser did not define `window.__COMPANY_OS_FIXTURE__`.
 
 The selected durable visual evidence is under
-`docs/design/company-os-v1/actual/` (26 PNG files). The three-way comparison is
-available in `docs/design/company-os-v1/expected-vs-actual.html`, backed by
-`comparison-manifest.json`. Its columns deliberately mean different things:
+`docs/design/company-os-v1/actual/` (26 PNG files). The old v1 three-way
+comparison report and manifest have been removed; current comparison reports
+live under Company OS v2/v3. The original columns deliberately meant different
+things:
 
 1. Current before: audited missing route, with no substitute screenshot;
 2. Expected: generated design reference, still pending Human visual approval;

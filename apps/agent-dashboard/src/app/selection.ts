@@ -35,6 +35,8 @@ export interface SelectionState {
   approvalId?: string;
   /** BusinessModule focus. */
   moduleId?: string;
+  /** Docs health review, addressed as `?health=structure`. */
+  docsHealth?: string;
   /** Native Mission detail, addressed as `?mission=<id>`. */
   missionId?: string;
   /** Native Wave detail inside a Mission, addressed as `?wave=<id>`. */
@@ -93,6 +95,7 @@ const selectionParamKeys = [
   "proposal",
   "approval",
   "module",
+  "health",
   "agent",
   "member",
   "memberRun",
@@ -169,6 +172,11 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
     next.moduleId = moduleId;
     if (!surface) next.surface = "docs";
   }
+  const docsHealth = params.get("health");
+  if (docsHealth) {
+    next.docsHealth = docsHealth;
+    if (!surface) next.surface = "docs";
+  }
   // A MemberRun belongs to an AgentTeamRun attempt, not to the standing Agent
   // directory. Do not translate it into `memberId` even if a future provider
   // happens to expose a related standing identity.
@@ -235,6 +243,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.proposalId) params.set("proposal", selection.proposalId);
   if (selection.approvalId) params.set("approval", selection.approvalId);
   if (selection.moduleId) params.set("module", selection.moduleId);
+  if (selection.docsHealth) params.set("health", selection.docsHealth);
   if (selection.memberId && selection.surface !== "organization") params.set("agent", selection.memberId);
   // Only persist a non-default agent tab, and only when an agent is open.
   if (selection.memberId && selection.agentTab && selection.agentTab !== "conversation") {

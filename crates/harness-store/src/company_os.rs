@@ -885,12 +885,16 @@ impl HarnessStore {
     pub fn append_custom_page_package(&self, value: &CustomPagePackage) -> StoreResult<()> {
         self.append_company_row(CUSTOM_PAGE_PACKAGES, value, |store| {
             // Packages are allowed to arrive before their definition to break
-            // the definition/package reference cycle. Once a definition exists,
-            // however, an update cannot silently retarget it.
+            // the definition/package reference cycle. They are also allowed to
+            // arrive as publish candidates for an existing definition; the
+            // definition does not switch to them until a later
+            // CustomPageDefinition row explicitly points at their id/version.
+            // Re-appending the currently selected package with mismatched
+            // version would be an ambiguous retarget and is rejected.
             if let Some(definition) = store
                 .find_by_id::<CustomPageDefinition>(CUSTOM_PAGE_DEFINITIONS, &value.definition_id)?
             {
-                if definition.package_ref != value.id || definition.package_version != value.version
+                if definition.package_ref == value.id && definition.package_version != value.version
                 {
                     return Err(StoreError::Conflict(format!(
                         "custom page package {} does not match definition {}",

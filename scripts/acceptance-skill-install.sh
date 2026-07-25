@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Acceptance: a fresh user can INSTALL the star-workflow skill and RUN the
-# harness. Models the external-user
+# Acceptance: a fresh user can INSTALL the star-workflow skill, INSTALL the
+# Company OS operator suite, and RUN the harness. Models the external-user
 # journey with checkable outcomes; exits nonzero on any failed check.
 #
 #   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
@@ -70,6 +70,27 @@ done
 # star-workflow additionally ships runnable examples/.
 [ "$(ls "$PROJ/.claude/skills/star-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
   && ok "star-workflow examples copied" || bad "star-workflow examples missing"
+
+echo "== A1b: install the Company OS operator suite into a clean project =="
+COMPANY_PROJ="$WORK/company-proj"
+mkdir -p "$COMPANY_PROJ"
+if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ" --suite company-os >/dev/null 2>&1; then
+  ok "install-skill.sh --suite company-os --agent both succeeded"
+else
+  bad "install-skill.sh --suite company-os exited nonzero"
+fi
+for name in company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder; do
+  for d in .claude/skills .agents/skills; do
+    if [ -f "$COMPANY_PROJ/$d/$name/SKILL.md" ] && [ ! -L "$COMPANY_PROJ/$d/$name" ]; then
+      ok "$d/$name installed as real files"
+    else
+      bad "$d/$name missing or a symlink"
+    fi
+    [ -f "$COMPANY_PROJ/$d/$name/agents/openai.yaml" ] \
+      && ok "$d/$name/agents/openai.yaml copied (Codex config)" \
+      || bad "$d/$name/agents/openai.yaml missing"
+  done
+done
 
 echo "== A2: build the harness binary =="
 BIN="$REPO_ROOT/target/debug/harness"

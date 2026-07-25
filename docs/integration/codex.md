@@ -90,7 +90,7 @@ provider-native turn context in live acceptance.
 Harness persists only the submitted proposal and Host decisions. `codex_exec`
 does not guarantee a read-only planning boundary and therefore reports
 `plan_mode=unsupported`, rather than imitating app-server with prompt wording.
-See [ADR 0036](../decisions/0036-provider-native-member-plan-negotiation.md).
+See [ADR 0038](../decisions/0038-provider-native-member-plan-negotiation.md).
 
 Agent Team currently uses a narrower, explicit profile than the persistent
 AgentMember delivery path:

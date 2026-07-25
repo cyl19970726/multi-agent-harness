@@ -32,7 +32,7 @@ change composition, integrate results, and decide acceptance. Do not create an
 implicit Lead MemberRun. Add the Host as a member only when it deliberately owns
 an execution lane with its own native session.
 
-Read `docs/product/mission-wave-host-plan.md`, ADR 0034, ADR 0035, and ADR 0036
+Read `docs/product/mission-wave-host-plan.md`, ADR 0034, ADR 0037, and ADR 0038
 when the product contract itself is in question. Do not reproduce their schemas
 in this skill.
 

@@ -3,7 +3,7 @@
 ```text
 status: canonical
 owner_role: product
-architecture: ADR 0034 + ADR 0035
+architecture: ADR 0034 + ADR 0037
 ```
 
 ## Product Promise
