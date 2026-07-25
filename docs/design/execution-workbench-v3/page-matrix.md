@@ -7,6 +7,7 @@
 | P0 | Mission Wave canvas | responsive implementation | Can the ordered journey and gate remain legible without the right rail? | Open context | captured at tablet and mobile |
 | P0 | Agent Team war room | responsive implementation | Can presence, activity, pressure, and composer remain one usable flow? | Message/review | captured at tablet and mobile |
 | P1 | MemberRun focus | completed native work history and handoff | What did this member do, what did it produce, and how can I inspect the execution? | Inspect history / follow up | V4 desktop warm-editorial implementation approved 2026-07-22 |
+| P0 | Agent Team war room V3 | active multi-member collaboration with mailbox projections | What has each participant received and sent, what needs Lead attention, and how is the plan debate progressing? | Filter, reply, review, inspect member | approved 1536×1024 expected; implementation in progress 2026-07-24 |
 
 ## Fidelity v2 · approved and implemented
 

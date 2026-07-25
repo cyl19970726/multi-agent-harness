@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
 import {
   BrainCircuit,
+  CheckCheck,
   CheckCircle2,
   ChevronLeft,
-  ChevronRight,
   ExternalLink,
   Inbox,
   ListFilter,
+  Mail,
   MessageSquare,
   Play,
+  Search,
   Send,
+  SendHorizontal,
   ShieldCheck,
   SquareArrowOutUpRight,
   Users,
@@ -24,6 +27,7 @@ import { ActivityStream, type WorkbenchActivityItem } from "@/components/workben
 import { ContextModule, ContextRail } from "@/components/workbench/context/ContextRail";
 import { ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
+import { Markdown } from "@/components/workbench/Markdown";
 import { EmptyState, StatusDot, type StatusTone } from "@/components/workbench/atoms";
 import { Select, TextArea } from "@/components/workbench/OperatorForms";
 
@@ -89,6 +93,8 @@ export function TeamWarRoom({
 }: TeamWarRoomProps) {
   const context = selectTeamRunContext(model.snapshot, teamRunId);
   const [filter, setFilter] = useState<StreamFilter>("all");
+  const [participantFilter, setParticipantFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedMemberId, setSelectedMemberId] = useState<string | undefined>();
   const [composerTarget, setComposerTarget] = useState<ComposerTarget>("team");
   const [draft, setDraft] = useState("");
@@ -139,7 +145,7 @@ export function TeamWarRoom({
   const pendingInteractions = context.interactions
     .filter((interaction) => interaction.status === "pending")
     .sort((left, right) => timestamp(left.created_at) - timestamp(right.created_at));
-  const activityItems = toActivityItems(context.activity, memberById).map((item) => {
+  const activityItems = toActivityItems(context.activity, memberById, openMember).map((item) => {
     if (!item.id.startsWith("message:")) return item;
     const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
     const hostDelivery = message?.deliveries?.find(
@@ -194,7 +200,12 @@ export function TeamWarRoom({
       ),
     };
   }
-  const filteredActivity = activityItems.filter((item) => matchesFilter(item, filter));
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const filteredActivity = activityItems.filter((item) =>
+    matchesFilter(item, filter)
+    && (participantFilter === "all" || item.relatedMemberIds?.includes(participantFilter))
+    && (!normalizedSearch || `${item.rawText ?? ""} ${item.actorLabel ?? ""}`.toLowerCase().includes(normalizedSearch)),
+  );
   const primaryActivity = filteredActivity.filter((item) => item.prominence === "primary");
   const latestPressure = [...filteredActivity].reverse().find((item) => item.prominence === "pressure");
   const keyActivity = latestPressure && !primaryActivity.some((item) => item.id === latestPressure.id)
@@ -204,12 +215,6 @@ export function TeamWarRoom({
   const selectedAssignment = selectedMember
     ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
     : undefined;
-  const leadInbox = messages
-    .filter((message) =>
-      (message.to_member_ids ?? []).includes("host")
-      && ["question", "blocker", "review_request"].includes(message.kind ?? ""),
-    )
-    .sort((left, right) => timestamp(right.created_at) - timestamp(left.created_at));
   const planThreads = orderedMembers
     .map((member) => ({ member, plan: selectMemberPlanNegotiation(messages, member.id) }))
     .filter((entry): entry is { member: MemberRun; plan: MemberPlanNegotiation } => Boolean(entry.plan));
@@ -245,15 +250,6 @@ export function TeamWarRoom({
     } else {
       setComposerTarget("team");
     }
-    document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }
-
-  function answerMessage(message: TeamMessage): void {
-    if (!message.correlation_id || !message.from_member_id || message.from_member_id === "host") return;
-    setReplyAnchor(message);
-    setComposerTarget(message.from_member_id);
-    setSelectedMemberId(message.from_member_id);
-    setKind("answer");
     document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
@@ -456,54 +452,25 @@ export function TeamWarRoom({
         </ContextRail>
       }
     >
-      <div className="mx-auto flex w-full max-w-[1040px] flex-col px-4 py-3 sm:px-5">
-        <div className="hidden items-center justify-end gap-1 text-[10px] font-medium text-muted-foreground sm:flex xl:hidden">
-          Scroll members <ChevronRight className="size-3" />
-        </div>
-        <section aria-label="Team members" className="relative border-b border-border/70 pb-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-[12px] font-semibold text-foreground">Team presence</h2>
-            </div>
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-status-running"><StatusDot tone="running" pulse /> Live</span>
-          </div>
-          <div className="grid grid-cols-1 divide-y divide-border/60 sm:flex sm:divide-x sm:divide-y-0 sm:overflow-x-auto xl:grid xl:grid-cols-4 xl:overflow-visible">
-          {orderedMembers.map((member, index) => (
-            <MemberControl
-              key={member.id}
-              member={member}
-              className={index > 0 && !showAllMembers ? "hidden sm:block" : undefined}
-              selected={member.id === selectedMember?.id}
-              assignment={selectMemberAssignmentCorrelations(messages, member.id)[0]?.assignment?.body}
-              currentAction={latestActionTitle(actions, member.id)}
-              livePreview={liveActivityByMember.get(member.id)?.preview}
-              terminal={["completed", "failed", "cancelled"].includes(status)}
-              onSelect={() => selectMember(member)}
-              onOpen={() => openMember(member)}
-            />
-          ))}
-          {orderedMembers.length > 1 && (
-            <button
-              type="button"
-              className="rounded-lg border border-dashed border-border px-3 py-2 text-[11px] font-medium text-muted-foreground hover:border-primary/35 hover:text-primary sm:hidden"
-              onClick={() => setShowAllMembers((value) => !value)}
-            >
-              {showAllMembers ? "Show priority member only" : `View all ${orderedMembers.length} members`}
-            </button>
-          )}
-          {members.length === 0 && <EmptyState icon={Users} title="No member runs" description="This attempt did not create any runnable member instances." />}
-          </div>
-        </section>
-
-        <LeadInbox
-          messages={leadInbox}
-          members={memberById}
-          actionsEnabled={actionsEnabled}
-          onAnswer={answerMessage}
-          onAcknowledge={(message) => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
+      <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-3 sm:px-5">
+        <TeamMailboxStrip
+          members={orderedMembers}
+          messages={messages}
+          selectedId={participantFilter}
+          selectedMemberId={selectedMember?.id}
+          showAllMembers={showAllMembers}
+          onToggleAllMembers={() => setShowAllMembers((value) => !value)}
+          onSelect={(id) => {
+            setParticipantFilter(id);
+            if (id !== "all" && id !== "host") {
+              const member = memberById.get(id);
+              if (member) selectMember(member);
+            }
+          }}
+          onOpenMember={openMember}
         />
 
-        <PlanReviewBoard
+        <PlanReviewQueue
           threads={planThreads}
           actionsEnabled={actionsEnabled}
           onRequest={(member, plan) => sendPlanMessage(
@@ -521,16 +488,34 @@ export function TeamWarRoom({
           )}
         />
 
-        <section className="min-h-[28rem] overflow-hidden bg-background">
-          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 py-3">
-            <div className="flex items-center gap-2">
-              <h2 className="text-[13px] font-semibold text-foreground">Team activity</h2>
+        <section className="min-h-[28rem] overflow-hidden bg-background" data-testid="team-conversation">
+          <header className="sticky top-0 z-10 space-y-2 border-b border-border/70 bg-background/95 py-3 backdrop-blur">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-[14px] font-semibold text-foreground">Team activity</h2>
+                  <Badge tone="muted">{filteredActivity.length} records</Badge>
+                </div>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Coordination messages, plan debate, delivery state and honest execution evidence in one chronology.</p>
+              </div>
+              <label className="flex h-8 min-w-[13rem] items-center gap-2 rounded-lg border border-border/75 bg-card px-2.5 text-muted-foreground focus-within:border-primary/45">
+                <Search className="size-3.5" />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search team activity"
+                  className="min-w-0 flex-1 bg-transparent text-[11px] text-foreground outline-none placeholder:text-muted-foreground"
+                  aria-label="Search team activity"
+                />
+                {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label="Clear search"><X className="size-3" /></button>}
+              </label>
             </div>
-            <div className="flex flex-wrap gap-1" role="group" aria-label="Activity filters">
+            <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Activity filters">
               {FILTERS.map((entry) => (
                 <button
                   key={entry.id}
                   type="button"
+                  data-testid={`activity-filter-${entry.id}`}
                   aria-pressed={filter === entry.id}
                   onClick={() => setFilter(entry.id)}
                   className={cn(
@@ -539,6 +524,32 @@ export function TeamWarRoom({
                   )}
                 >
                   {entry.label}
+                </button>
+              ))}
+              <span className="mx-1 h-4 w-px bg-border" />
+              <button
+                type="button"
+                aria-pressed={participantFilter === "all"}
+                onClick={() => setParticipantFilter("all")}
+                className={cn(
+                  "rounded-md border px-2 py-1 text-[11px] transition-colors",
+                  participantFilter === "all" ? "border-primary/35 bg-primary/10 text-primary" : "border-transparent text-muted-foreground hover:bg-accent",
+                )}
+              >
+                Everyone
+              </button>
+              {orderedMembers.map((member) => (
+                <button
+                  key={member.id}
+                  type="button"
+                  aria-pressed={participantFilter === member.id}
+                  onClick={() => setParticipantFilter(member.id)}
+                  className={cn(
+                    "rounded-md border px-2 py-1 text-[11px] transition-colors",
+                    participantFilter === member.id ? "border-primary/35 bg-primary/10 text-primary" : "border-transparent text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  {member.name ?? member.id}
                 </button>
               ))}
               <button
@@ -561,8 +572,9 @@ export function TeamWarRoom({
             variant="timeline"
             empty={
               <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">No {filter === "all" ? "team activity" : filter} yet</p>
-                <p className="text-sm text-muted-foreground">Durable messages, actions, evidence, and decisions appear here as the attempt progresses.</p>
+                <p className="text-sm font-medium text-foreground">No activity matches these filters</p>
+                <p className="text-sm text-muted-foreground">Clear the participant, type, or search filter to return to the full Team conversation.</p>
+                <Button size="sm" variant="secondary" onClick={() => { setFilter("all"); setParticipantFilter("all"); setSearchQuery(""); }}>Reset filters</Button>
               </div>
             }
           />
@@ -618,6 +630,165 @@ function toInteractionActivity(
       </div>
     ),
   };
+}
+
+function TeamMailboxStrip({
+  members,
+  messages,
+  selectedId,
+  selectedMemberId,
+  showAllMembers,
+  onToggleAllMembers,
+  onSelect,
+  onOpenMember,
+}: {
+  members: MemberRun[];
+  messages: TeamMessage[];
+  selectedId: string;
+  selectedMemberId?: string;
+  showAllMembers: boolean;
+  onToggleAllMembers: () => void;
+  onSelect: (id: string) => void;
+  onOpenMember: (member: MemberRun) => void;
+}) {
+  const participants = [
+    { id: "host", name: "Host Lead", role: "Team lead", tone: "info" as StatusTone, member: undefined },
+    ...members.map((member) => ({
+      id: member.id,
+      name: member.name ?? member.id,
+      role: member.role ?? "member",
+      tone: memberTone(member.status),
+      member,
+    })),
+  ];
+  return (
+    <section aria-label="Participant mailboxes" className="border-b border-border/70 pb-3">
+      <header className="mb-2 flex items-end justify-between gap-3">
+        <div>
+          <h2 className="text-[13px] font-semibold text-foreground">Team mailboxes</h2>
+          <p className="text-[10px] text-muted-foreground">Inbox and Outbox are live projections of coordination delivery, not duplicate stored objects.</p>
+        </div>
+        <button type="button" onClick={() => onSelect("all")} className="text-[11px] font-medium text-primary hover:underline">
+          All activity
+        </button>
+      </header>
+      <div className="flex snap-x gap-2 overflow-x-auto pb-1 xl:grid xl:grid-cols-5 xl:overflow-visible" data-testid="team-mailbox-strip">
+        {participants.map((participant, index) => {
+          const inbox = messages.filter((message) => (message.to_member_ids ?? []).includes(participant.id));
+          const outbox = messages.filter((message) => message.from_member_id === participant.id);
+          const awaiting = inbox.filter((message) => message.deliveries?.some(
+            (delivery) => delivery.member_id === participant.id && ["queued", "delivered"].includes(delivery.status ?? ""),
+          )).length;
+          return (
+            <article
+              key={participant.id}
+              className={cn(
+                "relative min-w-[15.75rem] snap-start rounded-xl border bg-card/65 p-3 shadow-[0_12px_32px_-30px_rgba(15,23,42,.75)] transition-colors xl:min-w-0",
+                selectedId === participant.id ? "border-primary/45 bg-primary/[0.045]" : "border-border/75 hover:border-primary/25",
+                index > 1 && !showAllMembers ? "hidden sm:block" : undefined,
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-testid={`mailbox-${participant.id}`}
+                  onClick={() => onSelect(participant.id)}
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <Avatar name={participant.name} tone={participant.tone} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[11px] font-semibold text-foreground">{participant.name}</span>
+                    <span className="block truncate text-[9px] uppercase tracking-wider text-muted-foreground">{participant.role}</span>
+                  </span>
+                </button>
+                {participant.member && (
+                  <button
+                    type="button"
+                    data-testid={`mailbox-open-${participant.id}`}
+                    onClick={() => onOpenMember(participant.member!)}
+                    className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    aria-label={`Open ${participant.name}`}
+                  >
+                    <SquareArrowOutUpRight className="size-3.5" />
+                  </button>
+                )}
+              </div>
+              <div className="mt-3 grid grid-cols-2 divide-x divide-border/70 rounded-lg border border-border/60 bg-background/60">
+                <button type="button" onClick={() => onSelect(participant.id)} className="px-2.5 py-2 text-left hover:bg-accent/50">
+                  <span className="flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground"><Mail className="size-3" /> Inbox</span>
+                  <span className="mt-1 flex items-end gap-1.5"><strong className="text-lg leading-none">{inbox.length}</strong>{awaiting > 0 && <span className="text-[9px] text-status-warn">{awaiting} needs attention</span>}</span>
+                </button>
+                <button type="button" onClick={() => onSelect(participant.id)} className="px-2.5 py-2 text-left hover:bg-accent/50">
+                  <span className="flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground"><SendHorizontal className="size-3" /> Outbox</span>
+                  <span className="mt-1 flex items-end gap-1.5"><strong className="text-lg leading-none">{outbox.length}</strong><span className="text-[9px] text-muted-foreground">sent</span></span>
+                </button>
+              </div>
+              {participant.member && participant.id === selectedMemberId && <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" />}
+            </article>
+          );
+        })}
+      </div>
+      {participants.length > 2 && (
+        <button type="button" className="mt-2 text-[10px] font-medium text-primary sm:hidden" onClick={onToggleAllMembers}>
+          {showAllMembers ? "Show priority mailboxes" : `Show all ${participants.length} mailboxes`}
+        </button>
+      )}
+    </section>
+  );
+}
+
+function PlanReviewQueue({
+  threads,
+  actionsEnabled,
+  onRequest,
+  onFeedback,
+  onApprove,
+}: {
+  threads: Array<{ member: MemberRun; plan: MemberPlanNegotiation }>;
+  actionsEnabled: boolean;
+  onRequest: (member: MemberRun, plan: MemberPlanNegotiation) => void | Promise<boolean> | undefined;
+  onFeedback: (member: MemberRun, plan: MemberPlanNegotiation, body: string) => void | Promise<boolean> | undefined;
+  onApprove: (member: MemberRun, plan: MemberPlanNegotiation) => void | Promise<boolean> | undefined;
+}) {
+  const [feedbackByMember, setFeedbackByMember] = useState<Record<string, string>>({});
+  const open = threads.filter(({ plan }) => plan.status !== "approved");
+  if (!threads.length) return null;
+  return (
+    <details className="group border-b border-border/70 py-2" open={open.some(({ plan }) => plan.status === "proposed")}>
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-1 py-1.5 hover:bg-accent/45">
+        <span className="grid size-7 place-items-center rounded-lg border border-[#8b5cf6]/20 bg-[#8b5cf6]/[0.07] text-[#7653c6]"><BrainCircuit className="size-3.5" /></span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-semibold text-foreground">Plan review queue</span>
+          <span className="block text-[9px] text-muted-foreground">Member proposal → Host challenge → revision → approval</span>
+        </span>
+        <Badge tone={open.some(({ plan }) => ["proposed", "changes_requested"].includes(plan.status)) ? "warn" : "muted"}>{open.length} open</Badge>
+      </summary>
+      <div className="mt-2 grid gap-2 lg:grid-cols-2">
+        {threads.map(({ member, plan }) => {
+          const feedback = feedbackByMember[member.id] ?? "";
+          return (
+            <article key={member.id} className="rounded-lg border border-border/70 bg-card/55 p-2.5">
+              <div className="flex items-center gap-2">
+                <Avatar name={member.name ?? member.id} tone={memberTone(member.status)} />
+                <div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold">{member.name ?? member.id}</p><p className="text-[9px] text-muted-foreground">revision {plan.revision} · {member.provider_profile?.plan_mode ?? "unknown"} mode</p></div>
+                <Badge tone={planStatusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge>
+              </div>
+              <div className="mt-2 flex flex-wrap items-end gap-1.5">
+                {plan.status === "not_requested" && <Button size="sm" disabled={!actionsEnabled} onClick={() => onRequest(member, plan)}>Request plan</Button>}
+                {plan.status === "proposed" && <>
+                  <TextArea aria-label={`Plan feedback for ${member.name ?? member.id}`} value={feedback} onChange={(event) => setFeedbackByMember((value) => ({ ...value, [member.id]: event.target.value }))} placeholder="Challenge or request a revision…" className="min-h-8 min-w-[12rem] flex-1 resize-none text-[10px]" rows={1} disabled={!actionsEnabled} />
+                  <Button size="sm" variant="secondary" disabled={!actionsEnabled || !feedback.trim()} onClick={() => { onFeedback(member, plan, feedback.trim()); setFeedbackByMember((value) => ({ ...value, [member.id]: "" })); }}>Revise</Button>
+                  <Button size="sm" disabled={!actionsEnabled} onClick={() => onApprove(member, plan)}><CheckCircle2 className="size-3.5" /> Approve</Button>
+                </>}
+                {plan.status === "changes_requested" && <span className="text-[10px] text-muted-foreground">Waiting for revised plan in the same work chain.</span>}
+                {plan.status === "approved" && <span className="inline-flex items-center gap-1 text-[10px] font-medium text-status-good"><CheckCheck className="size-3.5" /> Approved for execution</span>}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </details>
+  );
 }
 
 function PlanReviewBoard({
@@ -995,23 +1166,45 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
   return <div className="grid grid-cols-[5.25rem_1fr] gap-2"><span className="text-muted-foreground">{label}</span><span className={cn("min-w-0 break-words text-foreground", mono && "font-mono text-[10px]")}>{value}</span></div>;
 }
 
-function toActivityItems(items: StableTeamActivity[], members: Map<string, MemberRun>): WorkbenchActivityItem[] {
+function toActivityItems(
+  items: StableTeamActivity[],
+  members: Map<string, MemberRun>,
+  onOpenMember: (member: MemberRun) => void,
+): WorkbenchActivityItem[] {
   return items.map((item) => {
     const actor = item.sourceMemberRunId ? memberLabel(members, item.sourceMemberRunId) : "Host";
     if (item.kind === "message") {
       const message = item.message;
       const recipients = (message.to_member_ids ?? []).map((id) => memberLabel(members, id)).join(", ") || "team";
       const evidenceRefs = message.evidence_refs ?? [];
+      const actorMember = message.from_member_id ? members.get(message.from_member_id) : undefined;
+      const deliverySummary = summarizeDeliveries(message);
       return {
         id: item.id,
         kind: message.kind === "blocker" ? "blocker" : message.kind === "review_result" ? "decision" : evidenceRefs.length ? "evidence" : "message",
         glyph: teamMessageGlyph(message.kind, evidenceRefs.length > 0),
-        title: <span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge><span className="ml-2">{actor} → {recipients}</span></span>,
-        body: message.body,
-        actor: message.correlation_id ? `correlation ${shortId(message.correlation_id)}` : undefined,
+        title: (
+          <span className="flex flex-wrap items-center gap-2">
+            <span>{actor} <span className="font-normal text-muted-foreground">to {recipients}</span></span>
+            <Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>
+            {deliverySummary && <span className="text-[10px] font-normal text-muted-foreground">{deliverySummary}</span>}
+          </span>
+        ),
+        body: message.body ? <Markdown source={message.body} compact /> : undefined,
+        actor: message.correlation_id ? `work chain ${shortId(message.correlation_id)}` : undefined,
         timestamp: formatTime(message.created_at),
         evidenceRefs,
         tone: messageTone(message.kind),
+        actorAvatarName: actor,
+        actorTone: actorMember ? memberTone(actorMember.status) : "info",
+        onActorClick: actorMember ? () => onOpenMember(actorMember) : undefined,
+        relatedMemberIds: [
+          ...(message.from_member_id ? [message.from_member_id] : []),
+          ...(message.to_member_ids ?? []),
+        ],
+        rawText: `${message.kind ?? ""} ${message.body ?? ""} ${actor} ${recipients} ${message.correlation_id ?? ""}`,
+        actorLabel: actor,
+        statusLabel: deliverySummary,
         prominence: KEY_ACTIVITY_MESSAGE_KINDS.has(message.kind ?? "")
           ? "primary"
           : ["blocker", "review_request", "review_result"].includes(message.kind ?? "")
@@ -1023,12 +1216,23 @@ function toActivityItems(items: StableTeamActivity[], members: Map<string, Membe
       const action = item.action;
       const evidenceRefs = action.evidence_refs ?? [];
       const status = [action.provider_status, action.semantic_status].filter(Boolean).join(" · ");
-      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: status ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">provider {action.provider_status ?? "unknown"} · semantic {action.semantic_status ?? "not classified"}</span></> : action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail" };
+      return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: status ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">Harness action · provider {action.provider_status ?? "unknown"} · semantic {action.semantic_status ?? "not classified"}</span></> : action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail", relatedMemberIds: item.sourceMemberRunId ? [item.sourceMemberRunId] : [], rawText: `${action.title ?? ""} ${action.summary ?? ""} ${actor}`, actorLabel: actor };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");
-    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: formatTime(event.occurred_at), tone: decision ? "decision" : "info", prominence: event.entity_type === "team_run" && event.operation === "created" ? "primary" : "detail" };
+    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: formatTime(event.occurred_at), tone: decision ? "decision" : "info", prominence: event.entity_type === "team_run" && event.operation === "created" ? "primary" : "detail", relatedMemberIds: item.sourceMemberRunId ? [item.sourceMemberRunId] : [], rawText: `${event.summary ?? ""} ${actor}`, actorLabel: actor };
   });
+}
+
+function summarizeDeliveries(message: TeamMessage): string | undefined {
+  const deliveries = message.deliveries ?? [];
+  if (!deliveries.length) return undefined;
+  const acknowledged = deliveries.filter((delivery) => delivery.status === "acknowledged").length;
+  const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length;
+  const queued = deliveries.filter((delivery) => delivery.status === "queued").length;
+  if (acknowledged === deliveries.length) return `ACK ${acknowledged}/${deliveries.length}`;
+  if (queued) return `${queued} queued${delivered || acknowledged ? ` · ${delivered + acknowledged} received` : ""}`;
+  return `${delivered} delivered${acknowledged ? ` · ${acknowledged} ACK` : ""}`;
 }
 
 function teamMessageGlyph(kind?: string | null, hasEvidence = false): WorkbenchActivityItem["glyph"] {

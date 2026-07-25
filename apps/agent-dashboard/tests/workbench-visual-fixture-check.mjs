@@ -215,13 +215,16 @@ async function main() {
   );
   check(
     warRoomSource.includes('variant="timeline"')
-      && warRoomSource.includes("Team presence")
+      && warRoomSource.includes("TeamMailboxStrip")
+      && warRoomSource.includes("Team mailboxes")
+      && warRoomSource.includes("Inbox and Outbox are live projections")
       && warRoomSource.includes("Review request")
       && warRoomSource.includes("showFullActivity")
-      && warRoomSource.includes('prominence === "primary"')
+      && warRoomSource.includes("Search team activity")
+      && warRoomSource.includes("Markdown")
       && activitySource.includes("activity-timeline-row")
       && cssSource.includes(".activity-timeline::before"),
-    "Agent Team V3 exposes a presence rail, timestamped semantic timeline, key/full projection, and anchored review action",
+    "Agent Team V3 exposes mailbox projections, Markdown group activity, participant/type filters, and anchored review action",
   );
   check(
     executionSource.includes('role="progressbar"')

@@ -141,6 +141,8 @@ export function WorkbenchShell({
   onTogglePoll,
 }: WorkbenchShellProps) {
   const memberFocusMode = selection.surface === "team" && Boolean(selection.memberRunId);
+  const focusedTeamMode = selection.surface === "team" && Boolean(selection.teamId);
+  const compactExecutionMode = memberFocusMode || focusedTeamMode;
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
   }
@@ -151,10 +153,10 @@ export function WorkbenchShell({
         model={model}
         selection={selection}
         onSelectionChange={updateSelection}
-        compact={memberFocusMode}
+        compact={compactExecutionMode}
       />
       <div className="flex min-w-0 flex-1 flex-col pb-14 sm:pb-0">
-        {!memberFocusMode && <TopBar
+        {!compactExecutionMode && <TopBar
           apiUrl={apiUrl}
           currentSurface={surfaceLabel(selection.surface)}
           contextLabel={nativeContextLabel(model, selection)}

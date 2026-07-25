@@ -194,6 +194,59 @@
       }
     },
     {
+      "id": "team-war-room--team-mailboxes-group-chat-v3--desktop",
+      "priority": "P0",
+      "page": "team-war-room",
+      "state": "team-mailboxes-group-chat",
+      "route": "/?surface=team&team=<team-run-id>&mission=<mission-id>&wave=<wave-id>",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
+      "baseline": "../../../.visual-evidence/execution-workbench-v3/team-mailboxes-v3-baseline/team-war-room--running-needs-you--desktop-1536x1024.png",
+      "expected": "expected/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+      "implemented": "implemented/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+      "comparison": "comparisons/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+      "overlay": "overlays/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+      "prompt": "prompts/team-war-room/team-activity-mailboxes-group-chat-v3.md",
+      "design_spec": "specs/team-war-room--team-mailboxes-group-chat-v3--desktop-1536x1024.json",
+      "ux_contract": "ux/team-war-room-mailboxes-group-chat-v3--interaction-contract.md",
+      "asset_inventory": "assets/team-war-room--team-mailboxes-group-chat-v3--asset-inventory.md",
+      "expected_approval": { "status": "approved", "by": "user", "date": "2026-07-24" },
+      "implementation_iterations": [
+        {
+          "revision": "81f6867-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/team-mailboxes-v3-iteration-1/team-war-room--running-needs-you--desktop-1536x1024.png",
+          "stage": "mailbox-structure",
+          "verdict": "revise: mailbox projections and compact execution shell landed, but low-level actions displaced the coordination conversation from the first viewport"
+        },
+        {
+          "revision": "81f6867-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/team-mailboxes-v3-iteration-2/team-war-room--running-needs-you--desktop-1536x1024.png",
+          "stage": "conversation-priority",
+          "verdict": "pass: five participant mailboxes share one row and the default projection begins with assignment and plan coordination"
+        },
+        {
+          "revision": "81f6867-dirty",
+          "implemented": "implemented/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+          "stage": "interaction-evidence",
+          "verdict": "candidate: participant/type/search filters and member deep links pass deterministic browser journeys at the approved viewport"
+        }
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "Mailboxes are derived from TeamMessage recipients and delivery state; Host remains Lead rather than a fabricated MemberRun; provider-native transcript is not persisted." },
+        "visual_fidelity": { "status": "pass", "note": "At the exact approved viewport, compact rail, participant portraits, mailbox hierarchy, Markdown conversation and context/composer balance pass deterministic comparison; final taste approval remains a separate Human review." }
+      },
+      "review": {
+        "status": "candidate_ready",
+        "intentional_deviations": [
+          "The fixture contains Host plus four members, so the implementation renders five truthful mailbox tiles instead of the generated reference's smaller sample roster.",
+          "Plan-review controls remain available in a compact disclosure above the conversation rather than fabricating inline actions on historical messages.",
+          "Harness actions are labelled as Harness evidence; provider-native activity remains an on-demand Member Focus concern unless a native projection is available."
+        ],
+        "defects": [],
+        "follow_ups": ["Validate the sticky composer with a real mobile software keyboard and a multiline Markdown draft."]
+      }
+    },
+    {
       "id": "member-run-focus--running-needs-you--tablet-context-open",
       "priority": "P1",
       "page": "member-run-focus",

@@ -22,6 +22,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Avatar } from "@/components/workbench/Avatar";
 import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
 
 export type WorkbenchActivityKind =
@@ -77,6 +78,10 @@ export interface WorkbenchActivityItem {
   rawText?: string | null;
   actorLabel?: string;
   statusLabel?: string;
+  actorAvatarName?: string;
+  actorTone?: StatusTone;
+  onActorClick?: () => void;
+  relatedMemberIds?: string[];
 }
 
 /**
@@ -134,16 +139,30 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
         <div className="hidden pt-1 text-right text-[10px] font-medium text-muted-foreground sm:col-start-2 sm:block">
           {item.timestamp}
         </div>
-        <span className={cn(
-          "relative z-[1] col-start-1 row-start-1 mt-0.5 grid size-8 shrink-0 place-items-center rounded-[10px] border ring-4 ring-background",
-          activityIconSurface(tone),
-        )}>
-          <Icon className="size-3.5" strokeWidth={2.15} aria-hidden />
-          <StatusDot
-            tone={tone}
-            pulse={item.transient || tone === "running"}
-            className="absolute -bottom-0.5 -right-0.5 ring-2 ring-background"
-          />
+        <span className="relative z-[1] col-start-1 row-start-1 mt-0.5 ring-4 ring-background">
+          {item.actorAvatarName ? (
+            <button
+              type="button"
+              onClick={item.onActorClick}
+              disabled={!item.onActorClick}
+              className="rounded-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              aria-label={item.onActorClick ? `Open ${item.actorAvatarName}` : item.actorAvatarName}
+            >
+              <Avatar name={item.actorAvatarName} tone={item.actorTone ?? tone} />
+            </button>
+          ) : (
+            <span className={cn(
+              "relative grid size-8 shrink-0 place-items-center rounded-[10px] border",
+              activityIconSurface(tone),
+            )}>
+              <Icon className="size-3.5" strokeWidth={2.15} aria-hidden />
+              <StatusDot
+                tone={tone}
+                pulse={item.transient || tone === "running"}
+                className="absolute -bottom-0.5 -right-0.5 ring-2 ring-background"
+              />
+            </span>
+          )}
         </span>
         <div className="col-start-2 row-start-1 min-w-0 space-y-1 sm:col-start-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
@@ -156,7 +175,7 @@ export function ActivityRow({ item, className, variant = "rows" }: { item: Workb
             {item.source === "provider-native" && <Badge tone="muted">native session</Badge>}
           </div>
           <div className="text-[13px] font-semibold leading-snug tracking-[-0.01em] text-foreground">{item.title}</div>
-          {item.body && <div className="whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground">{item.body}</div>}
+          {item.body && <div className="rounded-lg border border-border/55 bg-card/45 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">{item.body}</div>}
           {(item.evidenceRefs?.length ?? 0) > 0 && (
             <div className="flex flex-wrap gap-1 pt-0.5">
               {item.evidenceRefs?.map((ref) => <Badge key={ref} tone="muted">{ref}</Badge>)}

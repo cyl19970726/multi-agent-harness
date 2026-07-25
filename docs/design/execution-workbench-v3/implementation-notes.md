@@ -1,5 +1,23 @@
 # Implementation notes
 
+## 2026-07-24 · Team Activity mailboxes/group chat V3
+
+- Team detail now uses the compact execution rail and removes the redundant
+  global top bar from this focused surface.
+- Host and every Member receive derived Inbox/Outbox summaries. These are
+  projections over TeamMessage/delivery truth, not persisted mailbox objects.
+- Team Activity defaults to the key coordination chain, renders message bodies
+  with the safe shared Markdown renderer, and retains the full durable record
+  behind explicit type/full controls.
+- Participant, type, and search filters compose locally. Member mailbox deep
+  links preserve TeamRun, Mission, and Wave navigation context.
+- Oversized standalone Lead Inbox and plan-review presentations were replaced
+  by conversation pressure plus a compact plan-review disclosure. Host reply,
+  ACK, feedback, and approval actions retain their correlation semantics.
+- Deterministic 1536×1024, tablet, and mobile captures have no horizontal
+  overflow. Browser journeys prove mailbox filtering, message/search filtering,
+  and Member Focus deep-link context preservation.
+
 ## Reuse before adding dependencies
 
 The current stack already has React, Tailwind CSS 4, Lucide, Radix Tabs, Tooltip, Separator, ScrollArea, `clsx`, and `class-variance-authority`. That is enough for the V3 structure and most interaction states.
