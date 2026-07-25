@@ -51,23 +51,66 @@ session. They may share UI components, but they are not the same product object.
 
 ## Current interface state
 
-Organization records exist through the Company OS Store/API and governed Action
-path. Until dedicated `harness company org ...` commands are implemented, use
-the current API/action contract and report CLI coverage honestly as `partial`.
+Organization records exist through the Company OS Store/API. The first
+dedicated `harness company org ...` command family is implemented for
+inspection and Human administrative authoring of actors, OrgUnits,
+Memberships, declared actor status, and permission/capability refs.
 
-The intended command family is:
+Use:
 
 ```bash
-harness company org query --actor <actor-id>
-harness company org list --unit <org-unit-id>
-harness company org propose-agent --reports-to <lead-agent-id> --role <role-id> --reason <reason>
-harness company org update-permissions --actor <actor-id> --permission <permission> --approval <approval-id>
-harness company org transition-agent --actor <actor-id> --status <status>
-harness company org record-capability-review --actor <actor-id> --evidence <ref>
+harness company org list [--actor-kind human|agent|external|service] [--status <status>] [--unit <org-unit-id>]
+harness company org query --actor <actor-id> [--actor-kind human|agent|external|service]
+harness company org query --unit <org-unit-id>
+harness company org query --membership <membership-id>
+harness company org create-human \
+  --id <human-id> \
+  --display-name <name> \
+  --responsibility <summary> \
+  --authority <human-admin-id>
+harness company org create-agent \
+  --id <standing-agent-id> \
+  --display-name <name> \
+  --role <role> \
+  --responsibility <summary> \
+  --authority <human-admin-id> \
+  [--skill <skill-id> --tool <tool-id> --permission <policy> --capability <capability>]
+harness company org create-unit \
+  --id <org-unit-id> \
+  --name <name> \
+  --purpose <purpose> \
+  --authority <human-admin-id> \
+  [--parent-unit <id> --human-lead <human-id> --agent-lead <agent-id>]
+harness company org add-membership \
+  --unit <org-unit-id> \
+  --actor <actor-id> \
+  --actor-kind human|agent|external|service \
+  --role lead|member|advisor|observer|external_partner \
+  --authority <human-admin-id>
+harness company org transition-actor \
+  --actor <actor-id> \
+  --actor-kind human|agent|external|service \
+  --status active|invited|paused|ended|archived \
+  --authority <human-admin-id>
+harness company org update-permissions \
+  --actor <actor-id> \
+  --actor-kind human|agent|external|service \
+  --permission <policy-ref> \
+  --authority <human-admin-id>
 ```
 
-Do not present those commands as implemented until the CLI and acceptance tests
-exist.
+Current v1 boundary:
+
+- Writes use the existing Human administrative authoring surface. The authority
+  must be an active Human with `company_os.admin`.
+- The CLI does not yet implement a governed OrgChangeProposal lifecycle,
+  multi-party approval workflow, promotion policy, retirement evaluation, or
+  capability-review record type.
+- For permission expansion, new durable actors, or org-structure changes,
+  report the write as administrative v1 and preserve the follow-up need for a
+  governed proposal/approval path.
+- A Standing Agent record is organization identity and authority context. It is
+  not an Agent Team MemberRun, provider-native session, or runtime health row.
 
 ## Governance model
 
@@ -96,8 +139,10 @@ adjust, or retire the actor. Skills are tools; they never grant authority.
 3. Prefer reuse. Check whether an existing Human, Standing Agent, external
    collaborator, service, Agent Team, Dynamic Workflow, or Host execution path
    can do the work before adding a durable actor.
-4. For new actors or permission expansion, prepare an Organization change
-   proposal and route required Human/Lead approval.
+4. For new actors or permission expansion, use the Org CLI only when the Human
+   administrative boundary is acceptable; otherwise prepare an Organization
+   change proposal and route required Human/Lead approval once that lifecycle
+   exists.
 5. Provision only approved tools, skills, budgets, and permissions. Do not infer
    authority from a prompt, profile, avatar, or UI card.
 6. Link initial WorkItems and maintained Docs so the actor's purpose is
