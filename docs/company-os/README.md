@@ -33,10 +33,10 @@ The installable Company OS operator suite is indexed in
 scripts/install-skill.sh --agent both --suite company-os
 ```
 
-Dedicated Docs CLI commands are implemented. Work, Finance, and Organization
+Dedicated Docs and Work CLI commands are implemented. Finance and Organization
 operator skills are installable operating contracts over the current native
-Store/API/Action path; their dedicated `harness company work|finance|org ...`
-CLI families remain planned until backed by commands and acceptance checks.
+Store/API/Action path; their dedicated `harness company finance|org ...` CLI
+families remain planned until backed by commands and acceptance checks.
 
 Current Company OS storage remains append-only JSONL ledgers plus latest
 projections. SQL is planned as a derived read/query/index layer for Docs query,
