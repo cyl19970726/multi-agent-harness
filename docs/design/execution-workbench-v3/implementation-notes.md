@@ -19,7 +19,7 @@
   fixture data.
 - Deterministic desktop, tablet and mobile captures pass participant mailbox,
   message/search filter, Mission/Wave deep-link and Member Focus navigation
-  journeys. Final visual-fidelity approval remains Human-owned.
+  journeys. The Human Owner approved the V4 visual result on 2026-07-25.
 
 ## 2026-07-24 · Team Activity mailboxes/group chat V3
 

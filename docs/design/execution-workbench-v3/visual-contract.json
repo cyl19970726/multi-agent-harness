@@ -234,15 +234,17 @@
           "revision": "95558a2-dirty",
           "implemented": "../../../.visual-evidence/execution-workbench-v3/team-mailboxes-v4-iteration-3/team-war-room--running-needs-you--desktop-1536x1024.png",
           "stage": "identity-route-and-message-taxonomy",
-          "verdict": "candidate: sender avatar nodes, sender-to-recipient portrait routes, semantic message-type icons/colors, compact mailbox geometry, roster context, Markdown plans, and browser interaction journeys are implemented"
+          "verdict": "pass: sender avatar nodes, sender-to-recipient portrait routes, semantic message-type icons/colors, compact mailbox geometry, roster context, Markdown plans, and browser interaction journeys are implemented and Human-approved"
         }
       ],
       "gates": {
         "product_truth": { "status": "pass", "note": "Mailboxes are derived from TeamMessage recipients and delivery state; Host remains Lead rather than a fabricated MemberRun; provider-native transcript is not persisted." },
-        "visual_fidelity": { "status": "pending_human_review", "note": "The V4 candidate corrects the explicitly reported identity-route and message-type gaps and has deterministic responsive/browser evidence; final visual equivalence remains a Human judgment." }
+        "visual_fidelity": { "status": "pass", "note": "Human approved the V4 identity route, message taxonomy, density and overall visual result on 2026-07-25 after deterministic responsive/browser evidence passed." }
       },
       "review": {
-        "status": "candidate_ready",
+        "status": "approved",
+        "approved_by": "user",
+        "approved_at": "2026-07-25",
         "intentional_deviations": [
           "The fixture contains Host plus four members, so the implementation renders five truthful mailbox tiles instead of the generated reference's smaller sample roster.",
           "Plan-review controls are enabled only on the latest actionable proposal rather than fabricated on historical messages.",
