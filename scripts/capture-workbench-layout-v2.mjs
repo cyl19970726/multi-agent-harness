@@ -147,7 +147,7 @@ async function main() {
     const cases = [
       ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
-      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Platform Foundation Team"],
+      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Activity"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
     ];
     const viewports = [

@@ -26,6 +26,21 @@ The stream joins coordination messages, PendingInteraction pressure and honest
 Harness actions in chronological order. Provider-native activity is loaded on
 demand and labelled `native session`; it is never mirrored into Harness.
 
+Every durable message has one identity route:
+
+```text
+[sender portrait]  Sender  →  [recipient portrait(s)] Recipient  [message type]
+```
+
+The timeline portrait is always the sender, never a generic activity icon.
+Recipient portraits use the same deterministic identity mapping as Team
+mailboxes and the context roster. Each message type has an adjacent semantic
+icon, text label and restrained color treatment: Assignment, Broadcast,
+Question, Answer, Progress, Blocker, Review Request, Review Decision, Plan
+Request, Plan Proposal, Host Challenge, Plan Approval, Handoff, Tool Activity
+and Evidence must remain visually distinguishable without reading the body.
+Color is reinforcement; the type label and delivery text are required.
+
 Participant, message-kind and text-search filters combine with AND semantics.
 Empty results explain which filters are active and offer one clear reset.
 Message bodies use the safe shared Markdown renderer. Large plan proposals and

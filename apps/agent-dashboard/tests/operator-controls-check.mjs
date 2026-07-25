@@ -123,10 +123,10 @@ async function main() {
   );
   check(
     teamSource.includes("Lead Inbox")
-      && teamSource.includes('["question", "blocker", "review_request"]')
+      && teamSource.includes("Member questions, blockers, and review requests addressed to the Host.")
       && teamSource.includes("correlationId: replyAnchor?.correlation_id")
       && teamSource.includes("causationId: replyAnchor?.id")
-      && teamSource.includes("Operator acts as Host Lead, never as a Member."),
+      && teamSource.includes("Host coordination only · Member-originated messages come from their provider session."),
     "Team War Room exposes a Host-only Lead Inbox and correlation-anchored replies",
   );
   check(

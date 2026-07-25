@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "page": "team-war-room",
   "expected": "/Users/hhh0x/multi-agent-harness/docs/design/execution-workbench-v3/expected/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
   "viewport": {
@@ -59,6 +59,29 @@
     "Lucide icons for mailbox, message kind, delivery state, filter and search",
     "no raster icon sheets and no decorative icon substitution"
   ],
+  "message_visual_grammar": {
+    "identity": "Every message uses the sender portrait as its timeline node. The card header repeats sender -> recipient portraits and names.",
+    "direction": "Recipient chips use the same deterministic portrait mapping as mailbox and roster surfaces; Team broadcast remains visibly distinct from one-to-one delivery.",
+    "type": "Every durable message displays an adjacent icon and text label. Assignment/handoff use coral, plan/review negotiation uses purple or amber, accepted decisions use green, runtime activity uses blue, and blockers use red.",
+    "state": "Queued, delivered, acknowledged, failed, provider-native and Harness-evidence states remain visible as text; color never carries state alone.",
+    "supported_types": [
+      "assignment",
+      "broadcast",
+      "question",
+      "answer",
+      "progress",
+      "blocker",
+      "review_request",
+      "review_result",
+      "plan_request",
+      "plan_proposal",
+      "plan_feedback",
+      "plan_approval",
+      "handoff",
+      "action",
+      "evidence"
+    ]
+  },
   "component_strategy": {
     "reuse": ["Markdown", "Badge", "StatusDot", "MemberAvatar", "ContextRail", "Composer"],
     "page_specific": ["TeamMailboxStrip", "TeamConversationStream", "TeamActivityToolbar"],

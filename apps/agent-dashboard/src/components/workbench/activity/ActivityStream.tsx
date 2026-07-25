@@ -82,6 +82,11 @@ export interface WorkbenchActivityItem {
   actorTone?: StatusTone;
   onActorClick?: () => void;
   relatedMemberIds?: string[];
+  /** Team conversation presentation metadata. These preserve the canonical
+   * record while allowing a page-specific message composition. */
+  messageKind?: string;
+  bodySource?: string;
+  recipientLabels?: string[];
 }
 
 /**

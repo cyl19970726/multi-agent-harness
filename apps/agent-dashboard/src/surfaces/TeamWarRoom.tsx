@@ -1,21 +1,38 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  Activity,
+  ArrowRight,
+  BadgeCheck,
   BrainCircuit,
   CheckCheck,
   CheckCircle2,
   ChevronLeft,
+  CircleCheckBig,
+  CircleHelp,
+  ClipboardCheck,
   ExternalLink,
+  FileCheck2,
+  Handshake,
   Inbox,
   ListFilter,
+  ListTodo,
   Mail,
+  Megaphone,
+  MessageCircleWarning,
   MessageSquare,
+  MessageSquareReply,
+  OctagonAlert,
   Play,
+  ScanSearch,
   Search,
   Send,
   SendHorizontal,
+  ShieldAlert,
   ShieldCheck,
+  Sparkles,
   SquareArrowOutUpRight,
   Users,
+  Wrench,
   X,
 } from "lucide-react";
 
@@ -23,7 +40,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
-import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
+import type { WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail } from "@/components/workbench/context/ContextRail";
 import { ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
@@ -145,12 +162,29 @@ export function TeamWarRoom({
   const pendingInteractions = context.interactions
     .filter((interaction) => interaction.status === "pending")
     .sort((left, right) => timestamp(left.created_at) - timestamp(right.created_at));
+  const planThreads = orderedMembers
+    .map((member) => ({ member, plan: selectMemberPlanNegotiation(messages, member.id) }))
+    .filter((entry): entry is { member: MemberRun; plan: MemberPlanNegotiation } => Boolean(entry.plan));
   const activityItems = toActivityItems(context.activity, memberById, openMember).map((item) => {
     if (!item.id.startsWith("message:")) return item;
     const message = messages.find((candidate) => `message:${candidate.id}` === item.id);
     const hostDelivery = message?.deliveries?.find(
       (delivery) => delivery.member_id === "host" && delivery.status === "delivered",
     );
+    const planThread = planThreads.find(({ plan }) => plan.latestProposal?.id === message?.id);
+    if (message && planThread?.plan.status === "proposed") {
+      return {
+        ...item,
+        action: (
+          <div className="flex items-center gap-1">
+            <Button size="sm" variant="secondary" disabled={!actionsEnabled} onClick={() => challengePlan(message)}>Challenge</Button>
+            <Button size="sm" disabled={!actionsEnabled} onClick={() => sendPlanMessage(planThread.member, planThread.plan, "plan_approval", "Approved. Execute this plan in the same MemberRun and provider-native session; report deviations before crossing the agreed boundary.")}>
+              <CheckCircle2 className="size-3.5" /> Approve
+            </Button>
+          </div>
+        ),
+      };
+    }
     if (!message || !hostDelivery) return item;
     return {
       ...item,
@@ -215,9 +249,6 @@ export function TeamWarRoom({
   const selectedAssignment = selectedMember
     ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
     : undefined;
-  const planThreads = orderedMembers
-    .map((member) => ({ member, plan: selectMemberPlanNegotiation(messages, member.id) }))
-    .filter((entry): entry is { member: MemberRun; plan: MemberPlanNegotiation } => Boolean(entry.plan));
   const explicitRecipients = composerTarget === "team" ? members.map((member) => member.id) : [composerTarget];
   const canSend = actionsEnabled
     && Boolean(draft.trim())
@@ -250,6 +281,15 @@ export function TeamWarRoom({
     } else {
       setComposerTarget("team");
     }
+    document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function challengePlan(message: TeamMessage): void {
+    if (!message.correlation_id || !message.from_member_id || message.from_member_id === "host") return;
+    setReplyAnchor(message);
+    setComposerTarget(message.from_member_id);
+    setSelectedMemberId(message.from_member_id);
+    setKind("plan_feedback");
     document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
@@ -311,8 +351,9 @@ export function TeamWarRoom({
 
   return (
     <FocusShell
-      headerClassName="min-h-[118px] bg-background py-3 sm:py-3"
-      composerClassName="bg-background shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
+      className="xl:grid-cols-[minmax(0,1fr)_20rem]"
+      headerClassName="min-h-[84px] bg-background py-1.5 sm:py-1.5"
+      composerClassName="bg-background py-2 shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
       header={
         <FocusHeader
           breadcrumb={
@@ -329,7 +370,8 @@ export function TeamWarRoom({
               {navigationMission?.title ?? "Agent Teams"} <span className="text-border">/</span> {navigationWave ? `Wave ${navigationWave.index}` : "Team"}
             </button>
           }
-          title={stableTeam?.name ?? "Agent Team attempt"}
+          title="Team Activity"
+          description={stableTeam?.name ?? "Agent Team attempt"}
           meta={
             <>
               <Badge tone={teamTone(status)}>{status}</Badge>
@@ -366,44 +408,34 @@ export function TeamWarRoom({
         />
       }
       composer={
-        <section id="team-war-room-composer" className="space-y-2">
-          <div className="flex min-h-6 items-center justify-between gap-3">
-            {replyAnchor ? (
-              <div className="flex min-w-0 items-center gap-2 text-[11px]">
-                <Badge tone="decision">Reply in work chain</Badge>
-                <span className="truncate text-muted-foreground">
-                  {memberLabel(memberById, replyAnchor.from_member_id ?? "")} · {shortId(replyAnchor.correlation_id ?? "")}
-                </span>
-                <button type="button" onClick={() => setReplyAnchor(undefined)} className="text-primary hover:underline">New message</button>
-              </div>
-            ) : (
-              <p className="text-[10px] text-muted-foreground">New Host message · choose a Lead Inbox item to reply in an existing Assignment chain.</p>
-            )}
-            <span className="shrink-0 text-[10px] text-muted-foreground">Operator acts as Host Lead, never as a Member.</span>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="hidden text-[11px] font-medium text-muted-foreground sm:inline">Message</span>
+        <section id="team-war-room-composer" className="space-y-1.5">
+          {replyAnchor && (
+            <div className="flex min-w-0 items-center gap-2 text-[10px]">
+              <Badge tone="decision">Reply in work chain</Badge>
+              <span className="truncate text-muted-foreground">{memberLabel(memberById, replyAnchor.from_member_id ?? "")} · {shortId(replyAnchor.correlation_id ?? "")}</span>
+              <button type="button" onClick={() => setReplyAnchor(undefined)} className="text-primary hover:underline">New message</button>
+            </div>
+          )}
+          <div className="grid min-w-0 gap-2 sm:grid-cols-[10.5rem_8rem_minmax(12rem,1fr)_auto]">
             <Select
               aria-label="Message recipient"
               value={composerTarget}
               onChange={(event) => setComposerTarget(event.target.value)}
-              className="h-8 w-44"
+              className="h-9 w-full"
               disabled={Boolean(replyAnchor)}
             >
               <option value="team">Team · all members</option>
               {members.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}
             </Select>
-            <Select aria-label="Message kind" value={kind} onChange={(event) => setKind(event.target.value)} className="h-8 w-32" disabled={Boolean(replyAnchor)}>
+            <Select aria-label="Message kind" value={kind} onChange={(event) => setKind(event.target.value)} className="h-9 w-full" disabled={Boolean(replyAnchor)}>
               <option value="broadcast">Broadcast</option>
               <option value="question">Question</option>
               <option value="answer">Answer</option>
               <option value="progress">Progress</option>
               <option value="blocker">Blocker</option>
               <option value="review_request">Review request</option>
+              <option value="plan_feedback">Plan feedback</option>
             </Select>
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">from Team Lead · current Host</span>
-          </div>
-          <div className="flex items-end gap-2">
             <TextArea
               aria-label="Team message"
               value={draft}
@@ -411,23 +443,26 @@ export function TeamWarRoom({
               placeholder={replyAnchor
                 ? `Answer ${memberLabel(memberById, replyAnchor.from_member_id ?? "")} in this Assignment chain…`
                 : composerTarget === "team" ? "Message team or @member…" : `Message ${memberById.get(composerTarget)?.name ?? "member"}…`}
-              className="min-h-12 flex-1 resize-none"
-              rows={2}
+              className="min-h-9 resize-none py-2"
+              rows={1}
               disabled={!actionsEnabled}
             />
-            <Button size="sm" onClick={submit} disabled={!canSend} title={actionsEnabled ? undefined : "Connect a live source to enable actions"}>
+            <Button size="sm" className="h-9" onClick={submit} disabled={!canSend} title={actionsEnabled ? undefined : "Connect a live source to enable actions"}>
               <Send className="size-3.5" /> Send
             </Button>
           </div>
+          <p className="text-center text-[9px] text-muted-foreground">Host coordination only · Member-originated messages come from their provider session.</p>
         </section>
       }
       context={
-        <ContextRail quiet label="Team context">
+        <ContextRail label="Team context" className="bg-[#fbfaf8]">
           <MissionTeamModule
             missionTitle={navigationMission?.title}
             teamName={stableTeam?.name}
             leadAgentId={stableTeam?.owner_agent_id}
             missionScoped={Boolean(run.mission_id && !run.wave_id)}
+            members={orderedMembers}
+            onOpenMember={openMember}
             onOpen={() => navigationMission && onSelectionChange({ surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined })}
           />
           <WaveModule
@@ -452,7 +487,7 @@ export function TeamWarRoom({
         </ContextRail>
       }
     >
-      <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-3 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-2 sm:px-5">
         <TeamMailboxStrip
           members={orderedMembers}
           messages={messages}
@@ -470,34 +505,9 @@ export function TeamWarRoom({
           onOpenMember={openMember}
         />
 
-        <PlanReviewQueue
-          threads={planThreads}
-          actionsEnabled={actionsEnabled}
-          onRequest={(member, plan) => sendPlanMessage(
-            member,
-            plan,
-            "plan_request",
-            "Plan this Assignment before execution. Submit a concrete approach, checks, risks, coordination needs, and execution boundary for Host review.",
-          )}
-          onFeedback={(member, plan, body) => sendPlanMessage(member, plan, "plan_feedback", body)}
-          onApprove={(member, plan) => sendPlanMessage(
-            member,
-            plan,
-            "plan_approval",
-            "Approved. Execute this plan in the same MemberRun and provider-native session; report deviations before crossing the agreed boundary.",
-          )}
-        />
-
         <section className="min-h-[28rem] overflow-hidden bg-background" data-testid="team-conversation">
-          <header className="sticky top-0 z-10 space-y-2 border-b border-border/70 bg-background/95 py-3 backdrop-blur">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-[14px] font-semibold text-foreground">Team activity</h2>
-                  <Badge tone="muted">{filteredActivity.length} records</Badge>
-                </div>
-                <p className="mt-0.5 text-[10px] text-muted-foreground">Coordination messages, plan debate, delivery state and honest execution evidence in one chronology.</p>
-              </div>
+          <header className="sticky top-0 z-10 border-b border-border/70 bg-background/95 py-2 backdrop-blur">
+            <div className="flex min-w-max items-center gap-1 overflow-x-auto pb-0.5" role="group" aria-label="Activity filters">
               <label className="flex h-8 min-w-[13rem] items-center gap-2 rounded-lg border border-border/75 bg-card px-2.5 text-muted-foreground focus-within:border-primary/45">
                 <Search className="size-3.5" />
                 <input
@@ -509,8 +519,6 @@ export function TeamWarRoom({
                 />
                 {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label="Clear search"><X className="size-3" /></button>}
               </label>
-            </div>
-            <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Activity filters">
               {FILTERS.map((entry) => (
                 <button
                   key={entry.id}
@@ -567,9 +575,8 @@ export function TeamWarRoom({
               </button>
             </div>
           </header>
-          <ActivityStream
+          <TeamConversationStream
             items={shownActivity}
-            variant="timeline"
             empty={
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">No activity matches these filters</p>
@@ -585,6 +592,257 @@ export function TeamWarRoom({
       </div>
     </FocusShell>
   );
+}
+
+function TeamConversationStream({ items, empty }: { items: WorkbenchActivityItem[]; empty: ReactNode }) {
+  if (!items.length) return <div className="grid min-h-48 place-items-center px-6 py-10 text-center">{empty}</div>;
+  const units: Array<{ id: string; kind: "assignment-group"; items: WorkbenchActivityItem[] } | { id: string; kind: "single"; item: WorkbenchActivityItem }> = [];
+  for (const item of items) {
+    if (item.messageKind === "assignment") {
+      const previous = units[units.length - 1];
+      if (previous?.kind === "assignment-group") {
+        previous.items.push(item);
+      } else {
+        units.push({ id: `assignment-group:${item.id}`, kind: "assignment-group", items: [item] });
+      }
+    } else {
+      units.push({ id: item.id, kind: "single", item });
+    }
+  }
+  return (
+    <ol className="relative py-1 before:absolute before:bottom-5 before:left-[1.05rem] before:top-5 before:w-px before:bg-border/80">
+      {units.map((unit) => (
+        <li key={unit.id}>
+          {unit.kind === "assignment-group"
+            ? <AssignmentConversationGroup items={unit.items} />
+            : <TeamConversationRow item={unit.item} />}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function AssignmentConversationGroup({ items }: { items: WorkbenchActivityItem[] }) {
+  const first = items[0];
+  return (
+    <article className="relative grid grid-cols-[2.25rem_4.25rem_minmax(0,1fr)] gap-x-2.5 py-1.5">
+      <ConversationNode kind="assignment" tone="info" avatarName={first.actorAvatarName} avatarTone={first.actorTone} onActorClick={first.onActorClick} />
+      <time className="pt-1 text-right text-[10px] font-medium text-muted-foreground">{first.timestamp}</time>
+      <div className="min-w-0">
+        <ConversationMeta item={first} label="Assignment briefing" />
+        <div className="mt-1 grid overflow-hidden rounded-lg border border-status-info/25 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--status-info)/.035))] shadow-[0_18px_40px_-36px_rgba(14,116,180,.7)] sm:grid-cols-2">
+          {items.map((item, index) => (
+            <div key={item.id} className={cn(
+              "grid gap-1.5 px-2.5 py-1.5 sm:grid-cols-[minmax(0,1fr)_auto]",
+              index > 0 && "border-t border-border/60",
+              index === 1 && "sm:border-t-0",
+              index % 2 === 1 && "sm:border-l sm:border-border/60",
+            )}>
+              <div className="min-w-0">
+                <ConversationRoute item={item} />
+                <div className="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">{item.body}</div>
+              </div>
+              <span className="self-start rounded-full bg-status-good/8 px-2 py-0.5 text-[9px] font-semibold text-status-good">{item.statusLabel ?? "queued"}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function TeamConversationRow({ item }: { item: WorkbenchActivityItem }) {
+  const kind = item.messageKind ?? item.kind;
+  const tone = item.tone ?? "idle";
+  const plan = kind === "plan_proposal";
+  const pressure = ["blocker", "review_request", "plan_feedback"].includes(kind);
+  const accepted = ["plan_approval", "review_result"].includes(kind);
+  const handoff = kind === "handoff";
+  const execution = item.kind === "action" || item.kind === "evidence";
+  return (
+    <article className="relative grid grid-cols-[2.25rem_4.25rem_minmax(0,1fr)] gap-x-2.5 py-1.5">
+      <ConversationNode kind={kind} tone={tone} avatarName={item.actorAvatarName} avatarTone={item.actorTone} onActorClick={item.onActorClick} />
+      <time className="pt-1 text-right text-[10px] font-medium text-muted-foreground">{item.timestamp}</time>
+      <div className="min-w-0">
+        <ConversationMeta item={item} label={conversationLabel(kind)} />
+        <div className={cn(
+          "mt-1 overflow-hidden rounded-lg border bg-card/75 shadow-[0_18px_42px_-38px_rgba(15,23,42,.75)]",
+          plan && "border-[#8b5cf6]/30 bg-[linear-gradient(145deg,hsl(var(--card)),rgba(139,92,246,.035))]",
+          pressure && "border-status-warn/35 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--status-warn)/.045))]",
+          accepted && "border-status-good/30 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--status-good)/.04))]",
+          handoff && "border-primary/30 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--primary)/.035))]",
+          execution && "border-status-info/25",
+        )}>
+          <div className="flex min-w-0 items-center gap-2 border-b border-border/55 px-2.5 py-1.5">
+            <div className="min-w-0 flex-1">
+              {item.messageKind ? <ConversationRoute item={item} /> : <div className="text-[11px] font-semibold text-foreground">{item.title}</div>}
+            </div>
+            {item.action && <div className="shrink-0">{item.action}</div>}
+          </div>
+          <div className="px-2.5 py-2">
+            {plan && item.bodySource
+              ? <PlanProposalBody source={item.bodySource} />
+              : <div className="text-[11px] leading-relaxed text-foreground/85">{item.body}</div>}
+            {(item.evidenceRefs?.length ?? 0) > 0 && (
+              <div className="mt-2 grid gap-1 border-t border-border/55 pt-2 sm:grid-cols-2">
+                {item.evidenceRefs?.map((ref) => (
+                  <span key={ref} className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-muted/45 px-2 py-1 text-[9px] text-muted-foreground">
+                    <FileCheck2 className="size-3 shrink-0 text-status-good" />
+                    <span className="truncate">{ref}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/50 bg-muted/20 px-2.5 py-1 text-[9px] text-muted-foreground">
+            {item.actor && <span>{item.actor}</span>}
+            {item.source === "provider-native" && <span>native session</span>}
+            {item.statusLabel && <span className={accepted ? "text-status-good" : undefined}>{item.statusLabel}</span>}
+            <span className="ml-auto">{item.kind === "message" || item.kind === "blocker" || item.kind === "decision" ? "coordination record" : "Harness evidence"}</span>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function ConversationMeta({ item, label }: { item: WorkbenchActivityItem; label: string }) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[9px] uppercase tracking-[0.11em] text-muted-foreground">
+      <span className="font-semibold text-foreground/75">{label}</span>
+      {item.actorLabel && <span className="normal-case tracking-normal">{item.actorLabel}</span>}
+    </div>
+  );
+}
+
+function ConversationRoute({ item }: { item: WorkbenchActivityItem }) {
+  const presentation = messagePresentation(item.messageKind);
+  const TypeIcon = presentation.icon;
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground">
+        <span className={cn("size-1.5 rounded-full", presentation.dotClass)} />
+        {item.actorLabel ?? "Host"}
+      </span>
+      <ArrowRight className="size-3 shrink-0 text-muted-foreground" />
+      <span className="flex min-w-0 items-center gap-1">
+        {(item.recipientLabels ?? []).slice(0, 3).map((recipient) => (
+          <span key={recipient} className="inline-flex items-center gap-1 rounded-full bg-muted/45 py-0.5 pl-0.5 pr-1.5">
+            <Avatar name={recipient} tone="idle" size="xs" />
+            <span className="max-w-28 truncate text-[10px] font-medium text-foreground/80">{recipient}</span>
+          </span>
+        ))}
+        {(item.recipientLabels?.length ?? 0) > 3 && <span className="text-[9px] text-muted-foreground">+{item.recipientLabels!.length - 3}</span>}
+      </span>
+      <Badge tone={messageTone(item.messageKind)}>
+        <TypeIcon className="mr-1 size-3" />
+        {presentation.label}
+      </Badge>
+    </div>
+  );
+}
+
+function ConversationNode({ kind, tone, avatarName, avatarTone, onActorClick }: {
+  kind: string;
+  tone: StatusTone;
+  avatarName?: string;
+  avatarTone?: StatusTone;
+  onActorClick?: () => void;
+}) {
+  if (avatarName) {
+    // The timeline identity is always the sender portrait; the corner mark
+    // communicates message type without replacing or obscuring authorship.
+    const presentation = messagePresentation(kind);
+    const TypeIcon = presentation.icon;
+    return (
+      <button type="button" disabled={!onActorClick} onClick={onActorClick} className="relative z-[1] rounded-full ring-4 ring-background focus-visible:outline-none focus-visible:ring-primary">
+        <Avatar name={avatarName} tone={avatarTone ?? tone} />
+        <span className={cn(
+          "absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full border border-background text-white shadow-sm",
+          presentation.iconClass,
+        )}>
+          <TypeIcon className="size-2.5" strokeWidth={2.4} />
+        </span>
+      </button>
+    );
+  }
+  const Icon = kind === "assignment" ? ClipboardCheck
+    : kind === "plan_proposal" ? BrainCircuit
+      : kind === "plan_feedback" || kind === "blocker" ? ShieldAlert
+        : kind === "plan_approval" || kind === "review_result" ? CheckCircle2
+          : kind === "handoff" ? ArrowRight
+            : kind === "evidence" ? FileCheck2
+              : kind === "action" ? Wrench
+                : MessageSquare;
+  return (
+    <span className={cn(
+      "relative z-[1] grid size-8 place-items-center rounded-xl border ring-4 ring-background",
+      tone === "bad" && "border-status-bad/25 bg-status-bad/8 text-status-bad",
+      tone === "warn" && "border-status-warn/25 bg-status-warn/8 text-status-warn",
+      tone === "good" && "border-status-good/25 bg-status-good/8 text-status-good",
+      tone === "decision" && "border-[#8b5cf6]/25 bg-[#8b5cf6]/[0.08] text-[#7653c6]",
+      ["info", "running"].includes(tone) && "border-status-info/25 bg-status-info/8 text-status-info",
+      tone === "idle" && "border-border bg-card text-muted-foreground",
+    )}>
+      <Icon className="size-3.5" />
+    </span>
+  );
+}
+
+function PlanProposalBody({ source }: { source: string }) {
+  const sections = source.split(/^##\s+/m).map((value) => value.trim()).filter(Boolean).map((value) => {
+    const [heading, ...lines] = value.split("\n");
+    return { heading, body: lines.join("\n").trim() };
+  });
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {sections.map((section) => (
+        <section key={section.heading} className="rounded-lg border border-[#8b5cf6]/15 bg-background/75 px-2.5 py-2">
+          <h3 className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-[#7653c6]">{section.heading}</h3>
+          <Markdown source={section.body} compact />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function conversationLabel(kind: string): string {
+  if (kind === "plan_request") return "Plan request";
+  if (kind === "plan_proposal") return "Plan proposal";
+  if (kind === "plan_feedback") return "Host challenge";
+  if (kind === "plan_approval") return "Plan approved";
+  if (kind === "review_request") return "Lead inbox";
+  if (kind === "review_result") return "Review decision";
+  if (kind === "handoff") return "Handoff";
+  if (kind === "blocker") return "Blocker";
+  if (kind === "evidence") return "Evidence";
+  if (kind === "action") return "Execution";
+  return kind.replace(/_/g, " ");
+}
+
+function messagePresentation(kind?: string | null): {
+  label: string;
+  icon: typeof MessageSquare;
+  iconClass: string;
+  dotClass: string;
+} {
+  const normalized = kind ?? "message";
+  if (normalized === "assignment") return { label: "Assignment", icon: ClipboardCheck, iconClass: "bg-[#ff725e]", dotClass: "bg-[#ff725e]" };
+  if (normalized === "broadcast") return { label: "Broadcast", icon: Megaphone, iconClass: "bg-status-info", dotClass: "bg-status-info" };
+  if (normalized === "question") return { label: "Question", icon: CircleHelp, iconClass: "bg-[#7c5bd6]", dotClass: "bg-[#7c5bd6]" };
+  if (normalized === "answer") return { label: "Answer", icon: MessageSquareReply, iconClass: "bg-status-good", dotClass: "bg-status-good" };
+  if (normalized === "progress") return { label: "Progress", icon: Activity, iconClass: "bg-status-info", dotClass: "bg-status-info" };
+  if (normalized === "blocker") return { label: "Blocker", icon: OctagonAlert, iconClass: "bg-status-bad", dotClass: "bg-status-bad" };
+  if (normalized === "review_request") return { label: "Lead inbox", icon: ScanSearch, iconClass: "bg-status-warn", dotClass: "bg-status-warn" };
+  if (normalized === "review_result") return { label: "Review decision", icon: BadgeCheck, iconClass: "bg-status-good", dotClass: "bg-status-good" };
+  if (normalized === "plan_request") return { label: "Plan request", icon: ListTodo, iconClass: "bg-status-info", dotClass: "bg-status-info" };
+  if (normalized === "plan_proposal") return { label: "Plan proposal", icon: BrainCircuit, iconClass: "bg-[#7c5bd6]", dotClass: "bg-[#7c5bd6]" };
+  if (normalized === "plan_feedback") return { label: "Host challenge", icon: MessageCircleWarning, iconClass: "bg-status-warn", dotClass: "bg-status-warn" };
+  if (normalized === "plan_approval") return { label: "Plan approved", icon: CircleCheckBig, iconClass: "bg-status-good", dotClass: "bg-status-good" };
+  if (normalized === "handoff") return { label: "Handoff", icon: Handshake, iconClass: "bg-[#ff725e]", dotClass: "bg-[#ff725e]" };
+  if (normalized === "evidence") return { label: "Evidence", icon: FileCheck2, iconClass: "bg-status-good", dotClass: "bg-status-good" };
+  if (normalized === "action") return { label: "Tool activity", icon: Wrench, iconClass: "bg-status-info", dotClass: "bg-status-info" };
+  return { label: conversationLabel(normalized), icon: MessageSquare, iconClass: "bg-muted-foreground", dotClass: "bg-muted-foreground" };
 }
 
 function toInteractionActivity(
@@ -662,8 +920,8 @@ function TeamMailboxStrip({
     })),
   ];
   return (
-    <section aria-label="Participant mailboxes" className="border-b border-border/70 pb-3">
-      <header className="mb-2 flex items-end justify-between gap-3">
+    <section aria-label="Participant mailboxes" className="border-b border-border/70 pb-1.5">
+      <header className="mb-1 flex items-end justify-between gap-3">
         <div>
           <h2 className="text-[13px] font-semibold text-foreground">Team mailboxes</h2>
           <p className="text-[10px] text-muted-foreground">Inbox and Outbox are live projections of coordination delivery, not duplicate stored objects.</p>
@@ -683,7 +941,7 @@ function TeamMailboxStrip({
             <article
               key={participant.id}
               className={cn(
-                "relative min-w-[15.75rem] snap-start rounded-xl border bg-card/65 p-3 shadow-[0_12px_32px_-30px_rgba(15,23,42,.75)] transition-colors xl:min-w-0",
+                "relative min-w-[14.5rem] snap-start rounded-lg border bg-card/65 p-1.5 shadow-[0_12px_32px_-30px_rgba(15,23,42,.75)] transition-colors xl:min-w-0",
                 selectedId === participant.id ? "border-primary/45 bg-primary/[0.045]" : "border-border/75 hover:border-primary/25",
                 index > 1 && !showAllMembers ? "hidden sm:block" : undefined,
               )}
@@ -713,14 +971,14 @@ function TeamMailboxStrip({
                   </button>
                 )}
               </div>
-              <div className="mt-3 grid grid-cols-2 divide-x divide-border/70 rounded-lg border border-border/60 bg-background/60">
-                <button type="button" onClick={() => onSelect(participant.id)} className="px-2.5 py-2 text-left hover:bg-accent/50">
+              <div className="mt-1 grid grid-cols-2 divide-x divide-border/70 rounded-md border border-border/60 bg-background/60">
+                <button type="button" onClick={() => onSelect(participant.id)} className="px-2 py-1 text-left hover:bg-accent/50">
                   <span className="flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground"><Mail className="size-3" /> Inbox</span>
-                  <span className="mt-1 flex items-end gap-1.5"><strong className="text-lg leading-none">{inbox.length}</strong>{awaiting > 0 && <span className="text-[9px] text-status-warn">{awaiting} needs attention</span>}</span>
+                  <span className="mt-0.5 flex items-end gap-1.5"><strong className="text-base leading-none">{inbox.length}</strong>{awaiting > 0 && <span className="text-[8px] text-status-warn">{awaiting} needs attention</span>}</span>
                 </button>
-                <button type="button" onClick={() => onSelect(participant.id)} className="px-2.5 py-2 text-left hover:bg-accent/50">
+                <button type="button" onClick={() => onSelect(participant.id)} className="px-2 py-1 text-left hover:bg-accent/50">
                   <span className="flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground"><SendHorizontal className="size-3" /> Outbox</span>
-                  <span className="mt-1 flex items-end gap-1.5"><strong className="text-lg leading-none">{outbox.length}</strong><span className="text-[9px] text-muted-foreground">sent</span></span>
+                  <span className="mt-0.5 flex items-end gap-1.5"><strong className="text-base leading-none">{outbox.length}</strong><span className="text-[8px] text-muted-foreground">sent</span></span>
                 </button>
               </div>
               {participant.member && participant.id === selectedMemberId && <span className="absolute right-2 top-2 size-1.5 rounded-full bg-primary" />}
@@ -1060,11 +1318,13 @@ function memberPressureRank(status?: string | null): number {
   return 5;
 }
 
-function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped, onOpen }: {
+function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped, members, onOpenMember, onOpen }: {
   missionTitle?: string;
   teamName?: string;
   leadAgentId?: string;
   missionScoped: boolean;
+  members: MemberRun[];
+  onOpenMember: (member: MemberRun) => void;
   onOpen: () => void;
 }) {
   return (
@@ -1074,19 +1334,35 @@ function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped,
       tone="good"
       action={missionTitle ? <button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open Mission</button> : undefined}
     >
-      <p className="text-[12px] leading-relaxed text-foreground">
-        {missionTitle ? `Linked to ${missionTitle}.` : "This Team is running independently."}
-      </p>
-      <div className="mt-2">
-        <Fact label="Team Lead" value={teamLeadLabel(leadAgentId)} />
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/65 px-2 py-1.5">
+          <Avatar name="Host Lead" tone="info" size="xs" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[11px] font-semibold text-foreground">{teamLeadLabel(leadAgentId)}</span>
+            <span className="block text-[9px] uppercase tracking-wider text-muted-foreground">Lead · outside MemberRuns</span>
+          </span>
+        </div>
+        {members.slice(0, 4).map((member) => (
+          <button
+            key={member.id}
+            type="button"
+            onClick={() => onOpenMember(member)}
+            className="flex w-full items-center gap-2 rounded-lg border border-transparent px-2 py-1 text-left transition-colors hover:border-border/70 hover:bg-background/75"
+          >
+            <Avatar name={member.name ?? member.id} tone={memberTone(member.status)} size="xs" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[11px] font-medium text-foreground">{member.name ?? member.id}</span>
+              <span className="block truncate text-[9px] text-muted-foreground">{member.role ?? "member"}</span>
+            </span>
+            <span className={cn("text-[9px] font-medium", member.status === "completed" ? "text-status-good" : member.status === "running" ? "text-status-info" : "text-muted-foreground")}>{member.status ?? "unknown"}</span>
+          </button>
+        ))}
+        {members.length > 4 && <p className="px-2 text-[9px] text-muted-foreground">+{members.length - 4} more members</p>}
       </div>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-        {missionScoped
-          ? "Its members and provider-native sessions may continue across multiple Host-plan Waves."
-          : "The Team remains an independent capability and can be linked to a Mission when useful."}
-      </p>
-      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
-        The Lead coordinates the Team and is outside MemberRuns unless it explicitly joins as an executing member.
+      <p className="mt-2 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">
+        {missionTitle
+          ? `${missionScoped ? "Mission-scoped" : "Linked"} · ${missionTitle}. Sessions may continue across Host-plan Waves.`
+          : "Independent Team. Link it to a Mission when useful."}
       </p>
     </ContextModule>
   );
@@ -1205,6 +1481,9 @@ function toActivityItems(
         rawText: `${message.kind ?? ""} ${message.body ?? ""} ${actor} ${recipients} ${message.correlation_id ?? ""}`,
         actorLabel: actor,
         statusLabel: deliverySummary,
+        messageKind: message.kind ?? "message",
+        bodySource: message.body ?? undefined,
+        recipientLabels: (message.to_member_ids ?? []).map((id) => memberLabel(members, id)),
         prominence: KEY_ACTIVITY_MESSAGE_KINDS.has(message.kind ?? "")
           ? "primary"
           : ["blocker", "review_request", "review_result"].includes(message.kind ?? "")
@@ -1220,7 +1499,7 @@ function toActivityItems(
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");
-    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: formatTime(event.occurred_at), tone: decision ? "decision" : "info", prominence: event.entity_type === "team_run" && event.operation === "created" ? "primary" : "detail", relatedMemberIds: item.sourceMemberRunId ? [item.sourceMemberRunId] : [], rawText: `${event.summary ?? ""} ${actor}`, actorLabel: actor };
+    return { id: item.id, kind: decision ? "decision" : "action", glyph: decision ? "decision" : "runtime", title: event.summary ?? `${event.entity_type ?? "Team"} ${event.operation ?? "updated"}`, actor, timestamp: formatTime(event.occurred_at), tone: decision ? "decision" : "info", prominence: "detail", relatedMemberIds: item.sourceMemberRunId ? [item.sourceMemberRunId] : [], rawText: `${event.summary ?? ""} ${actor}`, actorLabel: actor };
   });
 }
 

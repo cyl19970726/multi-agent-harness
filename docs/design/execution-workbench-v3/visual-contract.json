@@ -203,9 +203,9 @@
       "viewport": { "width": 1536, "height": 1024, "device_scale_factor": 1 },
       "baseline": "../../../.visual-evidence/execution-workbench-v3/team-mailboxes-v3-baseline/team-war-room--running-needs-you--desktop-1536x1024.png",
       "expected": "expected/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
-      "implemented": "implemented/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
-      "comparison": "comparisons/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
-      "overlay": "overlays/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
+      "implemented": "implemented/team-war-room/team-activity-mailboxes-group-chat-v4-1536x1024.png",
+      "comparison": "comparisons/team-war-room/team-activity-mailboxes-group-chat-v4-1536x1024.png",
+      "overlay": "overlays/team-war-room/team-activity-mailboxes-group-chat-v4-1536x1024.png",
       "prompt": "prompts/team-war-room/team-activity-mailboxes-group-chat-v3.md",
       "design_spec": "specs/team-war-room--team-mailboxes-group-chat-v3--desktop-1536x1024.json",
       "ux_contract": "ux/team-war-room-mailboxes-group-chat-v3--interaction-contract.md",
@@ -228,18 +228,24 @@
           "revision": "81f6867-dirty",
           "implemented": "implemented/team-war-room/team-activity-mailboxes-group-chat-v3-1536x1024.png",
           "stage": "interaction-evidence",
-          "verdict": "candidate: participant/type/search filters and member deep links pass deterministic browser journeys at the approved viewport"
+          "verdict": "revise: interactions pass, but the generic activity-card visual language did not make sender, recipient, and message type prominent enough"
+        },
+        {
+          "revision": "95558a2-dirty",
+          "implemented": "../../../.visual-evidence/execution-workbench-v3/team-mailboxes-v4-iteration-3/team-war-room--running-needs-you--desktop-1536x1024.png",
+          "stage": "identity-route-and-message-taxonomy",
+          "verdict": "candidate: sender avatar nodes, sender-to-recipient portrait routes, semantic message-type icons/colors, compact mailbox geometry, roster context, Markdown plans, and browser interaction journeys are implemented"
         }
       ],
       "gates": {
         "product_truth": { "status": "pass", "note": "Mailboxes are derived from TeamMessage recipients and delivery state; Host remains Lead rather than a fabricated MemberRun; provider-native transcript is not persisted." },
-        "visual_fidelity": { "status": "pass", "note": "At the exact approved viewport, compact rail, participant portraits, mailbox hierarchy, Markdown conversation and context/composer balance pass deterministic comparison; final taste approval remains a separate Human review." }
+        "visual_fidelity": { "status": "pending_human_review", "note": "The V4 candidate corrects the explicitly reported identity-route and message-type gaps and has deterministic responsive/browser evidence; final visual equivalence remains a Human judgment." }
       },
       "review": {
         "status": "candidate_ready",
         "intentional_deviations": [
           "The fixture contains Host plus four members, so the implementation renders five truthful mailbox tiles instead of the generated reference's smaller sample roster.",
-          "Plan-review controls remain available in a compact disclosure above the conversation rather than fabricating inline actions on historical messages.",
+          "Plan-review controls are enabled only on the latest actionable proposal rather than fabricated on historical messages.",
           "Harness actions are labelled as Harness evidence; provider-native activity remains an on-demand Member Focus concern unless a native projection is available."
         ],
         "defects": [],

@@ -174,8 +174,8 @@ async function main() {
   check(
     agentTeamsHomeSource.includes("Team Lead ·")
       && warRoomSource.includes("Lead · {teamLeadLabel")
-      && warRoomSource.includes("from Team Lead · current Host")
-      && warRoomSource.includes("outside MemberRuns unless it explicitly joins")
+      && warRoomSource.includes("Host coordination only")
+      && warRoomSource.includes("Lead · outside MemberRuns")
       && missionSource.includes('"Current Host Agent"')
       && missionSource.includes("not counted as a MemberRun unless explicitly added"),
     "Agent Team surfaces identify the current Host as Team Lead without inventing a Lead MemberRun",
@@ -214,7 +214,7 @@ async function main() {
     "Mission V3 renders one continuous Wave journey with live and decision anchors",
   );
   check(
-    warRoomSource.includes('variant="timeline"')
+    warRoomSource.includes("TeamConversationStream")
       && warRoomSource.includes("TeamMailboxStrip")
       && warRoomSource.includes("Team mailboxes")
       && warRoomSource.includes("Inbox and Outbox are live projections")
@@ -222,8 +222,8 @@ async function main() {
       && warRoomSource.includes("showFullActivity")
       && warRoomSource.includes("Search team activity")
       && warRoomSource.includes("Markdown")
-      && activitySource.includes("activity-timeline-row")
-      && cssSource.includes(".activity-timeline::before"),
+      && warRoomSource.includes("ConversationRoute")
+      && warRoomSource.includes("recipientLabels"),
     "Agent Team V3 exposes mailbox projections, Markdown group activity, participant/type filters, and anchored review action",
   );
   check(
@@ -243,6 +243,15 @@ async function main() {
       && activitySource.includes("activityIconSurface")
       && warRoomSource.includes("teamMessageGlyph"),
     "Team activity uses distinct assignment, handoff, runtime, evidence, review, and decision glyphs",
+  );
+  check(
+    warRoomSource.includes("<ConversationRoute item={item}")
+      && warRoomSource.includes("recipientLabels")
+      && warRoomSource.includes("messagePresentation")
+      && warRoomSource.includes("sender portrait")
+      && warRoomSource.includes('normalized === "plan_proposal"')
+      && warRoomSource.includes('normalized === "handoff"'),
+    "Team conversation makes sender, recipient portraits, and message taxonomy explicit",
   );
   check(
     contextSource.includes("contextIconSurface")

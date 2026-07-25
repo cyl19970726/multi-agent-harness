@@ -1,5 +1,26 @@
 # Implementation notes
 
+## 2026-07-25 · Team Activity identity route and message taxonomy V4
+
+- Replaced the remaining generic activity treatment with a Team-specific
+  conversation renderer. The left timeline node is now the sender portrait,
+  while every card header repeats the explicit sender-to-recipient route with
+  deterministic recipient portraits.
+- Added one visual grammar for all durable message types: Assignment,
+  Broadcast, Question, Answer, Progress, Blocker, Review Request/Decision,
+  Plan Request/Proposal/Challenge/Approval, Handoff, Tool Activity and
+  Evidence. Each combines icon, label and semantic tone; no state depends on
+  color alone.
+- The right Team module now reuses the same portraits for Host Lead and Member
+  roster, so identity remains stable between mailbox, conversation, context,
+  Mission and Member Focus surfaces.
+- Compressed header, mailbox, activity rows and composer to restore the
+  approved first-viewport hierarchy while retaining truthful five-participant
+  fixture data.
+- Deterministic desktop, tablet and mobile captures pass participant mailbox,
+  message/search filter, Mission/Wave deep-link and Member Focus navigation
+  journeys. Final visual-fidelity approval remains Human-owned.
+
 ## 2026-07-24 · Team Activity mailboxes/group chat V3
 
 - Team detail now uses the compact execution rail and removes the redundant
