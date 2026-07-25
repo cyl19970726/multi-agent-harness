@@ -33,10 +33,12 @@ The installable Company OS operator suite is indexed in
 scripts/install-skill.sh --agent both --suite company-os
 ```
 
-Dedicated Docs, Work, and Finance CLI commands are implemented. Organization
-operator skills are installable operating contracts over the current native
-Store/API/Action path; the dedicated `harness company org ...` CLI family
-remains planned until backed by commands and acceptance checks.
+Dedicated Docs, Work, Finance, and Organization CLI commands are implemented.
+Organization CLI v1 covers actor/unit/membership inspection and Human
+administrative authoring for Humans, Standing Agents, OrgUnits, Memberships,
+declared actor status, and permission/capability refs. It does not yet provide
+the governed OrgChangeProposal lifecycle for adding actors or expanding
+authority.
 
 Finance CLI v1 intentionally preserves the current Store/API governance
 boundary: proposed Commitments are created through the existing Human

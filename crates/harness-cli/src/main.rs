@@ -919,15 +919,381 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report | company work list|query|create|assign|transition|close | company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment")?;
+    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report | company work list|query|create|assign|transition|close | company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment | company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions")?;
     match args[0].as_str() {
         "docs" => company_docs_command(store, &args[1..]),
         "work" => company_work_command(store, &args[1..]),
         "finance" => company_finance_command(store, &args[1..]),
+        "org" => company_org_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company docs ... | harness company work ... | harness company finance ..."
+            "unknown company command: {other}; usage: harness company docs ... | harness company work ... | harness company finance ... | harness company org ..."
         ))),
     }
+}
+
+fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions",
+    )?;
+    match args[0].as_str() {
+        "list" => company_org_list_command(store, &args[1..]),
+        "query" => company_org_query_command(store, &args[1..]),
+        "create-human" => company_org_create_human_command(store, &args[1..]),
+        "create-agent" => company_org_create_agent_command(store, &args[1..]),
+        "create-unit" => company_org_create_unit_command(store, &args[1..]),
+        "add-membership" => company_org_add_membership_command(store, &args[1..]),
+        "transition-actor" => company_org_transition_actor_command(store, &args[1..]),
+        "update-permissions" => company_org_update_permissions_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown company org command: {other}; usage: harness company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions"
+        ))),
+    }
+}
+
+fn company_org_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let actor_kind = value(args, "--actor-kind");
+    let status = value(args, "--status");
+    let unit_id = value(args, "--unit");
+    let memberships = store.latest_organization_memberships()?;
+    let actors = store
+        .latest_actors()?
+        .into_iter()
+        .filter_map(|actor| serde_json::to_value(actor).ok())
+        .filter(|actor| {
+            actor_kind.as_deref().is_none_or(|kind| {
+                actor.get("actor_type").and_then(serde_json::Value::as_str) == Some(kind)
+            })
+        })
+        .filter(|actor| {
+            status.as_deref().is_none_or(|expected| {
+                actor
+                    .get("actor")
+                    .and_then(|record| record.get("status"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected)
+            })
+        })
+        .filter(|actor| {
+            unit_id.as_deref().is_none_or(|unit| {
+                let Some(kind) = actor.get("actor_type").and_then(serde_json::Value::as_str) else {
+                    return false;
+                };
+                let Some(id) = actor
+                    .get("actor")
+                    .and_then(|record| record.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    return false;
+                };
+                memberships.iter().any(|membership| {
+                    serde_json::to_value(membership)
+                        .ok()
+                        .is_some_and(|membership| {
+                            membership
+                                .get("org_unit_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(unit)
+                                && membership.get("status").and_then(serde_json::Value::as_str)
+                                    == Some("active")
+                                && membership
+                                    .get("actor_ref")
+                                    .and_then(|actor| actor.get("actor_type"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(kind)
+                                && membership
+                                    .get("actor_ref")
+                                    .and_then(|actor| actor.get("actor_id"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(id)
+                        })
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let org_units = store.latest_org_units()?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company org list",
+        "result": {
+            "actors": actors,
+            "org_units": org_units,
+            "memberships": memberships,
+            "summary": {
+                "actor_count": actors.len(),
+                "org_unit_count": org_units.len(),
+                "membership_count": memberships.len()
+            },
+            "boundaries": company_org_boundaries()
+        }
+    }))
+}
+
+fn company_org_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let actor_id = value(args, "--actor");
+    let unit_id = value(args, "--unit");
+    let membership_id = value(args, "--membership");
+    if actor_id.is_none() && unit_id.is_none() && membership_id.is_none() {
+        return Err(CliError::Usage(
+            "usage: harness company org query --actor <id> [--actor-kind <kind>] | --unit <id> | --membership <id>".into(),
+        ));
+    }
+    let actor = actor_id
+        .as_deref()
+        .map(|id| {
+            let kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
+            latest_company_actor_value(store, &kind, id)
+        })
+        .transpose()?;
+    let unit = unit_id
+        .as_deref()
+        .map(|id| latest_org_unit_value(store, id))
+        .transpose()?;
+    let membership = membership_id
+        .as_deref()
+        .map(|id| latest_membership_value(store, id))
+        .transpose()?;
+    let related_memberships = store
+        .latest_organization_memberships()?
+        .into_iter()
+        .filter(|candidate| {
+            actor_id
+                .as_deref()
+                .is_some_and(|id| candidate.actor_ref.actor_id == id)
+                || unit_id
+                    .as_deref()
+                    .is_some_and(|id| candidate.org_unit_id == id)
+                || membership_id
+                    .as_deref()
+                    .is_some_and(|id| candidate.id == id)
+        })
+        .collect::<Vec<_>>();
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company org query",
+        "result": {
+            "actor": actor,
+            "org_unit": unit,
+            "membership": membership,
+            "related_memberships": related_memberships,
+            "boundaries": company_org_boundaries()
+        }
+    }))
+}
+
+fn company_org_create_human_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let now = now_string();
+    let id = value(args, "--id").unwrap_or_else(|| generated_id("human-cli"));
+    let actor = serde_json::json!({
+        "actor_type": "human",
+        "actor": {
+            "id": id,
+            "display_name": required(args, "--display-name")?,
+            "title": value(args, "--title"),
+            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
+            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
+            "membership_refs": many(args, "--membership"),
+            "responsibility_summary": required(args, "--responsibility")?,
+            "permission_policy_refs": many(args, "--permission"),
+            "authority_policy_refs": many(args, "--authority-policy"),
+            "created_at": now,
+            "updated_at": now
+        }
+    });
+    company_org_admin_append(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_human_actor_append",
+    )
+}
+
+fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let now = now_string();
+    let id = value(args, "--id").unwrap_or_else(|| generated_id("standing-agent-cli"));
+    let capacity = value(args, "--capacity")
+        .map(|raw| {
+            raw.parse::<u32>()
+                .map_err(|_| CliError::Usage("--capacity must be an integer".into()))
+        })
+        .transpose()?;
+    let actor = serde_json::json!({
+        "actor_type": "agent",
+        "actor": {
+            "id": id,
+            "display_name": required(args, "--display-name")?,
+            "role": required(args, "--role")?,
+            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
+            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
+            "assignment_capacity": capacity,
+            "exclusive_assignment_ref": value(args, "--exclusive-assignment"),
+            "membership_refs": many(args, "--membership"),
+            "responsibility_summary": required(args, "--responsibility")?,
+            "capability_refs": many(args, "--capability"),
+            "system_prompt_ref": value(args, "--system-prompt"),
+            "tool_refs": many(args, "--tool"),
+            "skill_refs": many(args, "--skill"),
+            "maintained_document_refs": many(args, "--maintained-document"),
+            "accepted_work_type_refs": many(args, "--accepted-work-type"),
+            "escalation_policy_ref": value(args, "--escalation-policy"),
+            "permission_policy_refs": many(args, "--permission"),
+            "runtime_refs": many(args, "--runtime"),
+            "native_session_refs": many(args, "--native-session"),
+            "created_at": now,
+            "updated_at": now
+        }
+    });
+    company_org_admin_append(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_standing_agent_append",
+    )
+}
+
+fn company_org_create_unit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let now = now_string();
+    let id = value(args, "--id").unwrap_or_else(|| generated_id("org-unit-cli"));
+    let record = serde_json::json!({
+        "id": id,
+        "organization_id": value(args, "--organization").unwrap_or_else(|| "company".to_string()),
+        "name": required(args, "--name")?,
+        "purpose": required(args, "--purpose")?,
+        "parent_unit_id": value(args, "--parent-unit"),
+        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
+        "human_lead_actor_ref": value(args, "--human-lead")
+            .map(|id| company_actor_ref_json(&value(args, "--human-lead-kind").unwrap_or_else(|| "human".to_string()), &id))
+            .transpose()?,
+        "agent_lead_actor_ref": value(args, "--agent-lead")
+            .map(|id| company_actor_ref_json(&value(args, "--agent-lead-kind").unwrap_or_else(|| "agent".to_string()), &id))
+            .transpose()?,
+        "policy_refs": many(args, "--policy"),
+        "document_space_ref": value(args, "--document-space"),
+        "created_at": now,
+        "updated_at": now
+    });
+    company_org_admin_append(
+        store,
+        "/v1/company-os/org-units",
+        &authority,
+        record,
+        "administrative_org_unit_append",
+    )
+}
+
+fn company_org_add_membership_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let now = now_string();
+    let record = serde_json::json!({
+        "id": value(args, "--id").unwrap_or_else(|| generated_id("membership-cli")),
+        "organization_id": value(args, "--organization").unwrap_or_else(|| "company".to_string()),
+        "org_unit_id": required(args, "--unit")?,
+        "actor_ref": company_actor_ref_json(&value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()), &required(args, "--actor")?)?,
+        "membership_role": value(args, "--role").unwrap_or_else(|| "member".to_string()),
+        "title_or_function": value(args, "--title"),
+        "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
+        "starts_at": value(args, "--starts-at").unwrap_or_else(now_string),
+        "ends_at": value(args, "--ends-at"),
+        "authority_policy_refs": many(args, "--authority-policy"),
+        "created_by_actor_ref": company_actor_ref_json(&value(args, "--created-by-kind").unwrap_or_else(|| "human".to_string()), &authority)?,
+        "created_at": now
+    });
+    company_org_admin_append(
+        store,
+        "/v1/company-os/memberships",
+        &authority,
+        record,
+        "administrative_membership_append",
+    )
+}
+
+fn company_org_transition_actor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
+    let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
+    actor["actor"]["status"] = serde_json::json!(required(args, "--status")?);
+    if let Some(availability) = value(args, "--availability") {
+        actor["actor"]["availability"] = serde_json::json!(availability);
+    }
+    actor["actor"]["updated_at"] = serde_json::json!(now_string());
+    company_org_admin_append(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_actor_status_append",
+    )
+}
+
+fn company_org_update_permissions_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
+    let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
+    append_string_values(
+        &mut actor["actor"],
+        "permission_policy_refs",
+        many(args, "--permission"),
+    );
+    append_string_values(
+        &mut actor["actor"],
+        "authority_policy_refs",
+        many(args, "--authority-policy"),
+    );
+    append_string_values(
+        &mut actor["actor"],
+        "capability_refs",
+        many(args, "--capability"),
+    );
+    actor["actor"]["updated_at"] = serde_json::json!(now_string());
+    company_org_admin_append(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_actor_permission_append",
+    )
+}
+
+fn company_org_admin_append(
+    store: &HarnessStore,
+    path: &str,
+    authority: &str,
+    record: serde_json::Value,
+    write_path: &str,
+) -> CliResult<()> {
+    let result = dispatch_company_docs_admin_append_value(
+        store,
+        path,
+        company_actor_ref_json("human", authority)?,
+        record,
+    )?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company org",
+        "result": {
+            "record": result,
+            "write_path": write_path,
+            "boundaries": company_org_boundaries()
+        }
+    }))
+}
+
+fn company_org_boundaries() -> serde_json::Value {
+    serde_json::json!({
+        "org_change_proposal_action": "planned",
+        "write_model": "human_administrative_append_v1",
+        "organization_side_effects": true,
+        "execution_side_effects": false,
+        "standing_agent_is_not_agent_team_member_run": true,
+        "runtime_health_does_not_grant_authority": true
+    })
 }
 
 fn company_finance_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -4373,6 +4739,51 @@ fn latest_work_item_value(
         .map(serde_json::to_value)
         .transpose()?
         .ok_or_else(|| CliError::Usage(format!("WorkItem not found: {work_item_id}")))
+}
+
+fn latest_company_actor_value(
+    store: &HarnessStore,
+    actor_kind: &str,
+    actor_id: &str,
+) -> CliResult<serde_json::Value> {
+    store
+        .latest_actors()?
+        .into_iter()
+        .filter_map(|actor| serde_json::to_value(actor).ok())
+        .find(|actor| {
+            actor.get("actor_type").and_then(serde_json::Value::as_str) == Some(actor_kind)
+                && actor
+                    .get("actor")
+                    .and_then(|record| record.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(actor_id)
+        })
+        .ok_or_else(|| CliError::Usage(format!("Company actor not found: {actor_kind}:{actor_id}")))
+}
+
+fn latest_org_unit_value(store: &HarnessStore, unit_id: &str) -> CliResult<serde_json::Value> {
+    store
+        .latest_org_units()?
+        .into_iter()
+        .find(|candidate| candidate.id == unit_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| CliError::Usage(format!("OrgUnit not found: {unit_id}")))
+}
+
+fn latest_membership_value(
+    store: &HarnessStore,
+    membership_id: &str,
+) -> CliResult<serde_json::Value> {
+    store
+        .latest_organization_memberships()?
+        .into_iter()
+        .find(|candidate| candidate.id == membership_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| {
+            CliError::Usage(format!("OrganizationMembership not found: {membership_id}"))
+        })
 }
 
 fn latest_commitment_value(
@@ -22483,6 +22894,7 @@ fn print_help() {
   company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
   company work list|query|create|assign|transition|close
   company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
+  company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions
   agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
