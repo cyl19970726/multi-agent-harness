@@ -906,14 +906,369 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report | company work list|query|create|assign|transition|close")?;
+    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report | company work list|query|create|assign|transition|close | company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment")?;
     match args[0].as_str() {
         "docs" => company_docs_command(store, &args[1..]),
         "work" => company_work_command(store, &args[1..]),
+        "finance" => company_finance_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company docs ... | harness company work list|query|create|assign|transition|close"
+            "unknown company command: {other}; usage: harness company docs ... | harness company work ... | harness company finance ..."
         ))),
     }
+}
+
+fn company_finance_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment",
+    )?;
+    match args[0].as_str() {
+        "list" => company_finance_list_command(store, &args[1..]),
+        "query" => company_finance_query_command(store, &args[1..]),
+        "propose-commitment" => company_finance_propose_commitment_command(store, &args[1..]),
+        "request-approval" => company_finance_request_approval_command(store, &args[1..]),
+        "decide-approval" => company_finance_decide_approval_command(store, &args[1..]),
+        "transition-commitment" => {
+            company_finance_transition_commitment_command(store, &args[1..])
+        }
+        "record-payment" => company_finance_record_payment_command(store, &args[1..]),
+        "transition-payment" => company_finance_transition_payment_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown company finance command: {other}; usage: harness company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment"
+        ))),
+    }
+}
+
+fn company_finance_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let commitment_status = value(args, "--commitment-status");
+    let payment_status = value(args, "--payment-status");
+    let source_document = value(args, "--source-document");
+    let commitments = store
+        .latest_commitments()?
+        .into_iter()
+        .filter(|item| {
+            commitment_status.as_deref().is_none_or(|status| {
+                serde_json::to_value(item.status)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .as_deref()
+                    == Some(status)
+            }) && source_document
+                .as_deref()
+                .is_none_or(|id| item.source_document_id == id)
+        })
+        .collect::<Vec<_>>();
+    let payments = store
+        .latest_payments()?
+        .into_iter()
+        .filter(|item| {
+            payment_status.as_deref().is_none_or(|status| {
+                serde_json::to_value(item.status)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .as_deref()
+                    == Some(status)
+            }) && source_document
+                .as_deref()
+                .is_none_or(|id| item.source_document_id == id)
+        })
+        .collect::<Vec<_>>();
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company finance list",
+        "result": {
+            "commitments": commitments,
+            "payments": payments,
+            "summary": {
+                "commitment_count": commitments.len(),
+                "payment_count": payments.len()
+            },
+            "boundaries": company_finance_boundaries()
+        }
+    }))
+}
+
+fn company_finance_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let commitment_id = value(args, "--commitment");
+    let payment_id = value(args, "--payment");
+    if commitment_id.is_none() && payment_id.is_none() {
+        return Err(CliError::Usage(
+            "usage: harness company finance query --commitment <id> | --payment <id>".into(),
+        ));
+    }
+    let commitment = commitment_id
+        .as_deref()
+        .map(|id| latest_commitment_value(store, id))
+        .transpose()?;
+    let payment = payment_id
+        .as_deref()
+        .map(|id| latest_payment_value(store, id))
+        .transpose()?;
+    let approvals = store.latest_approvals()?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company finance query",
+        "result": {
+            "commitment": commitment,
+            "payment": payment,
+            "related_approvals": approvals.into_iter().filter(|approval| {
+                let subject = commitment_id.as_deref().or(payment_id.as_deref());
+                subject == Some(approval.subject_ref.id.as_str())
+            }).collect::<Vec<_>>(),
+            "boundaries": company_finance_boundaries()
+        }
+    }))
+}
+
+fn company_finance_propose_commitment_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let source_document = required(args, "--source-document")?;
+    let amount = required(args, "--amount")?;
+    let currency = value(args, "--currency").unwrap_or_else(|| "CNY".to_string());
+    let submitted_by = required(args, "--submitted-by")?;
+    let accountable_owner = required(args, "--accountable-owner")?;
+    let now = now_string();
+    let commitment_id = value(args, "--id").unwrap_or_else(|| generated_id("commitment-cli"));
+    let record = serde_json::json!({
+        "id": commitment_id,
+        "amount": {"amount": amount, "currency": currency},
+        "status": "proposed",
+        "source_document_id": source_document,
+        "submitted_by": company_actor_ref_json(&value(args, "--submitted-by-kind").unwrap_or_else(|| "agent".to_string()), &submitted_by)?,
+        "accountable_owner": company_actor_ref_json(&value(args, "--accountable-owner-kind").unwrap_or_else(|| "human".to_string()), &accountable_owner)?,
+        "relation_ids": many(args, "--relation"),
+        "evidence_refs": many(args, "--evidence"),
+        "approval_refs": [],
+        "audit_event_ids": many(args, "--audit-event"),
+        "due_at": value(args, "--due-at"),
+        "created_at": now,
+        "updated_at": now
+    });
+    let authority_ref = company_actor_ref_json("human", &authority)?;
+    let result = dispatch_company_docs_admin_append_value(
+        store,
+        "/v1/company-os/commitments",
+        authority_ref,
+        record,
+    )?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company finance propose-commitment",
+        "result": {
+            "record": result,
+            "write_path": "administrative_proposed_commitment_import",
+            "next": "request approval, then transition-commitment to pending_approval"
+        }
+    }))
+}
+
+fn company_finance_request_approval_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let commitment_id = required(args, "--commitment")?;
+    let requested_by = required(args, "--requested-by")?;
+    let approver = required(args, "--approver")?;
+    let policy_ref =
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:commitment.append"));
+    let now = now_string();
+    let approval_id = value(args, "--id").unwrap_or_else(|| generated_id("approval-cli-finance"));
+    let record = serde_json::json!({
+        "id": approval_id,
+        "subject_ref": {"kind": "financial_record", "id": commitment_id},
+        "action_summary": value(args, "--action-summary").unwrap_or_else(|| "Authorize commitment.append for financial commitment".to_string()),
+        "requested_by": company_actor_ref_json(&value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string()), &requested_by)?,
+        "required_approver_refs": [company_actor_ref_json(&value(args, "--approver-kind").unwrap_or_else(|| "human".to_string()), &approver)?],
+        "required_actor_type": "human",
+        "policy_ref": policy_ref,
+        "status": "requested",
+        "decided_by": [],
+        "decision_note": null,
+        "evidence_refs": many(args, "--evidence"),
+        "requested_at": now,
+        "decided_at": null,
+        "expires_at": value(args, "--expires-at")
+    });
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--approval-policy-ref")
+            .unwrap_or_else(|| format!("{definition_id}:approval.request")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-approval-request")),
+        "approval.request",
+        serde_json::json!({"kind": "financial_record", "id": commitment_id}),
+        company_actor_ref_json(
+            &value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string()),
+            &requested_by,
+        )?,
+        record,
+        "company.records.write",
+        "r1",
+        false,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_finance_decide_approval_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let approval_id = required(args, "--approval")?;
+    let actor = required(args, "--actor")?;
+    let decision = value(args, "--decision").unwrap_or_else(|| "approved".to_string());
+    if !matches!(decision.as_str(), "approved" | "rejected") {
+        return Err(CliError::Usage(
+            "--decision must be approved or rejected".into(),
+        ));
+    }
+    let mut record = latest_approval_value(store, &approval_id)?;
+    record["status"] = serde_json::json!(decision);
+    record["decided_by"] = serde_json::json!([company_actor_ref_json("human", &actor)?]);
+    record["decision_note"] = serde_json::json!(required(args, "--note")?);
+    record["decided_at"] =
+        serde_json::json!(value(args, "--decided-at").unwrap_or_else(now_string));
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:approval.decide")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-approval-decide")),
+        "approval.decide",
+        serde_json::json!({"kind": "approval", "id": approval_id}),
+        company_actor_ref_json("human", &actor)?,
+        record,
+        "company.approve",
+        "r2",
+        false,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_finance_transition_commitment_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let commitment_id = required(args, "--commitment")?;
+    let status = required(args, "--status")?;
+    let actor = required(args, "--actor")?;
+    let command_id = value(args, "--command-id")
+        .unwrap_or_else(|| generated_id("action-cli-commitment-transition"));
+    let authorized_audit_id = format!("{command_id}:policy-authorized");
+    let mut record = latest_commitment_value(store, &commitment_id)?;
+    record["status"] = serde_json::json!(status);
+    record["updated_at"] = serde_json::json!(now_string());
+    append_string_values(&mut record, "approval_refs", many(args, "--approval"));
+    append_string_values(&mut record, "evidence_refs", many(args, "--evidence"));
+    append_string_values(&mut record, "audit_event_ids", vec![authorized_audit_id]);
+    append_string_values(&mut record, "audit_event_ids", many(args, "--audit-event"));
+    let approvals = many(args, "--approval");
+    let body = company_finance_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:commitment.append")),
+        command_id,
+        "commitment.append",
+        serde_json::json!({"kind": "financial_record", "id": commitment_id}),
+        company_actor_ref_json(
+            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
+            &actor,
+        )?,
+        record,
+        "finance.commitment.write",
+        "r3",
+        true,
+        approvals,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_finance_record_payment_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let commitment_id = required(args, "--commitment")?;
+    let actor = required(args, "--actor")?;
+    let commitment = latest_commitment_value(store, &commitment_id)?;
+    let payment_id = value(args, "--id").unwrap_or_else(|| generated_id("payment-cli"));
+    let command_id =
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-payment-record"));
+    let authorized_audit_id = format!("{command_id}:policy-authorized");
+    let mut audit_event_ids = vec![authorized_audit_id];
+    audit_event_ids.extend(many(args, "--audit-event"));
+    let now = now_string();
+    let record = serde_json::json!({
+        "id": payment_id,
+        "amount": commitment["amount"].clone(),
+        "status": value(args, "--status").unwrap_or_else(|| "prepared".to_string()),
+        "source_document_id": commitment["source_document_id"].clone(),
+        "submitted_by": company_actor_ref_json(&value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()), &actor)?,
+        "accountable_owner": commitment["accountable_owner"].clone(),
+        "related_commitment_refs": [commitment_id],
+        "relation_ids": many(args, "--relation"),
+        "evidence_refs": many(args, "--evidence"),
+        "approval_refs": many(args, "--approval"),
+        "audit_event_ids": audit_event_ids,
+        "occurred_at": value(args, "--occurred-at"),
+        "created_at": now,
+        "updated_at": now
+    });
+    let approvals = many(args, "--approval");
+    let body = company_finance_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:payment.append")),
+        command_id,
+        "payment.append",
+        serde_json::json!({"kind": "financial_record", "id": commitment["id"].clone()}),
+        company_actor_ref_json(
+            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
+            &actor,
+        )?,
+        record,
+        "finance.payment.write",
+        "r3",
+        true,
+        approvals,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_finance_transition_payment_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let payment_id = required(args, "--payment")?;
+    let status = required(args, "--status")?;
+    let actor = required(args, "--actor")?;
+    let command_id = value(args, "--command-id")
+        .unwrap_or_else(|| generated_id("action-cli-payment-transition"));
+    let authorized_audit_id = format!("{command_id}:policy-authorized");
+    let mut record = latest_payment_value(store, &payment_id)?;
+    record["status"] = serde_json::json!(status);
+    record["updated_at"] = serde_json::json!(now_string());
+    if matches!(status.as_str(), "settled" | "reversed") && record["occurred_at"].is_null() {
+        record["occurred_at"] =
+            serde_json::json!(value(args, "--occurred-at").unwrap_or_else(now_string));
+    }
+    append_string_values(&mut record, "approval_refs", many(args, "--approval"));
+    append_string_values(&mut record, "evidence_refs", many(args, "--evidence"));
+    append_string_values(&mut record, "audit_event_ids", vec![authorized_audit_id]);
+    append_string_values(&mut record, "audit_event_ids", many(args, "--audit-event"));
+    let approvals = many(args, "--approval");
+    let body = company_finance_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:payment.append")),
+        command_id,
+        "payment.append",
+        serde_json::json!({"kind": "financial_record", "id": payment_id}),
+        company_actor_ref_json(
+            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
+            &actor,
+        )?,
+        record,
+        "finance.payment.write",
+        "r3",
+        true,
+        approvals,
+    );
+    dispatch_company_work_action(store, &body)
 }
 
 fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -3932,6 +4287,41 @@ fn company_work_action_body(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn company_finance_action_body(
+    definition_id: &str,
+    policy_ref: String,
+    command_id: String,
+    command_name: &str,
+    subject_ref: serde_json::Value,
+    actor_ref: serde_json::Value,
+    record: serde_json::Value,
+    required_permission: &str,
+    risk_tier: &str,
+    requires_human_approval: bool,
+    approval_refs: Vec<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": command_id,
+        "command_name": command_name,
+        "subject_ref": subject_ref,
+        "requested_by": actor_ref,
+        "payload": {
+            "definition_id": definition_id,
+            "record": record
+        },
+        "required_permission": required_permission,
+        "policy_ref": policy_ref,
+        "risk_tier": risk_tier,
+        "requires_human_approval": requires_human_approval,
+        "approval_refs": approval_refs,
+        "status": "requested",
+        "audit_event_refs": [format!("{command_id}:policy-authorized")],
+        "requested_at": now_string(),
+        "completed_at": null
+    })
+}
+
 fn dispatch_company_work_action(store: &HarnessStore, body: &serde_json::Value) -> CliResult<()> {
     print_json(&dispatch_company_work_action_value(store, body)?)
 }
@@ -3970,6 +4360,52 @@ fn latest_work_item_value(
         .map(serde_json::to_value)
         .transpose()?
         .ok_or_else(|| CliError::Usage(format!("WorkItem not found: {work_item_id}")))
+}
+
+fn latest_commitment_value(
+    store: &HarnessStore,
+    commitment_id: &str,
+) -> CliResult<serde_json::Value> {
+    store
+        .latest_commitments()?
+        .into_iter()
+        .find(|candidate| candidate.id == commitment_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| CliError::Usage(format!("Commitment not found: {commitment_id}")))
+}
+
+fn latest_payment_value(store: &HarnessStore, payment_id: &str) -> CliResult<serde_json::Value> {
+    store
+        .latest_payments()?
+        .into_iter()
+        .find(|candidate| candidate.id == payment_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| CliError::Usage(format!("Payment not found: {payment_id}")))
+}
+
+fn latest_approval_value(store: &HarnessStore, approval_id: &str) -> CliResult<serde_json::Value> {
+    store
+        .latest_approvals()?
+        .into_iter()
+        .find(|candidate| candidate.id == approval_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| CliError::Usage(format!("Approval not found: {approval_id}")))
+}
+
+fn company_finance_boundaries() -> serde_json::Value {
+    serde_json::json!({
+        "finance_owned_objects": ["Commitment", "Payment", "invoice", "refund", "monetary metric", "reconciliation evidence"],
+        "commitment_is_payment": false,
+        "approved_commitment_is_payment": false,
+        "docs_side_effects": false,
+        "work_side_effects": false,
+        "organization_side_effects": false,
+        "execution_side_effects": false,
+        "payment_note": "record-payment creates a governed prepared Payment; settlement is a later transition with evidence and approval"
+    })
 }
 
 fn company_work_apply_transition_fields(
@@ -21017,6 +21453,8 @@ fn print_help() {
   company docs document create|rename|move|archive | template create|status
   company docs block append|update|archive|remove|reorder
   company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
+  company work list|query|create|assign|transition|close
+  company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
   agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
