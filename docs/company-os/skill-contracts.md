@@ -1,7 +1,7 @@
 # Skill and CLI Contracts: Company OS Operator Suite
 
 ```text
-status: mixed — Company OS operator suite installable; Docs dedicated CLI implemented; Work/Finance/Org dedicated CLI planned
+status: mixed — Company OS operator suite installable; Docs and Work dedicated CLI implemented; Finance/Org dedicated CLI planned
 owner_role: product + platform
 canonical_for: optional Agent capability inputs, outputs, and governance boundaries
 ```
@@ -23,7 +23,7 @@ The suite currently expands to:
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
 | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
-| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs | procedural skill over Store/API/Action; dedicated CLI planned |
+| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs | dedicated `harness company work ...` CLI implemented for list/query/create/assign/transition/close |
 | [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence | procedural skill over Store/API/Action; dedicated CLI planned |
 | [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle | procedural skill over Store/API/Action; dedicated CLI planned |
 | [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design and governance proposal | procedural design skill |

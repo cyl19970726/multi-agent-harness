@@ -906,13 +906,244 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report")?;
+    require_subcommand(args, "company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report | company work list|query|create|assign|transition|close")?;
     match args[0].as_str() {
         "docs" => company_docs_command(store, &args[1..]),
+        "work" => company_work_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company docs query|search|traverse|refs|related|health|module|page|page-definition|document|template|block|typed-record|view|relation|diff|snapshot|change-report"
+            "unknown company command: {other}; usage: harness company docs ... | harness company work list|query|create|assign|transition|close"
         ))),
     }
+}
+
+fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "company work list|query|create|assign|transition|close",
+    )?;
+    match args[0].as_str() {
+        "list" => company_work_list_command(store, &args[1..]),
+        "query" => company_work_query_command(store, &args[1..]),
+        "create" => company_work_create_command(store, &args[1..]),
+        "assign" => company_work_assign_command(store, &args[1..]),
+        "transition" => company_work_transition_command(store, &args[1..]),
+        "close" => company_work_close_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown company work command: {other}; usage: harness company work list|query|create|assign|transition|close"
+        ))),
+    }
+}
+
+fn company_work_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let body = company_work_query_body(args);
+    let projection = company_work_projection_value(store, &body)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": projection,
+        "command": "harness company work list",
+        "boundaries": company_work_read_boundaries()
+    }))
+}
+
+fn company_work_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let work_item_id = required(args, "--work-item")?;
+    let item = store
+        .latest_work_items()?
+        .into_iter()
+        .find(|candidate| candidate.id == work_item_id)
+        .ok_or_else(|| CliError::Usage(format!("WorkItem not found: {work_item_id}")))?;
+    let assignments = store
+        .latest_assignments()?
+        .into_iter()
+        .filter(|assignment| assignment.work_item_id == work_item_id)
+        .collect::<Vec<_>>();
+    let approvals = store
+        .latest_approvals()?
+        .into_iter()
+        .filter(|approval| item.approval_refs.contains(&approval.id))
+        .collect::<Vec<_>>();
+    let milestone = if let Some(milestone_id) = &item.milestone_ref {
+        store
+            .latest_milestones()?
+            .into_iter()
+            .find(|candidate| candidate.id == *milestone_id)
+            .map(serde_json::to_value)
+            .transpose()?
+    } else {
+        None
+    };
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": {
+            "work_item": item,
+            "assignments": assignments,
+            "approvals": approvals,
+            "milestone": milestone,
+            "boundaries": company_work_read_boundaries()
+        },
+        "command": "harness company work query"
+    }))
+}
+
+fn company_work_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let source_document = required(args, "--source-document")?;
+    let title = required(args, "--title")?;
+    let objective = required(args, "--objective")?;
+    let submitted_by = required(args, "--submitted-by")?;
+    let accountable_owner = required(args, "--accountable-owner")?;
+    let actor_id = value(args, "--actor").unwrap_or_else(|| submitted_by.clone());
+    let actor_kind = value(args, "--actor-kind")
+        .or_else(|| value(args, "--submitted-by-kind"))
+        .unwrap_or_else(|| "agent".to_string());
+    let now = now_string();
+    let work_item_id = value(args, "--id").unwrap_or_else(|| generated_id("workitem-cli"));
+    let status = value(args, "--status").unwrap_or_else(|| "submitted".to_string());
+    let record = serde_json::json!({
+        "id": work_item_id,
+        "title": title,
+        "objective": objective,
+        "status": status,
+        "source_document_ref": source_document,
+        "source_record_refs": many(args, "--source-record"),
+        "milestone_ref": value(args, "--milestone"),
+        "work_type": value(args, "--work-type").unwrap_or_else(|| "general".to_string()),
+        "business_module_ref": value(args, "--module"),
+        "result_document_ref": null,
+        "result_record_refs": [],
+        "submitted_by": company_actor_ref_json(
+            &value(args, "--submitted-by-kind").unwrap_or_else(|| "agent".to_string()),
+            &submitted_by,
+        )?,
+        "requested_by": optional_company_actor_ref_json(args, "--requested-by", "--requested-by-kind")?,
+        "accountable_owner": company_actor_ref_json(
+            &value(args, "--accountable-owner-kind").unwrap_or_else(|| "agent".to_string()),
+            &accountable_owner,
+        )?,
+        "assignees": company_actor_refs_json(&many(args, "--assignee"), &value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()))?,
+        "contributors": company_actor_refs_json(&many(args, "--contributor"), &value(args, "--contributor-kind").unwrap_or_else(|| "agent".to_string()))?,
+        "reviewer": optional_company_actor_ref_json(args, "--reviewer", "--reviewer-kind")?,
+        "approver": optional_company_actor_ref_json(args, "--approver", "--approver-kind")?,
+        "execution_mode": value(args, "--execution-mode").unwrap_or_else(|| "direct".to_string()),
+        "execution_refs": many_json(args, "--execution-ref-json")?,
+        "approval_refs": many(args, "--approval"),
+        "evidence_refs": many(args, "--evidence"),
+        "artifact_refs": many(args, "--artifact"),
+        "outcome_summary": value(args, "--outcome-summary"),
+        "due_at": value(args, "--due-at"),
+        "priority": value(args, "--priority"),
+        "risk_level": value(args, "--risk-level"),
+        "created_at": now,
+        "updated_at": now,
+        "completed_at": null
+    });
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:work_item.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-create")),
+        "work_item.append",
+        serde_json::json!({"kind": "document", "id": source_document}),
+        company_actor_ref_json(&actor_kind, &actor_id)?,
+        record,
+        "company.records.write",
+        "r1",
+        false,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_work_assign_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let work_item_id = required(args, "--work-item")?;
+    let recipient_id = required(args, "--assignee")?;
+    let sender_id = required(args, "--assigned-by")?;
+    let now = now_string();
+    let assignment_id = value(args, "--id").unwrap_or_else(|| generated_id("assignment-cli"));
+    let delivery_state = value(args, "--delivery-state").unwrap_or_else(|| "pending".to_string());
+    let delivered_at = if matches!(delivery_state.as_str(), "delivered" | "acknowledged") {
+        Some(now.clone())
+    } else {
+        value(args, "--delivered-at")
+    };
+    let acknowledged_at = if delivery_state == "acknowledged" {
+        Some(now.clone())
+    } else {
+        value(args, "--acknowledged-at")
+    };
+    let record = serde_json::json!({
+        "id": assignment_id,
+        "work_item_id": work_item_id,
+        "recipient": company_actor_ref_json(
+            &value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()),
+            &recipient_id,
+        )?,
+        "sender": company_actor_ref_json(
+            &value(args, "--assigned-by-kind").unwrap_or_else(|| "agent".to_string()),
+            &sender_id,
+        )?,
+        "assigned_role": value(args, "--role").unwrap_or_else(|| "assignee".to_string()),
+        "scope": value(args, "--scope"),
+        "delivery_state": delivery_state,
+        "delivery_policy_ref": value(args, "--delivery-policy").unwrap_or_else(|| "work.assignment.default".to_string()),
+        "correlation_id": value(args, "--correlation-id").unwrap_or_else(|| generated_id("work-assignment")),
+        "delivery_evidence_ref": value(args, "--delivery-evidence"),
+        "assigned_at": value(args, "--assigned-at").unwrap_or_else(|| now.clone()),
+        "delivered_at": delivered_at,
+        "acknowledged_at": acknowledged_at
+    });
+    let actor_kind = value(args, "--actor-kind")
+        .or_else(|| value(args, "--assigned-by-kind"))
+        .unwrap_or_else(|| "agent".to_string());
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:assignment.append")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-assign")),
+        "assignment.append",
+        serde_json::json!({"kind": "work_item", "id": work_item_id}),
+        company_actor_ref_json(&actor_kind, &sender_id)?,
+        record,
+        "company.records.write",
+        "r1",
+        false,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_work_transition_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let work_item_id = required(args, "--work-item")?;
+    let status = required(args, "--status")?;
+    let actor_id = required(args, "--actor")?;
+    let mut record = latest_work_item_value(store, &work_item_id)?;
+    company_work_apply_transition_fields(args, &mut record, &status)?;
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--policy-ref")
+            .unwrap_or_else(|| format!("{definition_id}:work_item.transition")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-transition")),
+        "work_item.transition",
+        serde_json::json!({"kind": "work_item", "id": work_item_id}),
+        company_actor_ref_json(
+            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
+            &actor_id,
+        )?,
+        record,
+        "company.work.execute",
+        "r2",
+        false,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_work_close_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let mut forwarded = args.to_vec();
+    forwarded.push("--status".to_string());
+    forwarded.push("completed".to_string());
+    if value(args, "--completed-at").is_none() {
+        forwarded.push("--completed-at".to_string());
+        forwarded.push(now_string());
+    }
+    company_work_transition_command(store, &forwarded)
 }
 
 fn company_docs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -3571,6 +3802,232 @@ fn docs_actor_kind(args: &[String]) -> CliResult<String> {
         ));
     }
     Ok(actor_kind)
+}
+
+fn company_actor_ref_json(kind: &str, id: &str) -> CliResult<serde_json::Value> {
+    if !matches!(kind, "human" | "agent" | "external" | "service") {
+        return Err(CliError::Usage(format!(
+            "actor kind must be human|agent|external|service, got {kind}"
+        )));
+    }
+    Ok(serde_json::json!({"actor_type": kind, "actor_id": id}))
+}
+
+fn optional_company_actor_ref_json(
+    args: &[String],
+    id_flag: &str,
+    kind_flag: &str,
+) -> CliResult<Option<serde_json::Value>> {
+    value(args, id_flag)
+        .map(|id| {
+            company_actor_ref_json(
+                &value(args, kind_flag).unwrap_or_else(|| "agent".to_string()),
+                &id,
+            )
+        })
+        .transpose()
+}
+
+fn company_actor_refs_json(ids: &[String], kind: &str) -> CliResult<Vec<serde_json::Value>> {
+    ids.iter()
+        .map(|id| company_actor_ref_json(kind, id))
+        .collect()
+}
+
+fn many_json(args: &[String], name: &str) -> CliResult<Vec<serde_json::Value>> {
+    many(args, name)
+        .into_iter()
+        .map(|raw| {
+            let value = serde_json::from_str::<serde_json::Value>(&raw)?;
+            if value.is_object() {
+                Ok(value)
+            } else {
+                Err(CliError::Usage(format!(
+                    "{name} must parse to a JSON object"
+                )))
+            }
+        })
+        .collect()
+}
+
+fn company_work_query_body(args: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "statuses": many(args, "--status"),
+        "work_types": many(args, "--work-type"),
+        "business_module_refs": many(args, "--module"),
+        "milestone_refs": many(args, "--milestone"),
+        "accountable_owner": value(args, "--accountable").map(|id| serde_json::json!({
+            "actor_type": value(args, "--accountable-kind").unwrap_or_else(|| "agent".to_string()),
+            "actor_id": id
+        })),
+        "assignee": value(args, "--assignee").map(|id| serde_json::json!({
+            "actor_type": value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()),
+            "actor_id": id
+        }))
+    })
+}
+
+fn company_work_projection_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let response = company_os_api::handle_post(store, "/v1/company-os/work-query", body, None)
+        .ok_or_else(|| CliError::Usage("Company OS work query is unavailable".into()))?;
+    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        let detail = response
+            .body
+            .get("detail")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Company OS work query failed");
+        return Err(CliError::Usage(detail.to_string()));
+    }
+    Ok(response.body["result"].clone())
+}
+
+fn company_work_read_boundaries() -> serde_json::Value {
+    serde_json::json!({
+        "work_owned_objects": ["WorkItem", "Milestone", "Assignment", "Approval link", "ExecutionRef"],
+        "docs_side_effects": false,
+        "finance_side_effects": false,
+        "organization_side_effects": false,
+        "execution_side_effects": false,
+        "project_object": false,
+        "task_graph": false,
+        "goal_phase": false,
+        "assignment_note": "work assign appends an Assignment delivery record; it does not rewrite WorkItem.assignees in v1"
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn company_work_action_body(
+    definition_id: &str,
+    policy_ref: String,
+    command_id: String,
+    command_name: &str,
+    subject_ref: serde_json::Value,
+    actor_ref: serde_json::Value,
+    record: serde_json::Value,
+    required_permission: &str,
+    risk_tier: &str,
+    requires_human_approval: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": command_id,
+        "command_name": command_name,
+        "subject_ref": subject_ref,
+        "requested_by": actor_ref,
+        "payload": {
+            "definition_id": definition_id,
+            "record": record
+        },
+        "required_permission": required_permission,
+        "policy_ref": policy_ref,
+        "risk_tier": risk_tier,
+        "requires_human_approval": requires_human_approval,
+        "approval_refs": [],
+        "status": "requested",
+        "audit_event_refs": [format!("{command_id}:policy-authorized")],
+        "requested_at": now_string(),
+        "completed_at": null
+    })
+}
+
+fn dispatch_company_work_action(store: &HarnessStore, body: &serde_json::Value) -> CliResult<()> {
+    print_json(&dispatch_company_work_action_value(store, body)?)
+}
+
+fn dispatch_company_work_action_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let token = env::var("HARNESS_COMPANY_OS_TOKEN").ok();
+    let response = company_os_api::handle_post(
+        store,
+        "/v1/company-os/actions/dispatch",
+        body,
+        token.as_deref(),
+    )
+    .ok_or_else(|| CliError::Usage("Company OS action dispatcher is unavailable".into()))?;
+    if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        let detail = response
+            .body
+            .get("detail")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Company OS work action failed");
+        return Err(CliError::Usage(detail.to_string()));
+    }
+    Ok(response.body)
+}
+
+fn latest_work_item_value(
+    store: &HarnessStore,
+    work_item_id: &str,
+) -> CliResult<serde_json::Value> {
+    store
+        .latest_work_items()?
+        .into_iter()
+        .find(|candidate| candidate.id == work_item_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| CliError::Usage(format!("WorkItem not found: {work_item_id}")))
+}
+
+fn company_work_apply_transition_fields(
+    args: &[String],
+    record: &mut serde_json::Value,
+    status: &str,
+) -> CliResult<()> {
+    record["status"] = serde_json::json!(status);
+    record["updated_at"] = serde_json::json!(now_string());
+    if let Some(result_document) = value(args, "--result-document") {
+        record["result_document_ref"] = serde_json::json!(result_document);
+    }
+    append_string_values(record, "result_record_refs", many(args, "--result-record"));
+    append_string_values(record, "evidence_refs", many(args, "--evidence"));
+    append_string_values(record, "artifact_refs", many(args, "--artifact"));
+    append_json_values(
+        record,
+        "execution_refs",
+        many_json(args, "--execution-ref-json")?,
+    );
+    if let Some(summary) = value(args, "--outcome-summary") {
+        record["outcome_summary"] = serde_json::json!(summary);
+    }
+    if let Some(completed_at) = value(args, "--completed-at") {
+        record["completed_at"] = serde_json::json!(completed_at);
+    } else if status == "completed" {
+        record["completed_at"] = serde_json::json!(now_string());
+    } else {
+        record["completed_at"] = serde_json::json!(null);
+    }
+    Ok(())
+}
+
+fn append_string_values(record: &mut serde_json::Value, field: &str, values: Vec<String>) {
+    let mut existing = record
+        .get(field)
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for value in values {
+        if !existing
+            .iter()
+            .any(|item| item.as_str() == Some(value.as_str()))
+        {
+            existing.push(serde_json::json!(value));
+        }
+    }
+    record[field] = serde_json::json!(existing);
+}
+
+fn append_json_values(record: &mut serde_json::Value, field: &str, values: Vec<serde_json::Value>) {
+    let mut existing = record
+        .get(field)
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    existing.extend(values);
+    record[field] = serde_json::json!(existing);
 }
 
 #[allow(clippy::too_many_arguments)]

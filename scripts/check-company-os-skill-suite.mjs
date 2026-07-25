@@ -71,16 +71,16 @@ for (const skill of suiteSkills) {
   expect(skillContracts.includes(`../../skills/${skill}/SKILL.md`), `skill-contracts.md missing ${skill}`);
 }
 expect(
-  skillContracts.includes("Docs dedicated CLI implemented; Work/Finance/Org dedicated CLI planned"),
-  "skill-contracts.md must distinguish implemented Docs CLI from planned Work/Finance/Org CLI",
+  skillContracts.includes("Docs and Work dedicated CLI implemented; Finance/Org dedicated CLI planned"),
+  "skill-contracts.md must distinguish implemented Docs/Work CLI from planned Finance/Org CLI",
 );
 
 const readme = read("docs/company-os/README.md");
 expect(readme.includes("Skill and CLI Contracts"), "Company OS README missing skill-contracts reference");
 expect(readme.includes("--suite company-os"), "Company OS README missing suite install command");
 expect(
-  readme.includes("CLI families remain planned"),
-  "Company OS README must not claim Work/Finance/Org dedicated CLI is implemented",
+  readme.includes("harness company finance|org"),
+  "Company OS README must not claim Finance/Org dedicated CLI is implemented",
 );
 
 const governance = read("docs/company-os/governance-agent-workspaces.md");
@@ -88,11 +88,7 @@ for (const skill of operatorSkills) {
   expect(governance.includes(`../../skills/${skill}/SKILL.md`), `governance-agent-workspaces.md missing ${skill}`);
 }
 
-const forbiddenAsImplemented = [
-  "harness company work query",
-  "harness company finance query",
-  "harness company org query",
-];
+const forbiddenAsImplemented = ["harness company finance query", "harness company org query"];
 for (const phrase of forbiddenAsImplemented) {
   const docsClaim = new RegExp(`${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(implemented|available|stable)`, "i");
   expect(!docsClaim.test(skillContracts), `skill-contracts.md may overclaim planned command: ${phrase}`);

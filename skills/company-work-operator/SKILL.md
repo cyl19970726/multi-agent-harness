@@ -63,23 +63,50 @@ harness company docs related --record <typed-record-id>
 ```
 
 Work records and Work projections exist through the Company OS Store/API and
-governed Action path. Until dedicated `harness company work ...` commands are
-implemented, use the repository's current API/action contract and record the
-gap honestly as `partial` when reporting capability status.
+governed Action path. Dedicated `harness company work ...` commands are
+implemented for the first native operating slice: list, query, create, assign,
+transition, and close.
 
-The intended command family is:
+Use:
 
 ```bash
 harness company work query --work-item <work-item-id>
-harness company work list --business-line <line> --milestone <milestone-id>
-harness company work create --source-document <doc-id> --title <title> --owner <actor-id>
-harness company work assign --work-item <work-item-id> --assignee <actor-id>
-harness company work transition --work-item <work-item-id> --status <status>
-harness company work close --work-item <work-item-id> --result-document <doc-id> --evidence <ref>
+harness company work list --module <business-module-id> --milestone <milestone-id>
+harness company work create \
+  --definition <custom-page-definition-id> \
+  --source-document <doc-id> \
+  --module <business-module-id> \
+  --title <title> \
+  --objective <objective> \
+  --submitted-by <actor-id> \
+  --accountable-owner <actor-id> \
+  [--assignee <actor-id> ...]
+harness company work assign \
+  --definition <custom-page-definition-id> \
+  --work-item <work-item-id> \
+  --assignee <actor-id> \
+  --assigned-by <actor-id>
+harness company work transition \
+  --definition <custom-page-definition-id> \
+  --work-item <work-item-id> \
+  --status <in_progress|blocked|waiting_for_approval|in_review|completed> \
+  --actor <actor-id>
+harness company work close \
+  --definition <custom-page-definition-id> \
+  --work-item <work-item-id> \
+  --actor <actor-id>
 ```
 
-Do not present those commands as implemented until the CLI and acceptance tests
-exist.
+`list` and `query` are read-only. Writes require
+`HARNESS_COMPANY_OS_TOKEN`, a matching `CustomPageDefinition`, and an Action
+policy for `work_item.append`, `assignment.append`, or
+`work_item.transition`.
+
+`work assign` appends a native `Assignment` delivery record. It does not
+rewrite `WorkItem.assignees` in v1 because current `work_item.transition`
+correctly forbids changing responsibility fields. Set initial assignees during
+`work create`; add a later explicit assignment-update Action if the product
+needs reassignment to affect the Work projection.
 
 ## Safe workflow
 
