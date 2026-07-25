@@ -1,18 +1,37 @@
-# Skill and CLI Contracts: Docs, Modules, and Custom Pages
+# Skill and CLI Contracts: Company OS Operator Suite
 
 ```text
-status: mixed — Docs Governance CLI primitives and operator skill implemented; module/page skills proposed
+status: mixed — Company OS operator suite installable; Docs dedicated CLI implemented; Work/Finance/Org dedicated CLI planned
 owner_role: product + platform
 canonical_for: optional Agent capability inputs, outputs, and governance boundaries
 ```
 
 ## Purpose and non-authority
 
-The `company-docs-operator`, `company-module-designer`, and
-`company-page-builder` skills reduce variance when an Agent operates document
-truth, designs a business module, or creates an approved custom page. They are
-procedural capabilities, not part of the Company OS data model and not an
-authority for product, organization, security, finance, or legal decisions.
+The Company OS operator suite reduces variance when Agents operate company
+memory, durable work, organization authority, finance state, module design, and
+code-declared business pages.
+
+Install it into both Claude Code and Codex project skill roots with:
+
+```bash
+scripts/install-skill.sh --agent both --suite company-os
+```
+
+The suite currently expands to:
+
+| Skill | Owning surface | Implementation status |
+| --- | --- | --- |
+| [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
+| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs | procedural skill over Store/API/Action; dedicated CLI planned |
+| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence | procedural skill over Store/API/Action; dedicated CLI planned |
+| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle | procedural skill over Store/API/Action; dedicated CLI planned |
+| [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design and governance proposal | procedural design skill |
+| [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation contract | procedural page-building skill |
+
+These are procedural capabilities, not part of the Company OS data model and
+not an authority for product, organization, security, finance, or legal
+decisions.
 
 Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
 Agent interface for reading, editing, governing, and verifying document truth.
@@ -21,24 +40,16 @@ Agents maintain. UI editing can exist for necessary low-risk actions, but it is
 secondary to the CLI/API command surface and cannot be the only proof that a
 Docs capability is implemented.
 
-They may inspect permitted context, draft specifications, prepare artifacts,
-and implement within an approved boundary. They must not create durable
-authority merely because they can generate a proposal, HTML, React, or a
-convincing visual. Module records, permissions, policies, Approvals, and
-governance remain authoritative only when created and accepted through their
-respective Company OS contracts.
+The capability is optional: a human team or another Agent can use the same
+Company OS contracts without invoking a skill. The `SKILL.md` files are concise
+operating aids that point back to canonical docs and avoid duplicating product
+contracts.
 
-The capability should be optional: a human team can use the same Module Design
-and custom-page process without invoking either skill. A future `SKILL.md`
-should be concise, refer to the canonical docs below, and avoid duplicating
-product contracts.
-
-Governance Agents may later receive narrower procedural skills such as
-`document-architecture`, `work-intake-and-routing`, `finance-governance`, and
-`organization-governance`. Their Agent definition still consists of explicit
-responsibility, prompt, tools/Skills, permissions, maintained Docs, and
-escalation. A Skill is never installed or invoked merely because an Agent has a
-governance title, and it never expands that Agent's permission policy.
+Governance Agents may be configured with these skills, but their authority
+still consists of explicit responsibility, prompt, tools/Skills, permissions,
+maintained Docs, accepted WorkTypes, and escalation. A Skill is never installed
+or invoked merely because an Agent has a governance title, and it never expands
+that Agent's permission policy.
 
 The first implemented Docs Governance primitives are CLI-backed and exposed
 through the optional [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md)

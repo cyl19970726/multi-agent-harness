@@ -26,6 +26,18 @@ use the UI to inspect, review, supervise, and occasionally trigger safe
 low-risk actions. The UI should make structure, relations, state, and risk
 clear to people; the authoritative machine interface is CLI/API.
 
+The installable Company OS operator suite is indexed in
+[Skill and CLI Contracts](skill-contracts.md). Use:
+
+```bash
+scripts/install-skill.sh --agent both --suite company-os
+```
+
+Dedicated Docs CLI commands are implemented. Work, Finance, and Organization
+operator skills are installable operating contracts over the current native
+Store/API/Action path; their dedicated `harness company work|finance|org ...`
+CLI families remain planned until backed by commands and acceptance checks.
+
 Current Company OS storage remains append-only JSONL ledgers plus latest
 projections. SQL is planned as a derived read/query/index layer for Docs query,
 search, Views, health, diff, and export; it is not the current canonical write

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Work Operator"
+  short_description: "Operate Company OS WorkItems, Milestones, assignments, approvals, and lifecycle routing"
+  default_prompt: "Use $company-work-operator to inspect or mutate Company OS Work through governed Store/API/Action paths while preserving Docs, Org, Finance, and execution truth boundaries."

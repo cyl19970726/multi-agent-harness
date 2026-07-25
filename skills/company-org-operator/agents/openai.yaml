@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Org Operator"
+  short_description: "Operate Company OS actors, org units, roles, permissions, and Standing Agent lifecycle"
+  default_prompt: "Use $company-org-operator to inspect or mutate Company OS Organization through governed Store/API/Action paths while preserving Work, Docs, Finance, and execution boundaries."
