@@ -14,7 +14,7 @@ document tables as money state.
 
 Before proposing or executing a durable Finance change, read:
 
-- `docs/company-os/finance.md`
+- `docs/company-os/financial-relations.md`
 - `docs/company-os/work-items-and-approvals.md`
 - `docs/company-os/implementation-truth-matrix.md`
 - `docs/company-os/skill-contracts.md`
@@ -55,31 +55,77 @@ Company OS contract.
 ## Current interface state
 
 Finance records exist through the Company OS Store/API and governed Action
-path. Until dedicated `harness company finance ...` commands are implemented,
-use the current API/action contract and report CLI coverage honestly as
-`partial`.
+path. The first dedicated `harness company finance ...` command family is
+implemented for inspection, proposed Commitment creation, Approval routing,
+Commitment transitions, and Payment recording/transitions.
 
-The intended command family is:
+Use:
 
 ```bash
+harness company finance list [--commitment-status <status>] [--payment-status <status>]
 harness company finance query --commitment <commitment-id>
-harness company finance propose-commitment --work-item <work-item-id> --amount <amount> --currency <currency>
-harness company finance request-approval --commitment <commitment-id> --approver <human-id>
-harness company finance transition-commitment --commitment <commitment-id> --status <status>
-harness company finance record-payment --commitment <commitment-id> --amount <amount> --evidence <ref>
-harness company finance reconcile --payment <payment-id>
+harness company finance query --payment <payment-id>
+harness company finance propose-commitment \
+  --source-document <document-id> \
+  --amount <amount> \
+  --currency <currency> \
+  --submitted-by <actor-id> \
+  --accountable-owner <human-id> \
+  --authority <human-admin-id>
+harness company finance request-approval \
+  --definition <custom-page-definition-id> \
+  --commitment <commitment-id> \
+  --requested-by <actor-id> \
+  --approver <human-id> \
+  --evidence <ref>
+harness company finance decide-approval \
+  --definition <custom-page-definition-id> \
+  --approval <approval-id> \
+  --actor <human-id> \
+  --decision approved|rejected
+harness company finance transition-commitment \
+  --definition <custom-page-definition-id> \
+  --commitment <commitment-id> \
+  --status proposed|pending_approval|approved|rejected|cancelled \
+  --actor <actor-id> \
+  [--approval <approval-id>] \
+  [--evidence <ref>]
+harness company finance record-payment \
+  --definition <custom-page-definition-id> \
+  --commitment <commitment-id> \
+  --actor <actor-id> \
+  --approval <payment-approval-id> \
+  --evidence <ref>
+harness company finance transition-payment \
+  --definition <custom-page-definition-id> \
+  --payment <payment-id> \
+  --status prepared|settled|failed|reversed \
+  --actor <actor-id> \
+  [--approval <approval-id>] \
+  [--evidence <ref>]
 ```
 
-Do not present those commands as implemented until the CLI and acceptance tests
-exist.
+Current v1 boundary:
+
+- `propose-commitment` creates an initial `proposed` Commitment through the
+  existing Human administrative import path.
+- `request-approval`, `decide-approval`, `transition-commitment`,
+  `record-payment`, and `transition-payment` use the governed Action
+  dispatcher and require `HARNESS_COMPANY_OS_TOKEN`.
+- Payment approval is separate from Commitment approval. Do not reuse an
+  approval for `commitment.append` as proof for `payment.append`.
+- `record-payment` creates a Payment record and does not imply settlement.
+  Settlement requires an explicit Payment transition and evidence.
+- Native `commitment.propose` as a governed Action remains a follow-up because
+  the current Action scope expects an existing in-scope FinancialRecord.
 
 ## Safe workflow
 
 1. Inspect the source WorkItem and Docs context before changing Finance.
 2. Determine whether the request is a proposed future spend, an approved
    commitment, an actual payment, a refund, or a metric observation.
-3. Create or update Finance records only through the governed Company OS Action
-   path. Do not edit document tables or JSONL ledgers directly.
+3. Create or update Finance records only through the Finance CLI/API. Do not
+   edit document tables or JSONL ledgers directly.
 4. Apply approval policy. If the amount, actor, category, or policy requires
    Human approval, request Approval before transition or payment.
 5. Link Finance records back to WorkItem and Docs. The finance record is the

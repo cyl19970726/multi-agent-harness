@@ -156,15 +156,21 @@
         "ui": [
           "apps/agent-dashboard/src/company-os/operations/pages.tsx"
         ],
+        "skills": [
+          "skills/company-finance-operator/SKILL.md"
+        ],
         "acceptance": [
           "crates/harness-cli/tests/company_os_api.rs",
-          "crates/harness-store/tests/company_os.rs"
+          "crates/harness-store/tests/company_os.rs",
+          "scripts/check-company-os-finance-cli-smoke.mjs"
         ]
       },
       "verifiedSlices": [
-        "linked WorkItem to ¥3,000 Commitment proposal and Human Approval request/decision"
+        "linked WorkItem to ¥3,000 Commitment proposal and Human Approval request/decision",
+        "dedicated Finance CLI list/query/propose-commitment/request-approval/decide-approval/transition-commitment/record-payment/transition-payment smoke with distinct Commitment and Payment approval boundaries"
       ],
       "blockingGaps": [
+        "native commitment.propose Action for first Commitment creation without the current Human administrative import boundary",
         "finance reporting and reconciliation beyond Commitment/Payment records"
       ]
     }

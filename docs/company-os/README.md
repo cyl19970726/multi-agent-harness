@@ -33,10 +33,18 @@ The installable Company OS operator suite is indexed in
 scripts/install-skill.sh --agent both --suite company-os
 ```
 
-Dedicated Docs and Work CLI commands are implemented. Finance and Organization
+Dedicated Docs, Work, and Finance CLI commands are implemented. Organization
 operator skills are installable operating contracts over the current native
-Store/API/Action path; their dedicated `harness company finance|org ...` CLI
-families remain planned until backed by commands and acceptance checks.
+Store/API/Action path; the dedicated `harness company org ...` CLI family
+remains planned until backed by commands and acceptance checks.
+
+Finance CLI v1 intentionally preserves the current Store/API governance
+boundary: proposed Commitments are created through the existing Human
+administrative import path, while approval requests, approval decisions,
+Commitment transitions, and Payment records/transitions use the governed Action
+dispatcher. The remaining Finance gap is a native `commitment.propose` Action
+that can create the first Commitment without the current circular
+FinancialRecord-scope dependency.
 
 Current Company OS storage remains append-only JSONL ledgers plus latest
 projections. SQL is planned as a derived read/query/index layer for Docs query,
