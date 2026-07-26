@@ -1,0 +1,137 @@
+/**
+ * Persistent member mailbox.
+ *
+ * This is the whole point of the runner, so it is worth stating plainly.
+ *
+ * The current Claude and Codex team-member loops in `harness-cli` are shaped
+ * like this:
+ *
+ *     let queued = ledger.queued_messages_for(member)?;
+ *     if queued.is_empty() { break; }          // <- member terminates here
+ *
+ * A member therefore stops existing at the instant its queue is momentarily
+ * empty. A TeamMessage that arrives one millisecond later has no recipient:
+ * it stays `queued` forever and nobody ever consumes it. That is the runtime
+ * half of ADR 0037's unmet clause — "Member ... owns its plan, Workspace,
+ * session ... until the Team Lead accepts its handoff through a
+ * `review_result`" — and it is why acceptance items 5 and 6 have no test.
+ *
+ * A Mailbox is an async message stream that does NOT end when it is empty.
+ * `next()` parks until either `push()` delivers a message or `close()` is
+ * called explicitly. Only the Host closes it, and only on a terminal
+ * acceptance decision. Emptiness is not a terminal condition.
+ */
+export class Mailbox {
+  #queue = [];
+  #waiters = [];
+  #closed = false;
+  #closeReason = null;
+
+  /** Number of messages waiting for the member's next round. */
+  get pending() {
+    return this.#queue.length;
+  }
+
+  get closed() {
+    return this.#closed;
+  }
+
+  get closeReason() {
+    return this.#closeReason;
+  }
+
+  /**
+   * Hand a message to the member. If the member is parked waiting, it wakes
+   * immediately; otherwise the message queues for the next round.
+   *
+   * @param {object} message a TeamMessage-shaped envelope
+   */
+  push(message) {
+    if (this.#closed) {
+      throw new Error(
+        `mailbox is closed (${this.#closeReason}); cannot deliver ${message?.id ?? "message"}`,
+      );
+    }
+    const waiter = this.#waiters.shift();
+    if (waiter) {
+      waiter({ value: message, done: false });
+      return;
+    }
+    this.#queue.push(message);
+  }
+
+  /**
+   * End the member's lifetime. This is a Host decision (an accepted
+   * `review_result`, an explicit stop, or run teardown) — never an inference
+   * from an empty queue.
+   *
+   * Messages already queued are preserved and reported by `drain()` so the
+   * caller can requeue them rather than lose them, which is the same contract
+   * the SDK's `interrupt()` provides via `still_queued`.
+   */
+  close(reason = "closed_by_host") {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#closeReason = reason;
+    while (this.#waiters.length > 0) {
+      this.#waiters.shift()({ value: undefined, done: true });
+    }
+  }
+
+  /** Remove and return everything still queued. Used on interrupt/close. */
+  drain() {
+    const rest = this.#queue;
+    this.#queue = [];
+    return rest;
+  }
+
+  /**
+   * The stream handed to `query({ prompt })`. Yields `SDKUserMessage`-shaped
+   * values produced by `render`.
+   *
+   * @param {(message: object) => object} render TeamMessage -> SDKUserMessage
+   */
+  async *stream(render) {
+    while (true) {
+      if (this.#queue.length > 0) {
+        yield render(this.#queue.shift());
+        continue;
+      }
+      if (this.#closed) return;
+      const next = await new Promise((resolve) => this.#waiters.push(resolve));
+      if (next.done) return;
+      yield render(next.value);
+    }
+  }
+}
+
+/**
+ * Render a Harness TeamMessage as an SDK user message.
+ *
+ * Kept deliberately dumb: the envelope stays readable in the provider-native
+ * transcript so a human opening the session in Claude sees who sent what and
+ * under which correlation, without Harness having to mirror the transcript.
+ */
+export function renderTeamMessage(message) {
+  const header = `--- ${message.from_member_id} (${message.kind}) ---`;
+  const lineage = message.correlation_id
+    ? `correlation: ${message.correlation_id}`
+    : "correlation: (none)";
+  // Shape is `SDKUserMessage` from the SDK's own type declarations:
+  //   { type: 'user', message: MessageParam, parent_tool_use_id: string | null }
+  // Note the nested `message`. The published TypeScript reference's
+  // "Streaming Input Mode" example omits it and yields `{type, content}`
+  // directly; the runtime rejects that with
+  //   Error: Expected message role 'user', got 'undefined'
+  // and the SDK process exits code 1. Follow the .d.ts, not that example.
+  return {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: `${header}\n${lineage}\n\n${message.body}` },
+      ],
+    },
+    parent_tool_use_id: null,
+  };
+}

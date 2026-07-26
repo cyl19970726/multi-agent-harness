@@ -1,107 +1,69 @@
 # Claude Integration
 
-本文档定义 Star Harness 如何集成 Claude Code。重点是把 Claude 变成
-harness 里的持久 `AgentMember` provider：可以创建、投递消息、观察状态、回收
-运行时，并将 Claude 原生 session 作为 transcript、tool activity 与 resume
-真相；Harness 只保存 binding、协调、显式 outcome 和 artifact/check refs。
+本文档定义 Star Harness 如何集成 Claude Code。目标是把 Claude 变成 harness 里
+**持续存在**的 `AgentMember` provider：可创建、可投递、可 steer/interrupt、可
+resume，并且把 Claude 原生 session 作为 transcript、tool activity 与 resume 的
+唯一真相；Harness 只保存 binding、协调、显式 outcome 和 artifact/check refs。
 
 Provider-neutral runtime contracts live in [../agent-runtime.md](../agent-runtime.md).
 This file should explain only how Claude implements those contracts. Shared
 object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
 `Decision` must not be redefined here.
 
-## 核心结论
+## 当前状态：两个执行模式
 
-V1 主方案是：
+| mode | 状态 | 形态 |
+| --- | --- | --- |
+| `claude_cli` | **已实现，已发布** | `claude -p` 每次投递起一个进程 |
+| `claude_agent_sdk` | **skeleton, `review_required`** | Agent SDK streaming input，进程常驻 |
 
-```text
-AgentMember(provider=claude)
-  -> AgentRuntime(claude CLI, request-response shape, one spawned per delivery)
-  -> provider session
-  -> Message delivery through claude CLI with injected harness context
-  -> Claude native session (execution truth and resume)
-  -> ephemeral output projection + Harness coordination store
-  -> Agent Dashboard joined view
-  -> optional Claude Code plugin packaging after contracts stabilize
-```
+`claude_cli` 是唯一进了 `(provider, execution_mode)` 白名单的模式。
+`claude_agent_sdk` 的运行时在 `apps/claude-member-runner/`，Rust 侧尚未接线。
 
-Agent Team 也使用同一原生真相边界：`provider=claude` 默认
-`execution_mode=claude_cli`。adapter 以内存方式消费
-`claude -p --output-format stream-json --verbose`，从 `system(init)` 绑定真实
-session id；显式重试通过 `resume_native_session_id` 调用 `--resume`。工具、
-命令、文件活动与对话不写入 `MemberAction`，Member 详情页通过
-`GET /v1/member-runs/{id}/native-activity` 读取 Claude 自己的 project JSONL。
-thinking 在 reader 层直接丢弃。
+### `claude_cli` 的实测限制（不是设计选择，是缺陷）
 
-也就是说：
-
-- `claude CLI` 是按需 provider 执行形式（非持久 app-server）；opt-in 的
-  resident 模式（`HARNESS_CLAUDE_RESIDENT=1`，ADR-0021）可把
-  `claude --input-format stream-json` 进程保持常驻、逐 turn 喂 stdin frame；
-- 每次消息投递会通过 harness 的消息上下文生成 Claude 输入 prompt；
-- Claude 执行输出由 adapter 临时解析；只有显式 handoff、outcome、artifact /
-  check ref、PendingInteraction 与控制确认进入 Harness；
-- 子代理（native Claude subagents via threads）自动成为 child threads，
-  而非升级为新 members；
-- fallback 和 CI/review helper 与 Codex 类似但使用 claude API；
-- runtime health 可观测但形状不同（无持久 pid，有会话标识）。
-
-## 为什么 Claude CLI 是主方案
-
-Claude Code 官方 CLI 提供了 `claude` 命令行工具和 APIs 给外部产品做集成。
-相比于 Claude Agent SDK 或 HTTP API：
-
-- **local-process shape**：`claude` 命令行保持与 Codex 类似的启动模式，便于
-  harness 的一致性（ADR-0008: one-process-per-member 虽然 Claude 是按需，
-  但记录 session id 和事件同样清晰）；
-- **native subagent + thread handling**：Claude 的 native subagents（Task
-  tool 子代理）出现在 stream-json 转录帧里，harness
-  可以把它们映射到 `ProviderChildThread` 对象而无需额外的多层代理；
-- **no persistent server overhead**：避免了专属的 app-server 进程与调度复杂度，
-  符合"按需计算"的云原生 philosophy；
-- **statement-driven delivery**：每次消息投递是一个独立的 claude 调用，
-  输入是任务 + 上下文，输出是可解析的事件流，便于 idempotent 重试。
-
-## Provider Runtime 模型
-
-V1 使用 on-demand-spawned claude CLI per AgentMember delivery，在一个
-runtime 标识下持续记录 sessions。
-
-runtime 字段最小集合：
+2026-07-27 在同一台机器、同一个 provider、同一天实测：
 
 ```text
-AgentRuntime
-  id
-  agent_member_id
-  provider = claude
-  status = Running (或 Suspended/Closed)
-  pid = None (claude 按需启动，无持久进程 pid)
-  control_endpoint = "claude-runtime://{dir}" (指向运行时目录)
-  command = "claude"
-  args = [] (每次 delivery 动态注入参数)
-  started_at / ended_at
-  last_event_at
+harness team-run start（claude_cli 路径）   → member 跑 1 轮后终止
+apps/claude-member-runner（Agent SDK）      → 投递 → 空档 3s → 再投递，3 轮，同一 session
 ```
 
-健康检查分三层（不同于 Codex 的四层）：
+根因在 `run_claude_team_member` 的循环：
 
-```text
-endpoint: runtime directory exists + last_session within acceptable time
-session: NativeSessionRef resolves and native terminal state is readable
-delivery: latest message delivery has proof of receipt from Claude
+```rust
+let queued = ledger.queued_messages_for(&member.id)?;
+if queued.is_empty() { break; }        // 队列瞬时为空 == member 终止
 ```
 
-Process 层不适用（Claude 按需启动，无持久进程）。
+Member 在队列**恰好为空**的那一刻停止存在。晚一毫秒到达的 TeamMessage 没有收
+件人，它会永远停在 `queued`。这与 ADR 0037 的核心条款直接冲突：
 
-## Message Delivery
+> Member … owns its plan, Workspace, session … **until the Team Lead accepts its
+> handoff through a `review_result`**.
 
-每次投递消息时，harness 构造一个包含：
-- 当前任务上下文（goal/task/evidence/decision）
-- 消息队列（inbox 消息）
-- harness 系统 prompt（角色、权限、安全）
+也是 ADR 0037 §Acceptance 第 5、6 条至今没有任何测试覆盖的原因。
 
-然后调用 claude CLI（`run_claude_exec_delivery_real`，
-`crates/harness-cli/src/main.rs`）：
+## `claude_cli`（已发布路径）
+
+adapter 以内存方式消费 `claude -p --output-format stream-json --verbose`，从
+`system(init)` 绑定真实 session id；显式重试通过 `resume_native_session_id`
+调用 `--resume`。工具、命令、文件活动与对话不写入 `MemberAction`，Member 详情页
+通过 `GET /v1/member-runs/{id}/native-activity` 读取 Claude 自己的 project
+JSONL。thinking 在 reader 层直接丢弃。
+
+启动一个 Claude member（实测可用）：
+
+```bash
+harness team-run create \
+  --objective "…" \
+  --member "SmokeMember:Smoke tester:claude/cli:claude-haiku-4-5"
+harness team-run start --id <team_run_id>
+```
+
+member spec 是 `name:role:provider[/mode][:model][@owned,paths]`。
+
+调用形状：
 
 ```bash
 claude -p "{harness_message_envelope}" --output-format stream-json --verbose \
@@ -111,56 +73,164 @@ claude -p "{harness_message_envelope}" --output-format stream-json --verbose \
   [--add-dir {root}]
 ```
 
-Claude 执行后由 adapter 绑定真实 session id，供原生 `--resume` 使用，并
-提供临时 activity projection。只有明确的跨 actor 消息、结果摘要、artifact /
-check 引用或治理动作会被提升为 Harness 记录。
+opt-in 的 resident 模式（`HARNESS_CLAUDE_RESIDENT=1`，ADR-0021）把
+`claude --input-format stream-json` 保持常驻、逐 turn 喂 stdin frame。它解决了
+进程反复启动，但**没有**双向控制通道。
+
+### 成败判定依赖自由文本，这是个 false-negative 源
+
+member 的成功与否由输出里有没有 `## RESULT` / `## SUMMARY` 段决定。实测：一个
+objective 写成「只回 X 别的都不要」的 member，provider 正确执行并返回了 X，
+harness 仍标记 `failed`。模型只要没按格式说话就算失败。`claude_cli` 下没有更好
+的办法；`claude_agent_sdk` 下有（structured output / hooks），见下。
+
+## `claude_agent_sdk`（目标路径，review_required）
+
+`@anthropic-ai/claude-agent-sdk` **就是 Claude Code 打包成库**——同一个 native
+二进制、同一个 `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` 会话存储。选它不
+是换 provider，是换调用面。
+
+| 能力 | `claude -p` | resident stream-json | Agent SDK |
+| --- | :---: | :---: | :---: |
+| 持续 member | ❌ | ✅ | ✅ |
+| interrupt（真实 ACK） | ❌ | ❌ | ✅ |
+| steer（permission/model） | ❌ | ❌ | ✅ |
+| hooks | ❌ | ❌ | ✅ |
+| 会话注册表 | ❌ | ❌ | ✅ |
+
+映射到 Harness 对象：
+
+| Harness 契约 | SDK 原语 |
+| --- | --- |
+| 持续 member | `query({ prompt: AsyncIterable })` |
+| Mailbox 投递 | 往那个 iterable push |
+| Interrupt | `query.interrupt()` → `still_queued` |
+| Steer | `setPermissionMode()` / `setModel()` |
+| `native_session_id` | `system/init` 的 `session_id` |
+| **成员注册** | `tagSession(id, "<team_run_id>:<member_run_id>")` |
+| **成员发现** | `listSessions({dir})` 按 tag 过滤 |
+| 详情页原生活动 | `getSessionMessages(id)` |
+| retry 不污染原会话 | `forkSession: true` |
+| owned paths（ADR 0033） | `PreToolUse` deny |
+| Plan 闸（ADR 0038） | `PreToolUse` deny until `plan_approval` |
+| `evidence_refs`（#232） | `PostToolUse` 观察 |
+
+`tagSession` 值得单独说：**成员名册存在 provider 自己的注册表里**，Harness 连一
+份 roster 都不用维护。这比现在 `MemberRun.native_session` 存一份 locator 更严格
+地贴合 ADR 0032。
+
+### AGENTS.md 陷阱：streaming input 的消息形状
+
+官方 TypeScript 文档的 "Streaming Input Mode" 示例是错的。它写：
+
+```ts
+yield { type: "user", content: [...] }        // ← 运行时拒绝
+```
+
+实际报 `Expected message role 'user', got 'undefined'`，SDK 子进程 exit 1。
+正确形状在 SDK 自己的 `sdk.d.ts`：
+
+```ts
+type SDKUserMessage = {
+  type: 'user';
+  message: MessageParam;          // { role: 'user', content: [...] }
+  parent_tool_use_id: string | null;
+}
+```
+
+以 `.d.ts` 为准，不要以文档示例为准。
+
+## Desktop 可见性
+
+Claude Desktop 的会话列表**只列它自己创建的会话**。外部进程即使在
+`~/.claude/sessions/<pid>.json` 注册得与真 desktop session 完全一致
+（`kind:"interactive"`, `peerProtocol:1`, `entrypoint:"claude-desktop"`），也不
+会出现在列表里——已实测。
+
+但 desktop 注册了 `claude://` URL scheme，其中一个动作就是导入 CLI 会话：
+
+```bash
+open "claude://resume?session=<native_session_id>"
+```
+
+参数名是 `session`（不是 `sessionId`），值需通过 uuid 正则校验。desktop 侧执行
+`importCliSession(id)`，日志为
+`Imported CLI session <id> as Desktop session local_<id>`。
+
+三个已验证的性质：
+
+- **id 映射确定**：import 进来的会话是 `local_` + 原生 session id。（desktop
+  自己新建的会话则是无关 uuid + 一条 `Mapping internal session X to CLI
+  session Y` 日志，不确定。Harness 走 import，所以不需要对照表。）
+- **import 会剥离 thinking**：`Stripped thinking blocks from …jsonl`。AGENTS.md
+  的 thinking 政策由 provider 侧代为执行。
+- **有 300 秒重复投递抑制**，连续试同一个链接会被静默吞掉。
+
+`claude_cli` 和 `claude_agent_sdk` 两条路产出的会话都可以这样导入——都实测过。
+
+### 并发边界（未验证，按保守规则操作）
+
+import 之后 desktop 会 **接管** 会话（`startShellPty`、`replaceEnabledMcpTools`、
+`Warming session`）。已验证的只有**顺序访问**：desktop warm 之后 Harness 用
+`resume` 继续驱动，transcript 连贯追加、同一 session id、无分叉、无冲突日志。
+
+**同时写入没有验证。** 在有人验证之前，操作规则是：**Harness 驱动期间，desktop
+只做只读旁观。**
+
+## Provider Runtime 模型
+
+```text
+AgentRuntime
+  id / agent_member_id / provider = claude
+  status = Running | Suspended | Closed
+  pid = None（claude_cli 按需启动，无持久 pid）
+  control_endpoint = "claude-runtime://{dir}"
+  command = "claude"
+  started_at / ended_at / last_event_at
+```
+
+健康检查三层（Codex 是四层，Claude 无 process 层）：
+
+```text
+endpoint: runtime directory exists + last_session within acceptable time
+session:  NativeSessionRef resolves and native terminal state is readable
+delivery: latest message delivery has proof of receipt from Claude
+```
 
 ## Event Sources
 
-Claude 产生的事件通过以下源进来：
-
-1. **Claude native session / stdout stream-json** — 通过 provider adapter
-   读取并在内存中归一化；不复制成 Harness execution ledger
-   - `system`（subtype `init`）：新会话打开，携带 `session_id`（resume 用）
-   - `assistant` / `user`：消息帧（content blocks：text/tool_use/tool_result）
-   - `stream_event`：细粒度增量事件（按 subtype 归约）
-   - `result`：终态帧，携带最终 assistant 文本、usage/cost/model、可选
-     schema-validated `structured_output`
+1. **native session / stdout stream-json** — adapter 内存归一化，不复制成
+   Harness ledger
+   - `system(init)`：携带 `session_id`
+   - `assistant` / `user`：content blocks（text / tool_use / tool_result）
+   - `stream_event`：细粒度增量
+   - `result`：终态帧，携带最终文本、usage/cost/model、可选 `structured_output`
    - native subagents（Task tool）出现在转录帧里，不是独立事件类型
-
-2. **NativeSessionRef（implemented）** — Harness 记录的 mode-aware 引用
-   - provider = "claude"
-   - provider_thread_id：从 `system(init)` 帧解析的真实 session id
-     （下一次 delivery 用 `--resume` 延续）
-   - availability / provider version / adapter contract / resume capability
-
-3. **Explicit promotion** — Harness 只保存 assignment、handoff、outcome、
-   artifact/check refs、PendingInteraction 与控制确认；完整 session 留在 Claude。
+2. **NativeSessionRef** — mode-aware 引用：provider、`native_session_id`、
+   availability、provider version、adapter contract、resume capability
+3. **Explicit promotion** — 只有 assignment、handoff、outcome、artifact/check
+   refs、PendingInteraction 与控制确认进入 Harness
 
 ## Runtime Mapping
 
-Claude 事件在进程内归约，不写第二份 provider history：
-
 ```text
-(provider = "claude")
-  system(init)   → NativeSessionRef.native_session_id
-  stream_event   → transient NativeActivityProjection
-  result         → explicit delivery outcome；status = Succeeded（无 error）/ Failed
-  无 result 帧    → status = Stale（有事件）/ Failed（空输出或进程失败）
-  assistant text → DeliveryOutcome.summary（report 内容）+ Evidence
+system(init)   → NativeSessionRef.native_session_id
+stream_event   → transient NativeActivityProjection
+result         → explicit delivery outcome；Succeeded / Failed
+无 result 帧    → Stale（有事件）/ Failed（空输出或进程失败）
+assistant text → DeliveryOutcome.summary + Evidence
 ```
 
 Queue discipline（来自 harness，不由 provider 定义）：
 
-- 投递前：消息锁定在 `delivery_status = queued`
-- 投递中：claim 行记录为 `delivery_status = acknowledged`（原子 claim/lease）
-- 投递后：若成功则 `delivery_status = delivered`；若失败重试或 `failed`
-- claim/lease 原子性：harness-store 的 `claim_queued_message_delivery`
-  必须在事件入库前原子提交
+- 投递前 `queued`；投递中 `acknowledged`（原子 claim/lease）；成功 `delivered`
+- claim/lease 原子性：`claim_queued_message_delivery` 必须在事件入库前原子提交
+
+> ⚠️ 该原子 claim/lease **尚未实现**。当前 `mark_message_delivered` 是
+> clone 整条消息、改自己那条 delivery、整条重新 append，折叠按 message id
+> latest-wins。崩溃窗口丢消息与多收件人并发覆写都是真实风险。见 Issue #230。
 
 ## Permission Model
-
-Claude 权限映射到 harness `provider_config`：
 
 ```json
 {
@@ -173,170 +243,71 @@ Claude 权限映射到 harness `provider_config`：
 }
 ```
 
-权限语义：
-- `approval_policy = "prompt_required"`：每条消息需要 Lead 审批后投递
-- `workspace_policy = "workspaceWrite"`：Claude 可写入运行时目录（如生成文件、日志）
-- `service_tier`：影响 rate limits 和推理模型选择
-- 权限落到 CLI 层是 `--permission-mode` + `--allowedTools`：read-only =
-  `Read,Grep,Glob`（无 Edit/Write/Bash），即 claude 的
-  `enforces_read_only = true` 能力（对比 kimi 无法物理只读）
+落到 CLI 层是 `--permission-mode` + `--allowedTools`：read-only =
+`Read,Grep,Glob`（无 Edit/Write/Bash），即 claude 的
+`enforces_read_only = true`（对比 kimi 无法物理只读）。
 
-Codex 的 `sandbox_policy` / `service_tier` 具有相似语义。不在 core
-schema 中绑定到 provider 特定值（provider-neutral in data model；
-mapping 在 CLI 层）。
+在 `claude_agent_sdk` 下，owned paths 可以升级成 `PreToolUse` 的真实拦截，而不
+只是协作/验收边界。
 
 ## Workspace Model
 
-Claude 和 Codex 都假设一个隔离的工作目录。Harness 仅保留短生命周期的
-进程传输目录，归约出 outcome 后删除：
-
 ```text
-{harness_root}/runtimes/{member_id}/       # runtime 目录标记
-{harness_root}/runtimes/deliveries/{delivery_id}/  # ephemeral transport
+{harness_root}/runtimes/{member_id}/                # runtime 目录标记
+{harness_root}/runtimes/deliveries/{delivery_id}/   # ephemeral transport
 ```
 
-会话延续通过 `--resume`：delivery 从 `system(init)` 帧解析真实 session id，
-目标写入 `NativeSessionRef`；下一次对同一 member 的 delivery
-用 `--resume <session_id>` 延续同一对话（记忆跨 delivery 保留）。worker cwd
-取 member.worktree_ref → project root → process cwd（Claude 从 cwd 发现
-CLAUDE.md / .claude/）。
+worker cwd 取 member.worktree_ref → project root → process cwd。Claude 从 cwd
+发现 `CLAUDE.md` / `.claude/`；SDK 下由 `settingSources` 控制加载哪些来源。
 
 ## Native Multi-Agent Features
 
-Claude native subagents（threads 中的代理生成）自动成为
-`ProviderChildThread` 对象，而**不升级为 `AgentMember`**。
-
-Doctrine（来自 design spec §4.2(G)）：
+Claude native subagents 自动成为 `ProviderChildThread`，**不升级为
+`AgentMember`**：
 
 > Child threads stay **under** the parent member, not promoted to members.
 
-映射：
-- subagent/agent_spawn 形状的事件（`provider_child_thread_from_event`）→
-  `ProviderChildThread { agent_path, thread_id, parent_session_id, status }`；
-  常规 stream ingest 里 `provider_child_thread_id` 为 None（ADR-0011：
-  subagents 单独处理）
-- `ProviderChildThread` 在 Dashboard 中显示为"Member runtime panel"的一部分
-- 不创建新的 `AgentMember`（除非显式提升）
-- 若子代理需要与其他 members 通信，必须通过 parent 代理中转
+Subagent 是 stateless generation，不是持久线程——Harness 记录
+`ProviderChildThread` 但不能 resume 同一个 subagent。若子代理需要与其他 members
+通信，必须经 parent 中转。与 Codex 的 `subagent/collab_agent_spawn` 同原则。
 
-这与 Codex 的 `subagent/collab_agent_spawn` 相同的原则。
+## 鉴权与版本
 
-## Evidence and Report Extraction
-
-Claude 输出包含结构化或非结构化内容（code、analysis、plans）。
-Harness 把它们梯度化为 `Evidence`、`Proposal`、`Decision`：
-
-```text
-Claude output
-  ├─ structured JSON (plan/proposal) → Evidence + Proposal (自动)
-  ├─ code artifact (file/script)    → Evidence (category: "code_artifact")
-  ├─ narrative analysis             → Evidence (category: "agent_output")
-  └─ explicit decision              → Decision (若包含 decision_kind 标记)
-```
-
-Evidence 生命周期（与 Codex 同）：
-1. Raw evidence：capture Claude stdout as-is（`claude.stream-json.ndjson`）
-2. Indexed evidence：`source_type = "claude_delivery_session"`
-3. Optional graduation：若有结构化标记，升级为 Proposal 或 Decision
-
-## Dashboard Health Signals
-
-实现层的 `runtime_health` 行是 provider-neutral 字段
-`{process_alive, socket_exists, protocol_probe, delivery_probe, checked_at}`；
-下面的 endpoint/session/delivery 是 Claude 语义下的目标三层映射：
-
-```json
-{
-  "endpoint": {
-    "status": "pass" | "unknown",
-    "message": "runtime directory exists"
-  },
-  "session": {
-    "status": "pass" | "warn" | "fail",
-    "message": "last session < 5min old" | "no sessions yet"
-  },
-  "delivery": {
-    "status": "pass" | "warn" | "fail",
-    "message": "last message delivered" | "delivery pending"
-  },
-  "checked_at": "2026-05-31T12:34:00Z"
-}
-```
-
-Codex 有四层（process/socket/protocol/delivery）；Claude 有三层
-（endpoint/session/delivery），因为无持久进程。
-
-Dashboard 呈现方式（已 provider-neutral）：
-- 绿色 = pass
-- 琥珀色 = unknown/warn
-- 红色 = fail
-- 灰色 = not applicable（provider 不支持该层）
-
-## Fallback Modes
-
-若 claude CLI 不可用或失败：
-
-1. **No fallback to sync claude API** — 与 Codex 的 `codex exec` 类似，
-   我们优先维持按需模式。若要用 HTTP API fallback，需在 WP9+ 实现。
-
-2. **Message queueing on delivery failure** — 消息留在 `delivery_status = failed`
-   或 `delivery_status = queued`，下次 `agent deliver` 重试。
-
-3. **Health downgrade** — 若 claude CLI 不可用，`endpoint.status = "fail"`，
-   Dashboard 显示"Claude not available"。
-
-4. **Reconciliation hook** — 可通过 `agent reconcile` 手工修复状态。
-
-## Unsupported or Risky Surfaces
-
-相比 Codex：
-
-1. **No interrupt / thread pause** — Claude 按需执行，无中途中断机制
-   （`turn/interrupt` 只存在于 Codex app-server fallback 契约）。要停止执行，
-   必须不再投递消息。
-
-2. **No harness-managed hooks** — harness 未接 Claude hooks；策略通过
-   prompt/flag 注入，不如 Codex hook 桥实时。
-
-3. **No mid-turn control channel** — `claude -p` 的 stream-json 是单向
-   stdout 流（harness 边读边 tee 做实时观察），没有双向协议连接，无法在
-   turn 中途注入输入或审批（resident 模式也只是逐 turn 喂 stdin）。
-
-4. **Subagent lifecycle different** — Claude subagents 是 stateless
-   generation（每次 turn 可能产生不同的 subagent），不是持久线程。
-   Harness 记录 `ProviderChildThread` 但不能 "resume" 同一个 subagent。
-
-5. **File access is tool-mediated and flag-gated** — Claude 通过自身工具
-   （Read/Edit/Write/Bash）访问 cwd 与 `--add-dir` 目录；harness 用
-   `--permission-mode` + `--allowedTools` 做物理边界（不像 Codex 用
-   `--sandbox`）。
+- **凭据在 Keychain 的 `Claude Code-credentials`**，机器上所有 Claude Code 版本
+  共用一份，`claude auth login` 一次全部生效。
+- ⚠️ **`claude auth status` 报 `loggedIn: true` 不代表 token 有效**——它只查凭
+  据存在。实测出现过 `status` 说已登录、实际调用返回
+  `401 OAuth access token has expired`。以真实调用为准。
+- ⚠️ **Agent SDK 的官方鉴权是 API key。** 文档明确：未经事先批准，不允许第三方
+  产品向其用户提供 claude.ai 登录或额度，包括基于 Agent SDK 构建的 agent。
+  自用 dogfood 走 operator 自己的订阅是另一回事；分发前必须处理。
+- **品牌**：产品中不得使用 "Claude Code" / "Claude Code Agent" 命名。
+- 安装 `@anthropic-ai/claude-agent-sdk` 会引入一个 **bundled native Claude Code
+  二进制**——这是一次 provider 版本引入，按 AGENTS.md 需要人点名批准。当前
+  reviewed 版本：**2.1.220**（SDK 0.3.220，commit 4073f595）。adapter 仍为
+  `review_required`，直到 mode-specific 确定性检查 + live canary 通过。
 
 ## Validation Gates
 
-实现 Claude 集成的 validation 清单（与 WP6-WP8 对应）：
+`claude_cli`（已验证）：
 
-- [ ] `agent create --provider claude --start` 创建 runtime，记录 session
-- [ ] `agent deliver` 投递消息，claude 处理，session 更新
-- [ ] Events 解析正确，session/turn/item events 入库
-- [ ] Subagent spawn 记录为 `ProviderChildThread`，不升级为 member
-- [ ] Evidence 梯度化：CLI output 作为 raw evidence，可选升级为 proposal
-- [ ] `agent reconcile` 恢复一致性（与 Codex 同）
-- [ ] Health signals 正确（endpoint/session/delivery，无 process 层）
-- [ ] `--provider [codex|claude]` 在 CLI help 中可见
-- [ ] Codex 路径保持回归干净（无 provider 特定代码泄露）
-- [ ] Provider-neutral doctrine 保持（ADR-0011）：core schema 中不出现
-  Claude 字面值
+- [x] `team-run create --member "…:claude/cli:<model>"` 声明落库
+- [x] `team-run start` 真实启动 provider 并拿到回复
+- [x] `system(init)` 绑定 `native_session_id`，availability=available
+- [x] transcript 落在 `~/.claude/projects/`
+- [x] `claude://resume?session=<id>` 导入 desktop
 
-## Sequencing with Other Work Packages
+`claude_agent_sdk`（skeleton 已验证，接线未做）：
 
-WP8 依赖 WP6（provider enum + dispatch）和 WP7（Claude runtime/delivery）。
-WP8 目标是：
+- [x] 持续 member 跨空档存活，同一 native session 多轮
+- [x] `tagSession` / `listSessions` 作为成员注册与发现
+- [x] `claude://resume` 导入 desktop
+- [x] resume-after-import 顺序访问连贯
+- [ ] Rust 侧 spawn + NDJSON 接线
+- [ ] `PreToolUse` 拦截的 live 验证（单测已过，live 未跑）
+- [ ] interrupt / steer 的 live 终态确认
+- [ ] 同时写入的并发行为
+- [ ] live canary → 退出 `review_required`
 
-1. **Event ingest parser** — Claude 特定的事件解析逻辑
-2. **Child-thread mapper** — Subagent spawn → `ProviderChildThread`
-3. **Integration docs** — 本文档，定义 Claude 与 harness 的边界
-4. **CLI help update** — `--provider` 参数文档化
-5. **Registry & governance** — docs/registry.json + check-doc-links 更新
-
-一旦 WP8 通过，Claude 成为"一流"provider，与 Codex 功能同等（虽然语义
-有差异——那是 provider 特定的，不影响 harness objects）。
+实现细节、协议与实测记录见 [`apps/claude-member-runner/`](../../apps/claude-member-runner/)
+的 `README.md`、`FINDINGS.md` 与 `IMPLEMENTATION_PLAN.md`。

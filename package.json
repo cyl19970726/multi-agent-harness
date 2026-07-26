@@ -45,6 +45,7 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-separator": "^1.1.8",
     "@radix-ui/react-slot": "^1.2.4",
