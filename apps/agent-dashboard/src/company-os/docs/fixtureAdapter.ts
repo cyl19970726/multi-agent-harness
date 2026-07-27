@@ -282,7 +282,7 @@ function projectedDocumentBlocks(document: JsonRecord | undefined, blocks: JsonR
     const id = text(block.id, `block:${kind}`);
     if (kind === "heading") return { id, type: "heading" as const, content: blockText(block), level: Number(content.level) === 3 ? 3 as const : 2 as const };
     if (kind === "callout") return { id, type: "callout" as const, title: text(content.title) || undefined, content: blockText(block), tone: ["warning", "success"].includes(text(content.tone)) ? text(content.tone) as "warning" | "success" : "neutral" as const };
-    if (kind === "table") {
+    if (kind === "table" || kind === "simple_table") {
       const columns = strings(content.columns);
       const rawRows = Array.isArray(content.rows) ? content.rows : [];
       return {
