@@ -36,11 +36,11 @@ await new Promise(r=>setTimeout(r,3000));
 console.log(`   mailbox.pending=${runner.mailbox.pending} closed=${runner.mailbox.closed}`);
 
 console.log("→ 空档后再投一条 peer 消息");
-runner.deliver({ id:"m2", kind:"progress", from_member_id:"peer-Dashboard", correlation_id:"corr-1",
+runner.deliver({ id:"m2", kind:"message", from_member_id:"peer-Dashboard", correlation_id:"corr-1",
                  body:"Peer here. Reply with exactly: SECOND-TURN-OK" });
 await waitTurns(2);
 
-runner.close("review_result_accepted");
+runner.close("host_accepted_handoff");
 await done;
 console.log(`\nSESSION_ID=${sessionId}`);
 console.log(`turns=${turns.length}`);

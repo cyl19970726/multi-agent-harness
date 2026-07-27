@@ -123,19 +123,19 @@ async function main() {
   );
   check(
     teamSource.includes("Lead Inbox")
-      && teamSource.includes("Member questions, blockers, and review requests addressed to the Host.")
+      && teamSource.includes("Every Member message addressed to the Host, with its Assignment work chain.")
+      && teamSource.includes("<LeadInbox")
       && teamSource.includes("correlationId: replyAnchor?.correlation_id")
       && teamSource.includes("causationId: replyAnchor?.id")
       && teamSource.includes("Host coordination only · Member-originated messages come from their provider session."),
     "Team War Room exposes a Host-only Lead Inbox and correlation-anchored replies",
   );
   check(
-    teamSource.includes("Plan review")
-      && teamSource.includes('"plan_request"')
-      && teamSource.includes('"plan_feedback"')
-      && teamSource.includes('"plan_approval"')
-      && teamSource.includes("Member proposes → Host challenges → Member revises → Host approves → execution."),
-    "Team War Room exposes the provider-neutral Member plan debate and approval loop",
+    teamSource.includes('<option value="message">Message</option>')
+      && teamSource.includes('<option value="assignment">Assignment</option>')
+      && !teamSource.includes("Plan review")
+      && !teamSource.includes("sendPlanMessage"),
+    "Team War Room uses ordinary messages instead of a dedicated plan lifecycle",
   );
   check(
     teamSource.includes("KEY_ACTIVITY_MESSAGE_KINDS")
@@ -198,10 +198,10 @@ async function main() {
     "Member Focus derives its Goal, collaboration threads, latest steer, peers, and native subagent entry",
   );
   check(
-    memberSource.includes("Execution plan")
-      && memberSource.includes("selectMemberPlanNegotiation")
-      && memberSource.includes("provider mode · Assignment correlation retained"),
-    "Member Focus shows native plan capability, revision, feedback, and approval below the Assignment Goal",
+    !memberSource.includes("Execution plan")
+      && !memberSource.includes("selectMemberPlanNegotiation")
+      && memberSource.includes("Current Assignment · Member Goal"),
+    "Member Focus keeps planning inside the Assignment conversation instead of a separate product panel",
   );
 
   console.log(`\n   operator control checks: ${passed} pass, ${failed} fail`);

@@ -407,6 +407,7 @@ export interface TeamMessageDelivery {
 /** Kind of a {@link TeamMessage} (open enum; rendered as a colored pill). */
 export type TeamMessageKind =
   | "assignment"
+  | "message"
   | "plan_request"
   | "plan_proposal"
   | "plan_feedback"

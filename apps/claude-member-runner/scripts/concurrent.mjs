@@ -13,7 +13,7 @@ const runner = createMemberRunner({
                 if(e==="runner_error"||e==="registry_write_failed") console.log("  ["+e+"]",JSON.stringify(d).slice(0,120)); },
 });
 const done = runner.start();
-runner.deliver({id:"m3",kind:"question",from_member_id:"host",correlation_id:"corr-1",
+runner.deliver({id:"m3",kind:"message",from_member_id:"host",correlation_id:"corr-1",
                 body:"Reply with exactly: RESUMED-AFTER-IMPORT"});
 await new Promise(r=>{const i=setInterval(()=>{if(turns>=1){clearInterval(i);r();}},200);});
 runner.close("test_done");

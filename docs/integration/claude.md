@@ -62,7 +62,7 @@ Member 在队列**恰好为空**的那一刻停止存在。晚一毫秒到达的
 件人，它会永远停在 `queued`。这与 ADR 0037 的核心条款直接冲突：
 
 > Member … owns its plan, Workspace, session … **until the Team Lead accepts its
-> handoff through a `review_result`**.
+> handoff through an ordinary Host acceptance `message`**.
 
 也是 ADR 0037 §Acceptance 第 5、6 条至今没有任何测试覆盖的原因。
 
@@ -129,17 +129,16 @@ harness 仍标记 `failed`。模型只要没按格式说话就算失败。`claud
 | Interrupt | `query.interrupt()` → `still_queued` |
 | Steer | `setPermissionMode()` / `setModel()` |
 | `native_session_id` | `system/init` 的 `session_id` |
-| **成员注册** | `tagSession(id, "<team_run_id>:<member_run_id>")` |
-| **成员发现** | `listSessions({dir})` 按 tag 过滤 |
+| Provider session tag | `tagSession(id, "<team_run_id>:<member_run_id>")` |
+| Provider session discovery | `listSessions({dir})` 按 tag 过滤 |
 | 详情页原生活动 | `getSessionMessages(id)` |
 | retry 不污染原会话 | `forkSession: true` |
-| owned paths（ADR 0033） | `PreToolUse` deny |
-| Plan 闸（ADR 0038） | `PreToolUse` deny until `plan_approval` |
+| owned paths（ADR 0033） | `PreToolUse` 观察；不是 containment |
+| 普通计划讨论（ADR 0039） | correlated `message`；没有工具闸 |
 | `evidence_refs`（#232） | `PostToolUse` 观察 |
 
-`tagSession` 值得单独说：**成员名册存在 provider 自己的注册表里**，Harness 连一
-份 roster 都不用维护。这比现在 `MemberRun.native_session` 存一份 locator 更严格
-地贴合 ADR 0032。
+`tagSession` 用于 provider 侧发现；canonical 成员名册仍然是 Harness 的
+`AgentTeam/MemberRun`。Harness 只保存 native-session binding，不复制 transcript。
 
 ### AGENTS.md 陷阱：streaming input 的消息形状
 
@@ -231,24 +230,10 @@ member 写到 lane 外面了，是有意的吗?」——那才是真正要问的
 真需要 containment 只能来自 OS——member 出不去的 worktree，或者容器——不可能来自
 一个 PreToolUse matcher。
 
-唯一仍然会拦的是 **plan 闸**，因为那是 ADR 0038 的**时序**契约（Host 批准前不得
-执行），不是安全边界。shell 绕不过它——它约束的是「什么时候能开始」，不是「能碰
-哪些文件」。
-
-它由 ADR 0038 自己的消息链驱动，不由配置字段驱动：
-
-```text
-Host 发 plan_request   → 闸合上（plan_gate_armed），Write/Edit/NotebookEdit 被拒
-Host 发 plan_approval  → 闸打开（plan_approved）
-没人要过 plan          → 从不设闸
-```
-
-再发一次 `plan_request` 会重新合上——Host 中途要求重新规划就是一次新的协商，不该
-靠上一次的批准继续跑。
-
-> 这条接线是补上的：`planRequired` 之前从来没被 Rust 侧传过，
-> `Boolean(undefined)` 恒为 false，所以闸在真实路径上从不触发，只有单测直接设它
-> 才动。留着一个不会响的闸比没有闸更糟。
+ADR 0039 同样删除了 **Plan 闸**。Host 若希望先审计划，就发送普通关联消息：
+“先返回 Markdown 计划，不要执行”；Member 回复计划后，Host 再发送“修改”或
+“执行”。Claude 的 native planning 可以作为 Member 内部能力，但不会改变 Harness
+权限或生命周期。原因仍然相同：能拦 `Edit` 却拦不住 `Bash` 的 hook 不是可信边界。
 
 ### 并发边界（未验证，按保守规则操作）
 
@@ -315,7 +300,7 @@ Queue discipline（来自 harness，不由 provider 定义）：
 `HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` 调整。窗口内到达的 TeamMessage 由**同一
 个 MemberRun、同一个原生 session** 消费。
 
-这是缓解不是目标契约。ADR 0037 要求 member 活到 Host 的 `review_result`；那需要
+这是缓解不是目标契约。ADR 0037 要求 member 活到 Host 的普通验收 `message`；那需要
 `team-run start` 不再是前台编排，单独跟踪。
 
 覆盖它的确定性测试是
@@ -394,7 +379,7 @@ Subagent 是 stateless generation，不是持久线程——Harness 记录
 - [x] transcript 落在 `~/.claude/projects/`
 - [x] `claude://resume?session=<id>` 导入 desktop
 
-`claude_agent_sdk`（skeleton 已验证，接线未做）：
+`claude_agent_sdk`（确定性接线已验证，live 兼容性仍为 `review_required`）：
 
 - [x] 持续 member 跨空档存活，同一 native session 多轮
 - [x] `tagSession` / `listSessions` 作为成员注册与发现
@@ -408,4 +393,5 @@ Subagent 是 stateless generation，不是持久线程——Harness 记录
 - [ ] live canary → 退出 `review_required`
 
 实现细节、协议与实测记录见 [`apps/claude-member-runner/`](../../apps/claude-member-runner/)
-的 `README.md`、`FINDINGS.md` 与 `IMPLEMENTATION_PLAN.md`。
+的 `README.md` 与 `FINDINGS.md`。已经完成或被架构决策取代的阶段性实现计划不作为
+长期产品契约保留。

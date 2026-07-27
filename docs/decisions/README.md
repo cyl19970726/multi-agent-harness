@@ -36,7 +36,8 @@ consequences, affected modules, and validation path.
 | [0035](0035-company-os-sql-read-model.md) | active | SQL is a derived Company OS read/query/index layer, not the current canonical Store |
 | [0036](0036-agent-operated-docs-and-code-declared-pages.md) | active | Docs is an Agent-operated substrate with code-declared custom business pages |
 | [0037](0037-agent-member-autonomy-and-collaboration.md) | active | Members own end-to-end assignments; TeamMessage is the collaboration mailbox; subagents remain member-internal |
-| [0038](0038-provider-native-member-plan-negotiation.md) | active | Assignment remains Member Goal; provider-native planning is debated and approved through one correlated message chain |
+| [0038](0038-provider-native-member-plan-negotiation.md) | superseded | Historical provider-native Plan Gate, replaced by ordinary correlated planning |
+| [0039](0039-ordinary-member-planning-and-durable-mailbox-delivery.md) | active | Planning is ordinary Host/Member conversation; Harness owns durable mailbox and adapters prove delivery |
 
 ## Split Rule
 

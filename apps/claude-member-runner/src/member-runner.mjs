@@ -34,15 +34,6 @@
 import { Mailbox, renderTeamMessage } from "./mailbox.mjs";
 import { buildHooks } from "./gates.mjs";
 
-// ADR 0038's chain is `plan_request -> plan_proposal -> (plan_feedback ->
-// plan_proposal)* -> plan_approval`, and plan negotiation is explicitly
-// *optional* — only "complex or high-risk Assignments" use it. So the gate is
-// driven by that chain rather than by a config flag: the Host arms it by
-// sending a `plan_request`, and disarms it by sending `plan_approval`. An
-// assignment nobody requested a plan for is never gated.
-const PLAN_REQUEST_KIND = "plan_request";
-const PLAN_APPROVAL_KIND = "plan_approval";
-
 /**
  * @param {object} deps
  * @param {object} deps.sdk   injected Agent SDK surface: { query, tagSession,
@@ -59,8 +50,6 @@ export function createMemberRunner({ sdk, config, emit }) {
 
   const state = {
     sessionId: null,
-    planRequired: Boolean(config.planRequired),
-    planApproved: false,
     registered: false,
     pending: () => mailbox.pending,
   };
@@ -112,21 +101,6 @@ export function createMemberRunner({ sdk, config, emit }) {
     emit("session_bound", { sessionId, tag, title });
   }
 
-  function noteDelivery(message) {
-    if (message.kind === PLAN_REQUEST_KIND) {
-      // Arm the gate. Re-arming after an approval is legitimate: a Host that
-      // asks for a new plan mid-assignment is starting a fresh negotiation, and
-      // execution should hold again until that one is approved.
-      state.planRequired = true;
-      state.planApproved = false;
-      emit("plan_gate_armed", { correlationId: message.correlation_id });
-    }
-    if (message.kind === PLAN_APPROVAL_KIND) {
-      state.planApproved = true;
-      emit("plan_approved", { correlationId: message.correlation_id });
-    }
-  }
-
   function openQuery(resumeSessionId) {
     return sdk.query({
       prompt: mailbox.stream(renderTeamMessage),
@@ -134,11 +108,11 @@ export function createMemberRunner({ sdk, config, emit }) {
         cwd: config.cwd,
         allowedTools: config.allowedTools,
         disallowedTools: config.disallowedTools,
+        model: config.model ?? undefined,
         // `bypassPermissions`: an interactive permission prompt has nobody to
-        // answer it inside an unattended member. It does not switch the hooks
-        // off — verified live, a `PreToolUse` deny still blocks under it, which
-        // is what the plan gate relies on. It does NOT make this a sandbox and
-        // nothing here tries to be one; see the header comment in `gates.mjs`.
+        // answer it inside an unattended member. It does not switch observation
+        // hooks off, but it does NOT make this a sandbox and nothing here tries
+        // to be one; see the header comment in `gates.mjs`.
         permissionMode: config.permissionMode ?? "bypassPermissions",
         // Members must discover the project's own CLAUDE.md and .claude/
         // skills from their execution root.
@@ -230,7 +204,6 @@ export function createMemberRunner({ sdk, config, emit }) {
 
     /** Deliver a TeamMessage into the live session. */
     deliver(message) {
-      noteDelivery(message);
       mailbox.push(message);
       emit("delivered", { id: message.id, kind: message.kind });
     },

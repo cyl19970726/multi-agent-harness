@@ -3392,15 +3392,11 @@
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "provider-neutral Member plan request, proposal, challenge, revision, and approval protocol",
-    "mapping provider-native plan capabilities into one Assignment correlation chain",
-    "Dashboard plan negotiation projection and execution approval boundary"
+    "historical provider-native Member Plan Gate decision superseded by ADR 0039",
+    "read compatibility for legacy plan_* TeamMessage records"
    ],
    "dependsOn": [
-    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-    "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
-    "docs/dashboard/pages/member-run-focus.md",
-    "docs/dashboard/pages/team-run-war-room.md"
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -3411,25 +3407,57 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 acceptance:mission-wave"
    ],
-   "reorgTrigger": "Provider plan mode, Assignment-derived Member Goal, plan-message kinds, approval semantics, or Dashboard plan review UX changes.",
-   "authorityClass": "canonical_contract",
-   "implementationState": "verified",
+   "reorgTrigger": "Legacy plan_* read compatibility is removed.",
+   "authorityClass": "historical_evidence",
+   "implementationState": "partial",
    "truthRefs": [
     {
      "kind": "schema",
      "ref": "schemas/team-message.schema.json"
-    },
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "simple Host, Member, Harness, and Provider responsibility boundary",
+    "ordinary correlated Member planning without a Plan Gate",
+    "durable mailbox delivery and Member detail projection",
+    "natural-language worktree and peer coordination"
+   ],
+   "dependsOn": [
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
+    "docs/agent-runtime.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 acceptance:mission-wave",
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Mailbox delivery semantics, coordination message shapes, Member autonomy, or provider-native execution boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "verified",
+   "truthRefs": [
     {
-     "kind": "api",
-     "ref": "crates/harness-cli/src/main.rs"
-    },
-    {
-     "kind": "ui",
-     "ref": "apps/agent-dashboard/src/surfaces/MemberRuns.tsx"
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/claude_agent_sdk_member.rs"
     },
     {
      "kind": "test",
      "ref": "apps/agent-dashboard/tests/operator-controls-check.mjs"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
     }
    ]
   }

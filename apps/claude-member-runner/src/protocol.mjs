@@ -16,7 +16,7 @@ export const COMMANDS = Object.freeze({
   deliver: "deliver",
   /** Real provider interrupt; replies with `interrupted`. */
   interrupt: "interrupt",
-  /** Steer permission posture, e.g. plan -> acceptEdits after approval. */
+  /** Change the provider permission posture through its real protocol. */
   set_permission_mode: "set_permission_mode",
   /** Terminal: the Host accepted the handoff, or the run is being torn down. */
   close: "close",
@@ -38,10 +38,6 @@ export const EVENTS = Object.freeze({
   /** A fresh query resumed the same native session after an interrupt. */
   member_resumed_after_interrupt: "member_resumed_after_interrupt",
   permission_mode_changed: "permission_mode_changed",
-  /** A `plan_request` arrived; execution holds until `plan_approval`. */
-  plan_gate_armed: "plan_gate_armed",
-  plan_approved: "plan_approved",
-  plan_gate_blocked: "plan_gate_blocked",
   /** A write landed outside the declared lane. Observed, not blocked. */
   cross_lane_write: "cross_lane_write",
   registry_write_failed: "registry_write_failed",

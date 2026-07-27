@@ -60,37 +60,23 @@ There are now two deliberately separate Codex Team Member modes:
 
 This selection follows ADR [0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
-### Native Goal and plan negotiation
+### Native planning is a Member-internal aid
 
-For Agent Team plan review, only `codex_app_server` currently has a truthful
-approval-gated path:
+`codex_app_server` can expose a native Goal and structured Plan updates, but
+Harness does not turn them into a product Plan Mode or approval gate:
 
 ```text
-Harness Assignment
-  -> thread/goal/set(status=paused; session projection, not a new product Goal)
-  -> turn/start(collaborationMode.mode=plan; complete preset settings)
-  -> turn/plan/updated and plan item observed in memory
-  -> explicit TeamMessage(plan_proposal)
-  -> Host plan_feedback -> another Plan turn on the same thread
-  -> Host plan_approval
-  -> thread/goal/set(status=active)
-  -> resume the same thread
-  -> turn/start(collaborationMode.mode=default; complete preset settings)
-  -> execute
+Host TeamMessage(message): "Return a Markdown plan first; do not execute"
+  -> Member may use Codex native planning inside the same thread
+  -> Member TeamMessage(message): Markdown plan
+  -> Host TeamMessage(message): revise or execute
 ```
 
 Raw plan deltas stay in the Codex native session and transient projection.
-App-server notifications are correlated to the active provider turn so a
-delayed Goal/previous-revision completion cannot terminate the current plan.
-`collaborationMode` is an experimental app-server `turn/start` protocol field,
-not a `codex -c collaboration_mode=...` launch setting. The adapter sends the
-complete `{ mode, settings.model, settings.developer_instructions }` object on
-every planning and execution turn and verifies the effective mode from the
-provider-native turn context in live acceptance.
-Harness persists only the submitted proposal and Host decisions. `codex_exec`
-does not guarantee a read-only planning boundary and therefore reports
-`plan_mode=unsupported`, rather than imitating app-server with prompt wording.
-See [ADR 0038](../decisions/0038-provider-native-member-plan-negotiation.md).
+Harness persists only ordinary coordination messages and optional artifact
+references. Native plan capability remains observable provider metadata, not a
+permission or acceptance claim. See
+[ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
 
 Agent Team currently uses a narrower, explicit profile than the persistent
 AgentMember delivery path:

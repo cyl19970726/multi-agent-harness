@@ -1933,23 +1933,31 @@ pub enum PendingInteractionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum TeamMessageKind {
     Assignment,
-    /// Host asks the assignment owner to plan before execution. The matching
-    /// Assignment remains the durable work/goal anchor.
+    /// Ordinary correlated conversation. Planning requests and responses use
+    /// this kind; providers may use native planning internally, but Harness
+    /// does not create a Plan lifecycle or gate.
+    Message,
+    /// Historical compatibility labels. They remain readable but have no
+    /// special validation, permission, or runtime semantics after ADR 0039.
     PlanRequest,
-    /// Member submits one sanitized Markdown plan revision to the Host.
     PlanProposal,
-    /// Host challenges or requests changes to the latest plan revision.
     PlanFeedback,
-    /// Host accepts the latest plan revision and releases execution.
     PlanApproval,
+    /// Historical intent labels; new writes use `Message` with a readable
+    /// first-line intent such as QUESTION, PROGRESS, or BLOCKER.
     Question,
     Answer,
     Progress,
     Blocker,
+    /// Explicit completion proposal with outcome/evidence for Host review.
     Handoff,
+    /// Historical review intent labels; new writes use `Message`.
     ReviewRequest,
     ReviewResult,
+    /// A real runtime control record, not ordinary chat.
     Control,
+    /// Historical fan-out label; new writes use one `Message` with multiple
+    /// recipients.
     Broadcast,
 }
 

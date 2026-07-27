@@ -140,7 +140,7 @@ async function main() {
     ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].every(
       (kind) => messages.some((item) => item.kind === kind),
     ),
-    "Fixture exposes a complete Member plan debate and approval chain",
+    "Fixture preserves the historical Member plan debate as readable messages",
   );
   check(messages.some((item) => item.deliveries?.some((delivery) => ["queued", "delivered"].includes(delivery.status))), "Fixture includes a concrete unacknowledged delivery");
   check(actions.some((item) => item.evidence_refs?.length) && events.length > 0, "Activity contains evidence-backed actions and folded events");
@@ -249,7 +249,7 @@ async function main() {
       && warRoomSource.includes("recipientLabels")
       && warRoomSource.includes("messagePresentation")
       && warRoomSource.includes("sender portrait")
-      && warRoomSource.includes('normalized === "plan_proposal"')
+      && warRoomSource.includes('normalized === "message"')
       && warRoomSource.includes('normalized === "handoff"'),
     "Team conversation makes sender, recipient portraits, and message taxonomy explicit",
   );

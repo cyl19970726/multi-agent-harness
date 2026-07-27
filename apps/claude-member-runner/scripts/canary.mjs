@@ -22,22 +22,19 @@ const wait = (n, ms=120000) => new Promise(r=>{
 });
 const done = runner.start();
 
-// --- D1: plan 闸真实拦截 ---
-runner.deliver({ id:"p1", kind:"plan_request", from_member_id:"host", correlation_id:"c1", body:"Propose a plan first." });
-runner.deliver({ id:"a1", kind:"assignment", from_member_id:"host", correlation_id:"c1",
-  body:`Write the word GATED into ${SB}/lane/gated.txt using the Write tool. Do it now.` });
-await wait(2);
-const blockedBefore = of("plan_gate_blocked").length;
-const existsBefore = (await import("node:fs")).existsSync(`${SB}/lane/gated.txt`);
-console.log(`D1 armed:   plan_gate_blocked=${blockedBefore}  file_exists=${existsBefore}`);
+// --- D1: ordinary correlated planning conversation ---
+runner.deliver({ id:"p1", kind:"message", from_member_id:"host", correlation_id:"c1",
+  body:`PLAN REQUEST: Propose a concise Markdown plan for writing the word READY into ${SB}/lane/ready.txt. Do not execute yet.` });
+await wait(1);
+const existsBefore = (await import("node:fs")).existsSync(`${SB}/lane/ready.txt`);
+console.log(`D1 planned: file_exists_before_execute=${existsBefore}`);
 
-// --- D2: 批准后放行 ---
-runner.deliver({ id:"p2", kind:"plan_approval", from_member_id:"host", correlation_id:"c1", body:"Approved." });
-runner.deliver({ id:"a2", kind:"assignment", from_member_id:"host", correlation_id:"c1",
-  body:`Now write GATED into ${SB}/lane/gated.txt using the Write tool.` });
-await wait(4);
-const existsAfter = (await import("node:fs")).existsSync(`${SB}/lane/gated.txt`);
-console.log(`D2 released: file_exists=${existsAfter}`);
+// --- D2: Host replies with an ordinary execute message ---
+runner.deliver({ id:"p2", kind:"message", from_member_id:"host", correlation_id:"c1",
+  body:`EXECUTE: The plan is accepted. Now write READY into ${SB}/lane/ready.txt using the Write tool.` });
+await wait(2);
+const existsAfter = (await import("node:fs")).existsSync(`${SB}/lane/ready.txt`);
+console.log(`D2 executed: file_exists=${existsAfter}`);
 
 // --- D3: steer ---
 try { await runner.setPermissionMode("acceptEdits");

@@ -28,7 +28,7 @@ console.log("INTERRUPT receipt:", JSON.stringify(receipt));
 await new Promise(r=>setTimeout(r,1500));
 console.log("POST-INTERRUPT alive? closed=", runner.mailbox.closed, " turns=", turns);
 try {
-  runner.deliver({id:"a2",kind:"question",from_member_id:"host",body:"Reply with exactly: ALIVE-AFTER-INTERRUPT"});
+  runner.deliver({id:"a2",kind:"message",from_member_id:"host",body:"Reply with exactly: ALIVE-AFTER-INTERRUPT"});
   const ok = await wait(turns+1, 60000);
   console.log("POST-INTERRUPT delivery landed:", ok, " turns=", turns);
   const last = of("assistant_message").at(-1);

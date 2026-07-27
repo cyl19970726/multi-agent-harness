@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 
 import { createMemberRunner } from "../src/member-runner.mjs";
 import { Mailbox } from "../src/mailbox.mjs";
-import { isInside, ownedPathsObserver, planApprovalGate } from "../src/gates.mjs";
+import { isInside, ownedPathsObserver } from "../src/gates.mjs";
 import { createFakeSdk } from "./fake-sdk.mjs";
 
 const baseConfig = {
@@ -55,14 +55,14 @@ test("member survives an empty mailbox and consumes a later message", async () =
   assert.equal(of("member_closed").length, 0);
 
   // A message arriving after the lull still has a recipient.
-  runner.deliver({ id: "m2", kind: "progress", from_member_id: "host", body: "also do this" });
+  runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "also do this" });
   await settled();
 
   assert.equal(of("turn_complete").length, 2, "both messages produced a turn");
 
-  runner.close("review_result_accepted");
+  runner.close("host_accepted_handoff");
   await done;
-  assert.equal(of("member_closed")[0].data.reason, "review_result_accepted");
+  assert.equal(of("member_closed")[0].data.reason, "host_accepted_handoff");
 });
 
 test("only the Host ends the member, and the reason is recorded", async () => {
@@ -85,7 +85,7 @@ test("native session is bound once and registered under the TeamRun tag", async 
   const done = runner.start();
   runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "x" });
   await settled();
-  runner.deliver({ id: "m2", kind: "question", from_member_id: "host", body: "y" });
+  runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "y" });
   await settled();
   runner.close("done");
   await done;
@@ -102,7 +102,7 @@ test("undelivered messages are reported rather than silently dropped", async () 
   await settled();
 
   // Two arrive while the member is mid-turn on nothing; close before drain.
-  runner.mailbox.push({ id: "m9", kind: "progress", from_member_id: "peer", body: "late" });
+  runner.mailbox.push({ id: "m9", kind: "message", from_member_id: "peer", body: "late" });
   runner.close("closed_by_host");
   await done;
 
@@ -111,38 +111,6 @@ test("undelivered messages are reported rather than silently dropped", async () 
     closed.undelivered.includes("m9") || of("turn_complete").length === 1,
     "a message is either consumed or reported as undelivered — never lost",
   );
-});
-
-test("plan gate blocks edits until a correlated plan_approval arrives", async () => {
-  const state = { planRequired: true, planApproved: false };
-  const gate = planApprovalGate({ state });
-  const input = { hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {} };
-
-  const blocked = await gate(input);
-  assert.equal(blocked.hookSpecificOutput.permissionDecision, "deny");
-
-  state.planApproved = true;
-  assert.deepEqual(await gate(input), {}, "approval opens the gate");
-});
-
-test("plan_approval delivery flips the gate", async () => {
-  const { runner, of } = harness({ planRequired: true });
-  const done = runner.start();
-  assert.equal(runner.state.planApproved, false);
-
-  runner.deliver({
-    id: "m1",
-    kind: "plan_approval",
-    from_member_id: "host",
-    correlation_id: "corr-1",
-    body: "approved",
-  });
-  await settled();
-
-  assert.equal(runner.state.planApproved, true);
-  assert.equal(of("plan_approved")[0].data.correlationId, "corr-1");
-  runner.close("done");
-  await done;
 });
 
 test("a cross-lane write is reported and still allowed to proceed", async () => {
@@ -191,9 +159,7 @@ test("permission prompts default to off, because nobody can answer them", async 
   const done = runner.start();
   await settled();
   assert.equal(sdk.lastOptions.permissionMode, "bypassPermissions");
-  // Verified live: bypassPermissions skips the prompt layer, not the hooks.
-  // A PreToolUse deny still blocks a Write. See FINDINGS §C.
-  assert.ok(sdk.lastOptions.hooks?.PreToolUse?.length > 0, "gates stay wired");
+  assert.ok(sdk.lastOptions.hooks?.PreToolUse?.length > 0, "observers stay wired");
   runner.close("done");
   await done;
 });
@@ -209,50 +175,27 @@ test("an explicit permission mode is not overridden", async () => {
   await done;
 });
 
-test("a plan_request arms the gate and plan_approval releases it", async () => {
-  // The gate is driven by ADR 0038's own message chain rather than a config
-  // flag. Before this, `planRequired` was only ever set by tests — the Rust
-  // caller never sent it, so the gate could not fire in production at all.
+test("planning messages remain ordinary mailbox conversation", async () => {
   const { runner, of } = harness();
   const done = runner.start();
-  assert.equal(runner.state.planRequired, false, "not gated until asked for");
-
   runner.deliver({
-    id: "p1", kind: "plan_request", from_member_id: "host",
-    correlation_id: "corr-1", body: "propose a plan first",
+    id: "p1",
+    kind: "message",
+    from_member_id: "host",
+    correlation_id: "corr-1",
+    body: "Return a Markdown plan first. Do not execute yet.",
   });
   await settled();
-  assert.equal(runner.state.planRequired, true);
-  assert.equal(runner.state.planApproved, false);
-  assert.equal(of("plan_gate_armed")[0].data.correlationId, "corr-1");
-
   runner.deliver({
-    id: "p2", kind: "plan_approval", from_member_id: "host",
-    correlation_id: "corr-1", body: "approved",
+    id: "p2",
+    kind: "message",
+    from_member_id: "host",
+    correlation_id: "corr-1",
+    body: "Plan reviewed. Revise item 2, then execute.",
   });
   await settled();
-  assert.equal(runner.state.planApproved, true);
-
-  runner.close("done");
-  await done;
-});
-
-test("a second plan_request re-arms the gate after an approval", async () => {
-  // A Host asking for a new plan mid-assignment starts a fresh negotiation;
-  // execution should hold again rather than coast on the earlier approval.
-  const { runner } = harness();
-  const done = runner.start();
-  runner.deliver({ id: "p1", kind: "plan_request", from_member_id: "host", body: "x" });
-  await settled();
-  runner.deliver({ id: "p2", kind: "plan_approval", from_member_id: "host", body: "ok" });
-  await settled();
-  assert.equal(runner.state.planApproved, true);
-
-  runner.deliver({ id: "p3", kind: "plan_request", from_member_id: "host", body: "replan" });
-  await settled();
-  assert.equal(runner.state.planApproved, false, "approval must not carry over");
-  assert.equal(runner.state.planRequired, true);
-
+  assert.equal(of("turn_complete").length, 2);
+  assert.equal(of("plan_gate_armed").length, 0);
   runner.close("done");
   await done;
 });
@@ -278,7 +221,7 @@ test("the member survives an interrupt and consumes the next message", async () 
 
   // The load-bearing assertion: the member is still reachable afterwards.
   const before = of("turn_complete").length;
-  runner.deliver({ id: "m2", kind: "question", from_member_id: "host", body: "still there?" });
+  runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "still there?" });
   await settled();
   assert.ok(of("turn_complete").length > before, "post-interrupt delivery must land");
 

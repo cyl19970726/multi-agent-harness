@@ -97,20 +97,6 @@ async function main() {
     bad("Assignment correlation did not produce the expected anchored lineage");
   }
 
-  const plan = selectors.selectMemberPlanNegotiation([
-    { id: "assignment", kind: "assignment", to_member_ids: ["member-1"], correlation_id: "corr-plan", created_at: "2026-07-19T00:00:01Z" },
-    { id: "request", kind: "plan_request", from_member_id: "host", to_member_ids: ["member-1"], correlation_id: "corr-plan", created_at: "2026-07-19T00:00:02Z" },
-    { id: "proposal-1", kind: "plan_proposal", from_member_id: "member-1", to_member_ids: ["host"], correlation_id: "corr-plan", created_at: "2026-07-19T00:00:03Z" },
-    { id: "feedback", kind: "plan_feedback", from_member_id: "host", to_member_ids: ["member-1"], correlation_id: "corr-plan", created_at: "2026-07-19T00:00:04Z" },
-    { id: "proposal-2", kind: "plan_proposal", from_member_id: "member-1", to_member_ids: ["host"], correlation_id: "corr-plan", created_at: "2026-07-19T00:00:05Z" },
-    { id: "approval", kind: "plan_approval", from_member_id: "host", to_member_ids: ["member-1"], correlation_id: "corr-plan", created_at: "2026-07-19T00:00:06Z" },
-  ], "member-1");
-  if (plan?.status === "approved" && plan.revision === 2 && plan.latestProposal?.id === "proposal-2") {
-    ok("Member plan negotiation derives revision and Host approval from one Assignment chain");
-  } else {
-    bad(`Member plan negotiation was ${plan?.status ?? "missing"} revision ${plan?.revision ?? 0}`);
-  }
-
   if (member?.needsYou.total === 3 && member.needsYou.approvals[0]?.id === "message-review") {
     ok("Needs-you rolls up review request, waiting member, and unacknowledged delivery");
   } else {

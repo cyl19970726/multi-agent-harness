@@ -24,10 +24,10 @@ if queued.is_empty() { break; }   // member terminates on a momentarily empty qu
 ```
 
 A message arriving after that instant has no recipient. It stays `queued`
-forever. This is the runtime half of the unmet clause in ADR 0037 — *"Member …
-owns its plan, Workspace, session … until the Team Lead accepts its handoff
-through a `review_result`"* — and it is why acceptance items 5 and 6 have no
-test anywhere in the repo.
+forever. This is the runtime half of ADR 0037's continuity requirement: a
+Member owns its Assignment, Workspace, and native session until the Team Lead
+explicitly accepts its handoff. The deterministic runner tests now cover the
+previously missing continuity cases.
 
 ## Mapping to the model
 
@@ -38,18 +38,17 @@ test anywhere in the repo.
 | Interrupt with a real acknowledgement | `query.interrupt()` → `still_queued` |
 | Steer | `query.setPermissionMode()` / `setModel()` |
 | `native_session_id` binding | `system/init` → `session_id` |
-| Member registry (no second roster) | `tagSession(id, "<team_run_id>:<member_run_id>")` |
+| Provider session discovery | `tagSession(id, "<team_run_id>:<member_run_id>")` |
 | Member discovery | `listSessions()` filtered by that tag |
 | Member detail page activity | `getSessionMessages(id)` — read on demand, never mirrored |
 | Retry without polluting the original | `forkSession: true` |
-| owned-paths enforcement (ADR 0033) | `PreToolUse` deny |
-| Plan gate (ADR 0038) | `PreToolUse` deny until `plan_approval` |
+| owned-path observation (ADR 0033) | `PreToolUse` event; never containment |
+| Ordinary planning (ADR 0039) | Correlated `message`; no tool gate |
 | `evidence_refs` (Issue #232) | `PostToolUse` observation |
 
-`tagSession` is the part worth noticing: the member roster lives in the
-provider's own session registry, so Harness stores the binding and nothing else.
-That is stricter adherence to ADR 0032 than the current `MemberRun.native_session`
-locator, not looser.
+`tagSession` improves provider-side discovery. Harness still owns the canonical
+AgentTeam/MemberRun roster and stores only the native-session binding, not a
+second transcript.
 
 ## Protocol
 
@@ -59,7 +58,7 @@ events. stderr is diagnostics and is never parsed.
 Commands: `start`, `deliver`, `interrupt`, `set_permission_mode`, `close`.
 Events: `member_started`, `session_bound`, `assistant_message`, `turn_complete`,
 `turn_idle`, `delivered`, `interrupted`, `permission_mode_changed`,
-`plan_approved`, `plan_gate_blocked`, `owned_path_violation`,
+`cross_lane_write`,
 `registry_write_failed`, `member_closed`, `runner_error`.
 
 **`turn_complete` is not a lifecycle event.** Only an explicit `close` produces
@@ -77,7 +76,7 @@ Events: `member_started`, `session_bound`, `assistant_message`, `turn_complete`,
   "disallowedTools": [],
   "permissionMode": "default",
   "settingSources": ["project", "user"],   // loads the project's CLAUDE.md + skills
-  "planRequired": true,                    // ADR 0038 approval gate
+  "model": "claude-…",
   "resumeSessionId": null, "forkSession": false
 }
 ```
@@ -92,7 +91,7 @@ node --test "apps/claude-member-runner/test/*.test.mjs"
 printf '%s\n' \
   '{"command":"start","payload":{"teamRunId":"t","memberRunId":"m","memberName":"Demo","cwd":"/tmp/p"}}' \
   '{"command":"deliver","payload":{"id":"m1","kind":"assignment","from_member_id":"host","body":"hi"}}' \
-  '{"command":"close","payload":{"reason":"review_result_accepted"}}' \
+  '{"command":"close","payload":{"reason":"host_accepted_handoff"}}' \
   | node apps/claude-member-runner/bin/claude-member-runner.mjs --fake
 ```
 
@@ -100,12 +99,13 @@ Live execution additionally needs `pnpm add @anthropic-ai/claude-agent-sdk` and
 valid provider credentials. Neither is done here: adding a provider dependency
 and re-authenticating are Human decisions under AGENTS.md.
 
-## Not done yet
+## Remaining limits
 
-- No Rust caller. `run_claude_team_member` still runs the `-p` loop; wiring it
-  to spawn this process is the next change.
-- No live canary. Until one runs, `claude_agent_sdk` stays `review_required` and
-  must not be presented as a reviewed-compatible mode.
+- The Rust bridge is wired, but foreground `team-run start` still closes an
+  idle member after its configured grace window. Explicit Host-owned lifetime
+  remains required before this mode can claim full persistence.
+- A live canary exists, but provider version review and proportional reruns
+  remain required before claiming compatibility for a new Claude release.
 - `getSessionMessages` projection for the Member detail page is not wired here —
   it belongs on the read path (`GET /v1/member-runs/{id}/native-activity`).
 - Auth policy: the Agent SDK docs state Anthropic does not permit third-party

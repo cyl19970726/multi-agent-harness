@@ -21,6 +21,19 @@ Assignment message = owned work
 Provider-native session = member execution truth
 ```
 
+Keep the operating model equally small:
+
+```text
+Host = goal, boundaries, lane ownership, conflicts, acceptance
+Member = autonomous end-to-end lane owner
+Harness = identity, mailbox, correlation, delivery facts, evidence refs
+Provider = native session, tools, subagents, execution, resume
+```
+
+If the Host can express an action clearly in an Assignment or message, prefer
+that over adding another Harness state machine. Planning, worktree creation,
+peer coordination, and waiting for review normally belong to this rule.
+
 Never turn a Wave into a task graph, runtime container, synchronization barrier,
 or transcript store. A member may continue working while the Host advances to
 the next Wave. Never duplicate provider tool, command, chat, or thinking streams
@@ -32,7 +45,7 @@ change composition, integrate results, and decide acceptance. Do not create an
 implicit Lead MemberRun. Add the Host as a member only when it deliberately owns
 an execution lane with its own native session.
 
-Read `docs/product/mission-wave-host-plan.md`, ADR 0034, ADR 0037, and ADR 0038
+Read `docs/product/mission-wave-host-plan.md`, ADR 0034, ADR 0037, and ADR 0039
 when the product contract itself is in question. Do not reproduce their schemas
 in this skill.
 
@@ -64,9 +77,9 @@ internal test subagent is not independent review.
    the primary path.
 6. Send correlated assignment messages. Use `--origin-wave-id` only for
    navigation and explanation.
-7. For a complex or high-risk lane, request a Member plan before starting
-   execution. Debate the proposal through correlated feedback, then explicitly
-   approve it. Simple work may skip this negotiation.
+7. For a complex or high-risk lane, use an ordinary correlated message to ask
+   for a Markdown plan before execution. Reply with revisions or permission to
+   execute. Do not create a Plan Mode or Plan Gate.
 8. **Question and coordinate:** answer correlated member questions, allow
    same-run peer coordination, and use progress, blockers, review, steer,
    interrupt, and provider-native resume according to real capabilities.
@@ -138,8 +151,8 @@ harness team-run send --id <team-run-id> --from host \
   --to <member-run-id> --kind assignment --body "<owned work>" \
   --correlation-id <stable-work-id> --origin-wave-id <wave-id>
 harness team-run send --id <team-run-id> --from host \
-  --to <member-run-id> --kind plan_request \
-  --body "<what the plan must resolve>" \
+  --to <member-run-id> --kind message \
+  --body "Return a Markdown plan first; do not execute. Resolve: <questions>" \
   --correlation-id <stable-work-id> --causation-id <assignment-message-id>
 harness team-run add-member --id <team-run-id> \
   --member repair:fixer:codex --assignment "<repair work>" \
@@ -159,6 +172,7 @@ harness team-run inbox --id <team-run-id> \
   --member-run-id <member-run-id> --json
 harness team-run inbox --id <team-run-id> \
   --member-run-id <member-run-id> --all --json
+harness member-run show --id <member-run-id> --json
 ```
 
 ## Use Messages Deliberately
@@ -166,38 +180,31 @@ harness team-run inbox --id <team-run-id> \
 | Need | Record |
 | --- | --- |
 | Start owned work | `assignment` with stable correlation |
-| Ask a complex lane to plan first | `plan_request` caused by the Assignment |
-| Member submits or revises its plan | `plan_proposal` caused by request/feedback |
-| Host challenges a proposal | `plan_feedback` caused by latest proposal |
-| Host allows execution | `plan_approval` caused by latest proposal |
-| Member needs a Host/peer decision | `question`, then correlated `answer` |
-| Useful checkpoint | `progress` |
-| Work cannot continue | `blocker` with needed actor/action |
-| Independent inspection | `review_request`, then `review_result` |
-| Return a lane | `handoff`, then Lead `review_result` |
+| Any natural conversation | `message`, preserving correlation and direct cause |
+| Plan first | ordinary `message`: request → Markdown reply → revise/execute |
+| Return a lane | `handoff` with checks and evidence |
 | Real current-turn injection | Steer only when mode supports it |
 | Stop a real provider turn | Interrupt with terminal acknowledgement |
 
-Provider-pausing questions, approvals, and plan reviews are
+Question, answer, progress, blocker, review, and peer coordination are intents
+inside ordinary messages, not additional lifecycle states. Historical
+specialized kinds remain readable but are read-only on new public writes.
+
+Provider-pausing questions and approvals are
 `PendingInteraction`, not ordinary chat. Unsupported live Steer becomes a
 clearly labeled queued next-round message; never fabricate a control ACK.
 
-The semantic Member plan review is a `TeamMessage` chain. Provider-native Plan
-or ExitPlanMode pauses may additionally create a linked `PendingInteraction`,
-but provider completion never substitutes for Host `plan_approval`.
-
 ## Debate A Member Plan
 
-Use planning only where review adds value. The Host controls the decision; the
-Member owns the proposal.
+Use planning only where review adds value. Keep it ordinary:
 
 ```text
 assignment
-  -> Host plan_request
-  -> Member plan_proposal r1
-  -> Host plan_feedback ("argue": challenge assumptions or boundaries)
-  -> Member plan_proposal r2
-  -> Host plan_approval
+  -> Host message: "plan first; do not execute"
+  -> Member message: Markdown plan r1
+  -> Host message: challenge assumptions or boundaries
+  -> Member message: Markdown plan r2
+  -> Host message: "execute revision 2"
   -> execute in the same MemberRun and native session
 ```
 
@@ -205,9 +212,8 @@ Keep the same Assignment correlation throughout. Do not create a Wave revision
 for every Member plan revision. Update or advance the Wave only when Host's
 overall plan or judgment boundary changes.
 
-For providers with a native Goal, keep the Assignment projection paused during
-plan debate. Activate it only after correlated `plan_approval`; provider Goal
-continuation must not cross the Host decision boundary.
+Provider-native Goal or Plan features are optional Member-internal aids. Never
+present them as a Harness approval or permission boundary.
 
 Member-to-member messages are allowed inside the same TeamRun and remain
 visible to the Lead. They queue for the recipient's next available round and
@@ -249,6 +255,10 @@ lifecycle or make MCP installation a correctness requirement.
   next Wave without replacing its MemberRun or native session.
 - On conflict, make the Host own integration and record the decision in Wave
   context.
+- When isolation is useful, tell the Member in the Assignment to create and use
+  an independent Git worktree. The Member owns the Git mechanics and reports
+  the actual path, branch, commit/checks, and any shared-file conflicts; do not
+  create a Worktree scheduler or Task Graph.
 - On retry, preserve prior attempts and native session references. Resume only
   through a verified provider-native session operation.
 - On sensitive external action, stop and obtain Human approval. A Wave advance

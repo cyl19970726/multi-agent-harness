@@ -19,8 +19,8 @@ Confirm these values before acting:
   Workspace;
 - exact Host and peer addresses.
 
-If an identity or boundary is missing, send a correlated `question`. Do not
-invent it from a display name or provider chat.
+If an identity or boundary is missing, send a correlated `message` whose first
+line says `QUESTION:`. Do not invent it from a display name or provider chat.
 
 Read current work:
 
@@ -41,22 +41,19 @@ Translate the Assignment into your own design, implementation, and verification
 steps. Keep the same Assignment correlation across rounds and Host-plan Waves.
 Do not create a new Goal object or wait for the Wave to schedule you.
 
-When the Inbox contains `plan_request`, do not implement yet:
+When Host sends an ordinary message asking for a plan first:
 
-1. Enter the provider's native Plan mode when the adapter exposes it.
-2. Inspect only enough read-only context to form a concrete plan.
-3. Submit `plan_proposal` to Host, caused by the request or latest feedback.
-4. If Host sends `plan_feedback`, argue with evidence where appropriate,
-   revise the plan in the same native session, and submit the next revision.
-5. Begin execution only after correlated `plan_approval`.
+1. Inspect enough context to form a concrete plan.
+2. Reply with concise Markdown in the same Assignment correlation.
+3. Address Host challenges in the same native session.
+4. Execute only after Host sends an ordinary message telling you to proceed.
 
 The Assignment is still your Goal. A provider-native Goal is only a session
 projection of it. Plan revision does not replace your MemberRun, Workspace,
 correlation, or native session.
 
-While plan approval is pending, keep a provider-native Goal paused. Do not mark
-it active or let automatic Goal continuation start execution before the Host's
-correlated `plan_approval`.
+Provider-native planning is optional and internal. Harness has no Plan Mode or
+Plan Gate; do not treat a provider mode or tool hook as Host approval.
 
 Use a native subagent when a bounded subtask can return to your context. Keep
 work inline when delegation overhead is larger than the task. Subagents:
@@ -74,30 +71,26 @@ Use the Assignment correlation for every work-chain message:
 
 ```bash
 harness team-run send --id <team-run-id> \
-  --from <member-run-id> --to host --kind question \
+  --from <member-run-id> --to host --kind message \
   --body "<decision-shaped question and recommendation>" \
   --correlation-id <correlation-id>
 
 harness team-run send --id <team-run-id> \
-  --from <member-run-id> --to <peer-member-run-id> --kind progress \
+  --from <member-run-id> --to <peer-member-run-id> --kind message \
   --body "<coordination needed by the peer>" \
   --correlation-id <correlation-id>
 
 harness team-run send --id <team-run-id> \
-  --from <member-run-id> --to host --kind plan_proposal \
+  --from <member-run-id> --to host --kind message \
   --body "<Markdown execution plan>" \
   --correlation-id <correlation-id> \
-  --causation-id <plan-request-or-feedback-message-id>
+  --causation-id <host-message-id>
 ```
 
-Send:
-
-- `question` for a decision or missing boundary;
-- `plan_proposal` for an explicit Host-requested plan or revision;
-- `progress` after a meaningful result or plan change;
-- `blocker` for a specific failure and needed action;
-- `review_request` when another member should inspect evidence;
-- `handoff` when the lane meets its completion standard.
+Use `message` for questions, answers, progress, blockers, planning, review, and
+peer coordination. State the intent in the first sentence. Use `handoff` only
+when the lane meets its completion standard. Historical specialized message
+kinds remain readable but are read-only on new public writes.
 
 Member-to-Host is visible to the control plane immediately. Peer messages queue
 for the peer's next available round. Read the Inbox again after meaningful
@@ -123,11 +116,14 @@ affects acceptance.
 ## Respect Permission And Workspace Boundaries
 
 Modify only owned paths. Coordinate shared-file changes with the Host or peer
-before editing. Do not deploy, merge protected branches, alter remote/shared
+before editing. If the Assignment asks for isolation, create an appropriate Git
+worktree yourself, work there, and report its absolute path, branch, commit,
+checks, and shared-file conflicts. Do not wait for Harness to schedule Git
+steps. Do not deploy, merge protected branches, alter remote/shared
 state, spend money, submit legal actions, change permissions, or perform
 destructive operations without the applicable explicit approval.
 
-Send a `blocker` with the exact action, blast radius, options, and your
+Send an ordinary message stating `BLOCKER` with the exact action, blast radius, options, and your
 recommendation when the permission ceiling stops you.
 
 ## Hand Off Evidence
@@ -149,7 +145,7 @@ SUGGESTED NEXT:
 - integration, review, or follow-up
 ```
 
-Remain available. The lane ends only when the Host sends an accepting
-`review_result`, deactivates the member, or ends the run. Address review
+Remain available. The lane ends only when the Host sends an ordinary message
+accepting the Handoff, deactivates the member, or ends the run. Address review
 findings in the same MemberRun, Assignment correlation, Workspace, and native
 session unless the Host explicitly changes the contract.

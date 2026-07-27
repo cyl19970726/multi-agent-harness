@@ -4,6 +4,12 @@ Everything below was executed against the real provider (Claude Code 2.1.220,
 bundled by `@anthropic-ai/claude-agent-sdk` 0.3.220) in this worktree. Facts
 only; anything not verified is marked as such.
 
+> Historical evidence note: the plan-gate experiments below describe an
+> implementation that ADR 0039 subsequently retired. Harness now represents
+> planning as ordinary correlated Markdown conversation; there is no Plan
+> Mode, Plan Gate, or plan-approval message lifecycle. The old measurements are
+> retained only to explain why the simpler contract was chosen.
+
 ## Verified
 
 | # | Claim | Evidence |
@@ -14,7 +20,7 @@ only; anything not verified is marked as such.
 | A4 | The provider's own registry is a sufficient member roster | `tagSession(id,"trun-live-1:mrun-RuntimeBuilder")`, then `listSessions({dir})` filtered by tag returns exactly that member |
 | A5 | An SDK-created session imports into Claude Desktop | `open "claude://resume?session=<id>"` → `Imported CLI session … as Desktop session local_<id>`; MCP `list_sessions` shows `local_851b37dd-…` |
 | A6 | Resume after import appends coherently — **sequentially** | transcript 19 → 27 lines, user=3 / assistant=3, same session id, no fork, no conflict entry in the desktop log |
-| A7 | Unit suite green | 9/9 |
+| A7 | Unit suite green | 12/12 |
 
 Two things worth keeping:
 
@@ -35,8 +41,8 @@ Two things worth keeping:
   while Harness drives.**
 - ~~Long-lived interrupt/steer against the real provider.~~ Run on 2026-07-27;
   it found a defect. See §E.
-- **Plan-approval gate against the real provider.** Unit-tested only. (The
-  owned-paths gate has since been verified live — see §C.)
+- **OS-level containment.** Owned-path hooks are observations, not a sandbox;
+  a worktree or container is required for a real isolation boundary.
 
 ## Corrections to earlier conclusions in this repo's discussion
 
@@ -128,15 +134,15 @@ Two consequences to keep visible:
 Covered by `a_bare_claude_member_defaults_to_the_agent_sdk_mode`.
 
 
-## C. `bypassPermissions` does not disable the gates (2026-07-27)
+## C. `bypassPermissions` does not disable hooks (2026-07-27)
 
 The runner now defaults to `permissionMode: "bypassPermissions"`, matching what
 `claude_team_permission_mode()` already sent on the `claude_cli` path. An
 interactive permission prompt has nobody to answer it inside an unattended
 member; leaving that layer on only produces a deadlock.
 
-The obvious worry is that it also turns off the owned-paths and plan gates.
-It does not. Both controls were run live against Claude Haiku 4.5 with
+The original experiment asked whether it also turns off hook execution. It
+does not. The owned-path hook was run live against Claude Haiku 4.5 with
 `permissionMode: "bypassPermissions"`, `allowedTools: ["Write","Read"]` and
 `ownedPaths: ["owned"]` (`scripts/gate-live.mjs`):
 
@@ -175,16 +181,13 @@ lane, was that intended?" is the question that actually matters.
 coordination and acceptance. Real containment, if ever needed, has to come from
 the OS — a worktree the member cannot escape, or a container.
 
-The plan gate still blocks, because it is a *sequencing* contract from ADR 0038
-(do not execute before the Host approves), not a safety one.
-
 Covered by `a cross-lane write is reported and still allowed to proceed`.
 
 
-## D. The plan gate was never armed in production (2026-07-27)
+## D. Why the experimental plan gate was retired (2026-07-27)
 
-Keeping the plan gate — the one hook that still blocks — turned out to require
-wiring it, not just leaving it in place.
+The experiment revealed that a provider-specific plan gate required a second
+state machine alongside ordinary Host/Member conversation.
 
 `planRequired` was read as `Boolean(config.planRequired)`, and the Rust caller
 never sent that field: `grep -c planRequired` over `main.rs` returned 0. So it
@@ -192,8 +195,7 @@ was permanently `false` and the gate could only ever fire in unit tests that set
 it directly. A gate that cannot fire is worse than no gate: it reads as a
 control in review and enforces nothing.
 
-It is now driven by ADR 0038's own chain rather than by config, which also
-keeps plan negotiation *optional* as that ADR specifies:
+An intermediate implementation wired this chain:
 
 ```text
 plan_request  -> gate armed   (plan_gate_armed)
@@ -201,26 +203,21 @@ plan_approval -> gate released (plan_approved)
 neither       -> never gated
 ```
 
-A second `plan_request` re-arms it; an earlier approval must not carry a fresh
-negotiation. Verified end to end on the Rust side: `queued_messages_for` does
-not filter by kind, the follow-up `deliver` payload carries
-`team_message_kind_label(&message.kind)`, and `TeamMessageKind::PlanRequest`
-labels as `"plan_request"` — so the message the runner keys on is the message
-the harness actually sends.
-
-Covered by `a plan_request arms the gate and plan_approval releases it` and
-`a second plan_request re-arms the gate after an approval`.
+ADR 0039 later removed this chain. The Host now sends “return a plan; do not
+execute”, the Member replies with Markdown, and the Host responds with an
+ordinary revise-or-execute message in the same correlation. That model works
+across providers and has no hidden gate state.
 
 
 ## E. The canary failed, and that was the point (2026-07-27)
 
-A live probe of interrupt / steer / the plan gate against Claude Haiku 4.5.
+A live probe originally covered interrupt, steer, and the experimental plan
+gate against Claude Haiku 4.5.
 
 | | Result |
 | --- | --- |
 | steer — `setPermissionMode("acceptEdits")` | pass, acknowledged `{"mode":"acceptEdits"}` |
-| plan gate release — write after `plan_approval` | pass |
-| plan gate block — write while armed | **not exercised**; see below |
+| historical plan-gate experiment | inconclusive; subsequently retired by ADR 0039 |
 | interrupt | **failed**, then fixed and re-verified |
 
 ### The interrupt defect

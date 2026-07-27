@@ -34,7 +34,11 @@ fn init_project(home: &TempHome, name: &str) -> String {
 fn write_fake_runner(dir: &Path, follow_up_after_first_turn: bool) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join("fake-runner.mjs");
-    let follow_up = if follow_up_after_first_turn { "true" } else { "false" };
+    let follow_up = if follow_up_after_first_turn {
+        "true"
+    } else {
+        "false"
+    };
     let script = format!(
         r#"
 import {{ spawnSync }} from "node:child_process";
@@ -58,10 +62,14 @@ for await (const line of rl) {{
     emit("session_bound", {{ sessionId: "fake-native-session-0001" }});
   }} else if (command === "deliver") {{
     turns += 1;
+    emit("delivered", {{ id: payload.id, kind: payload.kind }});
     emit("assistant_message", {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
-    emit("turn_complete", {{ subtype: "success" }});
+    emit("turn_complete", {{
+      subtype: "success",
+      evidenceRefs: turns === 1 ? ["src/member.ts"] : [],
+    }});
 
     // Strictly after turn 1 is reported, so the Host has already seen an empty
     // queue by the time this lands.
@@ -72,7 +80,7 @@ for await (const line of rl) {{
         "--id", cfg.teamRunId,
         "--from", "host",
         "--to", cfg.memberRunId,
-        "--kind", "question",
+        "--kind", "message",
         "--body", "late follow-up",
       ], {{ stdio: "ignore" }});
     }}
@@ -161,6 +169,10 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     assert!(
         body.contains("turn-2"),
         "second round should report turn-2.\ninbox: {body}"
+    );
+    assert!(
+        body.contains("src/member.ts"),
+        "runner evidence refs must survive into the durable handoff.\ninbox: {body}"
     );
 }
 

@@ -12,9 +12,9 @@
  * A member therefore stops existing at the instant its queue is momentarily
  * empty. A TeamMessage that arrives one millisecond later has no recipient:
  * it stays `queued` forever and nobody ever consumes it. That is the runtime
- * half of ADR 0037's unmet clause — "Member ... owns its plan, Workspace,
- * session ... until the Team Lead accepts its handoff through a
- * `review_result`" — and it is why acceptance items 5 and 6 have no test.
+ * half of ADR 0037's unmet clause — a Member owns its Assignment, Workspace,
+ * and native session until the Team Lead explicitly accepts its handoff — and
+ * it is why acceptance items 5 and 6 originally had no test.
  *
  * A Mailbox is an async message stream that does NOT end when it is empty.
  * `next()` parks until either `push()` delivers a message or `close()` is
@@ -66,9 +66,9 @@ export class Mailbox {
   }
 
   /**
-   * End the member's lifetime. This is a Host decision (an accepted
-   * `review_result`, an explicit stop, or run teardown) — never an inference
-   * from an empty queue.
+   * End the member's lifetime. This is a Host decision (an ordinary acceptance
+   * message followed by close, an explicit stop, or run teardown) — never an
+   * inference from an empty queue.
    *
    * Messages already queued are preserved and reported by `drain()` so the
    * caller can requeue them rather than lose them, which is the same contract
