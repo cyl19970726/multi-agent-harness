@@ -724,11 +724,13 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const space = text(entry.space, text(entry.space_id, "Unassigned"));
     docsBySpace.set(space, [...(docsBySpace.get(space) ?? []), entry]);
   });
-  const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].map(([space, entries]) => ({
-    id: `space:${space}`,
-    label: space,
-    href: docsDocumentHref(text(entries[0]?.id)),
-    children: entries.map((entry) => {
+  const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })).map(([space, entries]) => {
+    const sortedEntries = [...entries].sort((left, right) => text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" }));
+    return {
+      id: `space:${space}`,
+      label: space,
+      href: docsDocumentHref(text(sortedEntries[0]?.id)),
+      children: sortedEntries.map((entry) => {
       const documentId = text(entry.id);
       return {
         id: documentId,
@@ -738,7 +740,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
         selected: selected.documentId === documentId,
       };
     }),
-  }));
+    };
+  });
   if (module && workspaceTree.length) {
     const parent = workspaceTree.find((entry) => entry.label === text(workspaceDocument?.space, text(workspaceDocument?.space_id))) ?? workspaceTree[0];
     const moduleId = text(module.id);
@@ -1075,6 +1078,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       title: focusDocument ? text(focusDocument.title, "Untitled document") : "No document selected",
       breadcrumb: focusDocument?.space || focusDocument?.space_id ? [text(focusDocument.space, text(focusDocument.space_id))] : undefined,
       description: focusDocument ? "This document is rendered from the supplied Company OS projection." : "Select a document or provide a document projection to begin.",
+      documentTree: workspaceTree,
       properties: documentProperties,
       blocks: documentBlocks,
       sourceLinks: linkEntries([sourceLink]),

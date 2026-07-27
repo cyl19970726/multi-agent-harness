@@ -1,12 +1,14 @@
-import { Link2, MoreHorizontal } from "lucide-react";
+import { ChevronDown, FolderKanban, Link2, MoreHorizontal } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DocSection, DocumentSurface } from "@/components/workbench/atoms";
+import { cn } from "@/lib/utils";
 
 import { buildDocsAppendBlockCommands, buildDocsChildDocumentCommand, buildDocsInstantiateTemplateBlockCommands, buildDocsReorderBlocksCommand } from "./documentAction";
 import { RelationChips } from "./RelationChips";
-import type { CompanyOsDocsActionCommand, CompanyOsDocumentBlock, CompanyOsDocumentPageData } from "./types";
+import type { CompanyOsDocsActionCommand, CompanyOsDocumentBlock, CompanyOsDocumentPageData, CompanyOsWorkspaceTreeItem } from "./types";
+import { preserveCompanyOsWorkbenchContext } from "./url";
 
 type DocsBlockKind = "rich_text" | "heading" | "callout" | "table";
 
@@ -72,6 +74,50 @@ function Block({ block }: { block: CompanyOsDocumentBlock }) {
 function ContextBlock({ label, links }: { label: string; links?: CompanyOsDocumentPageData["sourceLinks"] }) {
   if (!links?.length) return null;
   return <section className="space-y-2"><h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</h2><RelationChips links={links} /></section>;
+}
+
+function DocumentArchitectureTreeItem({ item, depth = 0 }: { item: CompanyOsWorkspaceTreeItem; depth?: number }) {
+  const hasChildren = Boolean(item.children?.length);
+  const className = cn(
+    "group flex w-full items-start gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs leading-4 text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    depth === 0 ? "pl-2" : depth === 1 ? "pl-5" : depth === 2 ? "pl-8" : "pl-11",
+    item.selected && "bg-primary/10 text-primary",
+  );
+  const body = (
+    <>
+      {hasChildren ? <ChevronDown className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden /> : <span className="mt-0.5 w-3 shrink-0" />}
+      <FolderKanban className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="block break-words font-medium">{item.label}</span>
+        {item.meta && <span className="block text-[10px] text-muted-foreground">{item.meta}</span>}
+      </span>
+    </>
+  );
+  return (
+    <li>
+      {item.href ? (
+        <a href={preserveCompanyOsWorkbenchContext(item.href)} data-company-os-ref={item.ref} data-docs-document-architecture-link="true" className={className}>{body}</a>
+      ) : (
+        <div data-company-os-ref={item.ref} className={className}>{body}</div>
+      )}
+      {hasChildren && <ul>{item.children?.map((child) => <DocumentArchitectureTreeItem key={child.id} item={child} depth={depth + 1} />)}</ul>}
+    </li>
+  );
+}
+
+function DocumentArchitecture({ tree }: { tree?: CompanyOsDocumentPageData["documentTree"] }) {
+  if (!tree?.length) return null;
+  return (
+    <section className="space-y-2 rounded-lg border border-border bg-card/70 p-3" aria-label="Document architecture" data-docs-document-architecture="true">
+      <div>
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Document architecture</h2>
+        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">Store projection directory. Links preserve the current api/project context.</p>
+      </div>
+      <ul className="max-h-[22rem] space-y-0.5 overflow-auto pr-1">
+        {tree.map((item) => <DocumentArchitectureTreeItem key={item.id} item={item} />)}
+      </ul>
+    </section>
+  );
 }
 
 function moveBlockId(blocks: CompanyOsDocumentBlock[], index: number, delta: -1 | 1): string[] {
@@ -277,6 +323,7 @@ export function BasicDocumentPage({
           {document.updatedLabel && <p className="border-t border-border pt-4 text-xs text-muted-foreground">{document.updatedLabel}</p>}
         </DocumentSurface>
         <aside className="space-y-5 border-t border-border pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0" aria-label="Document context">
+          <DocumentArchitecture tree={document.documentTree} />
           <ContextBlock label="Source" links={document.sourceLinks} />
           <ContextBlock label="Results" links={document.resultLinks} />
           <ContextBlock label="Connected records" links={document.connectedRecords} />

@@ -59,9 +59,9 @@ async function loadDocumentAction() {
 
 async function main() {
   const fixture = JSON.parse(await readFile(join(repositoryRoot, "docs", "design", "company-os-v1", "fixtures", "company-os-trademark-v1.json"), "utf8"));
-  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter] = await Promise.all([
+  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter, types] = await Promise.all([
     source("index.ts"), source("DocsWorkspace.tsx"), source("BasicDocumentPage.tsx"),
-    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"),
+    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"), source("types.ts"),
   ]);
 
   check(index.includes("DocsWorkspace") && index.includes("BasicDocumentPage") && index.includes("StructuredDocumentView") && index.includes("CompanyHome") && index.includes("DocumentHealthReview"), "public Docs API exports all five Company OS Docs surfaces");
@@ -81,6 +81,7 @@ async function main() {
   check(document.includes('data-docs-slash-menu="true"') && document.includes('aria-label="Slash menu block commands"') && document.includes("data-docs-slash-command") && document.includes("/heading"), "Document Focus exposes a slash-menu affordance for governed Block type selection");
   check(document.includes('data-docs-block-order-boundary="true"') && document.includes("Document.block_ids sequence") && document.includes("data-docs-block-reorder") && document.includes("governed document.append update"), "Document Focus exposes native block order and governed reorder controls");
   check(document.includes("data-docs-authoring-error-boundary") && document.includes("role=\"status\"") && document.includes("server validates definition, policy, actor permission"), "Document Focus exposes governed authoring error and permission feedback boundary");
+  check(document.includes('data-docs-document-architecture="true"') && document.includes('data-docs-document-architecture-link="true"') && document.includes("DocumentArchitecture") && document.includes("preserveCompanyOsWorkbenchContext"), "Document Focus exposes projection-backed document architecture navigation that preserves live api/project context");
   check(document.includes('data-docs-empty-document="true"') && document.includes("data-docs-template-provenance") && document.includes("template Blocks are copied only by an explicit governed instantiation action"), "Document Focus surfaces empty document and template provenance states without fabricating content");
   check(document.includes("data-docs-template-record-policy") && document.includes("Template Blocks do not create records") && document.includes("Use a governed Relation after the child Document and TypedRecord exist"), "Document Focus exposes template-to-TypedRecord relation boundary during child Document creation");
   check(document.includes('aria-label="Block kind"') && document.includes('value: "heading"') && document.includes('value: "callout"') && document.includes('value: "table"'), "Document Focus exposes structured Block authoring controls");
@@ -88,6 +89,7 @@ async function main() {
   check(home.includes("Review decision") && home.includes("decisionRequester") && home.includes("decisionCollaborators"), "Home gives the pending decision a first-viewport review action and structured responsibility context");
   check(home.includes("Button asChild") && home.includes("data.decisionRequired.href") && home.includes("disabled"), "Home renders a real approval link without a callback and never leaves an enabled no-op CTA");
   check(adapter.includes("adaptCompanyOsDocsProjection") && adapter.includes("financialRecordType"), "projection adapter maps financial type from an explicit record field");
+  check(types.includes("documentTree?: CompanyOsWorkspaceTreeItem[]") && adapter.includes("documentTree: workspaceTree"), "projection adapter supplies the same Store-backed document tree to Document Focus without hard-coded project navigation");
   check(adapter.includes("buildDocumentHealthData") && adapter.includes("missing_document_record_relation") && adapter.includes("No deletion without governed action") === false, "projection adapter computes document health without embedding UI policy copy");
   check(workspace.includes('data-docs-template-library="true"') && workspace.includes("data-docs-template-block-count") && workspace.includes("template_ref only") && workspace.includes("copy Blocks via Actions"), "Docs Workspace exposes a native template library with provenance and instantiation boundaries");
   check(workspace.includes("data-docs-template-lifecycle") && workspace.includes("harness company docs template status") && workspace.includes("archiving a template does not mutate existing Documents"), "Docs Workspace exposes template lifecycle state and governed status boundary");
@@ -134,6 +136,7 @@ async function main() {
   const documentTables = pages.document.blocks.filter((block) => block.type === "table").map((block) => block.table.caption);
   check(pages.workspace.rootSelected === true && !pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.selected), "Docs workspace selection remains on the Company workspace root");
   check(pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")) && pages.workspace.recentlyUpdated?.some((link) => link.href?.startsWith("?surface=docs&document=")), "Docs workspace supplies URL-addressable document links for tree and recent records");
+  check(pages.document.documentTree?.flatMap((item) => item.children ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")), "Document Focus receives URL-addressable document architecture links from the same projection-backed tree");
   check(pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => /Trademark Management/.test(item.label) && /Proposed/.test(item.meta ?? "")), "proposed module is discoverable from the Company workspace tree");
   check(pages.workspace.maintainers?.some((actor) => actor.id === "actor-agent-document-architecture" && actor.actorType === "Standing Agent"), "Docs workspace exposes projection-backed Standing Agent maintainers");
   check(pages.moduleView.provenance?.moduleId === "module-trademark-management" && pages.moduleView.provenance?.sourceKinds?.includes("typed_record") && pages.moduleView.provenance?.recordCount === pages.moduleView.records.length, "Business Module standard view provenance preserves module scope, source kinds, and record count");
@@ -257,6 +260,7 @@ async function main() {
     ].filter(Boolean)),
     "document-focus": new Set([
       pages.document.id,
+      ...(pages.document.documentTree ?? []).flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
       ...(pages.document.properties ?? []).flatMap((property) => property.ref ? [property.ref] : []),
       ...(pages.document.sourceLinks ?? []).map((link) => link.id),
       ...(pages.document.resultLinks ?? []).map((link) => link.id),
