@@ -1,16 +1,16 @@
 # Skill and CLI Contracts: Company OS Operator Suite
 
 ```text
-status: mixed — Company OS operator suite installable; Docs, Work, Finance, and Organization dedicated CLI implemented; governed OrgChangeProposal lifecycle planned
+status: mixed — Company OS operator suite installable; Docs, Work, Organization, Approval, and Finance baseline dedicated CLI implemented; governed OrgChangeProposal and deeper Finance lifecycle remain planned
 owner_role: product + platform
 canonical_for: optional Agent capability inputs, outputs, and governance boundaries
 ```
 
 ## Purpose and non-authority
 
-The Company OS operator suite reduces variance when Agents operate company
-memory, durable work, organization authority, finance state, module design, and
-code-declared business pages.
+The Company OS operator suite reduces variance when Agents bootstrap commercial
+projects, operate company memory, durable work, organization authority, finance
+state, module design, and code-declared business pages.
 
 Install it into both Claude Code and Codex project skill roots with:
 
@@ -22,10 +22,11 @@ The suite currently expands to:
 
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
+| [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs, Work, Org, Finance, external software sources, and custom pages | procedural orchestration skill |
 | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
-| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs | dedicated `harness company work ...` CLI implemented for list/query/create/assign/transition/close |
-| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence | dedicated `harness company finance ...` CLI implemented for list/query/propose-commitment/request-approval/decide-approval/transition-commitment/record-payment/transition-payment; proposed Commitment creation uses the current Human administrative import boundary in v1 |
-| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle | dedicated `harness company org ...` CLI implemented for list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions; writes use the current Human administrative authoring boundary in v1 |
+| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs | dedicated `harness company work ...` CLI implemented for list/query/create/assign/transition/close plus `work milestone ...` baseline lifecycle |
+| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
+| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
 | [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design and governance proposal | procedural design skill |
 | [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation contract | procedural page-building skill |
 
@@ -53,103 +54,29 @@ that Agent's permission policy.
 
 The first implemented Docs Governance primitives are CLI-backed and exposed
 through the optional [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md)
-skill:
+skill. The surface includes read/query commands (`query`, `search`,
+`traverse`, `refs`, `related`, `health`, `snapshot`, `diff`,
+`change-report`), governance authoring (`module create`,
+`page-definition create`, `page scaffold`, `page verify`, `page publish`),
+and governed maintenance for `document create|rename|move|archive`,
+`template create|status`, `block append|update|archive|remove|reorder`,
+`typed-record append|update|validate`, `view create|update`, and
+`relation link|unlink|relink`.
+
+External software source sync is project-routed:
 
 ```bash
-harness company docs query --document <document-id>
-harness company docs query --module <business-module-id>
-harness company docs health
-harness company docs module create \
-  --root-document <document-id> \
-  --name <module-name> \
-  --purpose <purpose> \
-  --authority <human-admin-id> \
-  --record-type <type> \
-  --relation-rule-json '{"relation_type":"source_for","from_kind":"document","to_kind":"typed_record","required":true,"cross_module":false}'
-harness company docs page-definition create \
-  --module <business-module-id> \
-  --fallback-view <view-id> \
-  --purpose <purpose> \
-  --authority <human-admin-id>
-harness company docs document create \
-  --definition <custom-page-definition-id> \
-  --parent-document <document-id> \
-  --title <title> \
-  [--template <template-document-id> --instantiate-template] \
-  --actor <human-or-agent-id>
-harness company docs document rename \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --title <new-title> \
-  --actor <human-or-agent-id> \
-  [--dry-run]
-harness company docs document move \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  (--parent-document <new-parent-document-id> | --root) \
-  --actor <human-or-agent-id> \
-  [--dry-run]
-harness company docs document archive \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --actor <human-or-agent-id> \
-  (--dry-run | --confirm)
-harness company docs template create \
-  --definition <custom-page-definition-id> \
-  --parent-document <document-id> \
-  --title <template-title> \
-  [--from-document <source-document-id>] \
-  --actor <human-or-agent-id>
-harness company docs template status \
-  --definition <custom-page-definition-id> \
-  --template <template-document-id> \
-  --status active|paused|archived \
-  --actor <human-or-agent-id>
-harness company docs block append \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --kind <rich_text|heading|callout|table> \
-  --text <body> \
-  --actor <human-or-agent-id>
-harness company docs block update \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block <block-id> \
-  [--kind <rich_text|heading|callout|table>] \
-  [--content-json '{"text":"updated"}' | --text <body>] \
-  --actor <human-or-agent-id> \
-  [--dry-run]
-harness company docs block archive \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block <block-id> \
-  --actor <human-or-agent-id> \
-  (--dry-run | --confirm)
-harness company docs block remove \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block <block-id> \
-  --actor <human-or-agent-id> \
-  (--dry-run | --confirm)
-harness company docs block reorder \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block-order <block-id-2,block-id-1> \
-  --actor <human-or-agent-id>
-harness company docs typed-record append \
+harness --project <company-os-project-selector> company docs source sync \
   --definition <custom-page-definition-id> \
   --module <business-module-id> \
   --source-document <document-id> \
-  --record-type <type> \
-  --title <title> \
-  --actor <human-or-agent-id>
-harness company docs typed-record update \
-  --definition <custom-page-definition-id> \
-  --record <typed-record-id> \
-  [--title <title>] \
-  [--fields-json '{"status":"accepted"}' --merge-fields] \
-  [--status <lifecycle-status>] \
   --actor <human-or-agent-id> \
+  --repo-path <local-git-worktree> \
+  --repo <owner/repo> \
+  --branch <branch> \
+  --project-id <external-software-project-id> \
+  --path docs/prd \
+  [--path docs/architecture] \
   [--dry-run]
 harness company docs view create \
   --definition <custom-page-definition-id> \
@@ -178,6 +105,17 @@ source-linked TypedRecords, Relations, Views, BusinessModule, page-definition
 and policy context, scoped health findings, available commands, and explicit
 side-effect boundaries. It does not create WorkItems, Approvals, Finance
 records, Organization changes, execution runs, or UI-only state.
+`docs source sync` is the first external software product-source mapping
+command. It reads a local Git worktree and writes Docs `TypedRecord` rows for
+`external_project`, `product_doc_source`, `product_doc_snapshot`, and
+`source_sync_run`, preserving repo, branch, commit, path, content hash,
+headings, and source class. The command treats GitHub/webhook delivery as a
+transport, not authority: it does not create WorkItems, approve spending,
+change Organization, mutate Finance, overwrite commercial truth, execute
+GitHub actions, or claim software delivery completion. Use the top-level
+`--project` option to select the Company OS Store and command-level
+`--project-id` to name the external software source; these are intentionally
+different identifiers.
 `docs health` remains the broader read-only structural audit over the current
 Company OS projection.
 `docs document rename`, `docs document move`, and `docs document archive` are

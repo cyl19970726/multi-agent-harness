@@ -116,8 +116,25 @@ Current v1 boundary:
   approval for `commitment.append` as proof for `payment.append`.
 - `record-payment` creates a Payment record and does not imply settlement.
   Settlement requires an explicit Payment transition and evidence.
-- Native `commitment.propose` as a governed Action remains a follow-up because
-  the current Action scope expects an existing in-scope FinancialRecord.
+- The nested operator surface is also available when a page definition declares
+  the necessary finance and approval Actions:
+
+```bash
+harness company finance commitment list
+harness company finance commitment show --commitment <commitment-id>
+harness company finance commitment propose --definition <page-definition-id> --work-item <work-item-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --relation <relation-id>
+harness company finance commitment transition --definition <page-definition-id> --commitment <commitment-id> --status pending_approval|approved|cancelled|fulfilled --actor <actor-id> --approval <approval-id> --evidence <ref>
+harness company finance payment list
+harness company finance payment show --payment <payment-id>
+harness company finance payment record --definition <page-definition-id> --commitment <commitment-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --approval <approval-id> --evidence <ref>
+```
+
+Use `harness company approval request|decide` for Human approval records linked
+to finance policies such as `<definition>:commitment.append` and
+`<definition>:payment.append`.
+
+Report budget, invoice, refund, reconciliation, and richer finance reporting as
+planned until their CLI and acceptance checks exist.
 
 ## Safe workflow
 
