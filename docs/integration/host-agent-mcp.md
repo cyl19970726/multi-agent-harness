@@ -30,13 +30,11 @@ parts; they do not fork the core model.
   Mission-linked independent AgentTeams, and Mission-scoped AgentTeamRuns are
   native.
 - Member execution: Codex app-server (`codex_app_server`), Kimi ACP
-  (`kimi_acp`), Claude Agent SDK (`claude_agent_sdk`), and an explicit Claude
-  CLI fallback (`claude_cli`) are registered executable Team Member modes.
-  Codex app-server is the default and only Codex Team mode. Bounded
-  `codex_exec` belongs to Dynamic Workflow and other one-shot execution paths;
-  it cannot create or start a new Codex Team member. Any other provider or mode
-  is rejected explicitly; Harness never silently substitutes a provider or
-  invents a native session.
+  (`kimi_acp`), and Claude Agent SDK streaming (`claude_agent_sdk`) are the
+  executable Team Member modes. Codex app-server is the only Codex Team mode;
+  Agent SDK streaming is the only Claude Team mode. Bounded `codex_exec` and
+  `claude_cli` belong to Dynamic Workflow and other one-shot paths. They cannot
+  create or start Team members. Harness never silently falls back.
 - `team_run_start` reserves the run and returns immediately while members run
   in the background.
 - Every create/start/status/cancel/ACK result includes an exact TeamRun URL on
@@ -128,9 +126,10 @@ path as an execution root is a routing defect.
    `team_run_resolve_interaction` with the exact option id and authorized actor.
    Do not treat provider `completed` as proof of semantic approval or answer.
 7. For a running `codex_app_server` member, use `team_run_steer_member` to
-   inject input into the same turn. Use `team_run_interrupt_member` for either
-   Codex app-server or Kimi ACP when cooperative cancellation is intended.
-   Other messages use `team_run_send_message` and are delivered next round.
+   inject input into the same turn. Use `team_run_interrupt_member` for Codex
+   app-server, Kimi ACP, or Claude Agent SDK when the current turn must stop.
+   Use `team_run_close_member` only when the Host is ending the Member runtime.
+   Other messages use `team_run_send_message` and preserve the native session.
 8. Acknowledge delivered handoffs with `team_message_acknowledge`.
 9. Check outcomes and artifacts, update the current Wave with the Host's actual
    judgment, then `wave advance` or record `accepted | revise | blocked`. Active

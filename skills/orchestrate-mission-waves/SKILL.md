@@ -63,6 +63,12 @@ thread and supports real chat, steer, interrupt, interaction routing, and
 resume. Do not select `codex_exec` for a Team member; reserve that bounded
 one-shot mode for Dynamic Workflow.
 
+For Claude, Agent Team always means `claude_agent_sdk`: its streaming mailbox
+keeps one native session addressable until the Host closes it, and exposes real
+interrupt/resume. Do not select `claude_cli` for a Team member; reserve
+`claude -p` for bounded Dynamic Workflow execution. Never silently fall back
+from either persistent Team mode to its one-shot counterpart.
+
 Use separate Members for parallel feature modules that each need end-to-end
 design, implementation, and validation. Let each Member use its own subagents.
 Use another Reviewer Member when acceptance must be independent; a member's
@@ -96,6 +102,29 @@ internal test subagent is not independent review.
    composition, responsibility, risk, or decision boundary changes materially.
 11. Close the Mission with an explicit outcome. Leave linked teams and their
     independent lifecycle untouched.
+
+The Host owns Member lifecycle explicitly:
+
+```bash
+# create/add and assign
+harness team-run add-member --id <run> \
+  --member "Builder:Feature owner:codex/app-server" \
+  --assignment "<end-to-end responsibility>"
+
+# inspect, communicate, interrupt one turn, or end the runtime
+harness team-run status --id <run>
+harness team-run inbox --id <run> --member-run-id host --all
+harness team-run send --id <run> --from host --to <member> \
+  --kind message --body "<follow-up>" --correlation-id <assignment-correlation>
+harness team-run close-member --id <run> --member-run-id <member> \
+  --reason "<Host decision>"
+```
+
+Use `team_run_interrupt_member` only to interrupt the current provider turn;
+use `team_run_close_member` to end the Member runtime. A resumed Member is
+created or added with an explicit provider-owned native session id. Live
+controls must go through the same Host server process that started the run;
+the current process-local supervisor is not reconstructed after restart.
 
 ## Write Useful Context
 

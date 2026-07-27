@@ -164,10 +164,11 @@ reordering is not a requirement.
   actor is allowed; same-turn resume is available only when the snapshotted
   execution-mode profile supports it.
 
-Do not offer fake lifecycle control. A stop/cancel action appears only after
-the provider exposes cooperative interruption and the backend can prove its
-outcome. Completion of the MemberRun is an execution fact, not an implicit
-Wave advance.
+Do not offer fake lifecycle control. Interrupt appears only when the provider
+exposes cooperative turn interruption. Close is a separate Host-owned action:
+it sends the selected adapter's real close/cancel protocol and must not be
+presented as ordinary turn completion. Completion of the MemberRun is an
+execution fact, not an implicit Wave advance.
 
 ## Empty, Loading, And Failure States
 

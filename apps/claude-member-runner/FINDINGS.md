@@ -113,23 +113,23 @@ named and approved by a Human. `claude_agent_sdk` stays `review_required`.
   reports 0 even when tests fail, and truncates the log that would have shown
   it. Capture to a file and read `$?` from the unpiped command.
 
-### Default mode switched (2026-07-27)
+### Agent Team mode boundary frozen (2026-07-27)
 
-`claude_agent_sdk` is now what a member declared as plain `claude` gets;
-`claude_cli` requires naming it. The argument is not that the new path is
-better — it is that `claude_cli` provably cannot satisfy ADR 0037 acceptance
-item 6, and a mode that ends a member on a momentarily empty queue is not a
-safe default.
+`claude_agent_sdk` is what a member declared as plain `claude` gets and the
+only accepted Claude Agent Team mode. `claude_cli` remains a bounded Workflow
+and historical-read mode; naming `claude/cli` on Team creation now fails.
+The reason is structural: a mode that ends a member on a momentarily empty
+queue cannot satisfy ADR 0037 acceptance item 6.
 
 Two consequences to keep visible:
 
 - The default is `review_required`. That is deliberate and honest, not an
   oversight: the profile still claims nothing beyond `claude_cli` until a live
   canary exercises interrupt, steer and a real `PreToolUse` denial.
-- The default now needs `node` plus the runner's dependency, where `claude_cli`
-  needed only the `claude` binary. Missing runner or missing `node` fails
-  explicitly with the three ways out; it never silently falls back, because a
-  silent fallback to the one-shot path is exactly the bug being removed.
+- The Team path needs `node` plus the runner's dependency. Missing runner or
+  missing `node` fails explicitly with repair guidance; it never silently
+  falls back, because a silent one-shot fallback is exactly the bug being
+  removed.
 
 Covered by `a_bare_claude_member_defaults_to_the_agent_sdk_mode`.
 

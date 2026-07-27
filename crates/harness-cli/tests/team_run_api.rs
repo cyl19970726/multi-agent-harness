@@ -1465,6 +1465,84 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
 }
 
 #[test]
+fn host_can_explicitly_close_a_live_codex_member() {
+    let home = TempHome::new("team-run-codex-close");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-close"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise explicit Host close",
+            "members": [{"name": "codex-close", "role": "observer", "provider": "codex"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+    let mut running = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        running = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if running {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(running, "Codex member never became live");
+
+    let (status, result) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"requested_by": "host", "reason": "lane accepted"}),
+    );
+    assert_eq!(status, 200, "body: {result}");
+    assert_eq!(result["result"]["status"].as_str(), Some("close_requested"));
+    assert_eq!(
+        result["result"]["provider_ack"].as_str(),
+        Some("turn_interrupt_accepted")
+    );
+    let mut stopped = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        if stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(stopped, "Codex member did not terminate after Host close");
+}
+
+#[test]
 fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
     let home = TempHome::new("team-run-codex-provider-interrupt");
     let _project_id = init_project(&home, "alpha");

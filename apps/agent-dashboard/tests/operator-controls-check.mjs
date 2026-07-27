@@ -110,6 +110,13 @@ async function main() {
       && interrupt.body.reason === "stop now",
     "Provider interruption targets one MemberRun with an auditable reason",
   );
+  const closeRuntime = actions.closeTeamMember("run/a", "member/b", "lane accepted");
+  check(
+    closeRuntime.path === "/v1/team-runs/run%2Fa/members/member%2Fb/close"
+      && closeRuntime.body.reason === "lane accepted"
+      && closeRuntime.body.requested_by === "host",
+    "Host close ends one Member runtime through an explicit action",
+  );
 
   const [teamSource, missionSource, memberSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
@@ -179,6 +186,7 @@ async function main() {
       && memberSource.includes('execution_mode === "codex_app_server"')
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
+      && memberSource.includes("closeTeamMember(")
       && memberSource.includes("supports_cancel"),
     "Member Focus invokes same-turn steer only for an explicit Steer action and otherwise queues Host coordination",
   );

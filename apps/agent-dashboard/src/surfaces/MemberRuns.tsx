@@ -22,6 +22,7 @@ import {
 import { fetchNativeMemberActivity } from "@/api";
 
 import {
+  closeTeamMember,
   interruptTeamMember,
   resolvePendingInteraction,
   sendTeamMessage,
@@ -323,6 +324,16 @@ function MemberHeroHeader({
         {context.member.status === "running" && context.member.provider_profile?.supports_cancel && (
           <Button size="sm" variant="outline" disabled={!actionsEnabled} onClick={() => dispatch(onAction, interruptTeamMember(context.run.id, context.member.id))}>
             <Square className="size-3 fill-current" /> Interrupt
+          </Button>
+        )}
+        {!["failed", "stopped"].includes(context.member.status ?? "") && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!actionsEnabled}
+            onClick={() => dispatch(onAction, closeTeamMember(context.run.id, context.member.id))}
+          >
+            <Square className="size-3" /> Close
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={onBack}><ArrowLeft className="size-3.5" /> Back to team</Button>

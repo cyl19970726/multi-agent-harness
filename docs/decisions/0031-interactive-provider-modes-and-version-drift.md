@@ -58,6 +58,22 @@ or an explicit recovery attestation.
   `supports_cancel=false`; `codex_app_server` reports only the controls its
   live adapter now exercises.
 
+### Claude mode selection
+
+- `claude_agent_sdk` is the default and only mode for new Claude Agent Team
+  Members. Streaming input owns one mailbox and native session; the Host can
+  deliver later messages, call the SDK's real interrupt, close the runtime, or
+  explicitly resume the provider-owned session.
+- `claude_cli` (`claude -p`) remains a bounded Dynamic Workflow substrate and a
+  readable historical execution mode. Harness rejects it for new Team members
+  because an empty queue ends the process and there is no live lifecycle
+  control channel.
+- Missing SDK runner dependencies fail explicitly. There is no fallback to
+  `claude_cli`.
+- The adapter remains `review_required` until a proportional live canary
+  validates the installed Claude version. Deterministic runner tests do not
+  update the reviewed-version set.
+
 ### Version drift governance
 
 Every execution-mode profile records:

@@ -386,6 +386,7 @@ fn kimi_member_explicitly_resumes_provider_native_session() {
 }
 
 #[test]
+#[ignore = "historical claude_cli Team path; new Team members require claude_agent_sdk"]
 fn claude_member_uses_native_session_without_provider_activity_mirror() {
     let home = TempHome::new("team-run-claude-native");
     let project_id = init_project(&home, "alpha");
@@ -473,6 +474,7 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
 }
 
 #[test]
+#[ignore = "historical claude_cli Team path; new Team members require claude_agent_sdk"]
 fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stream() {
     let home = TempHome::new("team-run-claude-native-failure");
     let project_id = init_project(&home, "alpha");

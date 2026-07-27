@@ -117,8 +117,9 @@ source message as causation, and acknowledges the source delivery.
 - Make it clear that Host-authored coordination comes from the Team Lead;
   Human/operator authorship remains separately attributable where supported.
 - Create a correlated assignment with optional origin Wave metadata.
-- Add, rename, deactivate, steer, interrupt, or resume a member where the
-  selected provider mode honestly supports it.
+- Add, rename, deactivate, steer, interrupt, explicitly close, or resume a
+  member where the selected provider mode honestly supports it. Interrupt ends
+  one turn; Close ends the runtime.
 - Inspect delivery/ACK/correlation lineage and answer PendingInteractions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.

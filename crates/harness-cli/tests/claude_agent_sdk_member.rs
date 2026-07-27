@@ -260,3 +260,29 @@ fn unknown_claude_execution_mode_is_rejected() {
          silently falling back to claude_cli"
     );
 }
+
+#[test]
+fn claude_cli_is_rejected_for_agent_team_members() {
+    let home = TempHome::new("agent-sdk-reject-cli");
+    init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let out = run_harness(
+        &home,
+        &root,
+        &[
+            "team-run",
+            "create",
+            "--objective",
+            "reject one-shot Team mode",
+            "--member",
+            "Legacy:Role:claude/cli",
+        ],
+    );
+    assert!(!out.status.success(), "claude/cli must be workflow-only");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "claude_cli is workflow-only; Agent Team Claude members use claude_agent_sdk"
+        ),
+        "rejection should explain the supported boundary: {out:?}"
+    );
+}
