@@ -231,12 +231,21 @@ fn mcp_stdio_agent_team_tools() {
         .expect("team_run_start definition")["description"]
         .as_str()
         .expect("team_run_start description");
-    for current_mode in ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"] {
+    for current_mode in [
+        "codex_app_server",
+        "kimi_acp",
+        "claude_cli",
+        "claude_agent_sdk",
+    ] {
         assert!(
             start_descriptor.contains(current_mode),
             "descriptor omits executable mode {current_mode}: {start_descriptor}"
         );
     }
+    assert!(
+        start_descriptor.contains("codex_exec is workflow-only"),
+        "descriptor must make the Codex Team/Workflow boundary explicit: {start_descriptor}"
+    );
     assert!(start_descriptor.contains("never store_root"));
     assert!(start_descriptor.contains("provider-native sessions"));
 

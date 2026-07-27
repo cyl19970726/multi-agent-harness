@@ -169,7 +169,7 @@ new binding records the parent native session id.
 
 | Mode | Native identity today | Native read truth | Restart resume | Operational boundary |
 | --- | --- | --- | --- | --- |
-| Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
+| Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` remains available to bounded Workflow and legacy non-Team paths | workflow-only for new work; historical Team records remain readable but cannot start a new member |
 | Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
 | Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | live provider activity is transient; native history is read on demand |
 | Claude `claude_cli` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | `--resume` wired through explicit member resume binding | Native history is read on demand; live success still depends on valid operator OAuth |
@@ -206,9 +206,10 @@ states. UI must not invent native activity or resume from a Harness replay.
   field `resume_native_session_id` or CLI
   `--resume-member <member-name>:<native-session-id>`. Resume is never inferred
   from the newest local session.
-- Codex `codex_exec` uses `codex exec resume`; Codex app-server uses
-  `thread/resume`; Kimi ACP uses `session/load`. A provider rejection fails the
-  member honestly instead of falling back to a fresh session.
+- Codex Agent Team app-server uses `thread/resume`; Kimi ACP uses
+  `session/load`. Workflow-side `codex_exec` may use `codex exec resume`, but
+  Harness never falls back to it for a Team member. A provider rejection fails
+  the member honestly instead of falling back to a fresh session.
 
 ## Completed migration sequence
 

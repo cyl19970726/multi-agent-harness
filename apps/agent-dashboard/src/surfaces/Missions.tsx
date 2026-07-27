@@ -69,7 +69,7 @@ interface MemberDraft {
   name: string;
   role: string;
   provider: "codex" | "kimi";
-  executionMode: "codex_exec" | "codex_app_server" | "kimi_acp";
+  executionMode: "codex_app_server" | "kimi_acp";
   model: string;
   ownedPaths: string;
 }
@@ -1422,10 +1422,8 @@ function AttemptDialog({
               <Field
                 label="Execution mode"
                 hint={member.executionMode === "codex_app_server"
-                  ? "Interactive: same-turn steer and cooperative interrupt."
-                  : member.executionMode === "codex_exec"
-                    ? "Batch: messages queue for the next round."
-                    : "ACP: provider questions resume in-turn; chat queues to the next round."}
+                  ? "Interactive app-server is the only Codex Agent Team mode; one-shot exec belongs to Dynamic Workflow."
+                  : "ACP: provider questions resume in-turn; chat queues to the next round."}
               >
                 {(id) => (
                   <Select
@@ -1436,10 +1434,7 @@ function AttemptDialog({
                     })}
                   >
                     {member.provider === "codex" ? (
-                      <>
-                        <option value="codex_app_server">Interactive app-server</option>
-                        <option value="codex_exec">Batch exec</option>
-                      </>
+                      <option value="codex_app_server">Interactive app-server</option>
                     ) : (
                       <option value="kimi_acp">Kimi ACP</option>
                     )}

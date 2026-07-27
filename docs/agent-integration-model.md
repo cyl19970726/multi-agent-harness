@@ -339,8 +339,11 @@ git-worktree requirement. The default-trait and unknown-provider values are
 The legacy `ProviderCapabilities` booleans describe a broad technical preset;
 they are not sufficient to claim an Agent Team integration. Every MemberRun now
 snapshots `ProviderIntegrationProfile`, which names the concrete mode
-(`codex_exec`, `kimi_acp`), interaction contract, tool/artifact event fidelity,
-cancel/resume support, native-child observation, and transient-thinking policy.
+(`codex_app_server`, `kimi_acp`, `claude_agent_sdk`, or an explicit supported
+fallback), interaction contract, tool/artifact event fidelity, cancel/resume
+support, native-child observation, and transient-thinking policy. The separate
+`codex_exec` profile remains useful to Dynamic Workflow and legacy one-shot
+records; it is not a selectable Agent Team mode.
 
 Provider requests that require an answer are `PendingInteraction` rows rather
 than hidden adapter callbacks. Questions, tool approvals, and plan reviews keep

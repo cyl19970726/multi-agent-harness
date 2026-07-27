@@ -44,12 +44,16 @@ or an explicit recovery attestation.
 
 ### Codex mode selection
 
-- `codex_exec` remains the batch/read-only mode for bounded one-shot work.
-- `codex_app_server` is the interactive Agent Team Member mode for chat,
+- `codex_app_server` is the default and only mode for new Codex Agent Team
+  Members. It provides chat,
   same-turn steer, approvals, and interrupt. Its provider thread id is the
   native-session binding. Restart-time `thread/resume` is implemented through
   an explicit resume binding; capability state remains mode/version specific.
-- The two modes have separate ProviderIntegrationProfiles and acceptance gates.
+- `codex_exec` remains a bounded one-shot substrate for Dynamic Workflow and
+  legacy non-Team paths. Historical Team records that name it remain readable,
+  but Harness rejects new Team creation or start attempts for that mode.
+- The two modes retain separate ProviderIntegrationProfiles and acceptance
+  gates because Workflow execution capability is not Team capability.
 - `codex_exec` honestly reports `interaction_mode=unsupported` and
   `supports_cancel=false`; `codex_app_server` reports only the controls its
   live adapter now exercises.
@@ -104,8 +108,8 @@ per day, not continuous automatic upgrades.
 - Provider name no longer determines chat or interruption capability; execution
   mode does.
 - Agent Team UI can remain shared while buttons are capability-driven.
-- Codex app-server is an explicit selectable execution mode, not a hidden
-  fallback from `codex_exec`.
+- Codex app-server is the only new Agent Team mode, not a selectable batch
+  alternative or a hidden fallback from `codex_exec`.
 - Release monitoring becomes reproducible and suitable for scheduled checks.
 - Daily monitoring is read-only; provider binary changes remain Human-approved.
 - Provider protocol vocabulary alone never proves Harness lifecycle control.

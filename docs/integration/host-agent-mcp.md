@@ -29,10 +29,14 @@ parts; they do not fork the core model.
 - Coordination: Mission context, ordered Host-plan Wave revisions,
   Mission-linked independent AgentTeams, and Mission-scoped AgentTeamRuns are
   native.
-- Member execution: Kimi ACP, Codex batch (`codex_exec`), Codex interactive
-  (`codex_app_server`), and Claude CLI (`claude_cli`) are registered executable
-  Team Member modes. Any other provider or mode is rejected explicitly; Harness
-  never silently substitutes Codex or invents a native session.
+- Member execution: Codex app-server (`codex_app_server`), Kimi ACP
+  (`kimi_acp`), Claude Agent SDK (`claude_agent_sdk`), and an explicit Claude
+  CLI fallback (`claude_cli`) are registered executable Team Member modes.
+  Codex app-server is the default and only Codex Team mode. Bounded
+  `codex_exec` belongs to Dynamic Workflow and other one-shot execution paths;
+  it cannot create or start a new Codex Team member. Any other provider or mode
+  is rejected explicitly; Harness never silently substitutes a provider or
+  invents a native session.
 - `team_run_start` reserves the run and returns immediately while members run
   in the background.
 - Every create/start/status/cancel/ACK result includes an exact TeamRun URL on
@@ -40,10 +44,12 @@ parts; they do not fork the core model.
   UI's same-origin `/v1` proxy. When project identity is available it includes
   `project=<workspace-id>`.
 - Temporary development policy gives every Agent Team member full execution
-  permission. Codex batch turns launch with `danger-full-access`; Kimi ACP tool
-  approvals are resolved immediately by `policy`. `AskUserQuestion` and
-  `PlanReview` still pause and route to Lead. Requests and resolutions remain
-  durable coordination evidence; provider transcripts and thinking do not.
+  permission. Codex app-server threads launch with `danger-full-access` and
+  approval policy `never`; Kimi ACP tool approvals are resolved immediately by
+  `policy`. Questions and other provider-native interactions that cannot be
+  safely auto-resolved still pause and route to Lead. Requests and resolutions
+  remain durable coordination evidence; provider transcripts and thinking do
+  not.
 - Thinking is allowed only as sanitized transient live state. It is never
   persisted, replayed, forwarded to peers, or accepted as evidence.
 

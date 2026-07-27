@@ -229,7 +229,7 @@ export interface TeamRunMemberSpec {
   role: string;
   provider: string;
   model?: string;
-  executionMode?: "codex_exec" | "codex_app_server" | "kimi_acp" | "claude_cli";
+  executionMode?: "codex_app_server" | "kimi_acp" | "claude_cli" | "claude_agent_sdk";
   /** Optional member-specific workspace override validated against project_root. */
   worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */

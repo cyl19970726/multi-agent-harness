@@ -20,26 +20,24 @@ with the `agent deliver` implementation and Dashboard read model.
 
 ## 核心结论
 
-当前主方案（ADR-0018 之后）是 headless exec-stream：
+当前 Agent Team 主方案是交互式 app-server：
 
 ```text
-AgentMember(provider=codex)
-  -> AgentRuntime(codex exec-stream, on-demand spawn per delivery)
-  -> provider thread（经 `codex exec resume <thread_id>` 跨 delivery 延续）
-  -> Message delivery through `codex exec --json`（null stdin）
+MemberRun(provider=codex, execution_mode=codex_app_server)
+  -> one live app-server process + native thread
+  -> ordinary Message as a new turn; explicit Steer into the active turn
+  -> native turn/interrupt and PendingInteraction routing
   -> Codex native rollout/state db (execution truth and resume)
   -> in-memory activity projection + Harness coordination store
   -> Agent Dashboard joined view
-  -> optional Codex plugin packaging after contracts stabilize
 ```
 
 也就是说：
 
-- headless `codex exec --json` 是主 provider substrate
-  （[ADR-0018](../decisions/0018-exec-stream-primary-substrate.md)），每次
-  delivery 按需 spawn，无持久进程；
-- `codex app-server` 已作为 Agent Team 的显式交互模式接入；它不替换常驻
-  AgentMember 的 exec-stream delivery，也不会被 `codex_exec` 隐式 fallback；
+- `codex_app_server` 是新建 Codex Agent Team Member 的默认且唯一模式；
+- headless `codex exec --json` 继续作为 Dynamic Workflow 的有界一次性执行
+  substrate，并保留历史读取能力，但不能再创建新的 Codex Team Member；
+- app-server 不会静默 fallback 到 `codex_exec`；
 - hooks 是生命周期观测、治理、实时状态回写和兜底；
 - skills 是 Codex 如何使用 harness/project CLI 的操作指南；
 - plugin 是分发和产品化包装层，负责把 harness-managed hooks / skills / MCP
@@ -47,10 +45,8 @@ AgentMember(provider=codex)
 
 ## Agent Team Member execution mode
 
-There are now two deliberately separate Codex Team Member modes:
+There is one Codex Agent Team Member mode:
 
-- `codex_exec`: implemented bounded batch mode; structured activity but no
-  same-turn chat or interrupt control.
 - `codex_app_server`: implemented interactive mode; one persistent app-server
   process/thread per live MemberRun, `turn/steer`, `turn/interrupt`, reverse
   question/approval routing, and streamed item events. Restart-time
@@ -58,7 +54,10 @@ There are now two deliberately separate Codex Team Member modes:
   `resume_native_session_id`; successful attachment refreshes the MemberRun's
   `NativeSessionRef` availability without copying the rollout into Harness.
 
-This selection follows ADR [0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
+`codex_exec` remains available to Dynamic Workflow and legacy non-Team
+one-shot paths. A historical TeamRun that names it remains readable but cannot
+be started as a new interactive member. This selection follows ADR
+[0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
 ### Native planning is a Member-internal aid
 
@@ -78,18 +77,7 @@ references. Native plan capability remains observable provider metadata, not a
 permission or acceptance claim. See
 [ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
 
-Agent Team currently uses a narrower, explicit profile than the persistent
-AgentMember delivery path:
-
-```text
-MemberRun(provider=codex)
-  -> execution_mode=codex_exec
-  -> codex exec --json --sandbox read-only --cd <project_root>
-  -> native Codex session owns structured item lifecycle and final reply
-  -> explicit promotion only -> correlated TeamMessage handoff / outcome
-```
-
-The interactive path is:
+The Agent Team path is:
 
 ```text
 MemberRun(provider=codex, execution_mode=codex_app_server)
@@ -102,9 +90,11 @@ MemberRun(provider=codex, execution_mode=codex_app_server)
   -> explicit promotion only -> TeamMessage / outcome
 ```
 
-The app-server sandbox is `read-only` when `owned_paths` is empty and
-`workspace-write` when the Wave explicitly grants owned paths. Thinking and
-reasoning deltas remain transient SSE previews and are never written to the
+Under the current temporary development policy, the app-server launches with
+`danger-full-access` and approval policy `never`. `owned_paths`, worktree
+selection, and Assignment text still communicate responsibility and expected
+change boundaries; they are not currently an enforced Codex sandbox. Thinking
+and reasoning deltas remain transient SSE previews and are never written to the
 store. Live control is process-local to the server/MCP process that started the
 MemberRun; after a server restart the recorded thread id is historical identity,
 not a false claim that the session was resumed.
@@ -115,7 +105,7 @@ not a false claim that the session was resumed.
   these provider-derived command/file/tool frames into Harness.
 - Reasoning items are eligible only for the sanitized transient live channel;
   they are not written to MemberAction, messages, artifacts, or evidence.
-- `codex exec` is non-interactive. Fresh `request_user_input`, command/file
+- Workflow-side `codex exec` is non-interactive. Fresh `request_user_input`, command/file
   approval, permission escalation, and dynamic-tool requests cannot be answered
   mid-turn. The current profile reports `interaction_mode=unsupported` and
   `supports_cancel=false`. Such a need must fail/end as an explicit blocker;
@@ -134,7 +124,7 @@ This mode boundary follows
 capability, `codex exec` capability, Team adapter coverage, and product policy
 must remain four separate claims.
 
-## 为什么 app-server 曾是主方案（现为 fallback 设计）
+## 为什么 app-server 是唯一 Agent Team 模式
 
 Codex app-server 官方定位就是给外部产品做深度集成：client 可以
 `initialize`、`thread/start` 或 `thread/resume`、`turn/start`，并持续读取
@@ -151,46 +141,37 @@ thread/turn/item 事件。官方 app-server 文档也说明 `turn/start` 后应�
 - 后续可以通过 `turn/interrupt`、`thread/archive`、`thread/read` 做停止、
   回收和 reconciliation。
 
-`codex exec --json` 可以发现 Codex 原生 thread 并绑定 `NativeSessionRef`
-（thread 经 `codex exec resume` 延续），且不依赖 undocumented 的
-WS-over-UDS 协议；app-server 模式则提供原生 steer/interrupt 控制。
+`codex exec --json` 仍可供 Dynamic Workflow 发现 Codex 原生 thread 并绑定
+`NativeSessionRef`，但它没有 Agent Team 需要的持续消息、原生 steer/interrupt
+与 provider pause 路由，因此不再作为 Team Member 模式暴露。
 
 ## Provider Runtime 模型
 
-当前实现是 exec-stream：`AgentRuntime` 只是目录标记（`control_endpoint =
-codex-exec-runtime://…`，`pid: None`），每次 delivery 按需 spawn。
-app-server fallback 设计仍是 one process per AgentMember，原因：
+当前 Agent Team 实现是 one app-server child process per live MemberRun。
+这个 child 由执行 `team-run start` 的 Harness 进程通过 stdio 持有；它不会
+伪装成常驻 Agent 的 `AgentRuntime` 或 socket daemon。Durable truth 是
+`MemberRun.native_session`、协调消息和控制 ACK；进程级 live control 在当前
+Harness 进程结束后不可继续使用，恢复必须显式走原生 `thread/resume`。
+Dynamic Workflow 的 exec 节点仍按步骤一次性 spawn，不与 Team Member
+生命周期混合。选择 per-Member app-server 的原因：
 
 - failure domain 清晰，一个 member 崩溃不影响其他 member；
 - prompt、cwd、worktree、permission profile、provider thread 都能隔离；
-- Dashboard 可以直接显示 pid/socket/thread id；
+- Dashboard 可以显示已确认的 native thread id 和 live control availability；
 - close/restart/reconcile 语义简单；
 - shared app-server pool 会提前引入调度、隔离、订阅和权限复杂度。
 
-V1 runtime 最小字段：
-
-```text
-AgentRuntime
-  id
-  agent_member_id
-  provider = codex
-  status
-  pid
-  control_endpoint = codex-exec-runtime://...（app-server fallback: unix://...）
-  command / args
-  started_at / ended_at
-  last_event_at
-```
-
-app-server fallback 的健康检查分四层（exec-stream runtime 无持久
-pid/socket；protocol 层记录为 `exec-stream`）：
+app-server 的健康检查分四层：
 
 ```text
 process: pid alive
-socket: unix control socket exists
-protocol: initialize succeeds
+transport: stdio child is connected
+protocol: initialize and thread start/resume succeed
 delivery: turn/start reaches terminal provider event or reconciles from rollout/hook
 ```
+
+把这个生命周期移交给未来的 Harness-owned Team Supervisor 是独立工作；
+在它落地前，不应把 Team Member 描述为脱离启动进程长期存活的 daemon。
 
 只有 process/socket 通过不代表真正的 AgentMember 可执行。MVP 验收必须至少
 包含 protocol 和 delivery 层。

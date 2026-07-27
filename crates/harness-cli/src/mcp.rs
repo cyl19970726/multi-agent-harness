@@ -963,7 +963,7 @@ fn tool_definitions() -> Value {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
                                 "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
-                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"], "description": "Optional provider-specific execution mode."},
+                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_cli", "claude_agent_sdk"], "description": "Optional provider-specific Agent Team mode. Codex defaults to and only accepts codex_app_server; codex_exec is workflow-only."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
@@ -991,7 +991,7 @@ fn tool_definitions() -> Value {
                             "name": {"type": "string", "minLength": 1},
                             "role": {"type": "string", "minLength": 1},
                             "provider": {"type": "string", "minLength": 1},
-                            "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"]},
+                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_cli", "claude_agent_sdk"]},
                             "model": {"type": "string", "minLength": 1},
                             "worktree_ref": {"type": "string", "minLength": 1},
                             "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
@@ -1031,7 +1031,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Executable modes are Codex batch (codex_exec), Codex interactive (codex_app_server), Kimi ACP (kimi_acp), and Claude CLI (claude_cli); unregistered providers or modes fail honestly. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex interactive (codex_app_server, default and only Codex mode), Kimi ACP (kimi_acp), Claude Agent SDK (claude_agent_sdk), and explicit Claude CLI fallback (claude_cli). Bounded codex_exec is workflow-only. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

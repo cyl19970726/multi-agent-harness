@@ -58,6 +58,11 @@ in this skill.
 | One member needs a bounded internal design/build/check helper | provider-native Subagent |
 | Repeated deterministic steps need owned step state | Dynamic Workflow |
 
+For Codex, Agent Team always means `codex_app_server`: it preserves one native
+thread and supports real chat, steer, interrupt, interaction routing, and
+resume. Do not select `codex_exec` for a Team member; reserve that bounded
+one-shot mode for Dynamic Workflow.
+
 Use separate Members for parallel feature modules that each need end-to-end
 design, implementation, and validation. Let each Member use its own subagents.
 Use another Reviewer Member when acceptance must be independent; a member's

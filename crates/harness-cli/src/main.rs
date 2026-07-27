@@ -6718,6 +6718,31 @@ fn team_member_provider_profile(provider: &str) -> ProviderIntegrationProfile {
     team_member_provider_profile_for_mode(provider, None)
 }
 
+fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()> {
+    if member.provider == "codex" && member.execution_mode.as_deref() == Some("codex_exec") {
+        return Err(CliError::Usage(
+            "codex_exec is workflow-only; Agent Team Codex members use codex_app_server"
+                .to_string(),
+        ));
+    }
+    if let Some(mode) = member.execution_mode.as_deref() {
+        let allowed = matches!(
+            (member.provider.as_str(), mode),
+            ("codex", "codex_app_server")
+                | ("kimi", "kimi_acp")
+                | ("claude", "claude_cli")
+                | ("claude", "claude_agent_sdk")
+        );
+        if !allowed {
+            return Err(CliError::Usage(format!(
+                "execution mode {mode} is not registered for provider {}",
+                member.provider
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
@@ -6763,7 +6788,10 @@ fn team_member_provider_profile_for_mode(
             thinking_transient_only: true,
         };
     }
-    if provider == "codex" && requested_mode == Some("codex_app_server") {
+    // Agent Team Codex members are interactive by definition. `codex exec`
+    // remains the bounded substrate for Dynamic Workflow and legacy one-shot
+    // delivery paths; it is not a second Team Member product mode.
+    if provider == "codex" && matches!(requested_mode, Some("codex_app_server") | None) {
         return ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "codex_app_server".to_string(),
@@ -7290,22 +7318,7 @@ fn create_team_run(
         if let Some(worktree_ref) = member.worktree_ref.as_deref() {
             validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
         }
-        if let Some(mode) = member.execution_mode.as_deref() {
-            let allowed = matches!(
-                (member.provider.as_str(), mode),
-                ("codex", "codex_exec")
-                    | ("codex", "codex_app_server")
-                    | ("kimi", "kimi_acp")
-                    | ("claude", "claude_cli")
-                    | ("claude", "claude_agent_sdk")
-            );
-            if !allowed {
-                return Err(CliError::Usage(format!(
-                    "execution mode {mode} is not registered for provider {}",
-                    member.provider
-                )));
-            }
-        }
+        validate_team_member_execution_mode(member)?;
     }
     let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
     if let Some(team_id) = agent_team_id.as_deref() {
@@ -7472,6 +7485,7 @@ fn add_team_run_member(
     assignment: &str,
     origin_wave_id: Option<String>,
 ) -> CliResult<(AgentTeamRun, MemberRun, TeamMessage)> {
+    validate_team_member_execution_mode(member)?;
     if assignment.trim().is_empty() {
         return Err(CliError::Usage(
             "new member assignment must not be empty".to_string(),
@@ -9385,10 +9399,7 @@ fn run_member_orchestration(
             live_sink,
         )
     } else if member.provider.eq_ignore_ascii_case("codex")
-        && matches!(
-            execution_mode,
-            Some("codex_exec") | Some("codex_app_server") | None
-        )
+        && matches!(execution_mode, Some("codex_app_server") | None)
     {
         run_codex_member(
             ledger,
@@ -9439,11 +9450,9 @@ fn run_member_orchestration(
     }
 }
 
-/// Drive one Codex Team Member using a fresh `codex exec --json` turn per
-/// round. Unlike the persistent-delivery adapter, this path deliberately never
-/// writes the raw provider event stream: reasoning items are eligible only for
-/// the sanitized volatile live sink, while the final agent message becomes the
-/// durable handoff.
+/// Drive one interactive Codex Team Member through one app-server process and
+/// native thread. Bounded `codex exec` remains a Dynamic Workflow substrate,
+/// not an alternative Agent Team Member mode.
 fn run_codex_member(
     ledger: &TeamRunLedger,
     objective: &str,
@@ -9467,7 +9476,7 @@ fn run_codex_member(
         &member.id,
         "updated",
         &format!(
-            "member {} starting (codex exec, cwd {})",
+            "member {} starting (codex app-server, cwd {})",
             member.name,
             cwd.display()
         ),
@@ -9481,37 +9490,24 @@ fn run_codex_member(
     let envelope =
         member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
     let collaboration_env = envelope.environment();
-    let app_server_mode = member_row
-        .provider_profile
-        .as_ref()
-        .is_some_and(|profile| profile.execution_mode == "codex_app_server");
-    let mut app_server = if app_server_mode {
-        Some(codex_app_server::CodexAppServerClient::spawn(
-            cwd,
-            member.model.as_deref(),
-            !member.owned_paths.is_empty(),
-            member
-                .native_session
-                .as_ref()
-                .map(|session| session.native_session_id.as_str()),
-            &collaboration_env,
-            false,
-        )?)
-    } else {
-        None
-    };
-    let mut live_control = None;
-    let mut live_control_registration = None;
-    if let Some(client) = app_server.as_ref() {
-        member_row.native_session = Some(native_session_ref(
-            &member_row,
-            client.thread_id(),
-            "codex_rollout",
-        ));
-        let (receiver, registration) = register_live_member_control(&member_row, 16);
-        live_control = Some(receiver);
-        live_control_registration = Some(registration);
-    }
+    let mut app_server = codex_app_server::CodexAppServerClient::spawn(
+        cwd,
+        member.model.as_deref(),
+        !member.owned_paths.is_empty(),
+        member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        &collaboration_env,
+        false,
+    )?;
+    member_row.native_session = Some(native_session_ref(
+        &member_row,
+        app_server.thread_id(),
+        "codex_rollout",
+    ));
+    let (live_control, registration) = register_live_member_control(&member_row, 16);
+    let mut live_control_registration = Some(registration);
 
     member_row.status = MemberRunStatus::Running;
     member_row.last_event_at = Some(now_string());
@@ -9520,9 +9516,7 @@ fn run_codex_member(
     if let Some(assignment) = &assignment {
         mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
     }
-    if let Some(client) = app_server.as_mut() {
-        client.set_goal(&assignment_body, "active")?;
-    }
+    app_server.set_goal(&assignment_body, "active")?;
 
     let mut round = 0u32;
     let mut next_prompt = Some(contract_prompt(
@@ -9535,27 +9529,15 @@ fn run_codex_member(
     let mut final_summary = String::new();
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
-        let turn = if let Some(client) = app_server.as_mut() {
-            run_codex_app_server_turn(
-                client,
-                &prompt_text,
-                member,
-                idle_timeout,
-                live_sink.clone(),
-                ledger,
-                live_control.as_ref().expect("live control registered"),
-            )?
-        } else {
-            run_codex_team_turn(
-                &prompt_text,
-                cwd,
-                member,
-                idle_timeout,
-                live_sink.clone(),
-                ledger,
-                &collaboration_env,
-            )?
-        };
+        let turn = run_codex_app_server_turn(
+            &mut app_server,
+            &prompt_text,
+            member,
+            idle_timeout,
+            live_sink.clone(),
+            ledger,
+            &live_control,
+        )?;
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
                 .native_session
@@ -9676,9 +9658,7 @@ fn run_codex_member(
         member_row.finished_at = Some(now_string());
         member_row.last_event_at = Some(now_string());
         if member_status == MemberRunStatus::Completed {
-            if let Some(client) = app_server.as_mut() {
-                client.set_goal(&assignment_body, "complete")?;
-            }
+            app_server.set_goal(&assignment_body, "complete")?;
         }
         ledger.save_member_run(&member_row)?;
         ledger.fold_event(
@@ -9799,178 +9779,6 @@ fn project_codex_team_event_live(
             preview: summary,
         });
     }
-}
-
-fn codex_team_sandbox() -> &'static str {
-    // Temporary development policy: Agent Team members receive full execution
-    // permission. Owned paths remain a coordination/acceptance boundary, not a
-    // provider sandbox claim.
-    "danger-full-access"
-}
-
-fn enabled_env_switch(value: Option<&str>) -> bool {
-    value
-        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
-}
-
-fn codex_team_ignore_user_config() -> bool {
-    enabled_env_switch(
-        std::env::var("HARNESS_CODEX_IGNORE_USER_CONFIG")
-            .ok()
-            .as_deref(),
-    )
-}
-
-/// Run one Codex turn and consume its event stream in memory. Members without
-/// owned paths still receive the temporary full-access development policy;
-/// ownership remains a durable coordination contract. Raw events and reasoning
-/// are intentionally not returned to any durable writer.
-fn run_codex_team_turn(
-    prompt: &str,
-    cwd: &Path,
-    member: &MemberRun,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
-    ledger: &TeamRunLedger,
-    collaboration_env: &[(String, String)],
-) -> CliResult<CodexTeamTurn> {
-    let mut cmd = Command::new("codex");
-    cmd.arg("exec");
-    // Agent Team members normally inherit the provider's user configuration so
-    // global skills and MCP servers remain discoverable. Operators can opt into
-    // a clean provider process when an unrelated user MCP is unavailable or
-    // inappropriate for the member's execution boundary. Authentication still
-    // comes from CODEX_HOME; only config.toml is ignored by Codex.
-    if codex_team_ignore_user_config() {
-        cmd.arg("--ignore-user-config");
-    }
-    cmd.arg("--cd")
-        .arg(cwd)
-        .arg("--sandbox")
-        .arg(codex_team_sandbox())
-        .arg("--skip-git-repo-check");
-    if let Some(model) = member.model.as_deref() {
-        cmd.arg("-m").arg(model);
-    }
-    if let Some(session) = member.native_session.as_ref() {
-        cmd.arg("resume").arg(&session.native_session_id);
-    }
-    cmd.arg("--json")
-        .arg(prompt)
-        .envs(collaboration_env.iter().cloned())
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|error| {
-        CliError::Usage(format!(
-            "failed to spawn codex team member {}: {error}",
-            member.name
-        ))
-    })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| CliError::Usage("codex stdout not available".to_string()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| CliError::Usage("codex stderr not available".to_string()))?;
-    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
-    let stdout_reader = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if line_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut text = String::new();
-        let _ = reader.read_to_string(&mut text);
-        text
-    });
-
-    let mut events = Vec::new();
-    let mut last_activity = Instant::now();
-    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
-    let status = loop {
-        match line_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) => {
-                last_activity = Instant::now();
-                if let Some(event) = CodexExecEvent::parse_line(&line) {
-                    project_codex_team_event_live(
-                        ledger,
-                        member,
-                        &event.payload,
-                        live_sink.as_ref(),
-                    );
-                    let reasoning = event
-                        .payload
-                        .get("item")
-                        .filter(|item| {
-                            item.get("type").and_then(|value| value.as_str()) == Some("reasoning")
-                        })
-                        .and_then(|item| item.get("text"))
-                        .and_then(|text| text.as_str())
-                        .and_then(sanitize_live_member_preview);
-                    if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
-                        if let (Some(sink), Some(preview)) = (&live_sink, reasoning) {
-                            last_live_activity = Instant::now();
-                            sink(LiveMemberActivityPreview {
-                                team_run_id: ledger.run_id.clone(),
-                                member_run_id: member.id.clone(),
-                                provider: member.provider.clone(),
-                                preview,
-                            });
-                        }
-                    }
-                    events.push(event);
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                break child.wait()?;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if child.try_wait()?.is_some() {
-                    // The stdout reader may still have the terminal lines in
-                    // flight. Wait for channel disconnect so they are not
-                    // dropped before final-message extraction.
-                    continue;
-                }
-                if last_activity.elapsed() >= idle_timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(CliError::Usage(format!(
-                        "codex team member {} exceeded idle timeout",
-                        member.name
-                    )));
-                }
-            }
-        }
-    };
-    let _ = stdout_reader.join();
-    let stderr_text = stderr_reader.join().unwrap_or_default();
-    let inferred = infer_provider_execution_status(&events, status.success());
-    if inferred != ProviderExecutionStatus::Succeeded {
-        return Err(CliError::Usage(format!(
-            "codex team member {} failed ({inferred:?}): {}",
-            member.name,
-            stderr_text.trim()
-        )));
-    }
-    let final_text = extract_codex_final_message(&events)
-        .or_else(|| extract_codex_reply_text(&events))
-        .unwrap_or_default();
-    Ok(CodexTeamTurn {
-        thread_id: extract_thread_id_from_exec_events(&events),
-        final_text,
-        interrupted: false,
-        interrupt_requested_by_harness: false,
-    })
 }
 
 /// Drive one turn on the persistent Codex app-server session. Unlike
@@ -27959,7 +27767,7 @@ mod tests {
                     name: "BuilderA".into(),
                     role: "module_a".into(),
                     provider: "codex".into(),
-                    execution_mode: Some("codex_exec".into()),
+                    execution_mode: Some("codex_app_server".into()),
                     model: None,
                     worktree_ref: None,
                     owned_paths: vec!["crates/a".into()],
@@ -27969,7 +27777,7 @@ mod tests {
                     name: "BuilderB".into(),
                     role: "module_b".into(),
                     provider: "codex".into(),
-                    execution_mode: Some("codex_exec".into()),
+                    execution_mode: Some("codex_app_server".into()),
                     model: None,
                     worktree_ref: None,
                     owned_paths: vec!["crates/b".into()],
@@ -28175,18 +27983,88 @@ mod tests {
     }
 
     #[test]
-    fn provider_profiles_distinguish_native_emulated_and_unsupported_planning() {
+    fn provider_profiles_make_codex_app_server_the_team_default() {
         let codex_app = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
         assert_eq!(codex_app.plan_mode, ProviderFeatureMode::Native);
         assert_eq!(codex_app.goal_mode, ProviderFeatureMode::Native);
+        assert_eq!(
+            team_member_provider_profile("codex").execution_mode,
+            "codex_app_server"
+        );
 
         let kimi = team_member_provider_profile_for_mode("kimi", Some("kimi_acp"));
         assert_eq!(kimi.plan_mode, ProviderFeatureMode::Native);
         assert_eq!(kimi.goal_mode, ProviderFeatureMode::Emulated);
 
+        // Historical records remain projectable even though new TeamRuns reject
+        // codex_exec; Workflow continues to own that one-shot substrate.
         let codex_exec = team_member_provider_profile_for_mode("codex", Some("codex_exec"));
         assert_eq!(codex_exec.plan_mode, ProviderFeatureMode::Unsupported);
         assert_eq!(codex_exec.goal_mode, ProviderFeatureMode::Unsupported);
+    }
+
+    #[test]
+    fn new_agent_team_rejects_codex_exec_as_workflow_only() {
+        let (store, root) = temp_store("team-reject-codex-exec");
+        let result = create_team_run(
+            &store,
+            None,
+            None,
+            "Do interactive team work",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                name: "BatchMember".into(),
+                role: "worker".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_exec".into()),
+                model: None,
+                worktree_ref: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+            }],
+        );
+        let error = match result {
+            Ok(_) => panic!("Agent Team must reject one-shot Codex exec"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Usage(ref message) if message.contains("workflow-only")),
+            "unexpected error: {error:?}"
+        );
+
+        let created = create_two_member_team_run(&store);
+        let add_result = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &TeamMemberSpec {
+                name: "LateBatchMember".into(),
+                role: "worker".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_exec".into()),
+                model: None,
+                worktree_ref: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+            },
+            "Join the running collaboration",
+            None,
+        );
+        let add_error = match add_result {
+            Ok(_) => panic!("Agent Team add-member must reject one-shot Codex exec"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(add_error, CliError::Usage(ref message) if message.contains("workflow-only")),
+            "unexpected add-member error: {add_error:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -28530,23 +28408,6 @@ mod sse_tests {
             }
             Err(_) => panic!("Did not receive event in time"),
         }
-    }
-
-    #[test]
-    fn codex_team_sandbox_uses_temporary_full_access_policy() {
-        assert_eq!(codex_team_sandbox(), "danger-full-access");
-        assert_eq!(claude_team_permission_mode(), "bypassPermissions");
-    }
-
-    #[test]
-    fn codex_team_user_config_isolation_switch_is_explicit() {
-        for enabled in ["1", "true", "yes", "on", " true "] {
-            assert!(enabled_env_switch(Some(enabled)));
-        }
-        for disabled in ["", "0", "false", "off", "unexpected"] {
-            assert!(!enabled_env_switch(Some(disabled)));
-        }
-        assert!(!enabled_env_switch(None));
     }
 
     #[test]
