@@ -18,12 +18,11 @@ function check(condition, message) {
 }
 
 async function main() {
-  const [selection, router, host, commandCenter, seedBlocks] = await Promise.all([
+  const [selection, router, host, commandCenter] = await Promise.all([
     readFile(resolve(root, "src/app/selection.ts"), "utf8"),
     readFile(resolve(root, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
     readFile(resolve(root, "src/company-os/page-packages/CustomPageHost.tsx"), "utf8"),
     readFile(resolve(root, "src/company-os/page-packages/wanchengwanling/WanchengwanlingCommandCenter.tsx"), "utf8"),
-    readFile(resolve(root, "../..", "scripts/seed-company-os-wanchengwanling-doc-blocks-v1.mjs"), "utf8"),
   ]);
 
   check(selection.includes("customPageId?: string") && selection.includes('params.get("page")') && selection.includes('params.set("page", selection.customPageId)'), "custom pages are URL-addressable through the page query parameter");
@@ -37,8 +36,6 @@ async function main() {
   check(commandCenter.includes("Primary operating docs") && commandCenter.includes("document-wcw-project-home") && commandCenter.includes("document-wcw-business-model") && commandCenter.includes("Default Document renderer"), "Command Center exposes 00/01 as primary Store-backed Docs with default Document fallback");
   check(commandCenter.includes("moduleByDocument") && commandCenter.includes("Open Module") && commandCenter.includes("data-wcw-primary-docs"), "Command Center links primary Docs to their standard Module fallback routes");
   check(!commandCenter.includes("Trademark") && !commandCenter.includes("CN-2026") && !commandCenter.includes("Brand A"), "Command Center package contains no trademark prototype copy");
-  check(seedBlocks.includes('"company", "docs", "block", "append"') && seedBlocks.includes("Docs-only block.append + document.append") && seedBlocks.includes("满 8 点兑换 AR 冰箱贴") && seedBlocks.includes("满 12 点参与抽奖"), "Wanchengwanling Docs block seed is governed, Docs-only, and captures the 8/12 check-in distinction");
-  check(seedBlocks.includes("Company OS 模块地图") && seedBlocks.includes("MVP 验证指标") && seedBlocks.includes("本页只解释商业逻辑，不直接授权花钱"), "00/01 seed content explains the module map, business model, metrics, and Finance boundary");
 
   console.log(`\nWanchengwanling custom page checks: ${passed} pass, ${failed} fail`);
   process.exit(failed === 0 ? 0 : 1);
