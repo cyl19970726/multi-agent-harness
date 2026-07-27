@@ -85,6 +85,21 @@ async function post(base, path, body) {
   return data.result ?? data;
 }
 
+async function postBootstrapActor(base, record) {
+  const response = await fetch(`${base}/v1/company-os/actors`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-company-os-token": token,
+    },
+    body: JSON.stringify(record),
+  });
+  const data = await response.json();
+  if (response.ok && data.ok !== false) return data.result ?? data;
+  if (response.status === 403) return post(base, "/v1/company-os/actors", admin(record));
+  throw new Error(`/v1/company-os/actors failed: HTTP ${response.status} ${JSON.stringify(data)}`);
+}
+
 async function get(base, path) {
   const response = await fetch(`${base}${path}`, { headers: { accept: "application/json" } });
   const data = await response.json();
@@ -156,7 +171,7 @@ async function main() {
 
   try {
     await waitFor(`${base}/health`);
-    await post(base, "/v1/company-os/actors", {
+    await postBootstrapActor(base, {
       actor_type: "human",
       actor: {
         id: "human-wanchengwanling-owner",

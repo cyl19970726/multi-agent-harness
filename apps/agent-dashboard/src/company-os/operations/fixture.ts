@@ -159,7 +159,7 @@ function approvalPresentation(params: {
   const noun = params.commitment.label.trim().toLowerCase() || "commitment";
   return {
     title: `Approve ${noun}`,
-    actionSummary: `Authorize the ${params.commitment.amount} ${noun}; legal submission remains blocked until approval.`,
+    actionSummary: `Authorize the ${params.commitment.amount} ${noun}; the requested governed effect remains blocked until approval.`,
   };
 }
 

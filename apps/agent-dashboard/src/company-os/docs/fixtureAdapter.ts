@@ -127,12 +127,22 @@ function entityRefs(value: unknown): Array<{ kind: string; id: string }> {
     : [];
 }
 
+function docsDocumentHref(id: string): string | undefined {
+  return id ? `?surface=docs&document=${encodeURIComponent(id)}` : undefined;
+}
+
+function docsModuleHref(id: string): string | undefined {
+  return id ? `?surface=docs&module=${encodeURIComponent(id)}` : undefined;
+}
+
 function documentLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
-  return entry ? { id: text(entry.id), label: text(entry.title, "Untitled document"), kind: "document" } : undefined;
+  const id = text(entry?.id);
+  return entry ? { id, label: text(entry.title, "Untitled document"), kind: "document", href: docsDocumentHref(id) } : undefined;
 }
 
 function moduleLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
-  return entry ? { id: text(entry.id), label: text(entry.name, "Unnamed module"), kind: "module", meta: text(entry.status) ? humanize(entry.status) : undefined } : undefined;
+  const id = text(entry?.id);
+  return entry ? { id, label: text(entry.name, "Unnamed module"), kind: "module", href: docsModuleHref(id), meta: text(entry.status) ? humanize(entry.status) : undefined } : undefined;
 }
 
 function typedRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
@@ -717,11 +727,22 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].map(([space, entries]) => ({
     id: `space:${space}`,
     label: space,
-    children: entries.map((entry) => ({ id: text(entry.id), ref: text(entry.id), label: text(entry.title, "Untitled document"), selected: false })),
+    href: docsDocumentHref(text(entries[0]?.id)),
+    children: entries.map((entry) => {
+      const documentId = text(entry.id);
+      return {
+        id: documentId,
+        ref: documentId,
+        label: text(entry.title, "Untitled document"),
+        href: docsDocumentHref(documentId),
+        selected: selected.documentId === documentId,
+      };
+    }),
   }));
   if (module && workspaceTree.length) {
     const parent = workspaceTree.find((entry) => entry.label === text(workspaceDocument?.space, text(workspaceDocument?.space_id))) ?? workspaceTree[0];
-    parent.children?.push({ id: text(module.id), ref: text(module.id), label: text(module.name, "Unnamed module"), meta: humanize(module.status) || undefined });
+    const moduleId = text(module.id);
+    parent.children?.push({ id: moduleId, ref: moduleId, label: text(module.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(module.status) || undefined });
   }
 
   const documentProperties = [
@@ -1030,7 +1051,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       description: documents.length ? "Documents, typed records, and connected operating context." : "No company documents are supplied by this projection.",
       rootSelected: true,
       tree: workspaceTree,
-      spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
+      spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, href: docsDocumentHref(text(entries[0]?.id)), countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
       recentlyUpdated: linkEntries(documents.map(documentLink)),
       templates: templateLinks,
       templateRecordPolicy: templatePolicy,
