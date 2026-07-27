@@ -4,7 +4,7 @@ A persistent Agent Team member backed by the [Claude Agent SDK](https://code.cla
 One process per `MemberRun`, one provider-native Claude session that stays alive
 until the Host accepts the handoff.
 
-> Status: **skeleton, `review_required`.** Lifecycle, gates, and the stdio
+> Status: **default Claude execution mode, `review_required`.** Lifecycle, gates, and the stdio
 > protocol are covered by deterministic tests against a fake SDK. Nothing here
 > has run against a real provider yet, so per AGENTS.md this execution mode is
 > not a reviewed-compatible adapter.

@@ -14,17 +14,27 @@ object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
 
 | mode | 状态 | 形态 |
 | --- | --- | --- |
-| `claude_cli` | **已实现，已发布** | `claude -p` 每次投递起一个进程 |
-| `claude_agent_sdk` | **已接线, `review_required`** | Agent SDK streaming input，进程常驻 |
+| `claude_cli` | 保留，需显式指定 | `claude -p` 每次投递起一个进程 |
+| `claude_agent_sdk` | **默认**，`review_required` | Agent SDK streaming input，进程常驻 |
 
 两个模式都在 `(provider, execution_mode)` 白名单里。`claude_agent_sdk` 的运行时
 在 `apps/claude-member-runner/`，Rust 侧由 `run_claude_agent_sdk_team_member`
-经 NDJSON 驱动；`claude_cli` 一行未改，仍是默认。
+经 NDJSON 驱动；`claude_cli` 的代码一行未改，但**不再是默认**。
 
 ```bash
---member "Name:Role:claude/cli"          # 现状，一次性
---member "Name:Role:claude/agent-sdk"    # 持续 member
+--member "Name:Role:claude"              # 默认 → claude_agent_sdk，持续 member
+--member "Name:Role:claude/agent-sdk"    # 同上，显式
+--member "Name:Role:claude/cli"          # 旧的一次性模式，需点名
 ```
+
+默认换过来的理由不是「新的更好」，而是：**默认到 `claude_cli` 等于默认到一个已
+证明满足不了 ADR 0037 验收第 6 条的模式。** 一个 member 在队列瞬时为空时就消失，
+不是可以当缺省的行为。
+
+代价要说清楚：`claude_agent_sdk` 需要 `node` 和 runner 的依赖，`claude_cli` 只要
+`claude` 二进制。找不到 runner 时不会静默退回——那正是这个模式要消除的失败——而是
+显式报错并给出三条出路（指 `HARNESS_CLAUDE_MEMBER_RUNNER`、装依赖、或
+`claude/cli`）。
 
 `claude_agent_sdk` 的 profile 刻意把 `reviewed_provider_versions` 留空，
 `interaction_mode` / `plan_mode` 也没有超过 `claude_cli` 的声明——interrupt、

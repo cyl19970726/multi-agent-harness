@@ -6721,7 +6721,10 @@ fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
 ) -> ProviderIntegrationProfile {
-    if provider == "claude" && requested_mode == Some("claude_agent_sdk") {
+    // Claude's default. `claude_cli` remains reachable, but only when asked for
+    // by name: defaulting to it means defaulting to a mode that provably cannot
+    // satisfy ADR 0037 acceptance item 6.
+    if provider == "claude" && matches!(requested_mode, Some("claude_agent_sdk") | None) {
         return ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "claude_agent_sdk".to_string(),
@@ -9394,7 +9397,7 @@ fn run_member_orchestration(
             live_sink,
         )
     } else if member.provider.eq_ignore_ascii_case("claude")
-        && matches!(execution_mode, Some("claude_agent_sdk"))
+        && matches!(execution_mode, Some("claude_agent_sdk") | None)
     {
         run_claude_agent_sdk_team_member(
             ledger,
@@ -9406,7 +9409,7 @@ fn run_member_orchestration(
             live_sink,
         )
     } else if member.provider.eq_ignore_ascii_case("claude")
-        && matches!(execution_mode, Some("claude_cli") | None)
+        && matches!(execution_mode, Some("claude_cli"))
     {
         run_claude_team_member(
             ledger,
@@ -10600,10 +10603,18 @@ fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
     }
     // Fail explicitly rather than silently degrading to the `-p` path: a member
     // that quietly loses its control channel is exactly the failure this mode
-    // exists to remove.
+    // exists to remove. Since `claude_agent_sdk` is now the default for Claude
+    // members, this message is what a first-time runner sees — it has to say
+    // how to proceed, including the escape hatch.
     Err(CliError::Usage(format!(
-        "claude_agent_sdk runner not found: no `{RELATIVE}` above {} and \
-         HARNESS_CLAUDE_MEMBER_RUNNER is unset",
+        "claude_agent_sdk runner not found. Looked for `{RELATIVE}` in {} and \
+         every parent, and HARNESS_CLAUDE_MEMBER_RUNNER is unset.\n\
+         Fix one of:\n  \
+         - run from a checkout that contains the runner, or point \
+         HARNESS_CLAUDE_MEMBER_RUNNER at it\n  \
+         - install its dependency once: pnpm add @anthropic-ai/claude-agent-sdk\n  \
+         - or pin the member to the older one-shot mode: --member \
+         \"<name>:<role>:claude/cli\"",
         cwd.display()
     )))
 }
@@ -10666,7 +10677,9 @@ fn run_claude_agent_sdk_team_member(
         .spawn()
         .map_err(|error| {
             CliError::Usage(format!(
-                "failed to spawn claude_agent_sdk runner for {}: {error}",
+                "failed to spawn claude_agent_sdk runner for {}: {error}. \
+                 The runner needs `node` on PATH; pin the member to \
+                 `claude/cli` if this host cannot provide it.",
                 member.name
             ))
         })?;

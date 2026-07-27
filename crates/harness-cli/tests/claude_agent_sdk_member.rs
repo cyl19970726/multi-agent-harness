@@ -192,6 +192,40 @@ fn agent_sdk_member_binds_one_native_session_and_closes_only_on_host_close() {
 }
 
 #[test]
+fn a_bare_claude_member_defaults_to_the_agent_sdk_mode() {
+    // The default is the point: `claude_cli` ends a member on an empty queue,
+    // so defaulting to it means defaulting to a mode that cannot satisfy
+    // ADR 0037 acceptance item 6. Naming no mode must land on agent-sdk.
+    let home = TempHome::new("agent-sdk-default");
+    init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let out = run_harness(
+        &home,
+        &root,
+        &[
+            "team-run",
+            "create",
+            "--objective",
+            "default mode coverage",
+            "--member",
+            "Bare:Role:claude",
+            "--json",
+        ],
+    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let body = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        body.contains("claude_agent_sdk"),
+        "a member declared as plain `claude` should get the agent-sdk \
+         profile.\n{body}"
+    );
+    assert!(
+        !body.contains("claude-cli-native-v1"),
+        "plain `claude` must not fall back to the one-shot adapter.\n{body}"
+    );
+}
+
+#[test]
 fn unknown_claude_execution_mode_is_rejected() {
     let home = TempHome::new("agent-sdk-reject-mode");
     init_project(&home, "proj");
