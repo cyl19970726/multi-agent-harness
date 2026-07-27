@@ -190,6 +190,27 @@ open "claude://resume?session=<native_session_id>"
 
 `claude_cli` 和 `claude_agent_sdk` 两条路产出的会话都可以这样导入——都实测过。
 
+### 权限模型：hook 才是边界，不是 permission mode
+
+两个模式都默认 `permissionMode = bypassPermissions`。理由不是图省事，而是
+**无人值守的 member 没有人能回答交互式权限提示**，留着那一层只会死锁。
+
+关键是它**不会**关掉闸。2026-07-27 对真实 provider 实测（`gate-live.mjs`，
+Haiku 4.5，`ownedPaths: ["owned"]`）：
+
+| 情况 | 结果 |
+| --- | --- |
+| 写 lane 外 | `PreToolUse` 拒绝，**文件从未生成** |
+| 写 lane 内 | 成功 |
+
+即：`bypassPermissions` 跳过的是**提示层**，hook 照常执行且 `deny` 仍然优先。
+**member 的强制边界是 hook，不是 permission mode。** 正对照和负对照一样重要——
+否则「什么都写不了」会被误读成「闸生效」。
+
+唯一真正无界的组合是「提示关掉 **且** `ownedPaths` 为空」（空列表是文档定义的
+「不限制」）。runner 在这种情况下发 `unbounded_write_scope` 事件，让它是**被声明
+的**而不是默认静默。
+
 ### 并发边界（未验证，按保守规则操作）
 
 import 之后 desktop 会 **接管** 会话（`startShellPty`、`replaceEnabledMcpTools`、

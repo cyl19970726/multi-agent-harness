@@ -173,3 +173,38 @@ test("mailbox rejects delivery after close instead of dropping it", () => {
   mailbox.close("done");
   assert.throws(() => mailbox.push({ id: "m1" }), /closed/);
 });
+
+test("permission prompts default to off, because nobody can answer them", async () => {
+  const { runner, sdk, of } = harness({ ownedPaths: ["crates"] });
+  const done = runner.start();
+  await settled();
+  assert.equal(sdk.lastOptions.permissionMode, "bypassPermissions");
+  // Verified live: bypassPermissions skips the prompt layer, not the hooks.
+  // A PreToolUse deny still blocks the tool call. See FINDINGS §C.
+  assert.ok(sdk.lastOptions.hooks?.PreToolUse?.length > 0, "gates stay wired");
+  assert.equal(of("unbounded_write_scope").length, 0, "ownedPaths bound the lane");
+  runner.close("done");
+  await done;
+});
+
+test("an unbounded member is announced rather than silently allowed", async () => {
+  // prompts off + no ownedPaths = nothing constrains writes. Legal, but it must
+  // not be the quiet default.
+  const { runner, of } = harness({ ownedPaths: [] });
+  const done = runner.start();
+  await settled();
+  const warned = of("unbounded_write_scope");
+  assert.equal(warned.length, 1);
+  assert.equal(warned[0].data.permissionMode, "bypassPermissions");
+  runner.close("done");
+  await done;
+});
+
+test("an explicit permission mode is not overridden", async () => {
+  const { runner, sdk } = harness({ permissionMode: "plan", ownedPaths: ["x"] });
+  const done = runner.start();
+  await settled();
+  assert.equal(sdk.lastOptions.permissionMode, "plan");
+  runner.close("done");
+  await done;
+});

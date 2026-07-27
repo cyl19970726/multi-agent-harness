@@ -35,9 +35,8 @@ Two things worth keeping:
   while Harness drives.**
 - **Long-lived interrupt/steer against the real provider.** `q.interrupt()` and
   `q.setPermissionMode()` are covered by unit tests against the fake only.
-- **Gates against the real provider.** The owned-paths and plan-approval denials
-  are unit-tested; no live run has exercised a real `PreToolUse` denial, because
-  the live runs used `allowedTools: []`.
+- **Plan-approval gate against the real provider.** Unit-tested only. (The
+  owned-paths gate has since been verified live — see §C.)
 
 ## Corrections to earlier conclusions in this repo's discussion
 
@@ -127,3 +126,32 @@ Two consequences to keep visible:
   silent fallback to the one-shot path is exactly the bug being removed.
 
 Covered by `a_bare_claude_member_defaults_to_the_agent_sdk_mode`.
+
+
+## C. `bypassPermissions` does not disable the gates (2026-07-27)
+
+The runner now defaults to `permissionMode: "bypassPermissions"`, matching what
+`claude_team_permission_mode()` already sent on the `claude_cli` path. An
+interactive permission prompt has nobody to answer it inside an unattended
+member; leaving that layer on only produces a deadlock.
+
+The obvious worry is that it also turns off the owned-paths and plan gates.
+It does not. Both controls were run live against Claude Haiku 4.5 with
+`permissionMode: "bypassPermissions"`, `allowedTools: ["Write","Read"]` and
+`ownedPaths: ["owned"]` (`scripts/gate-live.mjs`):
+
+| Case | Result |
+| --- | --- |
+| Write to `nototmine/should-not-exist.txt` (outside the lane) | `PreToolUse` denied; **file was never created** |
+| Write to `owned/allowed.txt` (inside the lane) | succeeded, file contains `INSIDE-LANE` |
+
+So `bypassPermissions` skips the *prompt* layer; hooks still run and a hook
+`deny` still wins. **Hooks — not permission mode — are the enforcement boundary
+for a member.** The positive control matters as much as the negative one: it
+rules out "everything was blocked" being mistaken for "the gate works".
+
+One combination is genuinely unbounded: prompts off **and** `ownedPaths: []`
+(the documented "no restriction" value). Each half is defensible alone; together
+nothing constrains the member's writes. The runner now emits
+`unbounded_write_scope` in that case, so it is announced rather than silent.
+Covered by `an unbounded member is announced rather than silently allowed`.

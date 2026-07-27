@@ -25,6 +25,8 @@ export const COMMANDS = Object.freeze({
 /** Runner -> Rust. */
 export const EVENTS = Object.freeze({
   member_started: "member_started",
+  /** Prompts off AND no ownedPaths — nothing gates this member's writes. */
+  unbounded_write_scope: "unbounded_write_scope",
   /** Native session bound + registered. Carries the id Harness stores. */
   session_bound: "session_bound",
   assistant_message: "assistant_message",

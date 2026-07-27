@@ -121,7 +121,19 @@ export function createMemberRunner({ sdk, config, emit }) {
           cwd: config.cwd,
           allowedTools: config.allowedTools,
           disallowedTools: config.disallowedTools,
-          permissionMode: config.permissionMode ?? "default",
+          // `bypassPermissions`, matching what `claude_team_permission_mode()`
+          // already sends on the `claude_cli` path. An interactive permission
+          // prompt has nobody to answer it inside an unattended member, so
+          // leaving that layer on only produces a deadlock.
+          //
+          // This does NOT disable the gates below. Verified live on 2026-07-27
+          // with `scripts/gate-live.mjs`: under `bypassPermissions`, a Write
+          // outside `ownedPaths` was denied by the PreToolUse hook and the file
+          // was never created, while a Write inside `ownedPaths` succeeded.
+          // `bypassPermissions` skips the prompt layer; hooks still run and a
+          // hook `deny` still wins. Hooks — not permission mode — are the
+          // enforcement boundary for a member.
+          permissionMode: config.permissionMode ?? "bypassPermissions",
           // Members must discover the project's own CLAUDE.md and .claude/
           // skills from their execution root. This is the corner case raised
           // during dogfooding: a provider started outside the project loads the
@@ -133,9 +145,29 @@ export function createMemberRunner({ sdk, config, emit }) {
         },
       });
 
+      const permissionMode = config.permissionMode ?? "bypassPermissions";
+      const ownedPathCount = (config.ownedPaths ?? []).length;
+
+      // The one genuinely unbounded combination: prompts off AND no owned-path
+      // gate. Each half is reasonable alone — prompts are useless unattended,
+      // and an empty `ownedPaths` is the documented "no restriction" value —
+      // but together nothing constrains the member's writes. Say so out loud
+      // rather than letting it be the quiet default.
+      if (permissionMode === "bypassPermissions" && ownedPathCount === 0) {
+        emit("unbounded_write_scope", {
+          memberRunId: config.memberRunId,
+          permissionMode,
+          detail:
+            "permission prompts are off and no ownedPaths are set, so no gate " +
+            "constrains this member's writes; set ownedPaths to bound the lane",
+        });
+      }
+
       emit("member_started", {
         memberRunId: config.memberRunId,
         cwd: config.cwd,
+        permissionMode,
+        ownedPathCount,
         resumed: Boolean(config.resumeSessionId),
       });
 
