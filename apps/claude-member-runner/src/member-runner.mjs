@@ -34,7 +34,13 @@
 import { Mailbox, renderTeamMessage } from "./mailbox.mjs";
 import { buildHooks } from "./gates.mjs";
 
-/** Kinds that flip the plan gate open. See ADR 0038. */
+// ADR 0038's chain is `plan_request -> plan_proposal -> (plan_feedback ->
+// plan_proposal)* -> plan_approval`, and plan negotiation is explicitly
+// *optional* — only "complex or high-risk Assignments" use it. So the gate is
+// driven by that chain rather than by a config flag: the Host arms it by
+// sending a `plan_request`, and disarms it by sending `plan_approval`. An
+// assignment nobody requested a plan for is never gated.
+const PLAN_REQUEST_KIND = "plan_request";
 const PLAN_APPROVAL_KIND = "plan_approval";
 
 /**
@@ -99,6 +105,14 @@ export function createMemberRunner({ sdk, config, emit }) {
   }
 
   function noteDelivery(message) {
+    if (message.kind === PLAN_REQUEST_KIND) {
+      // Arm the gate. Re-arming after an approval is legitimate: a Host that
+      // asks for a new plan mid-assignment is starting a fresh negotiation, and
+      // execution should hold again until that one is approved.
+      state.planRequired = true;
+      state.planApproved = false;
+      emit("plan_gate_armed", { correlationId: message.correlation_id });
+    }
     if (message.kind === PLAN_APPROVAL_KIND) {
       state.planApproved = true;
       emit("plan_approved", { correlationId: message.correlation_id });

@@ -179,3 +179,34 @@ The plan gate still blocks, because it is a *sequencing* contract from ADR 0038
 (do not execute before the Host approves), not a safety one.
 
 Covered by `a cross-lane write is reported and still allowed to proceed`.
+
+
+## D. The plan gate was never armed in production (2026-07-27)
+
+Keeping the plan gate — the one hook that still blocks — turned out to require
+wiring it, not just leaving it in place.
+
+`planRequired` was read as `Boolean(config.planRequired)`, and the Rust caller
+never sent that field: `grep -c planRequired` over `main.rs` returned 0. So it
+was permanently `false` and the gate could only ever fire in unit tests that set
+it directly. A gate that cannot fire is worse than no gate: it reads as a
+control in review and enforces nothing.
+
+It is now driven by ADR 0038's own chain rather than by config, which also
+keeps plan negotiation *optional* as that ADR specifies:
+
+```text
+plan_request  -> gate armed   (plan_gate_armed)
+plan_approval -> gate released (plan_approved)
+neither       -> never gated
+```
+
+A second `plan_request` re-arms it; an earlier approval must not carry a fresh
+negotiation. Verified end to end on the Rust side: `queued_messages_for` does
+not filter by kind, the follow-up `deliver` payload carries
+`team_message_kind_label(&message.kind)`, and `TeamMessageKind::PlanRequest`
+labels as `"plan_request"` — so the message the runner keys on is the message
+the harness actually sends.
+
+Covered by `a plan_request arms the gate and plan_approval releases it` and
+`a second plan_request re-arms the gate after an approval`.

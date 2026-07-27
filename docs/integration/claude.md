@@ -232,7 +232,23 @@ member 写到 lane 外面了，是有意的吗?」——那才是真正要问的
 一个 PreToolUse matcher。
 
 唯一仍然会拦的是 **plan 闸**，因为那是 ADR 0038 的**时序**契约（Host 批准前不得
-执行），不是安全边界。
+执行），不是安全边界。shell 绕不过它——它约束的是「什么时候能开始」，不是「能碰
+哪些文件」。
+
+它由 ADR 0038 自己的消息链驱动，不由配置字段驱动：
+
+```text
+Host 发 plan_request   → 闸合上（plan_gate_armed），Write/Edit/NotebookEdit 被拒
+Host 发 plan_approval  → 闸打开（plan_approved）
+没人要过 plan          → 从不设闸
+```
+
+再发一次 `plan_request` 会重新合上——Host 中途要求重新规划就是一次新的协商，不该
+靠上一次的批准继续跑。
+
+> 这条接线是补上的：`planRequired` 之前从来没被 Rust 侧传过，
+> `Boolean(undefined)` 恒为 false，所以闸在真实路径上从不触发，只有单测直接设它
+> 才动。留着一个不会响的闸比没有闸更糟。
 
 ### 并发边界（未验证，按保守规则操作）
 

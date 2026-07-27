@@ -34,6 +34,8 @@ export const EVENTS = Object.freeze({
   delivered: "delivered",
   interrupted: "interrupted",
   permission_mode_changed: "permission_mode_changed",
+  /** A `plan_request` arrived; execution holds until `plan_approval`. */
+  plan_gate_armed: "plan_gate_armed",
   plan_approved: "plan_approved",
   plan_gate_blocked: "plan_gate_blocked",
   /** A write landed outside the declared lane. Observed, not blocked. */

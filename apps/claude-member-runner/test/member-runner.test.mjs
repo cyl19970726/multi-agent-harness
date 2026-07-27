@@ -208,3 +208,51 @@ test("an explicit permission mode is not overridden", async () => {
   runner.close("done");
   await done;
 });
+
+test("a plan_request arms the gate and plan_approval releases it", async () => {
+  // The gate is driven by ADR 0038's own message chain rather than a config
+  // flag. Before this, `planRequired` was only ever set by tests — the Rust
+  // caller never sent it, so the gate could not fire in production at all.
+  const { runner, of } = harness();
+  const done = runner.start();
+  assert.equal(runner.state.planRequired, false, "not gated until asked for");
+
+  runner.deliver({
+    id: "p1", kind: "plan_request", from_member_id: "host",
+    correlation_id: "corr-1", body: "propose a plan first",
+  });
+  await settled();
+  assert.equal(runner.state.planRequired, true);
+  assert.equal(runner.state.planApproved, false);
+  assert.equal(of("plan_gate_armed")[0].data.correlationId, "corr-1");
+
+  runner.deliver({
+    id: "p2", kind: "plan_approval", from_member_id: "host",
+    correlation_id: "corr-1", body: "approved",
+  });
+  await settled();
+  assert.equal(runner.state.planApproved, true);
+
+  runner.close("done");
+  await done;
+});
+
+test("a second plan_request re-arms the gate after an approval", async () => {
+  // A Host asking for a new plan mid-assignment starts a fresh negotiation;
+  // execution should hold again rather than coast on the earlier approval.
+  const { runner } = harness();
+  const done = runner.start();
+  runner.deliver({ id: "p1", kind: "plan_request", from_member_id: "host", body: "x" });
+  await settled();
+  runner.deliver({ id: "p2", kind: "plan_approval", from_member_id: "host", body: "ok" });
+  await settled();
+  assert.equal(runner.state.planApproved, true);
+
+  runner.deliver({ id: "p3", kind: "plan_request", from_member_id: "host", body: "replan" });
+  await settled();
+  assert.equal(runner.state.planApproved, false, "approval must not carry over");
+  assert.equal(runner.state.planRequired, true);
+
+  runner.close("done");
+  await done;
+});
