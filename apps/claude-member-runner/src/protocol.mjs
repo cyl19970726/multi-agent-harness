@@ -33,6 +33,10 @@ export const EVENTS = Object.freeze({
   turn_idle: "turn_idle",
   delivered: "delivered",
   interrupted: "interrupted",
+  /** The interrupted query tore down; expected, not a fault. */
+  query_ended_by_interrupt: "query_ended_by_interrupt",
+  /** A fresh query resumed the same native session after an interrupt. */
+  member_resumed_after_interrupt: "member_resumed_after_interrupt",
   permission_mode_changed: "permission_mode_changed",
   /** A `plan_request` arrived; execution holds until `plan_approval`. */
   plan_gate_armed: "plan_gate_armed",

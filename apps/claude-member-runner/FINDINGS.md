@@ -33,8 +33,8 @@ Two things worth keeping:
   producing at the same time is untested and may behave differently. Until
   someone tests it, the operating rule is: **desktop is read-only observation
   while Harness drives.**
-- **Long-lived interrupt/steer against the real provider.** `q.interrupt()` and
-  `q.setPermissionMode()` are covered by unit tests against the fake only.
+- ~~Long-lived interrupt/steer against the real provider.~~ Run on 2026-07-27;
+  it found a defect. See §E.
 - **Plan-approval gate against the real provider.** Unit-tested only. (The
   owned-paths gate has since been verified live — see §C.)
 
@@ -210,3 +210,81 @@ the harness actually sends.
 
 Covered by `a plan_request arms the gate and plan_approval releases it` and
 `a second plan_request re-arms the gate after an approval`.
+
+
+## E. The canary failed, and that was the point (2026-07-27)
+
+A live probe of interrupt / steer / the plan gate against Claude Haiku 4.5.
+
+| | Result |
+| --- | --- |
+| steer — `setPermissionMode("acceptEdits")` | pass, acknowledged `{"mode":"acceptEdits"}` |
+| plan gate release — write after `plan_approval` | pass |
+| plan gate block — write while armed | **not exercised**; see below |
+| interrupt | **failed**, then fixed and re-verified |
+
+### The interrupt defect
+
+`interrupt()` returned a clean-looking receipt, `{still_queued: []}`, and then
+the member was dead:
+
+```text
+PRE-INTERRUPT  turns=0
+INTERRUPT      receipt {"still_queued":[]}
+POST-INTERRUPT closed=false  turns=0        <- looks alive
+               delivery TIMEOUT after 60s   <- is not
+               member_closed never emitted
+               start() neither resolved nor rejected
+```
+
+The SDK's own wording is the clue: **"Interrupts the query."** It ends the
+query, not the turn. The first implementation bound one member to one query, so
+interrupting ended the member — except nothing detected it. The stream stopped
+yielding without ending, so `for await` blocked forever and the runner believed
+the member was still alive.
+
+This is the same mistake as the original P0, one layer down:
+
+| | Conflated | Symptom |
+| --- | --- | --- |
+| `claude -p` | a **turn** with a **member** | member dies on an empty queue |
+| this runner | a **query/process** with a **member** | member dies on an interrupt |
+
+The rule that falls out: **the member's lifetime is defined by Harness — the
+mailbox — and everything under it (turn, query, OS process) is disposable and
+rebuildable from the native session.** The native session is the fixed point;
+that is what ADR 0032's "provider-native session is execution truth" means
+operationally, not just where logs live.
+
+Fix: a member spans query *generations*. `interrupt()` takes the receipt,
+`Mailbox.supersede()` retires the current consumer without closing the mailbox
+or dropping queued messages, `query.return()` ends the iterator, and `start()`
+opens a fresh query with `resume: <native_session_id>`. The `ede_diagnostic`
+error an interrupted query throws is swallowed only when we caused it; anything
+else still propagates.
+
+Re-verified with the same probe that exposed it:
+
+```text
+POST-INTERRUPT delivery landed: true   turns=1
+last reply: "ALIVE-AFTER-INTERRUPT"
+member_closed seen: 1
+```
+
+Covered by `the member survives an interrupt and consumes the next message` and
+`the resumed query continues the same native session`.
+
+### Why a receipt is not an acknowledgement
+
+`{still_queued: []}` proved only that the call returned. AGENTS.md asks for a
+**terminal acknowledgement**, and this is why: the difference between the two is
+exactly the bug above. `supports_cancel` should not be claimed from a return
+value; it needs the member to still answer afterwards.
+
+### The plan-gate block was not exercised
+
+`plan_gate_blocked=0` with no file created. The innocent explanation is that the
+model answered the `plan_request` with a plan and never attempted the Write, so
+the gate never fired. "The file is absent" has the same shape as "the gate
+worked" — the trap §C avoided with a positive control, and this probe walked
+into. Not scored as a pass.

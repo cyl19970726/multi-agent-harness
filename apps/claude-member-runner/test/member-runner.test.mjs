@@ -256,3 +256,49 @@ test("a second plan_request re-arms the gate after an approval", async () => {
   runner.close("done");
   await done;
 });
+
+test("the member survives an interrupt and consumes the next message", async () => {
+  // Regression for a live defect found by the 2026-07-27 canary: `interrupt()`
+  // ends the SDK *query*, not the turn. The first implementation bound one
+  // member to one query, so interrupting left the member hung — the stream
+  // stopped yielding but never ended, later deliveries went nowhere, and
+  // `member_closed` never fired. A member now spans query generations.
+  const { runner, of } = harness();
+  const done = runner.start();
+
+  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "long task" });
+  await settled();
+
+  await runner.interrupt();
+  await settled();
+
+  assert.equal(runner.mailbox.closed, false, "an interrupt must not end the member");
+  assert.equal(of("member_closed").length, 0);
+  assert.equal(of("member_resumed_after_interrupt").length, 1, "a fresh query resumed");
+
+  // The load-bearing assertion: the member is still reachable afterwards.
+  const before = of("turn_complete").length;
+  runner.deliver({ id: "m2", kind: "question", from_member_id: "host", body: "still there?" });
+  await settled();
+  assert.ok(of("turn_complete").length > before, "post-interrupt delivery must land");
+
+  runner.close("done");
+  await done;
+  assert.equal(of("member_closed").length, 1);
+});
+
+test("the resumed query continues the same native session", async () => {
+  const { runner, sdk, of } = harness();
+  const done = runner.start();
+  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "x" });
+  await settled();
+  const bound = of("session_bound")[0].data.sessionId;
+
+  await runner.interrupt();
+  await settled();
+
+  assert.equal(sdk.lastOptions.resume, bound, "reopen must resume, not start fresh");
+  assert.equal(of("session_bound").length, 1, "still one MemberRun, one session");
+  runner.close("done");
+  await done;
+});

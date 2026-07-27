@@ -77,6 +77,14 @@ export function createMemberRunner({ sdk, config, emit }) {
   });
 
   let query = null;
+  // `interrupt()` ends the SDK *query*, not the member. Live probe on
+  // 2026-07-27: after `query.interrupt()` the stream stopped yielding, the
+  // turn never produced a `result`, later deliveries went nowhere and the
+  // member hung with `member_closed` never emitted. The SDK's own wording is
+  // "Interrupts the query." — so the member survives an interrupt by opening a
+  // fresh query that resumes the same native session, which is what this flag
+  // drives.
+  let interruptedGeneration = false;
 
   /**
    * Bind the native session to this MemberRun the first time we see it, and
@@ -119,6 +127,29 @@ export function createMemberRunner({ sdk, config, emit }) {
     }
   }
 
+  function openQuery(resumeSessionId) {
+    return sdk.query({
+      prompt: mailbox.stream(renderTeamMessage),
+      options: {
+        cwd: config.cwd,
+        allowedTools: config.allowedTools,
+        disallowedTools: config.disallowedTools,
+        // `bypassPermissions`: an interactive permission prompt has nobody to
+        // answer it inside an unattended member. It does not switch the hooks
+        // off — verified live, a `PreToolUse` deny still blocks under it, which
+        // is what the plan gate relies on. It does NOT make this a sandbox and
+        // nothing here tries to be one; see the header comment in `gates.mjs`.
+        permissionMode: config.permissionMode ?? "bypassPermissions",
+        // Members must discover the project's own CLAUDE.md and .claude/
+        // skills from their execution root.
+        settingSources: config.settingSources ?? ["project", "user"],
+        resume: resumeSessionId ?? undefined,
+        forkSession: config.forkSession ?? false,
+        hooks,
+      },
+    });
+  }
+
   return {
     state,
     mailbox,
@@ -129,73 +160,64 @@ export function createMemberRunner({ sdk, config, emit }) {
      * turn happens to finish.
      */
     async start() {
-      query = sdk.query({
-        prompt: mailbox.stream(renderTeamMessage),
-        options: {
-          cwd: config.cwd,
-          allowedTools: config.allowedTools,
-          disallowedTools: config.disallowedTools,
-          // `bypassPermissions`, matching what `claude_team_permission_mode()`
-          // already sends on the `claude_cli` path. An interactive permission
-          // prompt has nobody to answer it inside an unattended member, so
-          // leaving that layer on only produces a deadlock.
-          //
-          // It does not switch the hooks off — verified live on 2026-07-27 with
-          // `scripts/gate-live.mjs`, where a `PreToolUse` deny still blocked a
-          // Write under `bypassPermissions`. That matters for the plan gate,
-          // which is the one hook here that still blocks.
-          //
-          // It does NOT make this a sandbox, and nothing here tries to be one.
-          // `owned_paths` is observed, not enforced; a member holding a shell
-          // writes wherever it likes. See the header comment in `gates.mjs`.
-          permissionMode: config.permissionMode ?? "bypassPermissions",
-          // Members must discover the project's own CLAUDE.md and .claude/
-          // skills from their execution root. This is the corner case raised
-          // during dogfooding: a provider started outside the project loads the
-          // wrong instructions while writing valid-looking rows to the right store.
-          settingSources: config.settingSources ?? ["project", "user"],
-          resume: config.resumeSessionId ?? undefined,
-          forkSession: config.forkSession ?? false,
-          hooks,
-        },
-      });
-
-      const permissionMode = config.permissionMode ?? "bypassPermissions";
-      const ownedPathCount = (config.ownedPaths ?? []).length;
-
+      let resumeId = config.resumeSessionId ?? undefined;
 
       emit("member_started", {
         memberRunId: config.memberRunId,
         cwd: config.cwd,
-        permissionMode,
-        ownedPathCount,
+        permissionMode: config.permissionMode ?? "bypassPermissions",
+        ownedPathCount: (config.ownedPaths ?? []).length,
         resumed: Boolean(config.resumeSessionId),
       });
 
-      for await (const message of query) {
-        if (message.type === "system" && message.subtype === "init") {
-          await bindSession(message.session_id);
-          continue;
-        }
-        if (message.type === "assistant") {
-          emit("assistant_message", {
-            sessionId: state.sessionId,
-            content: message.message?.content ?? message.content ?? null,
-          });
-          continue;
-        }
-        if (message.type === "result") {
-          // A result ends a TURN. It does not end the member; the mailbox
-          // decides that. This distinction is the entire fix.
-          if (!state.sessionId && message.session_id) {
-            await bindSession(message.session_id);
+      // One iteration per query generation. Normally there is exactly one; an
+      // interrupt retires the current query and the next iteration resumes the
+      // same native session, so the MemberRun and its transcript continue.
+      while (!mailbox.closed) {
+        interruptedGeneration = false;
+        query = openQuery(resumeId);
+
+        try {
+          for await (const message of query) {
+            if (message.type === "system" && message.subtype === "init") {
+              await bindSession(message.session_id);
+              continue;
+            }
+            if (message.type === "assistant") {
+              emit("assistant_message", {
+                sessionId: state.sessionId,
+                content: message.message?.content ?? message.content ?? null,
+              });
+              continue;
+            }
+            if (message.type === "result") {
+              // A result ends a TURN. It does not end the member; the mailbox
+              // decides that. This distinction is the entire fix.
+              if (!state.sessionId && message.session_id) {
+                await bindSession(message.session_id);
+              }
+              emit("turn_complete", {
+                sessionId: message.session_id ?? state.sessionId,
+                subtype: message.subtype,
+                evidenceRefs: evidence.map((e) => e.ref),
+              });
+            }
           }
-          emit("turn_complete", {
-            sessionId: message.session_id ?? state.sessionId,
-            subtype: message.subtype,
-            evidenceRefs: evidence.map((e) => e.ref),
+        } catch (error) {
+          // A query torn down by our own interrupt is expected to end badly —
+          // the observed failure is an `ede_diagnostic` result with
+          // `stop_reason=null`. Anything else is a real fault.
+          if (!interruptedGeneration) throw error;
+          emit("query_ended_by_interrupt", {
+            sessionId: state.sessionId,
+            error: String(error).slice(0, 200),
           });
         }
+
+        if (mailbox.closed) break;
+        if (!interruptedGeneration) break; // stream ended for some other reason
+        resumeId = state.sessionId;
+        emit("member_resumed_after_interrupt", { sessionId: resumeId });
       }
 
       emit("member_closed", {
@@ -219,7 +241,18 @@ export function createMemberRunner({ sdk, config, emit }) {
      */
     async interrupt() {
       if (!query) throw new Error("member not started");
+      interruptedGeneration = true;
       const receipt = await query.interrupt();
+      // Retire this query's consumer, then end its iterator, so `start()`
+      // leaves the for-await and opens a fresh query on the same session.
+      // Without this the member hangs: the stream stops yielding but never
+      // ends, so nothing detects that the query is spent.
+      mailbox.supersede();
+      try {
+        await query.return?.();
+      } catch {
+        // already torn down
+      }
       emit("interrupted", { stillQueued: receipt?.still_queued ?? null });
       return receipt;
     },

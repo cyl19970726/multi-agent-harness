@@ -88,12 +88,12 @@ arrived with the dependency, and "可以升级" did not name a version.
 
 ## Waiting on a Human
 
-1. **Live canary for `claude_agent_sdk`** — the mode is wired and green, but its
-   profile deliberately claims nothing beyond `claude_cli`. Raising
-   `interaction_mode`, `plan_mode`, `supports_cancel` and populating
-   `reviewed_provider_versions` needs a real run that exercises interrupt, steer
-   and a `PreToolUse` denial. Until then `member providers --fail-on-review`
-   should keep reporting it.
+1. **Finish the canary.** Steer and interrupt now pass live (interrupt only
+   after the fix in FINDINGS §E). Still unproven: a `PreToolUse` *block* against
+   the real provider — the probe never got the model to attempt the gated write.
+   Until that lands, `interaction_mode`, `plan_mode`, `supports_cancel` and
+   `reviewed_provider_versions` stay unclaimed and
+   `member providers --fail-on-review` keeps reporting the mode.
 2. **Stage 4** — turn ADR 0037 items 5 and 6 into checks joined into
    `pnpm check`, so this class of drift cannot recur silently.
 3. **Two stray TeamRuns** were written to the developer's real store while

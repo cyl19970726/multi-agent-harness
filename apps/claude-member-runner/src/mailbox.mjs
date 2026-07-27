@@ -26,6 +26,11 @@ export class Mailbox {
   #waiters = [];
   #closed = false;
   #closeReason = null;
+  // Bumped when the current consumer is retired without ending the member.
+  // `interrupt()` kills the SDK query, not the member, so the runner opens a
+  // fresh query on the same native session; the old `stream()` generator has
+  // to stop reading first or two consumers race for the same messages.
+  #generation = 0;
 
   /** Number of messages waiting for the member's next round. */
   get pending() {
@@ -78,6 +83,17 @@ export class Mailbox {
     }
   }
 
+  /**
+   * Retire the current `stream()` consumer **without** ending the member.
+   * Queued messages are preserved for the next consumer.
+   */
+  supersede() {
+    this.#generation += 1;
+    while (this.#waiters.length > 0) {
+      this.#waiters.shift()({ value: undefined, done: true });
+    }
+  }
+
   /** Remove and return everything still queued. Used on interrupt/close. */
   drain() {
     const rest = this.#queue;
@@ -92,7 +108,9 @@ export class Mailbox {
    * @param {(message: object) => object} render TeamMessage -> SDKUserMessage
    */
   async *stream(render) {
+    const generation = this.#generation;
     while (true) {
+      if (this.#generation !== generation) return; // superseded; do not consume
       if (this.#queue.length > 0) {
         yield render(this.#queue.shift());
         continue;
