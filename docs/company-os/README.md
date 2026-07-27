@@ -26,27 +26,33 @@ use the UI to inspect, review, supervise, and occasionally trigger safe
 low-risk actions. The UI should make structure, relations, state, and risk
 clear to people; the authoritative machine interface is CLI/API.
 
-The installable Company OS operator suite is indexed in
-[Skill and CLI Contracts](skill-contracts.md). Use:
+The installable Company OS skill suite is indexed in
+[Skill and CLI Contracts](skill-contracts.md). Start with
+`company-business-project-bootstrap` when turning a real commercial project
+into Company OS, then use the dedicated Docs, Work, Org, Finance, module-design,
+and page-building skills for each owned surface. Use:
 
 ```bash
 scripts/install-skill.sh --agent both --suite company-os
 ```
 
-Dedicated Docs, Work, Finance, and Organization CLI commands are implemented.
-Organization CLI v1 covers actor/unit/membership inspection and Human
-administrative authoring for Humans, Standing Agents, OrgUnits, Memberships,
-declared actor status, and permission/capability refs. It does not yet provide
-the governed OrgChangeProposal lifecycle for adding actors or expanding
-authority.
+Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands
+are implemented. Organization CLI v1 covers both the flat
+`harness company org ...` surface and nested `actor/unit/membership` groups for
+inspection and Human administrative authoring of Humans, Standing Agents,
+OrgUnits, Memberships, declared actor status, and permission/capability refs. It
+does not yet provide the governed OrgChangeProposal lifecycle for adding actors
+or expanding authority.
 
 Finance CLI v1 intentionally preserves the current Store/API governance
-boundary: proposed Commitments are created through the existing Human
-administrative import path, while approval requests, approval decisions,
-Commitment transitions, and Payment records/transitions use the governed Action
-dispatcher. The remaining Finance gap is a native `commitment.propose` Action
-that can create the first Commitment without the current circular
-FinancialRecord-scope dependency.
+boundary. The flat `harness company finance ...` surface keeps the existing
+Human administrative initial proposed-Commitment import path, while approval
+requests, approval decisions, Commitment transitions, and Payment
+records/transitions use the governed Action dispatcher. The nested
+`commitment/payment` surface adds the baseline Action-backed operator shape used
+by the broader Company OS operator smoke. Budget, invoice, refund, reporting,
+and deeper settlement lifecycle remain gated until backed by commands and
+acceptance checks.
 
 Current Company OS storage remains append-only JSONL ledgers plus latest
 projections. SQL is planned as a derived read/query/index layer for Docs query,
@@ -114,6 +120,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Cross-system ownership | [Four-system collaboration](four-system-collaboration.md) |
 | Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
 | Execution boundary | [Execution foundation](execution-foundation.md) |
+| External software projects and GitHub PRD mapping | [External project product sources](external-project-product-sources.md) |
 | Product experience | [Frontend information architecture](frontend-information-architecture.md) |
 | Store/read model direction | [ADR 0035](../decisions/0035-company-os-sql-read-model.md) |
 
@@ -133,6 +140,13 @@ rules live in [Documentation Governance](../documentation-governance.md).
   page/design scope and visual evidence.
 - [Trademark registration example](examples/trademark-registration.md): first
   cross-system acceptance scenario.
+- [Wanchengwanling AR tourism operations example](examples/wanchengwanling-operations.md):
+  first real external-project mapping example, connecting GitHub-hosted
+  software PRDs to Company OS commercial, merchant, procurement, content,
+  creator, finance, and launch-readiness modules.
+- [Wanchengwanling completion roadmap](examples/wanchengwanling-completion-roadmap.md):
+  storage-backed unfinished-goal map for CLI/API, skills, custom pages, GitHub
+  source sync, SQL read/search, real launch data, and replication templates.
 
 Historical implementation plans and completion audits are available through Git
 history and the native Mission/Wave records that executed them. They are not

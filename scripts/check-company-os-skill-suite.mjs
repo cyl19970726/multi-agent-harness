@@ -5,6 +5,7 @@ import path from "node:path";
 const repo = process.cwd();
 
 const suiteSkills = [
+  "company-business-project-bootstrap",
   "company-docs-operator",
   "company-work-operator",
   "company-finance-operator",
@@ -71,16 +72,16 @@ for (const skill of suiteSkills) {
   expect(skillContracts.includes(`../../skills/${skill}/SKILL.md`), `skill-contracts.md missing ${skill}`);
 }
 expect(
-  skillContracts.includes("Docs, Work, Finance, and Organization dedicated CLI implemented; governed OrgChangeProposal lifecycle planned"),
-  "skill-contracts.md must distinguish implemented Docs/Work/Finance/Organization CLI from planned OrgChangeProposal lifecycle",
+  skillContracts.includes("Docs, Work, Organization, Approval, and Finance baseline dedicated CLI implemented; governed OrgChangeProposal and deeper Finance lifecycle remain planned"),
+  "skill-contracts.md must record baseline Docs/Work/Org/Approval/Finance CLI implementation",
 );
 
 const readme = read("docs/company-os/README.md");
 expect(readme.includes("Skill and CLI Contracts"), "Company OS README missing skill-contracts reference");
 expect(readme.includes("--suite company-os"), "Company OS README missing suite install command");
 expect(
-  readme.includes("governed OrgChangeProposal lifecycle"),
-  "Company OS README must keep governed OrgChangeProposal lifecycle planned",
+  readme.includes("Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands"),
+  "Company OS README must record baseline Company OS CLI implementation",
 );
 
 const governance = read("docs/company-os/governance-agent-workspaces.md");

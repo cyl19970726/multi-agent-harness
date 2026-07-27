@@ -99,6 +99,23 @@ harness company org update-permissions \
   --authority <human-admin-id>
 ```
 
+The nested operator aliases are also available:
+
+```bash
+harness company org actor list
+harness company org actor show --actor <actor-id>
+harness company org actor create-human --id <human-id> --name <name> --responsibility <summary>
+harness company org actor create-agent --authority <human-admin-id> --id <agent-id> --name <name> --role <role> --responsibility <summary> --permission <policy-ref> --capability <capability-ref>
+harness company org actor update-status --authority <human-admin-id> --actor <actor-id> --status active|paused|ended|archived
+harness company org unit list
+harness company org unit show --unit <org-unit-id>
+harness company org unit create --authority <human-admin-id> --id <unit-id> --name <name> --purpose <purpose> --human-lead <human-id> --agent-lead <agent-id>
+harness company org unit update-status --authority <human-admin-id> --unit <unit-id> --status active|paused|archived
+harness company org membership list
+harness company org membership assign --authority <human-admin-id> --unit <unit-id> --actor <actor-id> --actor-kind human|agent|external|service --role lead|member|advisor|observer|external_partner
+harness company org membership update-status --authority <human-admin-id> --membership <membership-id> --status active|invited|paused|ended
+```
+
 Current v1 boundary:
 
 - Writes use the existing Human administrative authoring surface. The authority

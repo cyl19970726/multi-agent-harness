@@ -65,7 +65,7 @@ harness company docs related --record <typed-record-id>
 Work records and Work projections exist through the Company OS Store/API and
 governed Action path. Dedicated `harness company work ...` commands are
 implemented for the first native operating slice: list, query, create, assign,
-transition, and close.
+transition, close, and baseline Milestone lifecycle.
 
 Use:
 
@@ -95,6 +95,16 @@ harness company work close \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
   --actor <actor-id>
+harness company work milestone list
+harness company work milestone show --milestone <milestone-id>
+harness company work milestone create \
+  --authority <human-admin-id> \
+  --id <milestone-id> \
+  --title <title> \
+  --outcome <outcome> \
+  --accountable-owner <actor-id>
+harness company work milestone update --authority <human-admin-id> --milestone <milestone-id> --status <planned|active|at_risk|achieved|cancelled|archived>
+harness company work milestone close --authority <human-admin-id> --milestone <milestone-id>
 ```
 
 `list` and `query` are read-only. Writes require
