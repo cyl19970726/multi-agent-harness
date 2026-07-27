@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 
 import { createMemberRunner } from "../src/member-runner.mjs";
 import { Mailbox } from "../src/mailbox.mjs";
-import { isInside, ownedPathsGate, planApprovalGate } from "../src/gates.mjs";
+import { isInside, ownedPathsObserver, planApprovalGate } from "../src/gates.mjs";
 import { createFakeSdk } from "./fake-sdk.mjs";
 
 const baseConfig = {
@@ -145,21 +145,33 @@ test("plan_approval delivery flips the gate", async () => {
   await done;
 });
 
-test("owned-paths gate denies writes outside the lane", async () => {
-  const gate = ownedPathsGate({ ownedPaths: ["crates/harness-cli"], cwd: "/repo" });
-  const mine = await gate({
+test("a cross-lane write is reported and still allowed to proceed", async () => {
+  // Deliberately not a deny. A member holding a shell writes wherever it likes,
+  // so blocking Write would only move the same edit into `echo >` and hide it
+  // from the Host. Reporting keeps it visible at review time.
+  const seen = [];
+  const observe = ownedPathsObserver({
+    ownedPaths: ["crates/harness-cli"],
+    cwd: "/repo",
+    onCrossLane: (v) => seen.push(v),
+  });
+
+  const mine = await observe({
     hook_event_name: "PreToolUse",
     tool_name: "Edit",
     tool_input: { file_path: "/repo/crates/harness-cli/src/main.rs" },
   });
   assert.deepEqual(mine, {});
+  assert.equal(seen.length, 0, "in-lane writes are not reported");
 
-  const theirs = await gate({
+  const theirs = await observe({
     hook_event_name: "PreToolUse",
     tool_name: "Edit",
     tool_input: { file_path: "/repo/apps/agent-dashboard/src/App.tsx" },
   });
-  assert.equal(theirs.hookSpecificOutput.permissionDecision, "deny");
+  assert.deepEqual(theirs, {}, "must not block");
+  assert.equal(seen.length, 1, "but must be visible to the Host");
+  assert.match(seen[0].path, /agent-dashboard/);
 });
 
 test("owned-paths containment is not fooled by traversal", () => {
@@ -175,30 +187,18 @@ test("mailbox rejects delivery after close instead of dropping it", () => {
 });
 
 test("permission prompts default to off, because nobody can answer them", async () => {
-  const { runner, sdk, of } = harness({ ownedPaths: ["crates"] });
+  const { runner, sdk } = harness({ ownedPaths: ["crates"], allowedTools: ["Read"] });
   const done = runner.start();
   await settled();
   assert.equal(sdk.lastOptions.permissionMode, "bypassPermissions");
   // Verified live: bypassPermissions skips the prompt layer, not the hooks.
-  // A PreToolUse deny still blocks the tool call. See FINDINGS §C.
+  // A PreToolUse deny still blocks a Write. See FINDINGS §C.
   assert.ok(sdk.lastOptions.hooks?.PreToolUse?.length > 0, "gates stay wired");
-  assert.equal(of("unbounded_write_scope").length, 0, "ownedPaths bound the lane");
   runner.close("done");
   await done;
 });
 
-test("an unbounded member is announced rather than silently allowed", async () => {
-  // prompts off + no ownedPaths = nothing constrains writes. Legal, but it must
-  // not be the quiet default.
-  const { runner, of } = harness({ ownedPaths: [] });
-  const done = runner.start();
-  await settled();
-  const warned = of("unbounded_write_scope");
-  assert.equal(warned.length, 1);
-  assert.equal(warned[0].data.permissionMode, "bypassPermissions");
-  runner.close("done");
-  await done;
-});
+
 
 test("an explicit permission mode is not overridden", async () => {
   const { runner, sdk } = harness({ permissionMode: "plan", ownedPaths: ["x"] });

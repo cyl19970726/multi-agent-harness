@@ -25,8 +25,6 @@ export const COMMANDS = Object.freeze({
 /** Runner -> Rust. */
 export const EVENTS = Object.freeze({
   member_started: "member_started",
-  /** Prompts off AND no ownedPaths — nothing gates this member's writes. */
-  unbounded_write_scope: "unbounded_write_scope",
   /** Native session bound + registered. Carries the id Harness stores. */
   session_bound: "session_bound",
   assistant_message: "assistant_message",
@@ -38,7 +36,8 @@ export const EVENTS = Object.freeze({
   permission_mode_changed: "permission_mode_changed",
   plan_approved: "plan_approved",
   plan_gate_blocked: "plan_gate_blocked",
-  owned_path_violation: "owned_path_violation",
+  /** A write landed outside the declared lane. Observed, not blocked. */
+  cross_lane_write: "cross_lane_write",
   registry_write_failed: "registry_write_failed",
   /** Terminal. Only ever follows an explicit `close`. */
   member_closed: "member_closed",

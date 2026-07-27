@@ -204,12 +204,35 @@ Haiku 4.5，`ownedPaths: ["owned"]`）：
 | 写 lane 内 | 成功 |
 
 即：`bypassPermissions` 跳过的是**提示层**，hook 照常执行且 `deny` 仍然优先。
-**member 的强制边界是 hook，不是 permission mode。** 正对照和负对照一样重要——
-否则「什么都写不了」会被误读成「闸生效」。
+正对照和负对照一样重要——否则「什么都写不了」会被误读成「闸生效」。
 
-唯一真正无界的组合是「提示关掉 **且** `ownedPaths` 为空」（空列表是文档定义的
-「不限制」）。runner 在这种情况下发 `unbounded_write_scope` 事件，让它是**被声明
-的**而不是默认静默。
+这一点对 **plan 闸**有意义——它是这里唯一还会拦的 hook。
+
+### 没有 containment 边界，这是设计选择
+
+三个 provider 的 member 都按设计跑在最大权限、全量工具：Claude
+`bypassPermissions`、Codex `danger-full-access`、Kimi 的 headless `-p` 干脆拒绝
+一切权限 flag。member 要跑构建、测试、git，交互提示也没人能答。
+
+在这个前提下，**`owned_paths` 不做强制,只做观察**：
+
+```text
+写在 lane 外  → 发 cross_lane_write 事件，写照常进行
+写在 lane 内  → 无事发生
+```
+
+不拦的理由不是做不到，而是拦了更糟：能拦住 `Write` 却拦不住 `echo >` 的东西不是
+边界，是**长得像边界的东西**——它制造信任，而 shell 从旁边走过去。而且拦下来只会
+把同一个改动推进 Bash 里，从 Host 眼前消失。观察反而让它在验收时可见:「这个
+member 写到 lane 外面了，是有意的吗?」——那才是真正要问的问题。
+
+`owned_paths` 因此就是 ADR 0033 里它本来的样子:**协作与验收用的声明 lane**。
+
+真需要 containment 只能来自 OS——member 出不去的 worktree，或者容器——不可能来自
+一个 PreToolUse matcher。
+
+唯一仍然会拦的是 **plan 闸**，因为那是 ADR 0038 的**时序**契约（Host 批准前不得
+执行），不是安全边界。
 
 ### 并发边界（未验证，按保守规则操作）
 

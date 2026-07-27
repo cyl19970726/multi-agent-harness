@@ -1,12 +1,24 @@
 /**
- * PreToolUse / PostToolUse gates.
+ * PreToolUse / PostToolUse hooks.
  *
- * These turn three things that are currently advisory into contracts the
- * provider actually enforces, without Harness mirroring any provider state:
+ * **There is no containment boundary here, by design.** Members run at maximum
+ * provider permission with the full tool set — Claude `bypassPermissions`,
+ * Codex `danger-full-access`, Kimi's headless `-p` rejecting permission flags
+ * outright — because a member has to build, test and use git, and an
+ * interactive prompt has nobody to answer it.
  *
- *   owned paths      ADR 0033 / review P2 — today `owned_paths` is a
- *                    coordination and acceptance boundary with no TeamRun-level
- *                    interception. A PreToolUse deny makes it real.
+ * Given that, a hook that blocks `Write` while `echo >` walks past it is not a
+ * boundary; it is a boundary-shaped thing people would trust. So the only
+ * blocking hook here is the plan gate, which is a *sequencing* contract from
+ * ADR 0038 (do not execute before the Host approves), not a safety one.
+ * Everything else observes.
+ *
+ * If real containment is ever needed it has to come from the OS — a worktree
+ * the member cannot escape, or a container — never from a PreToolUse matcher.
+ *
+ *   owned paths      ADR 0033 — a declared lane for coordination and
+ *                    acceptance. **Observed, never enforced**: a cross-lane
+ *                    write emits `cross_lane_write` and the write proceeds.
  *   plan approval    ADR 0038 — the native Goal must stay paused until a
  *                    correlated `plan_approval`. Denying mutating tools before
  *                    approval is that pause, enforced at the tool boundary.
@@ -48,14 +60,21 @@ function denial(hookEventName, reason) {
 }
 
 /**
- * Deny writes outside the member's owned paths.
+ * Observe writes outside the member's owned paths. **Never blocks.**
  *
- * Register with matcher `MUTATING_TOOLS`. `ownedPaths` is resolved against
- * `cwd`; an empty list means "no owned-path restriction" (current default
- * behaviour), which we keep so this gate is additive rather than a silent
- * tightening of existing runs.
+ * This deliberately does not deny. Members run at maximum provider permission
+ * with the full tool set, and a member that can be stopped by a matcher on
+ * `Write` but not by `echo >` was never contained — it was only inconvenienced
+ * in one of two directions. Half-enforcement is worse than none: it produces a
+ * boundary people trust and shell walks through.
+ *
+ * What `owned_paths` is instead, and always was under ADR 0033: a declared lane
+ * used for coordination and acceptance. Recording a cross-lane write gives the
+ * Host something real to look at when reviewing a handoff — "this member edited
+ * outside its lane, was that intended?" — which is the question that actually
+ * matters. Blocking it would only push the same edit through Bash and hide it.
  */
-export function ownedPathsGate({ ownedPaths, cwd, onViolation }) {
+export function ownedPathsObserver({ ownedPaths, cwd, onCrossLane }) {
   const roots = (ownedPaths ?? []).map((p) => resolve(cwd, p));
   return async function ownedPathsHook(input) {
     if (input.hook_event_name !== "PreToolUse") return {};
@@ -67,13 +86,8 @@ export function ownedPathsGate({ ownedPaths, cwd, onViolation }) {
     const absolute = resolve(cwd, filePath);
     if (roots.some((root) => isInside(root, absolute))) return {};
 
-    onViolation?.({ tool: input.tool_name, path: absolute, ownedPaths: roots });
-    return denial(
-      input.hook_event_name,
-      `\`${filePath}\` is outside this member's owned paths ` +
-        `(${roots.join(", ")}). Hand the change to the member that owns it ` +
-        `instead of writing across the lane boundary.`,
-    );
+    onCrossLane?.({ tool: input.tool_name, path: absolute, ownedPaths: roots });
+    return {}; // observation only — the write proceeds
   };
 }
 
@@ -132,10 +146,10 @@ export function buildHooks({ state, cwd, ownedPaths, collect, emit }) {
       {
         matcher: MUTATING_TOOLS,
         hooks: [
-          ownedPathsGate({
+          ownedPathsObserver({
             ownedPaths,
             cwd,
-            onViolation: (v) => emit("owned_path_violation", v),
+            onCrossLane: (v) => emit("cross_lane_write", v),
           }),
           planApprovalGate({
             state,

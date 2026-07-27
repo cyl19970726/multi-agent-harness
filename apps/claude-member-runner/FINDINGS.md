@@ -146,12 +146,36 @@ It does not. Both controls were run live against Claude Haiku 4.5 with
 | Write to `owned/allowed.txt` (inside the lane) | succeeded, file contains `INSIDE-LANE` |
 
 So `bypassPermissions` skips the *prompt* layer; hooks still run and a hook
-`deny` still wins. **Hooks — not permission mode — are the enforcement boundary
-for a member.** The positive control matters as much as the negative one: it
+`deny` still wins. The positive control matters as much as the negative one: it
 rules out "everything was blocked" being mistaken for "the gate works".
 
-One combination is genuinely unbounded: prompts off **and** `ownedPaths: []`
-(the documented "no restriction" value). Each half is defensible alone; together
-nothing constrains the member's writes. The runner now emits
-`unbounded_write_scope` in that case, so it is announced rather than silent.
-Covered by `an unbounded member is announced rather than silently allowed`.
+### Scope of that claim, and what changed after it
+
+The first write-up said "**hooks are the enforcement boundary for a member**".
+Too strong; do not inherit it. The measurement covers **Write**, and the matcher
+never saw Bash — which has no `file_path` for the check to read.
+
+That prompted the actual decision: **there is no containment boundary, on
+purpose.** Members are maximum-permission across all providers (Claude
+`bypassPermissions`, Codex `danger-full-access`; Kimi's headless `-p` rejects
+permission flags outright) with the full tool set, because they have to build,
+test and use git.
+
+So the owned-paths hook was changed from **deny to observe**. A cross-lane write
+emits `cross_lane_write` and proceeds.
+
+The reasoning is worth keeping, because "half a gate" is the tempting middle
+option and it is the worst one: a hook that stops `Write` but not `echo >` is
+not a boundary, it is a boundary-shaped thing that earns trust it cannot repay.
+Blocking would also push the same edit into Bash and out of the Host's view,
+whereas observing surfaces it at review time — "this member wrote outside its
+lane, was that intended?" is the question that actually matters.
+
+`owned_paths` is therefore what ADR 0033 always described: a declared lane for
+coordination and acceptance. Real containment, if ever needed, has to come from
+the OS — a worktree the member cannot escape, or a container.
+
+The plan gate still blocks, because it is a *sequencing* contract from ADR 0038
+(do not execute before the Host approves), not a safety one.
+
+Covered by `a cross-lane write is reported and still allowed to proceed`.
