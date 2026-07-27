@@ -15,10 +15,22 @@ object semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and
 | mode | 状态 | 形态 |
 | --- | --- | --- |
 | `claude_cli` | **已实现，已发布** | `claude -p` 每次投递起一个进程 |
-| `claude_agent_sdk` | **skeleton, `review_required`** | Agent SDK streaming input，进程常驻 |
+| `claude_agent_sdk` | **已接线, `review_required`** | Agent SDK streaming input，进程常驻 |
 
-`claude_cli` 是唯一进了 `(provider, execution_mode)` 白名单的模式。
-`claude_agent_sdk` 的运行时在 `apps/claude-member-runner/`，Rust 侧尚未接线。
+两个模式都在 `(provider, execution_mode)` 白名单里。`claude_agent_sdk` 的运行时
+在 `apps/claude-member-runner/`，Rust 侧由 `run_claude_agent_sdk_team_member`
+经 NDJSON 驱动；`claude_cli` 一行未改，仍是默认。
+
+```bash
+--member "Name:Role:claude/cli"          # 现状，一次性
+--member "Name:Role:claude/agent-sdk"    # 持续 member
+```
+
+`claude_agent_sdk` 的 profile 刻意把 `reviewed_provider_versions` 留空，
+`interaction_mode` / `plan_mode` 也没有超过 `claude_cli` 的声明——interrupt、
+steer 和 PreToolUse 拦截在 runner 里有实现且过了确定性测试，但没跑过真实
+provider，所以不写进能力声明。这正是 `member providers --fail-on-review` 会把该
+模式报成 review_required 的原因。
 
 ### `claude_cli` 的实测限制（不是设计选择，是缺陷）
 
@@ -226,6 +238,21 @@ Queue discipline（来自 harness，不由 provider 定义）：
 - 投递前 `queued`；投递中 `acknowledged`（原子 claim/lease）；成功 `delivered`
 - claim/lease 原子性：`claim_queued_message_delivery` 必须在事件入库前原子提交
 
+### 终止条件
+
+`claude_agent_sdk` 把终止条件从「队列瞬时为空」换成「member 报告终态、且宽限窗口
+内队列仍为空」。窗口默认 3 秒，可用
+`HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` 调整。窗口内到达的 TeamMessage 由**同一
+个 MemberRun、同一个原生 session** 消费。
+
+这是缓解不是目标契约。ADR 0037 要求 member 活到 Host 的 `review_result`；那需要
+`team-run start` 不再是前台编排，单独跟踪。
+
+覆盖它的确定性测试是
+`crates/harness-cli/tests/claude_agent_sdk_member.rs`：fake runner 在发出
+`turn_complete` **之后**才回头 `team-run send`，所以「队列已空才到达」是被构造出
+来的、不是赛跑出来的。
+
 > ⚠️ 该原子 claim/lease **尚未实现**。当前 `mark_message_delivered` 是
 > clone 整条消息、改自己那条 delivery、整条重新 append，折叠按 message id
 > latest-wins。崩溃窗口丢消息与多收件人并发覆写都是真实风险。见 Issue #230。
@@ -303,7 +330,8 @@ Subagent 是 stateless generation，不是持久线程——Harness 记录
 - [x] `tagSession` / `listSessions` 作为成员注册与发现
 - [x] `claude://resume` 导入 desktop
 - [x] resume-after-import 顺序访问连贯
-- [ ] Rust 侧 spawn + NDJSON 接线
+- [x] Rust 侧 spawn + NDJSON 接线（`run_claude_agent_sdk_team_member`）
+- [x] 空队列后到达的消息由同一 member/session 消费（确定性测试 + live 各一次）
 - [ ] `PreToolUse` 拦截的 live 验证（单测已过，live 未跑）
 - [ ] interrupt / steer 的 live 终态确认
 - [ ] 同时写入的并发行为

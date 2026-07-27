@@ -36,27 +36,37 @@ native session; it appears in the desktop list as `local_<id>`.
 **Status**: Complete — sequential access only; simultaneous writes untested
 
 ## Stage 3: Rust caller
-**Goal**: `run_claude_team_member` spawns and drives this process instead of
-looping `claude -p`.
+**Goal**: `run_claude_team_member` no longer has to be the only Claude path.
+**Done**: three additive edits plus one new driver; `claude_cli` is untouched.
 
-The seam is three additive edits; `claude_cli` is not touched:
+- `parse_team_member_spec` accepts `claude/agent-sdk`
+- `(provider, execution_mode)` allowlist gains `("claude", "claude_agent_sdk")`
+- `team_member_provider_profile_for_mode` gains a `claude_agent_sdk` profile with
+  `reviewed_provider_versions` deliberately **empty**, so the mode reports as
+  review_required rather than silently compatible
+- `run_claude_agent_sdk_team_member` spawns the Node runner and drives NDJSON;
+  `record_member_round` is shared with the `claude_cli` path so the two modes
+  cannot drift apart in what they write to the ledger
 
-1. `crates/harness-cli/src/main.rs:7252` — add `("claude", "claude_agent_sdk")`
-   to the `(provider, execution_mode)` allowlist.
-2. `crates/harness-cli/src/main.rs:9354` — leave the existing
-   `matches!(execution_mode, Some("claude_cli") | None)` branch alone; add a
-   sibling branch for `Some("claude_agent_sdk")`.
-3. New `run_claude_agent_sdk_team_member`: spawn
-   `node apps/claude-member-runner/bin/claude-member-runner.mjs`, write
-   `start` / `deliver` / `interrupt` / `close` as NDJSON on stdin, fold inbound
-   events into the ledger. `session_bound` supplies `native_session_id`;
-   `turn_complete` is a turn boundary, **not** a member lifecycle event.
+The behavioural change is the termination condition:
 
-**Success Criteria**: A deterministic test proving a message delivered *after* a
-turn completes is consumed by the *same* MemberRun and native session — ADR 0037
-acceptance item 6, currently uncovered anywhere.
-**Tests**: `crates/harness-cli/tests/`.
-**Status**: Not Started
+```rust
+// claude_cli
+if queued.is_empty() { break; }                    // member dies on an empty queue
+
+// claude_agent_sdk
+if queued.is_empty() && since.elapsed() >= grace { close }  // member outlives it
+```
+
+`HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` tunes the window (default 3s).
+
+**Tests**: `crates/harness-cli/tests/claude_agent_sdk_member.rs`, 3 cases. The
+load-bearing one is ADR 0037 acceptance item 6: the fake runner sends a
+TeamMessage *after* emitting `turn_complete`, so "arrives once the queue was
+already empty" is constructed rather than raced. Also verified live end to end
+against Claude Haiku 4.5 through `harness team-run start`: 2 handoffs, second
+round reports SECOND-ROUND, one native session (`user=2 assistant=2`).
+**Status**: Complete
 
 ## Stage 4: Acceptance for items 5 and 6, wired to `pnpm check`
 **Goal**: Stop the class of drift, not just this instance.
@@ -78,13 +88,17 @@ arrived with the dependency, and "可以升级" did not name a version.
 
 ## Waiting on a Human
 
-1. **Approve Claude Code 2.1.220 by name**, or pin a different one.
-2. **Commit** — Stage 1 / 2 / 2.5 are complete and green but uncommitted.
-   Branch `codex/claude-member-runner-v1` off `origin/master` (5b1bae5).
-3. **`docs/integration/claude.md` still documents the `-p` design as V1.** It
-   should be rewritten around this runner, but it is a canonical doc behind
-   `check:docs-governance`, so it was left untouched rather than edited without
-   the ability to run the full gate.
-4. **computer-use screenshot verification** was pre-authorized but needs the
-   per-app approval dialog, which requires someone at the keyboard. MCP
-   `list_sessions` was used instead and is sufficient evidence for A5.
+1. **Live canary for `claude_agent_sdk`** — the mode is wired and green, but its
+   profile deliberately claims nothing beyond `claude_cli`. Raising
+   `interaction_mode`, `plan_mode`, `supports_cancel` and populating
+   `reviewed_provider_versions` needs a real run that exercises interrupt, steer
+   and a `PreToolUse` denial. Until then `member providers --fail-on-review`
+   should keep reporting it.
+2. **Stage 4** — turn ADR 0037 items 5 and 6 into checks joined into
+   `pnpm check`, so this class of drift cannot recur silently.
+3. **Two stray TeamRuns** were written to the developer's real store while
+   working out isolation (`team-run-1785086504477-p98466-0`, never started, and
+   `team-run-1785087229492-p4132-0`, started once). Append-only; not rewritten.
+4. **`ACTIVE_PROJECT` was changed** by a `harness init` here and restored with
+   `harness project switch multi-agent-harness`. The prior value was ambiguous —
+   `new-day-wanchengwanling` tied on `last_opened_at`. Re-switch if that was it.

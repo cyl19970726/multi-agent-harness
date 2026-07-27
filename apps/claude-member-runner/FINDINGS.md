@@ -79,3 +79,31 @@ one `claude auth login` covers all three.
 
 Per AGENTS.md, 2.1.220 arrived with the dependency install and has **not** been
 named and approved by a Human. `claude_agent_sdk` stays `review_required`.
+
+
+## 2026-07-27 — Stage 3 (Rust wiring)
+
+| # | Claim | Evidence |
+| --- | --- | --- |
+| B1 | `claude/agent-sdk` is accepted and recorded | profile shows `execution_mode=claude_agent_sdk`, `adapter_contract_version=claude-agent-sdk-v1`, `reviewed_provider_versions=[]` |
+| B2 | The harness can start a member through it | `team-run start` completed against Claude Haiku 4.5 |
+| B3 | **A message arriving after the queue emptied reaches the same member** | 2 handoffs; round 2 summary `SECOND-ROUND`; one native session `52735a0a…` with `user=2 assistant=2` |
+| B4 | Same, deterministically | `claude_agent_sdk_member.rs` 3/3 — the fake runner sends only *after* `turn_complete`, so the ordering is constructed, not raced |
+| B5 | An unregistered mode fails explicitly | `claude/not-a-mode` is rejected rather than falling back to `claude_cli` |
+
+### Corrections to earlier entries above
+
+- **"`HARNESS_HOME` does not override store resolution" was too strong.** It
+  does work — the integration tests isolate cleanly with `HOME` + `HARNESS_HOME`
+  via `TempHome::envs()`. What actually happened is narrower: when **no central
+  project is selected**, the CLI walks up from cwd and a legacy repo-local
+  `.harness` wins. Running from a directory under one, as here, silently used
+  the developer's real store. Isolate with both env vars *and* an inited
+  project, and check the `using repo-local store …` warning on stderr.
+- **`harness init` switches the global active project** as a side effect. It
+  changed `ACTIVE_PROJECT` on this machine; restored with
+  `harness project switch`, but the previous value was ambiguous (two projects
+  tied on `last_opened_at`).
+- **A pipeline's exit code is the last command's.** `cargo test … | tail -30`
+  reports 0 even when tests fail, and truncates the log that would have shown
+  it. Capture to a file and read `$?` from the unpiped command.

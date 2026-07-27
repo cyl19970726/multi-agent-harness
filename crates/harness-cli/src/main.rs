@@ -6721,6 +6721,44 @@ fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
 ) -> ProviderIntegrationProfile {
+    if provider == "claude" && requested_mode == Some("claude_agent_sdk") {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "claude_agent_sdk".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
+            // Deliberately empty. A Human approved installing Claude Code
+            // 2.1.220, but approving a version is not the same as reviewing the
+            // adapter against it: AGENTS.md requires mode-specific deterministic
+            // checks plus a proportional live canary first. Leaving this empty
+            // is what makes `member providers --fail-on-review` report the mode
+            // as review_required instead of silently compatible.
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: None,
+            compatibility_note: Some(
+                "Persistent member over the Agent SDK streaming-input mode. \
+                 Interrupt, steer and PreToolUse gates exist in the runner and \
+                 pass deterministic tests, but have not been exercised against a \
+                 live provider, so they are not claimed here yet."
+                    .to_string(),
+            ),
+            // Claimed capabilities are limited to what has actually run against
+            // the real provider: multi-round continuation on one native session,
+            // and explicit resume. Everything else stays at the `claude_cli`
+            // level until a canary justifies raising it.
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: false,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
     if provider == "codex" && requested_mode == Some("codex_app_server") {
         return ProviderIntegrationProfile {
             provider: provider.to_string(),
@@ -6975,6 +7013,9 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
                 "exec" => "codex_exec".to_string(),
                 "acp" => "kimi_acp".to_string(),
                 "cli" if provider == "claude" => "claude_cli".to_string(),
+                "agent-sdk" | "agent_sdk" if provider == "claude" => {
+                    "claude_agent_sdk".to_string()
+                }
                 other => other.to_string(),
             }),
         ),
@@ -7254,6 +7295,7 @@ fn create_team_run(
                     | ("codex", "codex_app_server")
                     | ("kimi", "kimi_acp")
                     | ("claude", "claude_cli")
+                    | ("claude", "claude_agent_sdk")
             );
             if !allowed {
                 return Err(CliError::Usage(format!(
@@ -9352,6 +9394,18 @@ fn run_member_orchestration(
             live_sink,
         )
     } else if member.provider.eq_ignore_ascii_case("claude")
+        && matches!(execution_mode, Some("claude_agent_sdk"))
+    {
+        run_claude_agent_sdk_team_member(
+            ledger,
+            objective,
+            project_id,
+            &member,
+            cwd,
+            idle_timeout,
+            live_sink,
+        )
+    } else if member.provider.eq_ignore_ascii_case("claude")
         && matches!(execution_mode, Some("claude_cli") | None)
     {
         run_claude_team_member(
@@ -10496,6 +10550,394 @@ fn run_claude_team_member(
         next_prompt = Some(follow_up);
     }
     Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+/// Grace window applied after a member reports a terminal round with an empty
+/// queue, before the Host closes it.
+///
+/// This constant is the whole point of `claude_agent_sdk`. The `claude_cli`
+/// path ends a member the instant `queued_messages_for` returns empty, so a
+/// TeamMessage that arrives a millisecond later has no recipient and stays
+/// `queued` forever. Here the member process stays alive and the queue is
+/// re-polled; anything that lands inside the window is delivered to the *same*
+/// MemberRun and the *same* native session.
+///
+/// It is a mitigation, not the target contract. ADR 0037 says a member lives
+/// until the Team Lead accepts its handoff through a `review_result`; wiring
+/// that requires `team-run start` to stop being foreground orchestration,
+/// which is tracked separately.
+const CLAUDE_AGENT_SDK_IDLE_GRACE: Duration = Duration::from_secs(3);
+
+/// Grace window, overridable with `HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS`.
+/// A Host that dispatches work slowly can widen it; the acceptance test widens
+/// it so the "message arrives after the queue was already empty" case is
+/// reproducible rather than a race.
+fn claude_agent_sdk_idle_grace() -> Duration {
+    std::env::var("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(CLAUDE_AGENT_SDK_IDLE_GRACE)
+}
+
+fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
+    if let Ok(explicit) = std::env::var("HARNESS_CLAUDE_MEMBER_RUNNER") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(CliError::Usage(format!(
+            "HARNESS_CLAUDE_MEMBER_RUNNER points at {}, which is not a file",
+            path.display()
+        )));
+    }
+    const RELATIVE: &str = "apps/claude-member-runner/bin/claude-member-runner.mjs";
+    for base in cwd.ancestors() {
+        let candidate = base.join(RELATIVE);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // Fail explicitly rather than silently degrading to the `-p` path: a member
+    // that quietly loses its control channel is exactly the failure this mode
+    // exists to remove.
+    Err(CliError::Usage(format!(
+        "claude_agent_sdk runner not found: no `{RELATIVE}` above {} and \
+         HARNESS_CLAUDE_MEMBER_RUNNER is unset",
+        cwd.display()
+    )))
+}
+
+/// Drive one Agent-SDK-backed Claude member.
+///
+/// Harness owns coordination; the runner owns exactly one provider-native
+/// session. Every ledger write below mirrors `run_claude_team_member` so the
+/// two modes produce the same records — only the member lifecycle differs.
+fn run_claude_agent_sdk_team_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    project_id: Option<&str>,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    _live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<MemberOutcome> {
+    use std::io::Write as _;
+
+    let runner = claude_agent_sdk_runner_path(cwd)?;
+
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (claude agent sdk, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+    member_row.status = MemberRunStatus::Running;
+    ledger.save_member_run(&member_row)?;
+
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    if let Some(assignment) = &assignment {
+        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+    }
+    let envelope =
+        member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
+
+    let mut child = Command::new("node")
+        .arg(&runner)
+        .current_dir(cwd)
+        .envs(envelope.environment().iter().cloned())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "failed to spawn claude_agent_sdk runner for {}: {error}",
+                member.name
+            ))
+        })?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| CliError::Usage("runner stdin unavailable".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("runner stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("runner stderr unavailable".into()))?;
+
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let stdout_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+
+    let mut send = |command: serde_json::Value| -> CliResult<()> {
+        stdin
+            .write_all(format!("{command}\n").as_bytes())
+            .and_then(|_| stdin.flush())
+            .map_err(|error| CliError::Usage(format!("runner stdin write failed: {error}")))
+    };
+
+    send(serde_json::json!({
+        "command": "start",
+        "payload": {
+            "teamRunId": ledger.run_id,
+            "memberRunId": member.id,
+            "memberName": member.name,
+            "roleLabel": member.role,
+            "cwd": cwd.to_string_lossy(),
+            "ownedPaths": member.owned_paths,
+            "model": member.model,
+            "permissionMode": claude_team_permission_mode(),
+            "resumeSessionId": member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone()),
+        }
+    }))?;
+    send(serde_json::json!({
+        "command": "deliver",
+        "payload": {
+            "id": assignment.as_ref().map(|m| m.id.clone()).unwrap_or_default(),
+            "kind": "assignment",
+            "from_member_id": "host",
+            "correlation_id": assignment.as_ref().map(|m| m.correlation_id.clone()),
+            "body": contract_prompt(objective, &member_row, &assignment_body, &envelope),
+        }
+    }))?;
+
+    let mut round = 0u32;
+    let mut turn_text = String::new();
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    let mut closing = false;
+    let mut idle_since: Option<Instant> = None;
+
+    loop {
+        let waited = match line_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(line) => Some(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        if let Some(line) = waited {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let name = event.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let data = event.get("data").cloned().unwrap_or(serde_json::Value::Null);
+
+            match name {
+                "session_bound" => {
+                    if let Some(session_id) = data.get("sessionId").and_then(|v| v.as_str()) {
+                        member_row.native_session = Some(native_session_ref(
+                            &member_row,
+                            session_id,
+                            "claude_project_session",
+                        ));
+                        ledger.save_member_run(&member_row)?;
+                    }
+                }
+                "assistant_message" => {
+                    if let Some(blocks) = data.get("content").and_then(|v| v.as_array()) {
+                        for block in blocks {
+                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                turn_text.push_str(text);
+                            }
+                        }
+                    }
+                }
+                "turn_complete" => {
+                    round += 1;
+                    let (status, summary) = record_member_round(
+                        ledger,
+                        &mut member_row,
+                        assignment.as_ref(),
+                        &turn_text,
+                        round,
+                    )?;
+                    final_status = status;
+                    final_summary = summary;
+                    turn_text.clear();
+                    idle_since = Some(Instant::now());
+                }
+                "member_closed" => break,
+                "runner_error" => {
+                    return Err(CliError::Usage(format!(
+                        "claude_agent_sdk runner error for {}: {}",
+                        member.name, data
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        if closing {
+            continue;
+        }
+
+        // The member is alive and idle. Anything queued now goes to the SAME
+        // member — this replaces `if queued.is_empty() { break }`.
+        if let Some(since) = idle_since {
+            let queued = ledger.queued_messages_for(&member.id)?;
+            if !queued.is_empty() {
+                for message in &queued {
+                    send(serde_json::json!({
+                        "command": "deliver",
+                        "payload": {
+                            "id": message.id,
+                            "kind": team_message_kind_label(&message.kind),
+                            "from_member_id": message.from_member_id,
+                            "correlation_id": message.correlation_id,
+                            "body": message.body,
+                        }
+                    }))?;
+                    mark_message_delivered(ledger, message, &member.id, &member.name)?;
+                }
+                member_row.status = MemberRunStatus::Running;
+                member_row.finished_at = None;
+                ledger.save_member_run(&member_row)?;
+                idle_since = None;
+            } else if since.elapsed() >= claude_agent_sdk_idle_grace()
+                || round >= TEAM_RUN_START_MAX_ROUNDS
+            {
+                send(serde_json::json!({
+                    "command": "close",
+                    "payload": { "reason": "host_closed_idle_member" }
+                }))?;
+                closing = true;
+            }
+        }
+    }
+
+    drop(stdin);
+    let _ = child.wait();
+    let _ = stdout_reader.join();
+    let stderr_text = stderr_reader.join().unwrap_or_default();
+    if round == 0 {
+        return Err(CliError::Usage(format!(
+            "claude_agent_sdk member {} produced no turn. stderr: {}",
+            member.name,
+            stderr_text.trim()
+        )));
+    }
+    let _ = idle_timeout;
+
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+/// Ledger writes for one completed member round, shared by both Claude modes so
+/// they cannot drift apart: handoff to Host, action row, member status.
+fn record_member_round(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    assignment: Option<&TeamMessage>,
+    final_text: &str,
+    round: u32,
+) -> CliResult<(MemberRunStatus, String)> {
+    let handoff = TeamMessage {
+        id: generated_id("tmsg"),
+        team_run_id: ledger.run_id.clone(),
+        origin_wave_id: assignment.and_then(|message| message.origin_wave_id.clone()),
+        from_member_id: member_row.id.clone(),
+        to_member_ids: vec!["host".to_string()],
+        kind: TeamMessageKind::Handoff,
+        body: final_text.to_string(),
+        correlation_id: assignment
+            .map(|message| message.correlation_id.clone())
+            .unwrap_or_else(|| generated_id("corr")),
+        causation_id: assignment.map(|message| message.id.clone()),
+        evidence_refs: Vec::new(),
+        deliveries: vec![TeamMessageDelivery {
+            member_id: "host".to_string(),
+            policy: TeamDeliveryPolicy::ManualAck,
+            status: TeamDeliveryStatus::Delivered,
+            attempt: 1,
+            updated_at: now_string(),
+        }],
+        created_at: now_string(),
+    };
+    ledger.save_message(&handoff)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "message",
+        &handoff.id,
+        "created",
+        &format!("handoff from {} to host (round {round})", member_row.name),
+    )?;
+
+    let (action_type, action_status, member_status) = match parse_round_result(final_text) {
+        MemberRoundResult::Done => (
+            "completed",
+            MemberActionStatus::Succeeded,
+            MemberRunStatus::Completed,
+        ),
+        MemberRoundResult::Blocked => (
+            "blocked",
+            MemberActionStatus::Failed,
+            MemberRunStatus::Blocked,
+        ),
+        MemberRoundResult::Failed => ("error", MemberActionStatus::Failed, MemberRunStatus::Failed),
+    };
+    let result_section =
+        extract_report_section(final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+    let action = ledger.append_action(
+        &member_row.id,
+        action_type,
+        action_status,
+        &format!("round {round} {action_type}"),
+        &result_section,
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "action",
+        &action.id,
+        "created",
+        &format!("{} round {round}: {action_type}", member_row.name),
+    )?;
+    member_row.status = member_status;
+    member_row.finished_at = Some(now_string());
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(member_row)?;
+
+    let summary = extract_report_section(final_text, "SUMMARY").unwrap_or_else(|| {
+        final_text
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    Ok((member_status, summary))
 }
 
 struct ClaudeTeamTurn {
