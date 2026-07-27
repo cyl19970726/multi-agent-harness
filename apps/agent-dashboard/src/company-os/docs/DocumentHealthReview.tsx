@@ -8,6 +8,7 @@ import { ArtField, EditorialTitle, ObjectEmblem } from "../visuals";
 
 import { RelationChips } from "./RelationChips";
 import { buildDocsHealthCorrectiveWorkCommand, buildDocsHealthRelationRepairCommand } from "./healthAction";
+import { preserveCompanyOsWorkbenchContext } from "./url";
 import type {
   CompanyOsCorrectiveWorkCommand,
   CompanyOsDocumentHealthData,
@@ -162,11 +163,11 @@ export function DocumentHealthReview({
             </div>
           </div>
           <nav className="mt-5 space-y-1 text-xs">
-            <a href="?surface=docs" className="flex items-center justify-between rounded-md px-2 py-2 hover:bg-accent">
+            <a href={preserveCompanyOsWorkbenchContext("?surface=docs")} className="flex items-center justify-between rounded-md px-2 py-2 hover:bg-accent">
               Workspace
               <span className="text-muted-foreground">{health.counts.documents}</span>
             </a>
-            <a href="?surface=docs&health=structure" className="flex items-center justify-between rounded-md bg-primary/10 px-2 py-2 text-primary">
+            <a href={preserveCompanyOsWorkbenchContext("?surface=docs&health=structure")} className="flex items-center justify-between rounded-md bg-primary/10 px-2 py-2 text-primary">
               Structure health
               <span>{health.counts.findings}</span>
             </a>
@@ -214,7 +215,7 @@ export function DocumentHealthReview({
                 {health.findings.length ? health.findings.map((finding) => (
                   <a
                     key={finding.id}
-                    href={`?surface=docs&health=structure&finding=${encodeURIComponent(finding.id)}`}
+                    href={preserveCompanyOsWorkbenchContext(`?surface=docs&health=structure&finding=${encodeURIComponent(finding.id)}`)}
                     data-docs-health-finding={finding.id}
                     data-company-os-ref={finding.subject?.id}
                     className={cn("block rounded-xl border p-4 hover:bg-accent/45", severityClass(finding.severity))}
@@ -343,7 +344,7 @@ export function DocumentHealthReview({
                 {health.cleanupQueue.map((item) => (
                   <a
                     key={item.id}
-                    href={`?surface=docs&health=structure&finding=${encodeURIComponent(item.findingId)}`}
+                    href={preserveCompanyOsWorkbenchContext(`?surface=docs&health=structure&finding=${encodeURIComponent(item.findingId)}`)}
                     data-docs-cleanup-operation={item.operation}
                     data-company-os-ref={item.subject?.id}
                     className={cn("block rounded-lg border bg-background/70 p-3 text-xs hover:bg-accent/45", item.disabledReason ? "border-dashed border-border" : "border-primary/20")}

@@ -35,6 +35,8 @@ export interface SelectionState {
   approvalId?: string;
   /** BusinessModule focus. */
   moduleId?: string;
+  /** Code-declared Company OS custom page, addressed as `?page=<custom-page-definition-id>`. */
+  customPageId?: string;
   /** Docs health review, addressed as `?health=structure`. */
   docsHealth?: string;
   /** Native Mission detail, addressed as `?mission=<id>`. */
@@ -95,6 +97,7 @@ const selectionParamKeys = [
   "proposal",
   "approval",
   "module",
+  "page",
   "health",
   "agent",
   "member",
@@ -172,6 +175,11 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
     next.moduleId = moduleId;
     if (!surface) next.surface = "docs";
   }
+  const customPageId = params.get("page");
+  if (customPageId) {
+    next.customPageId = customPageId;
+    if (!surface) next.surface = "docs";
+  }
   const docsHealth = params.get("health");
   if (docsHealth) {
     next.docsHealth = docsHealth;
@@ -243,6 +251,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   if (selection.proposalId) params.set("proposal", selection.proposalId);
   if (selection.approvalId) params.set("approval", selection.approvalId);
   if (selection.moduleId) params.set("module", selection.moduleId);
+  if (selection.customPageId) params.set("page", selection.customPageId);
   if (selection.docsHealth) params.set("health", selection.docsHealth);
   if (selection.memberId && selection.surface !== "organization") params.set("agent", selection.memberId);
   // Only persist a non-default agent tab, and only when an agent is open.

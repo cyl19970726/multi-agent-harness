@@ -3,6 +3,7 @@ import { ArrowUpRight, FileText, Landmark, ListTodo, Network, ShieldCheck, UserR
 import { cn } from "@/lib/utils";
 
 import type { CompanyOsLink } from "./types";
+import { preserveCompanyOsWorkbenchContext } from "./url";
 
 const iconFor = {
   document: FileText,
@@ -41,7 +42,7 @@ export function RelationChips({
         );
         const className = "inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
         return link.href ? (
-          <a key={link.id} href={link.href} data-company-os-ref={link.id} data-actor-type={link.actorType} data-financial-record-type={link.financialRecordType} className={className}>
+          <a key={link.id} href={preserveCompanyOsWorkbenchContext(link.href)} data-company-os-ref={link.id} data-actor-type={link.actorType} data-financial-record-type={link.financialRecordType} className={className}>
             {body}
           </a>
         ) : (

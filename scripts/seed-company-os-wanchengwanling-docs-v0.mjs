@@ -92,6 +92,21 @@ async function post(base, path, body) {
   return data.result ?? data;
 }
 
+async function postBootstrapActor(base, record) {
+  const response = await fetch(`${base}/v1/company-os/actors`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-company-os-token": token,
+    },
+    body: JSON.stringify(record),
+  });
+  const data = await response.json();
+  if (response.ok && data.ok !== false) return data.result ?? data;
+  if (response.status === 403) return post(base, "/v1/company-os/actors", admin(record));
+  throw new Error(`/v1/company-os/actors failed: HTTP ${response.status} ${JSON.stringify(data)}`);
+}
+
 async function get(base, path) {
   const response = await fetch(`${base}${path}`, { headers: { accept: "application/json" } });
   const data = await response.json();
@@ -322,7 +337,45 @@ async function main() {
 
   try {
     await waitFor(`${base}/health`);
-    await post(base, "/v1/company-os/actors", {
+    const preflight = await get(base, "/v1/company-os/snapshot");
+    const existingDocs = (preflight.documents ?? []).filter((entry) => entry.space_id === "wanchengwanling");
+    const existingModules = (preflight.business_modules ?? []).filter((entry) => entry.id.startsWith("module-wcw-"));
+    const existingTyped = preflight.typed_records ?? [];
+    const existingPageDefinitions = preflight.custom_page_definitions ?? [];
+    const requiredCustomPageIds = [
+      "page-wcw-command-center",
+      "page-wcw-business-model-canvas",
+      "page-wcw-new-site-blueprint",
+      "page-wcw-merchant-network-console",
+      "page-wcw-launch-readiness-dashboard",
+    ];
+    const completeExisting =
+      existingDocs.length >= 12 &&
+      existingModules.length >= modules.length &&
+      requiredCustomPageIds.every((id) => existingPageDefinitions.some((entry) => entry.id === id)) &&
+      existingTyped.some((entry) => entry.id === "record-wcw-bracelet-physical-nfc" && entry.fields?.price_cny === 30 && entry.fields?.merchant_share_cny === 10) &&
+      existingTyped.some((entry) => entry.id === "record-wcw-rule-8-checkins-ar-magnet" && entry.fields?.required_checkin_count === 8) &&
+      existingTyped.some((entry) => entry.id === "record-wcw-rule-12-checkins-lottery" && entry.fields?.required_checkin_count === 12);
+    if (completeExisting) {
+      console.log(JSON.stringify({
+        status: "already_exists",
+        store_root: preflight.source?.store_root ?? storeRoot,
+        project: useProject ? projectSelector : null,
+        document_space: "wanchengwanling",
+        document_count: existingDocs.length,
+        module_count: existingModules.length,
+        note: "Wanchengwanling Docs substrate already exists; no append was attempted.",
+      }, null, 2));
+      return;
+    }
+    if (existingDocs.length || existingModules.length) {
+      throw new Error(`partial Wanchengwanling Docs rows already exist; refusing to append over partial state: ${JSON.stringify({
+        document_count: existingDocs.length,
+        module_count: existingModules.length,
+      })}`);
+    }
+
+    await postBootstrapActor(base, {
       actor_type: "human",
       actor: {
         id: "human-wcw-owner",
@@ -448,7 +501,7 @@ async function main() {
           "--fallback-view", viewId,
           "--title", title,
           "--authority", "human-wcw-owner",
-          "--artifact-ref", `apps/agent-dashboard/src/company-os/wanchengwanling/${component}.tsx`,
+          "--artifact-ref", `apps/agent-dashboard/src/company-os/page-packages/wanchengwanling/${component}.tsx`,
           "--visual-contract-ref", `docs/design/company-os/wanchengwanling/${customKey}`,
         ]);
         if (customDefinition.ok !== true) throw new Error(`custom page scaffold failed for ${customKey}: ${JSON.stringify(customDefinition)}`);
