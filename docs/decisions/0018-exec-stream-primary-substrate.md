@@ -2,8 +2,10 @@
 
 ## Status
 
-Superseded in its storage/projection claims by ADR 0032. The headless execution
-mode remains supported, but its stream is transport—not a Harness ledger.
+Superseded for Agent Team mode selection by ADR 0031 and for storage/projection
+claims by ADR 0032. Headless exec-stream remains a bounded Dynamic Workflow
+substrate, but it is not a fallback for new Team members. New Codex and Claude
+Team members use app-server and Agent SDK streaming respectively.
 
 Amended by [0021 (resident-daemon warm-child host)](0021-resident-daemon.md):
 clarifies that keeping documented exec-stream children warm behind an internal

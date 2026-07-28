@@ -184,8 +184,10 @@ execution fact, not an implicit Wave advance.
   reason from status alone.
 - **Read/model error:** keep the last successful header/context state marked
   stale, show scoped retry, and do not replace the page with an empty shell.
-- **Finished run:** render read-only history; composer and lifecycle
-  controls are disabled with an explanation.
+- **Finished assignment or TeamRun:** render history read-only and disable
+  ordinary coordination when the member is no longer addressable. If the
+  provider runtime is still live, Host Close remains available and explicitly
+  explains that completion did not end the runtime.
 
 ## Screenshot Acceptance
 

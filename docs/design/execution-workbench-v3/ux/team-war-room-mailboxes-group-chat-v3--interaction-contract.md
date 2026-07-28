@@ -34,12 +34,13 @@ Every durable message has one identity route:
 
 The timeline portrait is always the sender, never a generic activity icon.
 Recipient portraits use the same deterministic identity mapping as Team
-mailboxes and the context roster. Each message type has an adjacent semantic
-icon, text label and restrained color treatment: Assignment, Broadcast,
-Question, Answer, Progress, Blocker, Review Request, Review Decision, Plan
-Request, Plan Proposal, Host Challenge, Plan Approval, Handoff, Tool Activity
-and Evidence must remain visually distinguishable without reading the body.
-Color is reinforcement; the type label and delivery text are required.
+mailboxes and the context roster. Each durable write has an adjacent semantic
+icon, text label and restrained color treatment: Assignment, Message, Handoff
+and Control remain structurally distinct. Human-readable message intent such as
+`QUESTION:`, `PLAN:`, `BLOCKER:`, `REVIEW:` or `DECISION:` is rendered as a
+compact intent label without creating a separate lifecycle machine. Tool
+Activity and Evidence keep their source labels. Color is reinforcement; the
+type/intent label and delivery text are required.
 
 Participant, message-kind and text-search filters combine with AND semantics.
 Empty results explain which filters are active and offer one clear reset.
@@ -71,7 +72,8 @@ Member-originated messages come from the Member CLI/provider session.
 ## Required browser journeys
 
 1. Select a Member mailbox; only sent/received rows remain; clear it.
-2. Filter to plan messages, search text, and reset without losing the Team.
+2. Filter to ordinary messages with `PLAN:` intent, search text, and reset
+   without losing the Team.
 3. Expand a Markdown plan/handoff and verify headings, lists, code and links.
 4. Open Member Focus from avatar/name and return with Mission/Wave context.
 5. Reply to a correlated question and verify delivery/ACK text.

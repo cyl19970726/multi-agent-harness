@@ -733,7 +733,7 @@
   {
    "path": "docs/integration/README.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "provider integration rules",
@@ -746,7 +746,9 @@
     "docs/integration/codex.md",
     "docs/integration/codex-message-delivery.md",
     "docs/integration/kimi.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md"
+    "docs/integration/claude.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -763,19 +765,20 @@
    "truthRefs": [
     {
      "kind": "decision",
-     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
     }
    ]
   },
   {
    "path": "docs/integration/codex.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Codex provider integration",
-    "app-server vs hooks vs skills vs plugins",
-    "Codex fallback modes"
+    "Codex app-server Agent Team mode",
+    "Codex Workflow and historical mode boundary",
+    "Codex lifecycle, hooks, skills, and plugins"
    ],
    "dependsOn": [
     "docs/agent-runtime.md",
@@ -784,7 +787,8 @@
     "docs/integration/codex-message-delivery.md",
     "docs/mvp.md",
     "docs/schemas.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md"
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -805,26 +809,26 @@
    "truthRefs": [
     {
      "kind": "decision",
-     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
     }
    ]
   },
   {
    "path": "docs/integration/codex-message-delivery.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
-    "Codex persistent AgentMember message delivery",
-    "Codex provider gateway queue semantics",
+    "Codex Agent Team MemberRun mailbox delivery",
+    "Codex app-server queue and receipt semantics",
     "Codex message-to-turn mapping",
-    "Codex Dashboard delivery proof"
+    "Codex CLI and Dashboard delivery proof"
    ],
    "dependsOn": [
     "docs/agent-runtime.md",
     "docs/integration/codex.md",
     "crates/harness-cli/src/main.rs",
-    "docs/decisions/0018-exec-stream-primary-substrate.md"
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -846,20 +850,20 @@
     },
     {
      "kind": "decision",
-     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+     "ref": "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
     }
    ]
   },
   {
    "path": "docs/integration/claude.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "Claude Code provider integration",
-    "claude CLI vs HTTP API shape",
-    "Claude subagent-to-child-thread mapping",
-    "Claude fallback modes"
+    "Claude Agent SDK streaming Agent Team mode",
+    "Claude Workflow and historical mode boundary",
+    "Claude lifecycle and native subagent boundary"
    ],
    "dependsOn": [
     "docs/agent-runtime.md",
@@ -867,8 +871,9 @@
     "docs/architecture.md",
     "docs/mvp.md",
     "docs/schemas.md",
+    "apps/claude-member-runner/bin/claude-member-runner.mjs",
     "crates/harness-cli/src/resident.rs",
-    "docs/decisions/0021-resident-daemon.md"
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -880,17 +885,17 @@
     "cargo test -p harness-cli",
     "harness governance check"
    ],
-   "reorgTrigger": "Claude provider surfaces, CLI shape, session protocol, subagent lifecycle, or fallback strategy changes.",
+   "reorgTrigger": "Claude Agent SDK streaming, session protocol, lifecycle controls, native subagents, or Workflow-only CLI boundary changes.",
    "authorityClass": "implementation_reference",
    "implementationState": "partial",
    "truthRefs": [
     {
      "kind": "api",
-     "ref": "crates/harness-cli/src/resident.rs"
+     "ref": "apps/claude-member-runner/bin/claude-member-runner.mjs"
     },
     {
      "kind": "decision",
-     "ref": "docs/decisions/0021-resident-daemon.md"
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
     }
    ]
   },
@@ -1087,7 +1092,7 @@
   {
    "path": "docs/member-runtime-observability.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "member real-time observability",
@@ -1101,9 +1106,9 @@
       "docs/data-model.md",
       "docs/decisions/0032-provider-native-session-is-execution-truth.md",
       "docs/decisions/0033-agent-team-workspace-contract.md",
+      "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
       "docs/integration/codex.md",
     "docs/integration/claude.md",
-    "docs/decisions/0008-persistent-codex-agent-runtime.md",
     "docs/decisions/0011-provider-neutral-runtime.md",
     "crates/harness-cli/src/sse.rs",
     "crates/harness-cli/src/main.rs",
@@ -1127,11 +1132,7 @@
    "truthRefs": [
     {
      "kind": "decision",
-     "ref": "docs/decisions/0008-persistent-codex-agent-runtime.md"
-    },
-    {
-     "kind": "decision",
-     "ref": "docs/decisions/0011-provider-neutral-runtime.md"
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
     },
     {
      "kind": "api",
@@ -1158,7 +1159,7 @@
   {
    "path": "docs/agent-integration-model.md",
    "ownerRole": "provider-integration",
-   "status": "planned",
+   "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
     "agent integration model",
@@ -1173,7 +1174,7 @@
     "docs/integration/codex.md",
     "docs/integration/claude.md",
     "docs/decisions/0011-provider-neutral-runtime.md",
-    "docs/decisions/0018-exec-stream-primary-substrate.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
     "examples/adapters/earning-engine/adapter.json",
     "crates/harness-core/src/lib.rs",
     "schemas/agent-member.schema.json",
@@ -1198,7 +1199,7 @@
     },
     {
      "kind": "decision",
-     "ref": "docs/decisions/0018-exec-stream-primary-substrate.md"
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
     },
     {
      "kind": "schema",
@@ -1212,9 +1213,9 @@
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "headless exec-stream as primary provider substrate",
-    "persistent app-server retained only as mid-turn-approval fallback",
-    "supersedes-in-part 0008, reinforces 0011"
+    "historical headless exec-stream substrate decision",
+    "bounded Dynamic Workflow exec-stream context",
+    "superseded Agent Team mode-selection rationale"
    ],
    "dependsOn": [
     "docs/decisions/0008-persistent-codex-agent-runtime.md",
@@ -1232,8 +1233,8 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "The primary substrate, the mid-turn-approval fallback policy, or the neutral launch-spec direction changes.",
-   "authorityClass": "canonical_contract",
+   "reorgTrigger": "Historical interpretation changes or bounded Workflow exec-stream is retired.",
+   "authorityClass": "historical_evidence",
    "implementationState": "partial",
    "truthRefs": [
     {
@@ -2117,6 +2118,7 @@
    "dependsOn": [
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
     "docs/company-os/concept-model.md",
     "docs/company-os/work-items-and-approvals.md"
    ],
@@ -2442,7 +2444,8 @@
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
-    "docs/decisions/0032-provider-native-session-is-execution-truth.md"
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2454,7 +2457,7 @@
    ],
    "reorgTrigger": "MemberRun execution semantics, assignment proof, activity truth, or responsive page contract changes.",
    "authorityClass": "design_intent",
-   "implementationState": "design_only",
+   "implementationState": "partial",
    "truthRefs": [
     {
      "kind": "decision",
@@ -2507,6 +2510,7 @@
     "docs/company-os/execution-foundation.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
     "docs/design/execution-workbench-v3/README.md"
    ],
    "machineConsumers": [
@@ -2519,7 +2523,7 @@
    ],
    "reorgTrigger": "AgentTeamRun collaboration, assignment correlation, source-context return path, or responsive page contract changes.",
    "authorityClass": "design_intent",
-   "implementationState": "design_only",
+   "implementationState": "partial",
    "truthRefs": [
     {
      "kind": "decision",

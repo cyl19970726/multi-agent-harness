@@ -9,8 +9,9 @@ execution-aware group conversation rather than a generic event ledger.
 - Present Team Activity as one chronological group chat with real portraits,
   rendered Markdown, semantic message icons, correlation/delivery metadata and
   restrained status color.
-- Integrate assignment, plan proposal, Host feedback, revised plan, approval,
-  peer question, blocker, handoff and review into the same stream.
+- Integrate Assignment, ordinary correlated planning/feedback/decision
+  messages, peer coordination, blocker, Handoff and review into the same
+  stream. Planning intent is readable Markdown, not a Plan Gate.
 - Provide participant, message-kind and search filters without turning the page
   into an admin table.
 - Keep Mission/Wave, team state and runtime context in a narrow right rail.

@@ -89,9 +89,25 @@ streams into Harness ledgers.
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
-are separate claims. Provider questions, approvals, and plan reviews must be
-routed as PendingInteraction records. A provider `completed` status is not by
-itself proof of semantic success, answer, or approval.
+are separate claims. Provider-native questions, approvals, or plan reviews that
+actually pause a turn must be routed as PendingInteraction records. Ordinary
+Host/Member planning remains correlated TeamMessage conversation. A provider
+`completed` status is not by itself proof of semantic success, answer, or
+approval.
+
+New Agent Team members use only their persistent bidirectional mode:
+`codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
+`codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
+reads; they are not Team fallbacks. The Host explicitly creates, messages,
+inspects, interrupts, closes, and resumes members. Interrupt stops one current
+turn; Close ends the member runtime; Wave or TeamRun completion never implies
+Close. Live control handles are currently process-local to the Harness service
+that started them, pending a durable Team Supervisor.
+
+Harness has no Plan Mode or Plan Gate. When the Host wants a plan first, it asks
+through an ordinary correlated Markdown message; the Member replies, the Host
+argues or approves in the same chain, and provider-native plan/goal features
+remain internal execution aids.
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but

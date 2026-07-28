@@ -11,27 +11,27 @@ provider implementations in [integration/codex.md](integration/codex.md),
 [integration/kimi.md](integration/kimi.md). It does not redefine Mission/Wave,
 executor-native records, WorkItems, Approvals, or organization authority.
 
-Integration is organized around **three pillars** plus a single
-**provider-neutral launch spec** that maps uniformly onto every platform:
+Integration is organized around **three pillars** plus a
+**provider-neutral launch/control contract** that each concrete execution mode
+implements honestly:
 
 ```text
 Pillar 1  Base configuration   prompt, skills, capabilities, model/profile
 Pillar 2  Environment          workspace (worktree, owned paths), MCP, resources
 Pillar 3  Platform adaptation  AgentProvider + EventReducer + capability decl.
 ---------------------------------------------------------------------------
-Launch spec                     one normalized per-turn request, mapped onto
-                                codex exec / claude -p / future platforms
+Launch/control contract         start, deliver, inspect, interrupt, close and
+                                resume through one selected execution mode
 ```
 
-The execution transport that binds the three pillars is **headless exec-stream**
-or an explicitly selected interactive mode:
-`codex exec --json`, `claude -p --output-format stream-json`, and
-`kimi -p --output-format stream-json`, normalized into
-an in-memory neutral projection. The provider-native session store remains the
-sole durable transcript/tool/turn history and resume source; Harness retains a
-mode-aware native session binding, not a second event store. The transport
-decision is recorded
-in [decisions/0018-exec-stream-primary-substrate.md](decisions/0018-exec-stream-primary-substrate.md).
+The executor selects the transport. Agent Team requires a persistent,
+bidirectional member mode: `codex_app_server`, `kimi_acp`, or
+`claude_agent_sdk`. Dynamic Workflow may use bounded exec/CLI modes such as
+`codex_exec` and `claude_cli`. There is no silent fallback between these
+contracts. The provider-native session store remains the sole durable
+transcript/tool/turn history and resume source; Harness retains a mode-aware
+native session binding, not a second event store. See
+[ADR 0031](decisions/0031-interactive-provider-modes-and-version-drift.md).
 
 ## Why Three Pillars
 
@@ -260,8 +260,10 @@ allowed, as long as protocol/delivery health is real:
 
 | Platform | Layers |
 | --- | --- |
-| Codex (app-server fallback) | process / socket / protocol / delivery |
-| Codex (exec) / Claude (exec) | process(per-turn) / session / delivery |
+| Codex app-server Team member | process / protocol / native session / mailbox delivery |
+| Kimi ACP Team member | process / ACP protocol / native session / mailbox delivery |
+| Claude Agent SDK Team member | runner process / SDK stream / native session / mailbox delivery |
+| Bounded Workflow exec/CLI | process(per-turn) / native session / delivery |
 
 A platform that has no persistent process (exec-stream) reports `not
 applicable` for the process layer rather than faking it. The Dashboard must not
@@ -272,9 +274,9 @@ present process health as execution readiness when delivery health is unknown.
 A platform must map the **neutral permission** (Pillar 2 / launch spec) onto its
 own controls and **declare what it cannot do**. Unsupported surfaces must be
 explicit so the Dashboard shows honest capability state (invariant 4,
-[integration/README.md](integration/README.md)). Example: Claude exec has no
-mid-turn `turn/interrupt`; that is a declared unsupported surface, not a silent
-gap.
+[integration/README.md](integration/README.md)). Example: a bounded Workflow
+CLI may have no mid-turn interrupt; that is a declared unsupported surface,
+not a reason to start it as an Agent Team member.
 
 ### Provider capability declaration (WP-6 — implemented)
 
@@ -296,10 +298,11 @@ pub struct ProviderCapabilities {
 }
 ```
 
-Each provider implements a static method to declare its capabilities. Current
-values per implementation:
+Each provider implements a static method to declare its capabilities. The
+following legacy presets describe bounded execution capabilities. They are
+useful to Dynamic Workflow but do not prove Agent Team suitability:
 
-| Capability | Codex exec | Claude -p / SDK | Kimi exec |
+| Capability | Codex exec | Claude -p | Kimi exec |
 | --- | --- | --- | --- |
 | streaming | yes (`--json` NDJSON) | yes (`stream-json`) | yes (`--output-format stream-json`) |
 | resume | yes (`--session`) | yes (`--resume`) | no (unverified — degraded) |
@@ -339,11 +342,11 @@ git-worktree requirement. The default-trait and unknown-provider values are
 The legacy `ProviderCapabilities` booleans describe a broad technical preset;
 they are not sufficient to claim an Agent Team integration. Every MemberRun now
 snapshots `ProviderIntegrationProfile`, which names the concrete mode
-(`codex_app_server`, `kimi_acp`, `claude_agent_sdk`, or an explicit supported
-fallback), interaction contract, tool/artifact event fidelity, cancel/resume
+(`codex_app_server`, `kimi_acp`, or `claude_agent_sdk` for new Team members),
+interaction contract, tool/artifact event fidelity, cancel/resume
 support, native-child observation, and transient-thinking policy. The separate
-`codex_exec` profile remains useful to Dynamic Workflow and legacy one-shot
-records; it is not a selectable Agent Team mode.
+`codex_exec` and `claude_cli` profiles remain useful to Dynamic Workflow and
+legacy one-shot records; neither is a selectable Agent Team mode.
 
 Provider requests that require an answer are `PendingInteraction` rows rather
 than hidden adapter callbacks. Questions, tool approvals, and plan reviews keep

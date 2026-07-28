@@ -73,10 +73,10 @@
       "blocker",
       "review_request",
       "review_result",
-      "plan_request",
-      "plan_proposal",
-      "plan_feedback",
-      "plan_approval",
+      "message:PLAN",
+      "message:QUESTION",
+      "message:BLOCKER",
+      "message:REVIEW",
       "handoff",
       "action",
       "evidence"
@@ -87,7 +87,7 @@
     "page_specific": ["TeamMailboxStrip", "TeamConversationStream", "TeamActivityToolbar"],
     "replace_or_split": [
       "replace oversized TeamPresence with mailbox projections",
-      "fold LeadInbox and PlanReviewBoard into the chronological conversation",
+      "fold Lead Inbox and ordinary correlated planning discussion into the chronological conversation",
       "use compact execution AppRail on Team detail"
     ]
   },
@@ -101,7 +101,7 @@
     "mailbox counts must remain projections of TeamMessage and delivery records",
     "provider-native activity must never be presented as Harness-persisted transcript",
     "Markdown must be sanitized and preserve readable density",
-    "large plan proposals must collapse without hiding their message lineage",
+    "large Markdown planning messages must collapse without hiding their message lineage",
     "sticky layers must not create nested-scroll traps"
   ],
   "unresolved_decisions": []
