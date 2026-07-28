@@ -56,43 +56,28 @@ lifecycle from a document update.
 
 ## Command selection
 
-Use the smallest command that preserves the source of truth.
-
-| Need | Command |
-| --- | --- |
-| Read one Document or module operating context | `harness company docs query` |
-| Search Docs projection context | `harness company docs search` |
-| Traverse a Document tree | `harness company docs traverse` |
-| Inspect references around one object | `harness company docs refs` |
-| Inspect related objects | `harness company docs related` |
-| Audit document structure | `harness company docs health` |
-| Create a governed business module | `harness company docs module create` |
-| Scaffold a code-declared custom page contract | `harness company docs page scaffold` |
-| Verify a custom page contract | `harness company docs page verify` |
-| Publish custom page package metadata | `harness company docs page publish` |
-| Install a page definition and policy bundle | `harness company docs page-definition create` |
-| Create a child document | `harness company docs document create` |
-| Rename a document | `harness company docs document rename` |
-| Move a document in the tree | `harness company docs document move` |
-| Archive a document | `harness company docs document archive` |
-| Create a reusable template | `harness company docs template create` |
-| Activate, pause, or archive a template | `harness company docs template status` |
-| Append a document block | `harness company docs block append` |
-| Update a document block | `harness company docs block update` |
-| Archive a document block | `harness company docs block archive` |
-| Remove a block from document order | `harness company docs block remove` |
-| Reorder document blocks | `harness company docs block reorder` |
-| Create a source-linked typed record | `harness company docs typed-record append` |
-| Update a typed record | `harness company docs typed-record update` |
-| Validate a typed record against explicit schema JSON | `harness company docs typed-record validate` |
-| Create a standard module view with saved presentation config | `harness company docs view create` |
-| Update a standard module view configuration | `harness company docs view update` |
-| Link a document to a typed record | `harness company docs relation link` |
-| Unlink a document/record relation | `harness company docs relation unlink` |
-| Relink a relation through archive-plus-link cleanup | `harness company docs relation relink` |
-| Produce review diff evidence | `harness company docs diff` |
-| Export a scoped projection snapshot | `harness company docs snapshot` |
-| Explain an ActionCommand before/after | `harness company docs change-report` |
+Use the smallest command that preserves the source of truth. Current commands:
+`harness company docs query`, `harness company docs search`,
+`harness company docs traverse`, `harness company docs refs`,
+`harness company docs related`, `harness company docs health`,
+`harness company docs source sync`, `harness company docs module create`,
+`harness company docs page scaffold`, `harness company docs page verify`,
+`harness company docs page publish`,
+`harness company docs page-definition create`,
+`harness company docs document create`, `harness company docs document rename`,
+`harness company docs document move`, `harness company docs document archive`,
+`harness company docs template create`, `harness company docs template status`,
+`harness company docs block append`, `harness company docs block update`,
+`harness company docs block archive`, `harness company docs block remove`,
+`harness company docs block reorder`,
+`harness company docs typed-record append`,
+`harness company docs typed-record update`,
+`harness company docs typed-record validate`,
+`harness company docs view create`, `harness company docs view update`,
+`harness company docs relation link`, `harness company docs relation unlink`,
+`harness company docs relation relink`, `harness company docs diff`,
+`harness company docs snapshot`, and
+`harness company docs change-report`.
 
 Module and page-definition creation are administrative governance operations
 and require a Human with `company_os.admin`. Ordinary document, block,
@@ -148,6 +133,37 @@ becoming write authority.
 projection commands. They help Agents find context without scraping the UI.
 They do not prove a SQL index exists and they do not infer approval, payment,
 authority, or execution state.
+
+## External software product sources
+
+Use `source sync` when a Company OS Docs module needs to observe PRDs, ADRs,
+architecture docs, or design contracts from an external Git worktree such as a
+software product repository:
+
+```bash
+harness company docs source sync \
+  --definition <custom-page-definition-id> \
+  --module <business-module-id> \
+  --source-document <document-id> \
+  --actor <agent-or-human-id> \
+  --repo-path <local-git-worktree> \
+  --repo <owner/repo> \
+  --branch <branch> \
+  --path docs/prd \
+  --path docs/architecture \
+  --dry-run
+```
+
+The command writes `TypedRecord` rows for `external_project`,
+`product_doc_source`, `product_doc_snapshot`, and `source_sync_run`. In v0 this
+is the native Docs substrate for external PRD mapping; later dedicated schema
+or SQL read models must remain rebuildable from these Company OS records.
+
+`source sync` observes software product truth. It does not overwrite Company OS
+commercial truth, create WorkItems, approve spending, update Finance, mutate
+Organization, execute GitHub actions, or treat a GitHub webhook as authority.
+When synced sources drift materially, create or route a separate WorkItem for
+Docs Governance review.
 
 ## Code-declared custom pages
 
@@ -219,29 +235,9 @@ records.
 Use explicit Block commands for content edits instead of replacing the whole
 Document:
 
-```bash
-harness company docs block update \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block <block-id> \
-  --content-json '{"text":"updated"}' \
-  --actor <human-or-agent-id> \
-  --dry-run
-
-harness company docs block archive \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block <block-id> \
-  --actor <human-or-agent-id> \
-  --dry-run
-
-harness company docs block remove \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block <block-id> \
-  --actor <human-or-agent-id> \
-  --dry-run
-```
+Commands: `harness company docs block update`,
+`harness company docs block archive`, and
+`harness company docs block remove`.
 
 `block update` dispatches a governed `block.append` update for the existing
 Block and keeps `Document.block_ids` unchanged. `block remove` dispatches only
@@ -257,32 +253,10 @@ Finance, Organization, or Execution effects.
 Use TypedRecord and Relation commands for structured business truth. Do not
 hide structured changes inside prose Blocks.
 
-```bash
-harness company docs typed-record update \
-  --definition <custom-page-definition-id> \
-  --record <typed-record-id> \
-  --fields-json '{"status":"accepted"}' \
-  --merge-fields \
-  --actor <human-or-agent-id> \
-  --dry-run
-
-harness company docs relation unlink \
-  --definition <custom-page-definition-id> \
-  --relation <relation-id> \
-  --actor <human-or-agent-id> \
-  --dry-run
-
-harness company docs relation relink \
-  --definition <custom-page-definition-id> \
-  --relation <relation-id> \
-  --to-record <typed-record-id> \
-  --actor <human-or-agent-id> \
-  --dry-run
-
-harness company docs typed-record validate \
-  --record <typed-record-id> \
-  --schema-json '{"required":["status"],"properties":{"status":{"type":"string"}}}'
-```
+Commands: `harness company docs typed-record update`,
+`harness company docs relation unlink`,
+`harness company docs relation relink`, and
+`harness company docs typed-record validate`.
 
 `typed-record update` dispatches a governed `typed_record.append` update for an
 existing record. It may change title, fields, and lifecycle status; it must not
@@ -438,12 +412,11 @@ harness company docs view update \
 ```
 
 The first supported configuration slice is table/board/timeline mode, source
-`view update` writes a latest `view.append` row for presentation/query config
-only. It must not mutate TypedRecords or create a second source of truth.
-The first supported configuration slice is table/board/timeline mode, source
 kinds, simple filters, grouping, and sorting stored in `View.query`. Calendar,
 chart, advanced field layout, and inline saved-view editing remain planned
 until their own UI and acceptance evidence exist.
+`view update` writes a latest `view.append` row for presentation/query config
+only. It must not mutate TypedRecords or create a second source of truth.
 
 ## Review evidence
 

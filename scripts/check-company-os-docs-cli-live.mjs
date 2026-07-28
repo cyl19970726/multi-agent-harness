@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,12 @@ async function main() {
   execFileSync("cargo", ["build", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
   const root = await mkdtemp(join(tmpdir(), "company-os-docs-cli-live-"));
   const storeRoot = join(root, "store");
+  const externalRepo = join(root, "external-product-repo");
+  await mkdir(join(externalRepo, "docs", "prd"), { recursive: true });
+  await writeFile(join(externalRepo, "docs", "prd", "README.md"), "# External Product PRD\n\n## Business line\n\nThis PRD is synced into Company OS Docs as a product source snapshot.\n");
+  execFileSync("git", ["init"], { cwd: externalRepo, stdio: "ignore" });
+  execFileSync("git", ["add", "docs/prd/README.md"], { cwd: externalRepo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Docs CLI", "-c", "user.email=docs-cli@example.invalid", "commit", "-m", "seed external product prd"], { cwd: externalRepo, stdio: "ignore" });
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const env = { ...process.env, HARNESS_ROOT: storeRoot, HARNESS_COMPANY_OS_TOKEN: token };
@@ -402,6 +408,39 @@ async function main() {
     ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
     if (typedRecordValidation.ok !== true || typedRecordValidation.boundaries?.validate_does_not_dispatch !== true) {
       throw new Error(`typed-record validate did not pass read-only schema validation: ${JSON.stringify(typedRecordValidation)}`);
+    }
+
+    const sourceSyncDryRun = JSON.parse(execFileSync(harness, [
+      "company", "docs", "source", "sync",
+      "--definition", "page-docs-cli",
+      "--module", "module-docs-cli",
+      "--source-document", "document-cli-child",
+      "--actor", "agent-docs-governance",
+      "--repo-path", externalRepo,
+      "--repo", "example/external-product",
+      "--branch", "dev",
+      "--project-id", "external-product",
+      "--path", "docs/prd",
+      "--dry-run",
+    ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
+    if (sourceSyncDryRun.ok !== true || sourceSyncDryRun.dry_run !== true || sourceSyncDryRun.boundaries?.github_webhook_is_transport_not_authority !== true || !sourceSyncDryRun.records?.some((record) => record.record_type === "product_doc_snapshot")) {
+      throw new Error(`source sync dry-run did not preserve source mapping boundaries: ${JSON.stringify(sourceSyncDryRun)}`);
+    }
+
+    const sourceSync = JSON.parse(execFileSync(harness, [
+      "company", "docs", "source", "sync",
+      "--definition", "page-docs-cli",
+      "--module", "module-docs-cli",
+      "--source-document", "document-cli-child",
+      "--actor", "agent-docs-governance",
+      "--repo-path", externalRepo,
+      "--repo", "example/external-product",
+      "--branch", "dev",
+      "--project-id", "external-product",
+      "--path", "docs/prd",
+    ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
+    if (sourceSync.ok !== true || sourceSync.records_written !== 4 || sourceSync.boundaries?.work_side_effects !== false) {
+      throw new Error(`source sync did not write the expected source TypedRecords: ${JSON.stringify(sourceSync)}`);
     }
 
     const relation = JSON.parse(execFileSync(harness, [
@@ -816,6 +855,10 @@ async function main() {
     const archivedBlock = blocks.find((entry) => entry.id === "block-cli-child-archive");
     const copiedTemplateBlock = blocks.find((entry) => entry.id === "block-cli-template-document-cli-child-1-block-template-cli-1");
     const appendedTypedRecord = typedRecords.find((entry) => entry.id === "typed-record-cli-child-1");
+    const externalProject = typedRecords.find((entry) => entry.id === "external-project-external-product");
+    const productDocSource = typedRecords.find((entry) => entry.record_type === "product_doc_source" && entry.fields?.project_id === "external-product");
+    const productDocSnapshot = typedRecords.find((entry) => entry.record_type === "product_doc_snapshot" && entry.fields?.path === "docs/prd/README.md");
+    const sourceSyncRun = typedRecords.find((entry) => entry.record_type === "source_sync_run" && entry.fields?.project_id === "external-product");
     const createdView = views.find((entry) => entry.id === "view-cli-child-records");
     const createdModule = modules.find((entry) => entry.id === "module-docs-cli");
     const createdDefinition = definitions.find((entry) => entry.id === "page-docs-cli");
@@ -859,6 +902,18 @@ async function main() {
     if (!appendedTypedRecord || appendedTypedRecord.source_document_ref !== "document-cli-child" || appendedTypedRecord.module_id !== "module-docs-cli" || appendedTypedRecord.title !== "CLI Typed Record Updated" || appendedTypedRecord.fields?.status !== "accepted" || appendedTypedRecord.fields?.source !== "cli-live") {
       throw new Error(`CLI TypedRecord is missing, not scoped, or did not preserve merged fields: ${JSON.stringify(appendedTypedRecord)}`);
     }
+    if (!externalProject || externalProject.record_type !== "external_project" || externalProject.fields?.repo !== "example/external-product") {
+      throw new Error(`Docs source sync did not create the external_project TypedRecord: ${JSON.stringify(externalProject)}`);
+    }
+    if (!productDocSource || productDocSource.fields?.path !== "docs/prd") {
+      throw new Error(`Docs source sync did not create the product_doc_source TypedRecord: ${JSON.stringify(productDocSource)}`);
+    }
+    if (!productDocSnapshot || productDocSnapshot.fields?.source_class !== "software_product_contract" || !productDocSnapshot.fields?.hash || !productDocSnapshot.fields?.headings?.some((heading) => heading.title === "External Product PRD")) {
+      throw new Error(`Docs source sync did not create a usable product_doc_snapshot TypedRecord: ${JSON.stringify(productDocSnapshot)}`);
+    }
+    if (!sourceSyncRun || sourceSyncRun.fields?.work_side_effects !== false || sourceSyncRun.fields?.snapshot_count !== 1) {
+      throw new Error(`Docs source sync did not create the source_sync_run boundary record: ${JSON.stringify(sourceSyncRun)}`);
+    }
     if (!createdView || createdView.module_id !== "module-docs-cli" || !createdView.source_kinds?.includes("typed_record")) {
       throw new Error("CLI View is missing or not scoped to the module/typed_record source");
     }
@@ -893,6 +948,7 @@ async function main() {
       reusable_template_block_count: reusableTemplateDocument.block_ids.length,
       reordered_block_ids: child.block_ids,
       typed_record_id: appendedTypedRecord.id,
+      product_doc_snapshot_id: productDocSnapshot.id,
       relation_id: linkedRelation.id,
       relation_lifecycle_status: linkedRelation.lifecycle_status,
       view_id: createdView.id,

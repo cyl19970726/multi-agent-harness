@@ -127,12 +127,22 @@ function entityRefs(value: unknown): Array<{ kind: string; id: string }> {
     : [];
 }
 
+function docsDocumentHref(id: string): string | undefined {
+  return id ? `?surface=docs&document=${encodeURIComponent(id)}` : undefined;
+}
+
+function docsModuleHref(id: string): string | undefined {
+  return id ? `?surface=docs&module=${encodeURIComponent(id)}` : undefined;
+}
+
 function documentLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
-  return entry ? { id: text(entry.id), label: text(entry.title, "Untitled document"), kind: "document" } : undefined;
+  const id = text(entry?.id);
+  return entry ? { id, label: text(entry.title, "Untitled document"), kind: "document", href: docsDocumentHref(id) } : undefined;
 }
 
 function moduleLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
-  return entry ? { id: text(entry.id), label: text(entry.name, "Unnamed module"), kind: "module", meta: text(entry.status) ? humanize(entry.status) : undefined } : undefined;
+  const id = text(entry?.id);
+  return entry ? { id, label: text(entry.name, "Unnamed module"), kind: "module", href: docsModuleHref(id), meta: text(entry.status) ? humanize(entry.status) : undefined } : undefined;
 }
 
 function typedRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
@@ -272,7 +282,7 @@ function projectedDocumentBlocks(document: JsonRecord | undefined, blocks: JsonR
     const id = text(block.id, `block:${kind}`);
     if (kind === "heading") return { id, type: "heading" as const, content: blockText(block), level: Number(content.level) === 3 ? 3 as const : 2 as const };
     if (kind === "callout") return { id, type: "callout" as const, title: text(content.title) || undefined, content: blockText(block), tone: ["warning", "success"].includes(text(content.tone)) ? text(content.tone) as "warning" | "success" : "neutral" as const };
-    if (kind === "table") {
+    if (kind === "table" || kind === "simple_table") {
       const columns = strings(content.columns);
       const rawRows = Array.isArray(content.rows) ? content.rows : [];
       return {
@@ -714,14 +724,28 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const space = text(entry.space, text(entry.space_id, "Unassigned"));
     docsBySpace.set(space, [...(docsBySpace.get(space) ?? []), entry]);
   });
-  const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].map(([space, entries]) => ({
-    id: `space:${space}`,
-    label: space,
-    children: entries.map((entry) => ({ id: text(entry.id), ref: text(entry.id), label: text(entry.title, "Untitled document"), selected: false })),
-  }));
+  const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })).map(([space, entries]) => {
+    const sortedEntries = [...entries].sort((left, right) => text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" }));
+    return {
+      id: `space:${space}`,
+      label: space,
+      href: docsDocumentHref(text(sortedEntries[0]?.id)),
+      children: sortedEntries.map((entry) => {
+      const documentId = text(entry.id);
+      return {
+        id: documentId,
+        ref: documentId,
+        label: text(entry.title, "Untitled document"),
+        href: docsDocumentHref(documentId),
+        selected: selected.documentId === documentId,
+      };
+    }),
+    };
+  });
   if (module && workspaceTree.length) {
     const parent = workspaceTree.find((entry) => entry.label === text(workspaceDocument?.space, text(workspaceDocument?.space_id))) ?? workspaceTree[0];
-    parent.children?.push({ id: text(module.id), ref: text(module.id), label: text(module.name, "Unnamed module"), meta: humanize(module.status) || undefined });
+    const moduleId = text(module.id);
+    parent.children?.push({ id: moduleId, ref: moduleId, label: text(module.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(module.status) || undefined });
   }
 
   const documentProperties = [
@@ -1030,7 +1054,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       description: documents.length ? "Documents, typed records, and connected operating context." : "No company documents are supplied by this projection.",
       rootSelected: true,
       tree: workspaceTree,
-      spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
+      spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, href: docsDocumentHref(text(entries[0]?.id)), countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
       recentlyUpdated: linkEntries(documents.map(documentLink)),
       templates: templateLinks,
       templateRecordPolicy: templatePolicy,
@@ -1054,6 +1078,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       title: focusDocument ? text(focusDocument.title, "Untitled document") : "No document selected",
       breadcrumb: focusDocument?.space || focusDocument?.space_id ? [text(focusDocument.space, text(focusDocument.space_id))] : undefined,
       description: focusDocument ? "This document is rendered from the supplied Company OS projection." : "Select a document or provide a document projection to begin.",
+      documentTree: workspaceTree,
       properties: documentProperties,
       blocks: documentBlocks,
       sourceLinks: linkEntries([sourceLink]),

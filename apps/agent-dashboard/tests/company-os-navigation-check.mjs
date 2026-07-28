@@ -71,7 +71,8 @@ async function main() {
   check(shell.includes('{companyContext ? "Company context" : "Active context"}') && shell.includes("Docs holds context, Organization holds authority, Work holds commitments, and Finance records monetary effects."), "Company OS navigation keeps four-system context separate from Mission and Wave execution context");
 
   const pages = ["home", "docs-workspace", "document-health", "document-focus", "workboard", "work-item-focus", "finance", "agents-organization", "standing-agent-focus", "governance-proposal", "approval-focus", "business-module-focus", "human-member-focus"];
-  check(pages.every((page) => router.includes(`\"${page}\"`)), "router owns all thirteen core page contracts");
+  check([...pages, "custom-page"].every((page) => router.includes(`\"${page}\"`)), "router owns all core page contracts plus the custom page runtime entry");
+  check(router.includes("<CustomPageHost") && router.includes("selection.customPageId"), "router mounts Store-backed custom pages through the generic CustomPageHost");
   check(router.includes('data-company-os-prototype={isLive ? "false" : "true"}') && router.includes("fixed fixture fallback") && router.includes("not claiming live Company OS persistence"), "fixture fallback is visibly and structurally labelled as prototype data");
   check(router.includes("Live · Store-backed Company OS") && router.includes('data-company-os-data-mode="store-live"'), "authoritative store projections have a distinct live truth label");
   check(router.includes("adaptCompanyOsDocsProjection(resolved.value,") && router.includes("adaptTrademarkOperationsProjection(resolved.value"), "fixture and store-live routes pass the resolved projection directly into both presentation adapters");
@@ -126,6 +127,7 @@ async function main() {
       ["?surface=organization&proposal=governance-proposal-trademark-management", "organization", "proposalId", "governance-proposal-trademark-management"],
       ["?surface=approvals&approval=approval-trademark-filing-fee-cn-2026-018", "approvals", "approvalId", "approval-trademark-filing-fee-cn-2026-018"],
       ["?surface=docs&module=module-trademark-management", "docs", "moduleId", "module-trademark-management"],
+      ["?surface=docs&page=page-wcw-command-center", "docs", "customPageId", "page-wcw-command-center"],
       ["?surface=docs&health=structure", "docs", "docsHealth", "structure"],
     ];
     for (const [search, surface, key, value] of routeCases) {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Business Bootstrap"
+  short_description: "Bootstrap commercial projects in Company OS"
+  default_prompt: "Use $company-business-project-bootstrap to turn this commercial project into a Company OS Docs, Work, Org, and Finance operating map."

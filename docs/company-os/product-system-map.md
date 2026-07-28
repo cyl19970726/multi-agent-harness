@@ -90,10 +90,16 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Work | WorkItem, Milestone, WorkType, Assignment, Approval links, execution/delivery refs | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
 | Execution | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run |
+| External project source | ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are mapped into Company OS |
 
 There is no native `Project`, Task Graph, GoalPhase, or universal Agent object.
 Mission/Wave is the only new long-task coordination model. Temporary Agent Team
 members and provider-native subagents do not become Standing Agents.
+
+An external GitHub repository may own the software product contract for a real
+application. Company OS still owns the commercial model, operating modules,
+WorkItems, Organization, Finance, and launch readiness around that application.
+The integration contract is [External Project Product Sources](external-project-product-sources.md).
 
 ## Current delivery truth
 
@@ -118,9 +124,10 @@ separates baseline, Expected, Actual, historical, and deferred-reference assets.
 5. [Work Operating System](work-operating-system.md)
 6. [Document system](document-system.md) and [financial relations](financial-relations.md)
 7. [Governance Agent workspaces](governance-agent-workspaces.md)
-8. [Frontend information architecture](frontend-information-architecture.md)
-9. [Execution foundation](execution-foundation.md)
-10. [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md)
+8. [External project product sources](external-project-product-sources.md)
+9. [Frontend information architecture](frontend-information-architecture.md)
+10. [Execution foundation](execution-foundation.md)
+11. [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md)
 
 Detailed schemas, Actions, examples, and implementation audits remain linked
 from [the Company OS index](README.md). If a detailed document conflicts with

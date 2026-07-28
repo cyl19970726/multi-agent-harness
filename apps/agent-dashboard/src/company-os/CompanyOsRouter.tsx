@@ -25,12 +25,14 @@ import {
   adaptTrademarkOperationsProjection,
 } from "./operations";
 import { WorkOperatingPage } from "./work/WorkOperatingPage";
+import { CustomPageHost } from "./page-packages/CustomPageHost";
 
 type CompanyOsPage =
   | "home"
   | "docs-workspace"
   | "document-health"
   | "document-focus"
+  | "custom-page"
   | "workboard"
   | "work-item-focus"
   | "finance"
@@ -90,6 +92,7 @@ function selectedPage(selection: SelectionState): CompanyOsPage | undefined {
       return "home";
     case "docs":
       if (selection.docsHealth) return "document-health";
+      if (selection.customPageId) return "custom-page";
       if (selection.moduleId) return "business-module-focus";
       if (selection.documentId) return "document-focus";
       return "docs-workspace";
@@ -215,6 +218,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     case "docs-workspace": content = <DocsWorkspace workspace={docs.workspace} />; break;
     case "document-health": content = <DocumentHealthReview health={docs.health} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onCreateCorrectiveWork={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} onRepairRelation={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "document-focus": content = <BasicDocumentPage document={docs.document} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDocsAction={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
+    case "custom-page": content = <CustomPageHost pageId={selection.customPageId} source={resolved.value} />; break;
     case "workboard": content = <WorkOperatingPage source={resolved.value} />; break;
     case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;

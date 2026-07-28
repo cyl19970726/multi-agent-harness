@@ -251,7 +251,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-07-26",
+      "reviewAfter": "2026-08-26",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "cargo test"
@@ -918,7 +918,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-07-26",
+      "reviewAfter": "2026-08-26",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "cargo clippy --all-targets -- -D warnings"
@@ -2400,6 +2400,105 @@
    "truthRefs": []
   },
   {
+   "path": "docs/company-os/external-project-product-sources.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "external software repository source mapping into Company OS",
+    "GitHub PRD snapshot and webhook boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/skill-contracts.md",
+    "docs/company-os/examples/wanchengwanling-operations.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-27",
+   "lastVerifiedWith": [
+    "pnpm check:company-os"
+   ],
+   "reorgTrigger": "External repo sync, ProductDocSnapshot, SourceSyncRun, SourceChangeEvent, GitHub webhook, or DeliveryRef boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/company-os/examples/wanchengwanling-operations.md",
+   "ownerRole": "business-operations",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Wanchengwanling commercial project mapping into Company OS",
+    "AR tourism merchant, reward, content, creator, finance, and launch module example"
+   ],
+   "dependsOn": [
+    "docs/company-os/external-project-product-sources.md",
+    "docs/company-os/examples/wanchengwanling-completion-roadmap.md",
+    "scripts/seed-company-os-wanchengwanling-four-system-v1.mjs",
+    "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-27",
+   "lastVerifiedWith": [
+    "pnpm acceptance:company-os:wanchengwanling-roadmap"
+   ],
+   "reorgTrigger": "Wanchengwanling business model, module map, persistent Store bootstrap, source sync, or operating boundary changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "scripts/seed-company-os-wanchengwanling-four-system-v1.mjs"
+    }
+   ]
+  },
+  {
+   "path": "docs/company-os/examples/wanchengwanling-completion-roadmap.md",
+   "ownerRole": "business-operations",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Wanchengwanling unfinished-goal roadmap",
+    "Company OS operating-surface, custom-page, GitHub sync, SQL read/search, launch data, and replication backlog"
+   ],
+   "dependsOn": [
+    "docs/company-os/examples/wanchengwanling-operations.md",
+    "docs/company-os/agent-programmable-pages.md",
+    "docs/company-os/skill-contracts.md",
+    "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-27",
+   "lastVerifiedWith": [
+    "pnpm acceptance:company-os:wanchengwanling-roadmap"
+   ],
+   "reorgTrigger": "Wanchengwanling roadmap WorkItems, milestones, custom page plan, GitHub/source sync plan, SQL read-model plan, or replication plan changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "test",
+     "ref": "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
+    }
+   ]
+  },
+  {
    "path": "docs/decisions/0027-company-os-primary-model.md",
    "ownerRole": "product-architecture",
    "status": "stable",
@@ -3462,6 +3561,62 @@
     {
      "kind": "api",
      "ref": "crates/harness-cli/src/main.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/cli-map.md",
+   "ownerRole": "lead-operations",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "implemented Harness CLI command surface",
+    "Company OS CLI coverage and missing dedicated command groups"
+   ],
+   "dependsOn": [
+    "crates/harness-cli/src/main.rs",
+    "crates/harness-cli/src/company_os_api.rs",
+    "docs/company-os/skill-contracts.md",
+    "docs/company-os/docs-operating-surface-matrix.md",
+    "docs/company-os/implementation-truth-matrix.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-27",
+   "lastVerifiedWith": [
+    "target/debug/harness --help",
+    "node scripts/check-company-os-operator-cli-smoke.mjs",
+    "harness governance check"
+   ],
+   "reorgTrigger": "Top-level harness commands, Company OS CLI groups, Store/API resources, skill suite, or validation scripts change.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/company_os_api.rs"
+    },
+    {
+     "kind": "store",
+     "ref": "crates/harness-store/src/company_os.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-work-cli-smoke.mjs"
+    },
+    {
+     "kind": "test",
+     "ref": "scripts/check-company-os-operator-cli-smoke.mjs"
     }
    ]
   }
