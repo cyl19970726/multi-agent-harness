@@ -7,6 +7,20 @@
   "outcome": "A governed trademark record, filing work, approval, and finance relation",
   "non_goals": ["Automatically authorize a legal filing or payment"],
   "documents": [{"id": "document-trademark-application-cn-2026-018"}],
+  "page_contracts": [
+    {
+      "id": "page-contract-trademark-module-focus",
+      "document_id": "document-trademark-application-cn-2026-018",
+      "primary_question": "What is the trademark filing state, who must approve it, and what evidence/financial commitment is linked?",
+      "required_sections": ["filing summary", "approval gate", "finance commitment", "evidence and result provenance"],
+      "required_typed_records": ["trademark-application"],
+      "required_relations": ["document-to-trademark-application", "trademark-application-to-financial-record", "workitem-to-approval"],
+      "required_views": ["view-trademark-applications"],
+      "right_rail_context": ["accountable owner", "assigned agent", "pending approval", "¥3,000 commitment"],
+      "frontend_shape": "standard module focus with document context, application table, work/approval rail, and finance commitment card",
+      "fallback_view_id": "view-trademark-applications"
+    }
+  ],
   "record_types": [{"id": "trademark-application"}],
   "relations": [{"from_type": "trademark-application", "to_type": "financial-record", "cardinality": "one-to-many", "ownership": "finance"}],
   "views": [{"id": "view-trademark-applications"}],
@@ -17,7 +31,15 @@
   "actions": [{"id": "request-trademark-approval", "effects": ["approval_requested"], "policy_gate": "human-financial-and-legal-approval"}],
   "permissions": [{"scope": "trademark:prepare"}],
   "automations": [],
-  "custom_page_candidates": [{"id": "trademark-module-focus", "fallback_view_ids": ["view-trademark-applications"]}],
+  "custom_page_candidates": [{"id": "trademark-module-focus", "page_contract_id": "page-contract-trademark-module-focus", "fallback_view_ids": ["view-trademark-applications"], "frontend_surface_id": "frontend-surface-trademark-module-focus"}],
+  "frontend_surfaces": [
+    {
+      "id": "frontend-surface-trademark-module-focus",
+      "page_contract_id": "page-contract-trademark-module-focus",
+      "layout": "document/module center with right-rail approval and finance context",
+      "standard_fallback": "view-trademark-applications"
+    }
+  ],
   "fallback_views": [{"id": "view-trademark-applications"}],
   "migration": {"mode": "create-new-module"},
   "archive_policy": {"retain_decisions_and_evidence": true},
