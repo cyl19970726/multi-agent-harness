@@ -49,6 +49,28 @@ Read `docs/product/mission-wave-host-plan.md`, ADR 0034, ADR 0037, and ADR 0039
 when the product contract itself is in question. Do not reproduce their schemas
 in this skill.
 
+## Select One Execution Driver
+
+The Assignment is the durable work contract. A provider-native Goal is only an
+optional way to continue executing that Assignment. Before starting a Member,
+select one top-level execution driver for its MemberRun, native session, and
+writable Workspace:
+
+| Driver | Who starts the next provider cycle | Use when |
+| --- | --- | --- |
+| `host_driven` | Harness accepts the next eligible mailbox envelope and starts one cycle | default; provider has no reviewed native continuation controller |
+| `provider_driven` | the provider's reviewed native continuation loop starts cycles until its condition is terminal | the exact mode/version supports inspect, control, resume, mail handling, and permission continuity |
+
+Never activate a provider-native goal and also start ordinary Harness turns for
+the same Assignment. That creates two schedulers and can produce concurrent
+top-level turns in one native session/worktree. A provider-driven Member may
+perform many cycles without creating a new MemberRun. Provider satisfaction is
+still not Host acceptance: inspect the Handoff and evidence, then send an
+explicit acceptance decision.
+
+Do not reject a provider merely because it lacks Goal mode. Keep it
+`host_driven`. See `docs/member-continuation-model.md` and ADR 0041.
+
 ## Choose The Smallest Truthful Executor
 
 | Situation | Choose |
@@ -102,6 +124,11 @@ internal test subagent is not independent review.
    composition, responsibility, risk, or decision boundary changes materially.
 11. Close the Mission with an explicit outcome. Leave linked teams and their
     independent lifecycle untouched.
+
+When inspecting a Member, read three separate facts: Assignment ownership,
+native continuation state, and Host acceptance state. Do not collapse “Goal
+satisfied”, “provider turn completed”, “Handoff delivered”, and “Host accepted”
+into one status.
 
 At every safe Host turn boundary—session start, after the user sends a new
 prompt, before re-planning, and before accepting a handoff—read the Lead Inbox.

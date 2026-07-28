@@ -5,6 +5,10 @@ shared by Host execution, Agent Team members, Dynamic Workflow steps and future
 Standing Agent operation. Provider-specific files under `docs/integration/`
 explain how a concrete provider implements the substrate.
 
+The provider-neutral rule for continuous, multi-cycle Member execution lives
+in [Member Continuation Model](member-continuation-model.md). Runtime lifecycle,
+mail delivery, and continuation are related but separate contracts.
+
 Provider records are execution infrastructure. They do not own company
 identity, organization authority, WorkItem responsibility, Mission/Wave
 acceptance or business results. The owning executor and product systems keep
@@ -39,7 +43,8 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
 | How does a member receive work? | A correlated Assignment and member Inbox are projected into provider turns by `MessageDelivery`. |
-| How does it receive work? | Delivery maps the requesting executor's assignment or Host request to provider input. |
+| Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`) or one reviewed native continuation controller (`provider_driven`). |
+| Who decides the work is accepted? | The Host, using the Assignment completion policy and evidence; provider completion is only an execution signal. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
 | How are providers swapped? | Providers implement the same interfaces and cannot own harness state. |
@@ -52,6 +57,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
+| `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
@@ -108,6 +114,14 @@ AgentProvider
   read_native_session(session_ref) -> bounded projection
   resume_native_session(session_ref, input)
 
+ContinuationController
+  capabilities(mode, version)
+  start_or_replace(session_ref, condition)
+  inspect(session_ref) -> NativeContinuationProjection
+  inject_or_queue(session_ref, message)
+  interrupt_current_cycle(session_ref, reason)
+  clear(session_ref)
+
 Delivery
   package_context(request, execution_refs, artifact_refs, skill_refs, permissions)
   send(provider_request)
@@ -144,6 +158,13 @@ The harness owns delivery policy:
 | `blocked` | queue or reassign, depending on Leader decision |
 | `closed` / `error` | fail delivery and create evidence/blocker |
 
+The selected execution driver owns cycle creation. In `host_driven` mode,
+eligible mail causes Harness to start exactly one next provider cycle. In
+`provider_driven` mode, Harness may queue or inject mail according to the
+reviewed native protocol, but it must not independently start a competing
+top-level cycle. The lease is scoped to one MemberRun, native session, and
+writable Workspace; it is not a claim that a Member can perform only one turn.
+
 Provider context is ephemeral. Harness state is durable. Each delivery should
 include only the bounded context needed for that turn: objective, acceptance
 criteria, relevant executor-native assignments/messages, artifact refs, skill
@@ -178,6 +199,8 @@ Use this split:
 ```text
 docs/agent-integration-model.md  # how to integrate a new agent (three pillars + launch spec)
 docs/agent-runtime.md        # provider-neutral runtime substrate and interfaces
+docs/member-continuation-model.md
+                             # execution-driver, completion and native continuation contract
 docs/integration/README.md   # integration rules and template
 docs/integration/codex.md    # Codex implementation
 docs/integration/claude.md   # Claude implementation

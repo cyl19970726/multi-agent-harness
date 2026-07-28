@@ -109,6 +109,17 @@ through an ordinary correlated Markdown message; the Member replies, the Host
 argues or approves in the same chain, and provider-native plan/goal features
 remain internal execution aids.
 
+An Assignment is durable work ownership; a provider-native Goal is only one
+possible continuation mechanism for executing it. Each active MemberRun/native
+session/writable Workspace must have exactly one top-level execution driver:
+either Harness starts the next provider cycle (`host_driven`) or an observed
+provider-native continuation loop does (`provider_driven`). Never activate a
+native goal and also issue an ordinary Harness start for the same work. A
+provider-driven member may complete many native cycles without creating a new
+MemberRun, but provider satisfaction never implies Host acceptance. Providers
+without a reviewed native continuation capability remain first-class
+host-driven members. See `docs/member-continuation-model.md` and ADR 0041.
+
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but
 the harness must not claim lifecycle control it does not have.

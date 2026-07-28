@@ -142,6 +142,27 @@ Claude does not expose the same content-steer primitive as Codex app-server in
 this adapter. Send ordinary content as a queued TeamMessage. SDK permission or
 model mutation is a provider control, not a substitute for team conversation.
 
+## Native Continuation
+
+Claude Code 2.1.139 and later exposes native `/goal`. It is a session-scoped
+continuation loop: setting a goal starts work immediately, a Stop hook evaluates
+the condition after each cycle, one goal may be active per session, and the
+goal is restored when that session resumes. `/goal` can inspect status and
+`/goal clear` ends the loop. Goal activation does not widen tool permissions.
+
+This is a provider-native capability, not yet an adapter-wired Team contract.
+The current `claude_agent_sdk` integration therefore remains `host_driven`.
+Harness must not activate `/goal` and also feed the AsyncIterable mailbox as a
+competing top-level driver for the same Assignment. Before promotion to
+`provider_driven`, a mode/version canary must prove exclusive cycle ownership,
+mail injection or queuing, interruption, resume, terminal reason, and
+permission continuity.
+
+The durable Assignment, correlation, Workspace, Handoff, and Host acceptance
+remain Harness-owned regardless of the selected driver. See
+[Member Continuation Model](../member-continuation-model.md) and
+[Claude Code goal docs](https://code.claude.com/docs/en/goal).
+
 ## Workspace and permissions
 
 Provider cwd resolves as:

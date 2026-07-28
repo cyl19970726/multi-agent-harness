@@ -123,6 +123,31 @@ but their raw updates remain provider-native activity. They do not change
 Harness permission, ownership, or acceptance. See
 [ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
 
+## Native Continuation
+
+Codex app-server exposes a native Goal continuation path, but Harness must not
+confuse that capability with the Member Assignment or run it beside the
+ordinary Host-driven loop. The provider-neutral contract is
+[Member Continuation Model](../member-continuation-model.md).
+
+A 2026-07-28 canary proved the failure mode: `thread/goal/set(active)` started a
+provider-owned cycle while Harness also called `turn/start`. Two top-level
+turns then ran concurrently in the same native thread and writable worktree,
+and the provider-owned turn used a different sandbox posture. The Goal turn
+eventually completed the work; that does not make dual-driver operation valid.
+
+The required posture until the adapter implements and live-validates an
+exclusive `provider_driven` lease is `host_driven`. The current implementation
+that calls both native Goal activation and `turn/start` is nonconforming and
+must remain `review_required` until repaired:
+
+- do not combine `thread/goal/set(active)` with Harness `turn/start` for one
+  Assignment;
+- retain native Goal state only as an on-demand provider projection;
+- do not infer Host acceptance from native Goal satisfaction; and
+- keep version/mode compatibility `review_required` when continuation or
+  permission behavior has not been canaried.
+
 ## Pending Interactions
 
 Reverse requests that pause the provider—user questions, tool approvals,

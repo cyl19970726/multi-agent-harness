@@ -10,6 +10,8 @@ provider implementations in [integration/codex.md](integration/codex.md),
 [integration/claude.md](integration/claude.md), and
 [integration/kimi.md](integration/kimi.md). It does not redefine Mission/Wave,
 executor-native records, WorkItems, Approvals, or organization authority.
+Continuous Member execution follows the separate
+[Member Continuation Model](member-continuation-model.md).
 
 Integration is organized around **three pillars** plus a
 **provider-neutral launch/control contract** that each concrete execution mode
@@ -18,7 +20,7 @@ implements honestly:
 ```text
 Pillar 1  Base configuration   prompt, skills, capabilities, model/profile
 Pillar 2  Environment          workspace (worktree, owned paths), MCP, resources
-Pillar 3  Platform adaptation  AgentProvider + EventReducer + capability decl.
+Pillar 3  Platform adaptation  AgentProvider + EventReducer + continuation caps
 ---------------------------------------------------------------------------
 Launch/control contract         start, deliver, inspect, interrupt, close and
                                 resume through one selected execution mode
@@ -33,6 +35,14 @@ transcript/tool/turn history and resume source; Harness retains a mode-aware
 native session binding, not a second event store. See
 [ADR 0031](decisions/0031-interactive-provider-modes-and-version-drift.md).
 
+For every persistent Team mode, the integration also selects exactly one
+top-level `execution_driver`: `host_driven` or `provider_driven`. A native Goal
+or continuation loop is optional. When it exists, the adapter must separately
+declare whether it can start, inspect, replace, clear, resume, inject mail,
+interrupt a cycle, expose cycle boundaries, and preserve the intended
+permission scope. “Provider has Goal mode” is not an executable compatibility
+claim by itself.
+
 ## Why Three Pillars
 
 An `AgentMember` (see [agent-control-plane.md](company-os/execution-foundation.md)) is a
@@ -44,7 +54,7 @@ hands a single turn to whatever platform sits behind the member:
 | --- | --- | --- |
 | 1 Base configuration | What does this agent *know and is allowed to be*? | `prompt_ref`, `skill_refs`, `capabilities`, `model`, `profile` on `AgentMember` |
 | 2 Environment | What can it *touch*? | `worktree_ref`, `runtime_workspace_roots`, `workspace_policy`; MCP via `AgentProviderConfig.mcp` |
-| 3 Platform adaptation | How does the harness *drive* the platform, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
+| 3 Platform adaptation | How does the harness *drive* the platform, select one continuation owner, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, continuation controller, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
 
 The pillars are deliberately separable: changing the platform (Pillar 3) must
 not require rewriting the prompt stack (Pillar 1) or the workspace contract
@@ -280,62 +290,18 @@ not a reason to start it as an Agent Team member.
 
 ### Provider capability declaration (WP-6 — implemented)
 
-The harness now provides a neutral way for platforms to declare what they
-technically support. The `ProviderCapabilities` struct in
-[harness-core](../crates/harness-core/src/lib.rs) carries this:
+The implemented `ProviderCapabilities` preset in
+[harness-core](../crates/harness-core/src/lib.rs) covers broad technical axes:
+streaming, resume, mid-turn approval, subagents, MCP, hooks, schema, cost, and
+enforced read-only execution. These booleans are execution-mode metadata, not
+provider-brand promises.
 
-```rust
-pub struct ProviderCapabilities {
-    pub streaming: bool,          // incremental event stream during a turn
-    pub resume: bool,             // session resume (--session / --resume)
-    pub mid_turn_approval: bool,  // approve/deny a tool call mid-turn
-    pub subagents: bool,          // native child threads
-    pub mcp: bool,                // MCP server attachment
-    pub hooks: bool,              // lifecycle hook surface
-    pub schema: bool,             // native structured-output / JSON-schema flag
-    pub cost: bool,               // provider reports billed USD in terminal frame
-    pub enforces_read_only: bool, // can physically run a read-only (non-mutating) leaf
-}
-```
-
-Each provider implements a static method to declare its capabilities. The
-following legacy presets describe bounded execution capabilities. They are
-useful to Dynamic Workflow but do not prove Agent Team suitability:
-
-| Capability | Codex exec | Claude -p | Kimi exec |
-| --- | --- | --- | --- |
-| streaming | yes (`--json` NDJSON) | yes (`stream-json`) | yes (`--output-format stream-json`) |
-| resume | yes (`--session`) | yes (`--resume`) | no (unverified — degraded) |
-| mid_turn_approval | **no** (policy pre-approve) | no (Tier-3 only) | no (unverified) |
-| subagents | yes (observed) | yes (observed) | no (unverified) |
-| mcp | yes (config) | yes (`--mcp-config`) | no (unverified) |
-| hooks | no (limited) | no | no (unverified) |
-| schema | yes (`--output-schema`) | yes (`--json-schema`) | no (text-extract fallback) |
-| cost | no (token usage only) | yes (`result.total_cost_usd`) | no (token-estimate fallback) |
-| enforces_read_only | yes (`--sandbox read-only`) | yes (read-only tool allowlist `Read,Grep,Glob`) | **no** (`kimi -p` rejects every permission flag) |
-
-**Implementation:** `ProviderCapabilities::codex_exec()`,
-`ProviderCapabilities::claude_exec()`, and `ProviderCapabilities::kimi_exec()`
-return the columns above (see
-[crates/harness-core/src/lib.rs](../crates/harness-core/src/lib.rs)). Most of the
-`kimi_exec()` row is intentionally conservative — every axis except `streaming`
-is `false` = degraded-until-verified against the live binary, not a positive
-claim of absence. The snapshot can include these capabilities so the Dashboard
-shows honest per-provider support.
-
-`enforces_read_only` is different: it is a **VERIFIED** `false` for kimi, not a
-TBD. The live `kimi -p` rejects every permission flag (`-y`/`--auto`/`--plan`)
-and has no tool allowlist, so it has NO read-only mode — a leaf the workflow
-declares read-only can still edit the live tree (observed in dogfooding: a
-read-only kimi leaf edited two checked-in docs). Since #190 this is
-**capability metadata**, not isolation routing: read-only workflow leaves run
-in the selected project root regardless of provider — only `writable` leaves
-and explicit `isolation="worktree"` opt-ins get a throwaway git worktree
-(`step_needs_isolation` in
-[crates/harness-cli/src/main.rs](../crates/harness-cli/src/main.rs)); a provider
-capability gap must not silently turn a read-only scan/review into a
-git-worktree requirement. The default-trait and unknown-provider values are
-`false` (assume-unenforceable), surfaced as honest Dashboard capability state.
+Legacy `codex_exec`, `claude_exec`, and `kimi_exec` presets describe bounded
+Workflow execution and do not prove Agent Team suitability. Conservative
+`false` values mean unsupported or unverified for that exact mode. In
+particular, `kimi_exec` cannot enforce read-only execution; this must remain an
+honest capability gap and must not silently change workspace isolation policy.
+Mode-specific details and current evidence belong in each provider document.
 
 ### Execution-mode profile and interaction truth
 
@@ -384,19 +350,29 @@ harness *what tools and evidence a project exposes*. Both plug into the same
 ### Substrate decision
 
 Per [decisions/0018-exec-stream-primary-substrate.md](decisions/0018-exec-stream-primary-substrate.md):
-**headless exec-stream is the primary integration substrate.** A new platform
-should be integrated via its documented exec/stream-json mode first. The
-persistent app-server (WebSocket-over-UDS) path is retained only as an
-**optional fallback** for members that genuinely require live mid-turn approval.
+headless exec-stream remains the primary substrate for **bounded Dynamic
+Workflow execution**. It is not an Agent Team fallback. A new Agent Team
+provider must expose a persistent, bidirectional native session through an
+app-server, ACP, streaming SDK, or equivalent reviewed mode. This preserves
+mailbox delivery, interaction routing, interrupt, resume, and explicit Host
+lifecycle control.
+
+Provider-native continuation is optional even in a persistent mode. The
+adapter starts `host_driven` and may promote a specific mode/version to
+`provider_driven` only after the capability and lease checks in
+[Member Continuation Model](member-continuation-model.md).
 
 ---
 
 ## The Provider-Neutral Launch Spec
 
-The launch spec is one normalized per-turn request. The harness builds it from
-the member (Pillars 1–2) and the claimed `Message`, and each platform adapter
-(Pillar 3) maps it onto its own call. This is the seam that keeps the operator
-composer and Dashboard uniform across Codex, Claude, and future platforms.
+The launch spec is one normalized delivery request. For Workflow it maps to one
+bounded invocation. For Agent Team it is delivered into one persistent native
+session under the selected execution driver. The harness builds it from the
+member (Pillars 1–2) and the claimed `Message`, and each platform adapter
+(Pillar 3) maps it onto its own protocol. This is the seam that keeps the
+operator composer and Dashboard uniform across Codex, Claude, and future
+platforms.
 
 | Neutral field | Meaning | Codex `exec` mapping | Claude `-p` / SDK mapping | Low-code / OpenCloud / Hermit |
 | --- | --- | --- | --- | --- |
@@ -410,6 +386,8 @@ composer and Dashboard uniform across Codex, Claude, and future platforms.
 | `mcp` | neutral MCP block (WP-6, implemented) | `--config mcp_servers.*` | `--mcp-config` / SDK `mcp_servers` | adapter-provided |
 | `skill_refs` | skills to inject (Pillar 1 contract) | explicit skill input item | system-prompt injection / SDK | adapter-provided |
 | `session` / `resume` | resume an existing session | `--session <id>` | `--resume <id>` / SDK `resume` | adapter-provided |
+| `execution_driver` | who may start the next persistent Member cycle | app-server Host loop or reviewed native Goal controller | SDK mailbox loop or reviewed `/goal` controller | adapter-provided |
+| `completion_policy` | provider stop condition versus Host acceptance requirements | provider evaluator/check + correlated Handoff | provider evaluator/check + correlated Handoff | adapter-provided |
 | `output` | provider-native session + ephemeral projection | `--json` / native rollout | stream-json / native session | adapter-provided |
 
 ### The Codex-vocabulary leak this spec abstracts
@@ -450,17 +428,22 @@ is the concrete "define X, Y, Z" deliverable.
    `runtime_workspace_roots`, `owned_paths` per task, and `workspace_policy`. If
    the platform uses MCP, write the neutral `mcp` block and how the platform
    consumes it.
-3. **Implement Pillar 3 via exec-stream.** Implement `AgentProvider`
-   (start / deliver / probe / ingest) over the platform's documented
-   exec/stream mode; write the `EventReducer` mapping; define the health-signal
-   layers; map the neutral `permission` enum; declare unsupported surfaces.
+3. **Implement Pillar 3 for the selected executor.** For Agent Team, implement
+   a persistent bidirectional mode; for Dynamic Workflow, implement bounded
+   exec-stream. Implement `AgentProvider` (start / deliver / probe / ingest),
+   write the `EventReducer` mapping, define the health-signal layers, map the
+   neutral `permission` enum, and declare unsupported surfaces. Never silently
+   fall back from Team mode to bounded exec.
 4. **Map the launch spec.** Fill the platform's column of the launch-spec table:
    how each neutral field becomes a concrete CLI flag / SDK argument. Do not
    leak platform wire vocabulary back into the neutral spec.
-5. **Declare provider capabilities.** Implement the `ProviderCapabilities`
+5. **Declare provider and continuation capabilities.** Implement the `ProviderCapabilities`
    declaration (streaming, resume, mid-turn approval, subagents, mcp, hooks,
    schema, cost, enforces_read_only) so the harness/UI can adapt and the
-   Dashboard shows honest state.
+   Dashboard shows honest state. Select the default execution driver and state
+   which native continuation operations are verified for the exact mode and
+   version. Test that later provider-created cycles preserve the intended
+   permission posture.
 6. **Write `docs/integration/<provider>.md`** from the provider template in
    [integration/README.md](integration/README.md). Answer every section:
    capability summary, runtime model, message delivery, claim/retry, event
@@ -470,12 +453,13 @@ is the concrete "define X, Y, Z" deliverable.
    and validation gates. Register the new doc in
    [registry.json](registry.json) and link it from
    [integration/README.md](integration/README.md).
-7. **Pass the validation gates.** `npx pnpm@9.15.4 check` must be green
+7. **Pass deterministic and live validation gates.** `npx pnpm@9.15.4 check` must be green
    (`validate:json`, `check:schema-fixtures`, `check:tool-descriptors`,
    `check:dashboard`) and so must `harness governance check` (the doc/skill
-   gates: links, registry, size, skills). Live acceptance follows the provider
-   doc's own gates (e.g. Codex MVP acceptance in
-   [integration/codex.md](integration/codex.md)).
+   gates: links, registry, size, skills). Live acceptance must prove one
+   top-level execution driver, native-session resume, busy mailbox behavior,
+   interrupt/close, permission continuity, and separation of provider
+   satisfaction from Host acceptance.
 
 ## Open Gaps Flagged by This Model
 
@@ -484,6 +468,7 @@ is the concrete "define X, Y, Z" deliverable.
 | Skill contract (resolve / discover / inject) | WP-6: Implemented | Pillar 1, `skill_resolver` module |
 | MCP neutral config shape | WP-6: Implemented | Pillar 2, `LaunchMcp` / `LaunchMcpServer` on `AgentProviderConfig` |
 | Provider capability declaration | WP-6: Implemented | Pillar 3, `ProviderCapabilities` struct |
+| Operation-level continuation capability and execution lease | design contract in ADR 0041; code/schema pending | Member Continuation Model |
 | `AgentProviderConfig` leaks Codex vocabulary | documented; abstraction is additive future work | Launch Spec |
 
 The first three gaps are now closed. The `AgentProviderConfig` vocabulary

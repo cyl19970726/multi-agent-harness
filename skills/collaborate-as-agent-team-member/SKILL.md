@@ -53,9 +53,17 @@ When Host sends an ordinary message asking for a plan first:
 3. Address Host challenges in the same native session.
 4. Execute only after Host sends an ordinary message telling you to proceed.
 
-The Assignment is still your Goal. A provider-native Goal is only a session
-projection of it. Plan revision does not replace your MemberRun, Workspace,
-correlation, or native session.
+The Assignment is your durable responsibility. A provider-native Goal is an
+optional continuation mechanism, not its identity. Plan revision does not
+replace your MemberRun, Workspace, correlation, or native session.
+
+Use the execution driver selected by the Host/adapter. In `host_driven` mode,
+do not independently activate a native Goal that starts another top-level
+cycle; return control through ordinary messages or Handoff and wait for the
+next delivery. In `provider_driven` mode, keep working through the provider's
+native cycles until its condition is terminal or the Host interrupts/clears it.
+Report any material condition change or native terminal reason. Never treat
+provider Goal satisfaction as Host acceptance of your Assignment.
 
 Provider-native planning is optional and internal. Harness has no Plan Mode or
 Plan Gate; do not treat a provider mode or tool hook as Host approval.

@@ -476,13 +476,15 @@
     "provider-neutral Agent Runtime Object Model",
     "AgentProvider interface",
     "message delivery policy",
-    "event reducer contract"
+    "event reducer contract",
+    "continuation controller interface"
    ],
    "dependsOn": [
     "docs/prd.md",
     "docs/concept-model.md",
     "docs/data-model.md",
     "docs/integration/README.md",
+    "docs/member-continuation-model.md",
     "docs/integration/claude.md",
     "docs/schemas.md",
     "docs/integration/kimi.md",
@@ -497,7 +499,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "Provider-neutral runtime, message delivery, queue policy, or provider interface changes.",
+   "reorgTrigger": "Provider-neutral runtime, execution-driver selection, native continuation, message delivery, queue policy, or provider interface changes.",
    "authorityClass": "implementation_reference",
    "implementationState": "partial",
    "truthRefs": [
@@ -1165,11 +1167,13 @@
     "agent integration model",
     "three pillars (base configuration, environment, platform adaptation)",
     "provider-neutral launch spec",
+    "new-provider continuation capability declaration",
     "skill contract / MCP / provider capability declaration",
     "new-provider integration checklist"
    ],
    "dependsOn": [
     "docs/agent-runtime.md",
+    "docs/member-continuation-model.md",
     "docs/integration/README.md",
     "docs/integration/codex.md",
     "docs/integration/claude.md",
@@ -1189,7 +1193,7 @@
     "npx pnpm@9.15.4 check",
     "harness governance check"
    ],
-   "reorgTrigger": "The three pillars, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change.",
+   "reorgTrigger": "The three pillars, execution-driver/continuation declarations, the neutral launch-spec field set, the skill/MCP/capability-declaration contracts, or the new-provider integration checklist change.",
    "authorityClass": "implementation_reference",
    "implementationState": "partial",
    "truthRefs": [
@@ -3499,7 +3503,9 @@
     "read compatibility for legacy plan_* TeamMessage records"
    ],
    "dependsOn": [
-    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+    "docs/decisions/0041-provider-neutral-member-continuation.md",
+    "docs/member-continuation-model.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -3563,6 +3569,75 @@
      "ref": "crates/harness-cli/src/main.rs"
     }
    ]
+  },
+  {
+   "path": "docs/member-continuation-model.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "provider-neutral Agent Team Member continuation model",
+    "Member execution-driver and completion-policy separation",
+    "single top-level execution lease per MemberRun native session and writable Workspace",
+    "native continuation capability and projection vocabulary"
+   ],
+   "dependsOn": [
+    "docs/agent-runtime.md",
+    "docs/agent-integration-model.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+    "docs/decisions/0041-provider-neutral-member-continuation.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "check:star-harness-plugin"
+   ],
+   "reviewAfter": "2026-08-11",
+   "lastVerifiedWith": [
+    "harness governance check",
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Execution-driver ownership, completion policy, native continuation capabilities, permission continuity, or Member acceptance semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0041-provider-neutral-member-continuation.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0041-provider-neutral-member-continuation.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "decision to separate Assignment from provider-native continuation",
+    "decision to prohibit dual top-level execution drivers",
+    "decision that native continuation is optional and provider-specific"
+   ],
+   "dependsOn": [
+    "docs/member-continuation-model.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "harness governance check"
+   ],
+   "reorgTrigger": "A provider continuation controller, execution lease, or provider-neutral acceptance boundary is changed.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/cli-map.md",

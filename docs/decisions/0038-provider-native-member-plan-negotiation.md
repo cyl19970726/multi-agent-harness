@@ -9,6 +9,10 @@ extends: ADR 0032 provider-native execution truth; ADR 0037 member autonomy
 > Historical decision only. ADR 0039 removes the dedicated Plan Mode and Plan
 > Gate. Planning is now ordinary correlated Host/Member conversation, with an
 > optional Markdown artifact and no provider-specific approval state.
+> ADR 0041 also supersedes this document's Goal projection and activation
+> rules. Do not use the `plan_*` chain, `goal_mode` table, paused/active Goal
+> mapping, or provider coverage claims below for new work. Current continuation
+> semantics live in `docs/member-continuation-model.md`.
 
 ## Context
 

@@ -80,6 +80,14 @@ flowchart TB
 | Execution | Mission context/Host-plan Waves, independent or Mission-scoped Agent Teams, Workflow, direct delivery | company organization or document truth; Wave runtime containment |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
 
+For persistent Agent Team members, Assignment ownership and continuous native
+execution are separate. Harness owns the durable Assignment and mailbox; one
+selected execution driver owns provider cycles for a MemberRun/native
+session/writable Workspace. Provider Goal satisfaction never implies Host
+acceptance. See
+[Member Continuation Model](member-continuation-model.md) and
+[ADR 0041](decisions/0041-provider-neutral-member-continuation.md).
+
 ## Source-of-truth rule
 
 Documents compose views of typed records. A value shared by two modules is one
