@@ -3,9 +3,10 @@
 ```text
 status: active roadmap
 scope: unfinished goals required to make Wanchengwanling operable through Company OS
-store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+company_store_id: agent-company
+store: /Users/hhh0x/.harness/companies/agent-company
 dogfood_role: first real commercial Company OS dogfood project
-canonical_boundary: WorkItems in the project Store are the execution backlog; this document explains the grouping and acceptance logic
+canonical_boundary: WorkItems in the Company Store are the execution backlog; this document explains the grouping and acceptance logic
 ```
 
 ## Purpose
@@ -50,7 +51,7 @@ editing JSONL ledgers directly and not by rerunning a seed script.
 Verified Store:
 
 ```text
-/Users/hhh0x/.harness/projects/new-day-wanchengwanling
+/Users/hhh0x/.harness/companies/agent-company
 ```
 
 Current completed slice:
@@ -109,25 +110,25 @@ Frontend Store-live evidence:
 Verification commands:
 
 ```bash
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-project-home --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-business-model --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-bracelet-product --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-route-ar-experience --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-merchant-network --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-rewards-procurement-inventory --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs traverse --document document-wcw-root --depth 2 --json
 ```
 
@@ -319,17 +320,21 @@ Acceptance:
 - custom pages continue to work from module/store queries;
 - finance and org assumptions are explicit before launch.
 
-## Native seeding path
+## Historical seeding path
 
-This roadmap is seeded into the project Store by:
+This roadmap was originally materialized by a seed script:
 
 ```bash
 node scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs \
   --project /Users/hhh0x/new-day/wanchengwanling
 ```
 
-The script first ensures the four-system bootstrap exists, then appends only
-missing roadmap WorkItems. It is safe to rerun against an already-seeded Store.
+That path is now historical acceptance/migration evidence, not the authoring
+interface for active dogfood. New roadmap changes should be made in
+`agent-company` through `harness company docs ...`, `harness company work ...`,
+`harness company org ...`, and `harness company finance ...` commands with the
+owning operator skills.
 
 For acceptance-only validation, omit `--project`; the script creates an
-isolated temporary Store and reports counts without touching the real project.
+isolated temporary Store and reports counts without touching any real Company
+Store.

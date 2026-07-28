@@ -45,12 +45,13 @@ Agents through CLI/API. Seed or materialization scripts may remain acceptance
 fixtures, but they are not the normal authoring path for a registered project
 Store.
 
-`new-day-wanchengwanling` is the current compatibility Store id for the first
-real commercial dogfood project. Under ADR 0040, Wanchengwanling should live as
-an operating area inside the selected Agent Company Workspace / Company Store.
-Its GitHub `dev` branch is an external software product source; commercial
-operating truth must remain in Company OS records through Docs, Work,
-Organization, Finance, source-sync records, and custom page definitions.
+`agent-company` is the active local Company Store for the first real commercial
+dogfood path: Wanchengwanling and AgentOS dogfood records now live in the same
+Company Store. The older `new-day-wanchengwanling` project-derived Store is
+compatibility/migration evidence, not the normal operating target. The
+Wanchengwanling GitHub `dev` branch is an external software product source;
+commercial operating truth must remain in Company OS records through Docs,
+Work, Organization, Finance, source-sync records, and custom page definitions.
 
 ## Company Store selection
 
