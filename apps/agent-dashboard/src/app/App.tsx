@@ -261,9 +261,10 @@ export function App() {
           discardSnapshotRequest(result.request);
           return;
         }
-        if (adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSource(liveSource);
+        if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+          setSnapshot(result.snapshot);
         }
+        setSource(liveSource);
         try {
           const defs = await fetchWorkflowDefs(apiUrl);
           if (!cancelled) setWorkflowDefs(defs);
@@ -289,9 +290,10 @@ export function App() {
         try {
           const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
           if (!result) return;
-          if (adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSource(liveSource);
+          if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+            setSnapshot(result.snapshot);
           }
+          setSource(liveSource);
         } catch {
           // still offline; retry next tick
         }
@@ -474,9 +476,10 @@ export function App() {
     try {
       const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
       if (!result) return;
-      if (adoptSnapshotResponse(result.request, result.snapshot)) {
-        setSource(liveSource);
+      if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+        setSnapshot(result.snapshot);
       }
+      setSource(liveSource);
       try {
         setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
       } catch {
@@ -505,9 +508,10 @@ export function App() {
       try {
         const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
         if (!result) return;
-        if (adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSourceError(null);
+        if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+          setSnapshot(result.snapshot);
         }
+        setSourceError(null);
       } catch (error) {
         setSourceError(error instanceof Error ? error.message : String(error));
       }
@@ -573,9 +577,10 @@ export function App() {
             discardSnapshotRequest(result.request);
             return;
           }
-          if (adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSourceError(null);
+          if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+            setSnapshot(result.snapshot);
           }
+          setSourceError(null);
         } catch (error) {
           if (!cancelled) {
             setSourceError(error instanceof Error ? error.message : String(error));
@@ -613,7 +618,9 @@ export function App() {
     try {
       const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, options);
       if (response.snapshot) {
-        adoptSnapshotResponse(request, response.snapshot);
+        if (!adoptSnapshotResponse(request, response.snapshot)) {
+          setSnapshot(response.snapshot);
+        }
       } else {
         needsRefresh = true;
       }
