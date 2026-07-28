@@ -52,6 +52,25 @@ A `Commitment` is not a `Payment`. An approved Commitment is not proof that
 money was paid. A Payment without related commitment refs is invalid for the
 Company OS contract.
 
+## Docs page integration
+
+Business Docs pages may show budgets, purchase needs, prize costs, merchant
+settlements, or payment watchlists. These are Finance panels over Finance
+records, not document-owned money state.
+
+When a page contract references Finance, require:
+
+- source Document and, when applicable, source WorkItem ref;
+- amount, currency, category, cost center, and business reason;
+- Commitment id/status for planned spend;
+- Approval id and human decision actor when policy requires approval;
+- Payment id/status only after a separate payment record and evidence exist;
+- evidence refs for invoices, receipts, transfers, refunds, or reconciliation.
+
+If the page contains a local cost table, treat it as planning context until a
+Finance Commitment exists. Do not let Docs text, Work status, or visual cards
+imply payment, settlement, reimbursement, or budget approval.
+
 ## Current interface state
 
 Finance records exist through the Company OS Store/API and governed Action
@@ -139,6 +158,9 @@ planned until their CLI and acceptance checks exist.
 ## Safe workflow
 
 1. Inspect the source WorkItem and Docs context before changing Finance.
+   If the request comes from a business page, inspect the page contract so the
+   Finance record links back to the correct Document, WorkItem, and right-rail
+   finance panel.
 2. Determine whether the request is a proposed future spend, an approved
    commitment, an actual payment, a refund, or a metric observation.
 3. Create or update Finance records only through the Finance CLI/API. Do not
@@ -162,6 +184,8 @@ planned until their CLI and acceptance checks exist.
 - Payment links to related commitment refs.
 - Evidence refs are durable and inspectable.
 - Docs and Work show Finance links without duplicating money truth.
+- Any Docs page that shows money state does so through Finance refs/View data,
+  not copied prose or a custom page-local total.
 
 ## Report format
 

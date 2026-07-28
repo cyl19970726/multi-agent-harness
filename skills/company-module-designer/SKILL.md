@@ -21,7 +21,9 @@ Read these repository documents before proposing a design:
 - `docs/company-os/governance.md`
 
 Read [the output contract](references/module-design-contract.md) before writing
-the deliverable.
+the deliverable. When the module includes important human-facing pages, also
+use `$company-docs-operator` `references/page-contract.md` and
+`references/business-page-archetypes.md`.
 
 ## Design workflow
 
@@ -42,9 +44,11 @@ the deliverable.
    permissions, human approval, idempotency, effects, and audit output.
 7. Define organization effects as proposals. An Agent may recommend a role,
    unit, permission, or module; it cannot silently grant authority.
-8. Specify ordinary document pages and standard views before proposing any
-   custom page. Reserve custom code for a core page that must combine several
-   record types or decision surfaces.
+8. Specify page contracts for ordinary document pages and standard views before
+   proposing any custom page. Each contract names the page's primary question,
+   required sections, typed records, relations, views, right rail context, and
+   front-end shape. Reserve custom code for a core page that must combine
+   several record types or decision surfaces.
 9. Define migration, archive, retention, failure, and rollback behavior.
 10. Produce the design as JSON and a short human-readable rationale. Run:
 
@@ -63,6 +67,7 @@ authority decides. Block implementation when any of these remain ambiguous:
 - external-party scope;
 - direct-write behavior outside governed Actions;
 - missing standard-view fallback;
+- missing page contract for a core page;
 - migration or archival impact on existing records.
 
 Hand the approved design, its approval reference, fixture, and visual scenarios

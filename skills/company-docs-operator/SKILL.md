@@ -1,18 +1,15 @@
 ---
 name: company-docs-operator
-description: Operate Company OS Docs through governed CLI and Action contracts. Use when a Governance Agent or business Agent needs to audit document structure, create child documents or reusable templates, append structured blocks, create typed records, create views, link relations, or prepare a module/page-definition operation while preserving Docs/Work/Org/Finance truth boundaries.
+description: Operate Company OS Docs through governed CLI and Action contracts. Use when a Governance Agent or business Agent needs to audit document/page architecture, define page contracts, create child documents or templates, append structured blocks, create typed records, create views, link relations, or prepare a module/page-definition operation while preserving Docs/Work/Org/Finance truth boundaries.
 ---
 
 # Company Docs Operator
 
 Operate the Company OS Docs surface. This skill is a procedural capability, not
-product authority. It helps an Agent choose the right governed CLI command,
-prepare safe inputs, and verify the resulting native records.
+product authority; it helps Agents choose governed CLI commands and verify records.
 
-Docs are Agent-operated and Human-reviewed. Use CLI/API as the primary Agent
-interface for reading, editing, governing, and verifying document truth. Treat
-the UI as Human review context: useful for understanding structure, status, and
-risk, but not the authoritative machine interface.
+Docs are Agent-operated and Human-reviewed. CLI/API is the primary Agent
+interface; UI is Human review context, not the authoritative machine interface.
 
 ## Load the contracts
 
@@ -27,10 +24,22 @@ When the change touches a recurring business domain or custom page, also read:
 
 - `docs/company-os/module-design.md`
 - `docs/company-os/agent-programmable-pages.md`
+- `docs/company-os/frontend-information-architecture.md`
 
 Do not use this skill to override those contracts. If a repository document,
 schema, API, or acceptance check conflicts with this skill, the canonical
 contract wins.
+
+## Load focused references when needed
+
+- Read `references/page-contract.md` before creating or changing a
+  business-critical page.
+- Read `references/business-page-archetypes.md` when shaping a commercial
+  project, operating module, or multi-page document space.
+- Read `references/store-authoring-patterns.md` before writing page contracts,
+  structured Blocks, TypedRecords, Relations, or Views into a real Store.
+- Read `references/anti-patterns.md` before final handoff for a commercial
+  Docs change or when the result risks becoming generic prose.
 
 ## Operating rule
 
@@ -124,6 +133,9 @@ editing a real commercial project page, check:
 - Are module boundaries explicit so an Agent knows which CLI/skill to use next?
 - If the page is a core surface, is there a standard View fallback and a custom
   page candidate only when the standard composition is not enough?
+- If a custom page is planned, is its visual/front-end shape recorded as a page
+  contract and handed to `$company-page-builder` rather than embedded as
+  ungoverned HTML in Docs?
 
 If the answer is no, stop and produce the page contract or module design before
 writing more blocks.
@@ -141,11 +153,10 @@ harness company docs refs --document <document-id>
 harness company docs related --record <typed-record-id>
 ```
 
-The response is the Agent-facing operating context over the current latest
-projection: selected/root Document, ordered Blocks, child Documents, templates,
-source-linked TypedRecords, Relations, module Views, BusinessModule,
-CustomPageDefinition and ActionPolicyDefinition context, scoped health
-findings, available commands, and explicit boundaries.
+The response is the Agent-facing operating context over the latest projection:
+selected/root Document, ordered Blocks, children, templates, source-linked
+TypedRecords, Relations, Views, module/page policy context, health findings,
+available commands, and explicit boundaries.
 
 `docs query` does not create WorkItems, Approvals, Finance records,
 Organization changes, execution runs, or UI-only state. The canonical write
@@ -153,9 +164,8 @@ store remains append-only JSONL ledgers plus latest projections. SQL is a
 future derived read/query/index layer that must serve the same contract without
 becoming write authority.
 
-`search`, `traverse`, `refs`, and `related` are also read-only latest
-projection commands. They help Agents find context without scraping the UI.
-They do not prove a SQL index exists and they do not infer approval, payment,
+`search`, `traverse`, `refs`, and `related` are read-only projection commands
+for finding context without scraping UI. They do not infer approval, payment,
 authority, or execution state.
 
 ## External software product sources

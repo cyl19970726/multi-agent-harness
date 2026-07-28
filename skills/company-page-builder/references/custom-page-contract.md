@@ -6,6 +6,7 @@ not a new database or privileged write path.
 Required manifest fields:
 
 - `schema_version`, `package_id`, `definition_id`, `version`, `entrypoint`;
+- `page_contract_ref` and the Store Document/module it belongs to;
 - `declared_queries` and `declared_actions`;
 - `fallback_document_id` and non-empty `fallback_view_ids`;
 - `fixture_id`, `expected_artifact`, `expected_hash`, `approval_ref`;
@@ -21,6 +22,8 @@ Runtime rules:
 5. Render the fallback document and Views when code, data, or package loading
    fails.
 6. Preserve canonical record links in visual cards and activity output.
+7. Preserve the approved page information shape: left navigation, center
+   content, right rail context, responsive priority, and fallback route.
 
 Visual evidence uses separate paths for current baseline, candidate, approved
 expected, implemented capture, and comparison. Never overwrite evidence from a

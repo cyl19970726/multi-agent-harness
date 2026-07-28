@@ -22,6 +22,21 @@ It does not replace the module operators:
 - `$company-page-builder` builds code-declared custom pages from approved
   module/page contracts.
 
+The normal progression is:
+
+```text
+business thesis
+  -> DocumentSpace + page information architecture
+  -> page_contract records in Store
+  -> module records, Relations, Views
+  -> Work / Org / Finance operating records
+  -> custom page visual contract and implementation when needed
+```
+
+Repository markdown may document the design, but the live business system is
+the project Store. Do not stop at repo docs when the user expects Agents and
+UI to operate the project.
+
 ## Load contracts first
 
 Read these before changing durable records or writing a project plan:
@@ -34,6 +49,12 @@ Read these before changing durable records or writing a project plan:
 - `docs/company-os/module-design.md`
 - `docs/company-os/skill-contracts.md`
 - `docs/company-os/implementation-truth-matrix.md`
+
+For page architecture and Docs Store authoring, also use:
+
+- `$company-docs-operator` and its `references/page-contract.md`;
+- `$company-docs-operator` and its `references/business-page-archetypes.md`;
+- `$company-docs-operator` and its `references/store-authoring-patterns.md`.
 
 If the project has software source truth in GitHub or another repo, also read:
 
@@ -124,6 +145,22 @@ Do not satisfy this step with generic prose. A usable Docs setup must let a
 human understand the business from the UI and let an Agent operate it through
 CLI/API without scraping pages. If a page needs data from another system, model
 that data as a relation or View rather than copying the fact into text.
+
+For every core page, decide whether the front-end should be:
+
+```text
+standard Document page
+  left document tree + center Blocks/Views + right related context
+
+standard Module page
+  module records + saved Views + relation/health panels
+
+custom code-declared page
+  only when a core surface needs several systems in one deliberate layout
+```
+
+Record that choice in the Store page contract. Hand custom page candidates to
+`$company-page-builder`; do not embed custom HTML as company truth.
 
 ### 3. Turn work into WorkItems
 
