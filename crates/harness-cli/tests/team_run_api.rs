@@ -1450,6 +1450,10 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
             ("PATH", path.as_str()),
             ("FAKE_CODEX_AUTO_COMPLETE", "1"),
             ("FAKE_CODEX_EXIT_AFTER_FIRST_TURN", "1"),
+            // This test intentionally sends follow-up mail after observing
+            // idle. Keep the test-only supervisor bound well above slow CI
+            // HTTP/snapshot latency; explicit Close still ends both members.
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
             (
                 "FAKE_CODEX_NAME_MARKER",
                 name_marker.to_str().expect("name marker"),
