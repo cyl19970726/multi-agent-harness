@@ -162,13 +162,39 @@ the Host; the Store contains explicit progress and completion actions.
 - Both Assignment messages moved from queued to delivered with attempt `1`.
 - Codex and Kimi MemberRuns have real provider-native session identifiers and terminal
   timestamps.
-- Both handoffs name their originating assignment as `causation_id` and reuse
-  its `correlation_id`.
+- Both initial-round handoffs name their originating assignment as
+  `causation_id` and reuse its `correlation_id`. Persistent multi-round adapters
+  now keep that correlation while later handoffs name the exact follow-up
+  TeamMessage that triggered their round.
 - Dashboard snapshot joins Mission, Wave, selected TeamRun, both MemberRuns,
   assignments, handoffs, and MemberActions.
 - No `thinking`, `thinking_preview`, or provider `reasoning` field occurs in
   `team_messages.jsonl`, `member_actions.jsonl`, `team_run_events.jsonl`, or
   `member_runs.jsonl`.
+
+## Persistent lineage canary — 2026-07-28
+
+Wave 4 added one read-only Codex app-server canary after deterministic
+lineage tests:
+
+- TeamRun `team-run-1785234011645-p94238-0`;
+- MemberRun `member-run-1785234011646-p94238-1`;
+- native thread `019fa83d-59bb-7922-91e1-9ae69352282a`;
+- Assignment correlation `corr-1785234011670-p94238-5`; and
+- Host follow-up `tmsg-1785234060005-p96204-0`.
+
+The same native thread completed two rounds. The first explicit Handoff points
+to the Assignment; the second points to the exact Host follow-up while keeping
+the Assignment correlation. Exactly two Handoffs remain. The Member had used
+the collaboration CLI to submit each one, so the Adapter correctly treated
+those explicit records as authoritative and did not append duplicate copies of
+the final provider replies. The Host then explicitly stopped the idle member
+and completed the TeamRun.
+
+An earlier exploratory run,
+`team-run-1785233710585-p85372-0`, is preserved as cancelled evidence: it
+revealed the former duplicate-Handoff behavior and was intentionally stopped
+before the replacement canary verified the fix.
 
 ## Acceptance boundary
 

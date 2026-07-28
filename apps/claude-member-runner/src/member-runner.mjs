@@ -47,6 +47,11 @@ import { buildHooks } from "./gates.mjs";
 export function createMemberRunner({ sdk, config, emit }) {
   const mailbox = new Mailbox();
   const evidence = [];
+  // `delivered` means the runner accepted a TeamMessage into its mailbox.
+  // `consumedMessageIds` records the stronger fact that the provider stream
+  // actually pulled that message as the input for a turn. The Rust control
+  // plane uses the matching id as the handoff's causation id.
+  const consumedMessageIds = [];
 
   const state = {
     sessionId: null,
@@ -105,7 +110,10 @@ export function createMemberRunner({ sdk, config, emit }) {
 
   function openQuery(resumeSessionId) {
     return sdk.query({
-      prompt: mailbox.stream(renderTeamMessage),
+      prompt: mailbox.stream((message) => {
+        consumedMessageIds.push(message.id);
+        return renderTeamMessage(message);
+      }),
       options: {
         cwd: config.cwd,
         // Make the coordination identity an explicit part of the provider
@@ -183,6 +191,7 @@ export function createMemberRunner({ sdk, config, emit }) {
               emit("turn_complete", {
                 sessionId: message.session_id ?? state.sessionId,
                 subtype: message.subtype,
+                triggerMessageId: consumedMessageIds.shift() ?? null,
                 evidenceRefs: evidence.map((e) => e.ref),
               });
             }
@@ -226,6 +235,9 @@ export function createMemberRunner({ sdk, config, emit }) {
       if (!query) throw new Error("member not started");
       interruptedGeneration = true;
       const receipt = await query.interrupt();
+      // The interrupted turn has no semantic handoff. Do not let its input id
+      // become the causation of a later resumed turn.
+      const abandonedTriggerMessageIds = consumedMessageIds.splice(0);
       // Retire this query's consumer, then end its iterator, so `start()`
       // leaves the for-await and opens a fresh query on the same session.
       // Without this the member hangs: the stream stops yielding but never
@@ -236,7 +248,10 @@ export function createMemberRunner({ sdk, config, emit }) {
       } catch {
         // already torn down
       }
-      emit("interrupted", { stillQueued: receipt?.still_queued ?? null });
+      emit("interrupted", {
+        stillQueued: receipt?.still_queued ?? null,
+        abandonedTriggerMessageIds,
+      });
       return receipt;
     },
 

@@ -59,6 +59,11 @@ test("member survives an empty mailbox and consumes a later message", async () =
   await settled();
 
   assert.equal(of("turn_complete").length, 2, "both messages produced a turn");
+  assert.deepEqual(
+    of("turn_complete").map((event) => event.data.triggerMessageId),
+    ["m1", "m2"],
+    "each provider turn identifies the exact TeamMessage it consumed",
+  );
 
   runner.close("host_accepted_handoff");
   await done;

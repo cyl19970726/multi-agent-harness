@@ -95,7 +95,8 @@ Mission <-> AgentTeam -> Mission-scoped AgentTeamRun
 Wave -. Host plan / optional origin metadata .-> assignment or outcome
 ```
 
-Automatic handoff preserves assignment correlation. Manual CLI, HTTP, and MCP
+Automatic handoff preserves assignment correlation and points causation at the
+exact TeamMessage consumed for that provider round. Manual CLI, HTTP, and MCP
 sends can reuse that assignment correlation or inherit it from a validated
 same-run cause. The UI should render these structural joins and label messages
 with omitted lineage as unanchored rather than fabricating ownership.

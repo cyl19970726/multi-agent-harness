@@ -955,13 +955,16 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
       tone: messageTone(message.kind),
       evidenceRefs: message.evidence_refs,
       action: message.correlation_id ? (
-        <Badge tone="muted" title={message.correlation_id}>
-          <Link2 className="size-2.5" /> linked
+        <Badge
+          tone="muted"
+          title={`correlation ${message.correlation_id}${message.causation_id ? ` · caused by ${message.causation_id}` : ""}`}
+        >
+          <Link2 className="size-2.5" /> {message.causation_id ? "reply linked" : "linked"}
         </Badge>
       ) : undefined,
       prominence: assignment || needsAttention || ["handoff", "progress"].includes(message.kind ?? "") ? (needsAttention ? "pressure" : "primary") : "detail",
       source: "harness",
-      rawText: message.body,
+      rawText: `${message.body ?? ""} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
       actorLabel: label,
       statusLabel: message.kind ?? "message",
     };

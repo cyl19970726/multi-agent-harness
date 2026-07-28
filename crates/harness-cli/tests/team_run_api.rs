@@ -1598,6 +1598,28 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         delivered_once,
         "Host and peer mail did not wake exactly one follow-up turn"
     );
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let builder_handoffs = snapshot["team_messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| {
+            message["from_member_id"].as_str() == Some(builder_id.as_str())
+                && message["kind"].as_str() == Some("handoff")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        builder_handoffs.len(),
+        2,
+        "one provider round must produce one authoritative handoff"
+    );
+    assert!(
+        builder_handoffs.iter().any(|message| {
+            message["causation_id"].as_str() == Some(peer_message_id.as_str())
+                && message["correlation_id"].as_str() == Some(assignment_correlation.as_str())
+        }),
+        "the follow-up handoff must keep Assignment correlation and point to the latest consumed message"
+    );
 
     let native_names = std::fs::read_to_string(&name_marker).expect("thread/name/set requests");
     assert!(
@@ -2146,12 +2168,17 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
         .as_str()
         .unwrap()
         .to_string();
+    let assignment_correlation = created["result"]["assignment_messages"][0]["correlation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (status, _) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
     );
     assert_eq!(status, 202);
     let mut first_session = None;
+    let mut first_handoff_id = None;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         first_session = snapshot["member_runs"]
@@ -2167,19 +2194,31 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
                     .as_str()
                     .map(str::to_string)
             });
-        if first_session.is_some() {
+        first_handoff_id = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .and_then(|message| message["id"].as_str().map(str::to_string));
+        if first_session.is_some() && first_handoff_id.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     let first_session = first_session.expect("Kimi idle native session");
+    let first_handoff_id = first_handoff_id.expect("Kimi first handoff");
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "body": "late Kimi follow-up"
+            "body": "late Kimi follow-up",
+            "correlation_id": assignment_correlation,
+            "causation_id": first_handoff_id,
         }),
     );
     assert_eq!(status, 200, "body: {sent}");
@@ -2196,7 +2235,7 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
                 message["from_member_id"].as_str() == Some(member_id.as_str())
                     && message["kind"].as_str() == Some("handoff")
             })
-            .count();
+            .collect::<Vec<_>>();
         let delivered = snapshot["team_messages"]
             .as_array()
             .into_iter()
@@ -2216,7 +2255,12 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
                     && member["native_session"]["native_session_id"].as_str()
                         == Some(first_session.as_str())
             });
-        second_round = handoffs == 2 && delivered && same_session;
+        let second_handoff_has_exact_lineage = handoffs.iter().any(|message| {
+            message["causation_id"].as_str() == Some(message_id.as_str())
+                && message["correlation_id"].as_str() == Some(assignment_correlation.as_str())
+        });
+        second_round =
+            handoffs.len() == 2 && delivered && same_session && second_handoff_has_exact_lineage;
         if second_round {
             break;
         }
@@ -2224,7 +2268,7 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
     }
     assert!(
         second_round,
-        "late Kimi mail was not delivered exactly once on the same session"
+        "late Kimi mail was not delivered exactly once with exact round lineage on the same session"
     );
 }
 

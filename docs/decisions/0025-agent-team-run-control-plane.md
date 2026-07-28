@@ -124,8 +124,9 @@ TeamMessage(kind=assignment)
 
 This is the target proof chain for lane ownership inside the run.
 
-Automatic handoff reuses its assignment's `correlation_id`. Manual CLI, HTTP,
-and MCP sends now accept `correlation_id` and `causation_id`: explicit
+Automatic handoff reuses its assignment's `correlation_id` and names the exact
+TeamMessage consumed by that provider round as `causation_id`. Manual CLI,
+HTTP, and MCP sends accept `correlation_id` and `causation_id`: explicit
 correlation must identify an Assignment in the same run, causation must identify
 a message in the same run, and a causation-only reply inherits its cause's
 correlation. Invalid or cross-run lineage is rejected before a message append.

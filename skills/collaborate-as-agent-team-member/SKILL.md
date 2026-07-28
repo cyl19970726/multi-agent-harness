@@ -105,6 +105,13 @@ Use the Assignment correlation for every work-chain message:
   --causation-id <host-message-id>
 ```
 
+Keep the Assignment correlation stable, but set `causation_id` to the exact
+message you are answering. For the first result that is usually the Assignment
+id; after a Host or peer follow-up it is that follow-up's id. The persistent
+provider adapters apply the same rule to their automatic round Handoffs. Send
+one explicit Handoff when the lane is ready; the Adapter treats it as
+authoritative and does not add a duplicate final-reply Handoff.
+
 Use `message` for questions, answers, progress, blockers, planning, review, and
 peer coordination. State the intent in the first sentence. Use `handoff` only
 when the lane meets its completion standard. Historical specialized message

@@ -134,8 +134,10 @@ async function main() {
       && teamSource.includes("<LeadInbox")
       && teamSource.includes("correlationId: replyAnchor?.correlation_id")
       && teamSource.includes("causationId: replyAnchor?.id")
+      && teamSource.includes("caused by ·")
+      && teamSource.includes("reply to ${shortId(message.causation_id)}")
       && teamSource.includes("Host coordination only · Member-originated messages come from their provider session."),
-    "Team War Room exposes a Host-only Lead Inbox and correlation-anchored replies",
+    "Team War Room exposes a Host-only Lead Inbox and visible correlation/causation lineage",
   );
   check(
     teamSource.includes('<option value="message">Message</option>')
@@ -202,8 +204,10 @@ async function main() {
       && memberSource.includes("assignmentCompletionCriteria")
       && memberSource.includes("latestSteerSummary")
       && memberSource.includes("Host & peer threads")
-      && memberSource.includes("Native subagent activity"),
-    "Member Focus derives its Goal, collaboration threads, latest steer, peers, and native subagent entry",
+      && memberSource.includes("Native subagent activity")
+      && memberSource.includes("reply linked")
+      && memberSource.includes("caused by ${message.causation_id}"),
+    "Member Focus derives its Goal, collaboration threads, latest steer, peers, native subagent entry, and reply lineage",
   );
   check(
     !memberSource.includes("Execution plan")

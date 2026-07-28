@@ -87,6 +87,18 @@ ordinary messages are queued for the recipient's next available provider
 round. Reading an inbox is a projection over latest message rows; it is not a
 provider transcript.
 
+Every provider-round Handoff keeps the original Assignment `correlation_id`
+and records the exact consumed TeamMessage as `causation_id`. The initial
+round is normally caused by the Assignment; later rounds are caused by the
+specific Host or peer follow-up that woke them. This is sufficient lineage for
+multi-round collaboration and does not introduce conditional delivery or a
+Task Graph.
+
+A Member's explicit correlated Handoff is authoritative for that round. The
+Adapter may enrich it with observed evidence references but must not also
+append an automatic copy of the provider's final reply. Automatic Handoff
+creation is a fallback only when the Member did not explicitly send one.
+
 Harness never persists a second copy of provider chat, tool calls, commands,
 file events, reasoning, or subagent transcripts. The bound provider-native
 session is their sole truth and the only valid resume source.

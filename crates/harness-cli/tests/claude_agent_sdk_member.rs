@@ -69,8 +69,24 @@ for await (const line of rl) {{
     emit("assistant_message", {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
+    if (FOLLOW_UP) {{
+      const handoff = spawnSync(process.env.HARNESS_BIN, [
+        "team-run", "send",
+        "--id", cfg.teamRunId,
+        "--from", cfg.memberRunId,
+        "--to", "host",
+        "--kind", "handoff",
+        "--body", `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}} explicit handoff`,
+        "--correlation-id", payload.correlation_id,
+        "--causation-id", payload.id,
+        "--json",
+      ], {{ encoding: "utf8" }});
+      if (handoff.status !== 0) throw new Error(handoff.stderr);
+      JSON.parse(handoff.stdout);
+    }}
     emit("turn_complete", {{
       subtype: "success",
+      triggerMessageId: payload.id,
       evidenceRefs: turns === 1 ? ["src/member.ts"] : [],
     }});
 
@@ -78,14 +94,19 @@ for await (const line of rl) {{
     // queue by the time this lands.
     if (FOLLOW_UP && turns === 1 && !sentFollowUp) {{
       sentFollowUp = true;
-      spawnSync(process.env.HARNESS_BIN, [
+      const sent = spawnSync(process.env.HARNESS_BIN, [
         "team-run", "send",
         "--id", cfg.teamRunId,
         "--from", "host",
         "--to", cfg.memberRunId,
         "--kind", "message",
         "--body", "late follow-up",
-      ], {{ stdio: "ignore" }});
+        "--correlation-id", payload.correlation_id,
+        "--causation-id", payload.id,
+        "--json",
+      ], {{ encoding: "utf8" }});
+      if (sent.status !== 0) throw new Error(sent.stderr);
+      JSON.parse(sent.stdout);
     }}
   }} else if (command === "close") {{
     emit("member_closed", {{ reason: payload?.reason ?? "closed", undelivered: [] }});
@@ -164,10 +185,10 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
 
     // Two rounds means the member was still alive when the late message
     // arrived. Under `claude_cli` this is 1: the member is gone by then.
-    assert!(
-        handoffs >= 2,
+    assert_eq!(
+        handoffs, 2,
         "expected the member to survive the empty queue and take a second \
-         round, got {handoffs} handoff(s).\ninbox: {body}"
+         round without duplicate Adapter handoffs, got {handoffs}.\ninbox: {body}"
     );
     assert!(
         body.contains("turn-2"),
@@ -181,6 +202,62 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
         &home,
         &root,
         &["team-run", "status", "--id", &run_id, "--json"],
+    );
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status JSON");
+    let member_id = status_json["members"][0]["member_run"]["id"]
+        .as_str()
+        .expect("member id");
+    let detail = run_harness(
+        &home,
+        &root,
+        &["member-run", "show", "--id", member_id, "--json"],
+    );
+    let detail_json: serde_json::Value =
+        serde_json::from_slice(&detail.stdout).expect("member detail JSON");
+    let member_inbox = detail_json["mailbox"]["inbox"]
+        .as_array()
+        .expect("member inbox");
+    let member_outbox = detail_json["mailbox"]["outbox"]
+        .as_array()
+        .expect("member outbox");
+    let assignment = member_inbox
+        .iter()
+        .find(|message| message["kind"] == "assignment")
+        .expect("assignment");
+    let follow_up = member_inbox
+        .iter()
+        .find(|message| message["body"] == "late follow-up")
+        .expect("follow-up");
+    let first_handoff = member_outbox
+        .iter()
+        .find(|message| {
+            message["kind"] == "handoff"
+                && message["body"]
+                    .as_str()
+                    .is_some_and(|body| body.contains("turn-1"))
+        })
+        .expect("first handoff");
+    let second_handoff = member_outbox
+        .iter()
+        .find(|message| {
+            message["kind"] == "handoff"
+                && message["body"]
+                    .as_str()
+                    .is_some_and(|body| body.contains("turn-2"))
+        })
+        .expect("second handoff");
+    assert_eq!(
+        first_handoff["causation_id"], assignment["id"],
+        "round one is caused by the Assignment"
+    );
+    assert_eq!(
+        second_handoff["causation_id"], follow_up["id"],
+        "round two is caused by the exact follow-up TeamMessage"
+    );
+    assert_eq!(
+        second_handoff["correlation_id"], assignment["correlation_id"],
+        "all rounds remain in the Assignment correlation"
     );
     let status_body = String::from_utf8_lossy(&status.stdout);
     assert!(

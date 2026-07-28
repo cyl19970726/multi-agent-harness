@@ -11106,6 +11106,7 @@ fn run_codex_member(
     )?;
 
     let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let mut active_assignment = assignment.clone();
     let assignment_body = assignment
         .as_ref()
         .map(|message| message.body.clone())
@@ -11188,6 +11189,9 @@ fn run_codex_member(
     }
     loop {
         round += 1;
+        active_assignment =
+            active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
+        let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let turn = {
             let _turn_lease = turn_leases.acquire();
             run_codex_app_server_turn(
@@ -11203,6 +11207,7 @@ fn run_codex_member(
                 },
             )?
         };
+        let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
@@ -11262,39 +11267,17 @@ fn run_codex_member(
                     member.name
                 )));
             }
-            let handoff = TeamMessage {
-                id: generated_id("tmsg"),
-                team_run_id: ledger.run_id.clone(),
-                origin_wave_id: assignment
-                    .as_ref()
-                    .and_then(|message| message.origin_wave_id.clone()),
-                from_member_id: member.id.clone(),
-                to_member_ids: vec!["host".to_string()],
-                kind: TeamMessageKind::Handoff,
-                body: final_text.clone(),
-                correlation_id: assignment
-                    .as_ref()
-                    .map(|message| message.correlation_id.clone())
-                    .unwrap_or_else(|| generated_id("corr")),
-                causation_id: assignment.as_ref().map(|message| message.id.clone()),
-                evidence_refs: Vec::new(),
-                deliveries: vec![TeamMessageDelivery {
-                    member_id: "host".to_string(),
-                    policy: TeamDeliveryPolicy::ManualAck,
-                    status: TeamDeliveryStatus::Delivered,
-                    attempt: 1,
-                    updated_at: now_string(),
-                }],
-                created_at: now_string(),
-            };
-            ledger.save_message(&handoff)?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "message",
-                &handoff.id,
-                "created",
-                &format!("handoff from {} to host (round {round})", member.name),
+            record_round_handoff(
+                ledger,
+                &member_row,
+                &MemberRoundRecord {
+                    assignment: active_assignment.as_ref(),
+                    trigger: round_trigger.as_ref(),
+                    final_text: &final_text,
+                    evidence_refs: &[],
+                    round,
+                    handoffs_before_round: &handoffs_before_round,
+                },
             )?;
 
             let result = parse_round_result(&final_text);
@@ -11959,6 +11942,7 @@ fn run_claude_agent_sdk_team_member(
     ledger.save_member_run(&member_row)?;
 
     let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let mut active_assignment = assignment.clone();
     let assignment_body = assignment
         .as_ref()
         .map(|message| message.body.clone())
@@ -12022,6 +12006,11 @@ fn run_claude_agent_sdk_team_member(
             .map_err(|error| CliError::Usage(format!("runner stdin write failed: {error}")))
     };
 
+    let mut inflight_messages = HashMap::<String, TeamMessage>::new();
+    let mut delivered_message_ids = HashSet::<String>::new();
+    let mut delivered_messages = HashMap::<String, TeamMessage>::new();
+    let mut handoffs_before_by_message = HashMap::<String, HashSet<String>>::new();
+
     send(serde_json::json!({
         "command": "start",
         "payload": {
@@ -12041,6 +12030,10 @@ fn run_claude_agent_sdk_team_member(
     }))?;
     let mut turn_lease = assignment.as_ref().map(|_| turn_leases.acquire());
     if let Some(assignment) = &assignment {
+        handoffs_before_by_message.insert(
+            assignment.id.clone(),
+            member_handoff_ids(ledger, &member.id)?,
+        );
         send(serde_json::json!({
             "command": "deliver",
             "payload": {
@@ -12080,8 +12073,6 @@ fn run_claude_agent_sdk_team_member(
     let mut closed_cleanly = false;
     let mut transport_disconnected = false;
     let mut idle_since = assignment.is_none().then(Instant::now);
-    let mut inflight_messages = HashMap::<String, TeamMessage>::new();
-    let mut delivered_message_ids = HashSet::<String>::new();
     if let Some(assignment) = &assignment {
         inflight_messages.insert(assignment.id.clone(), assignment.clone());
     }
@@ -12209,6 +12200,7 @@ fn run_claude_agent_sdk_team_member(
                         if let Some(message) = inflight_messages.remove(message_id) {
                             mark_message_delivered(ledger, &message, &member.id, &member.name)?;
                             delivered_message_ids.insert(message_id.to_string());
+                            delivered_messages.insert(message_id.to_string(), message);
                         }
                     }
                 }
@@ -12220,15 +12212,30 @@ fn run_claude_agent_sdk_team_member(
                         .flatten()
                         .filter_map(|value| value.as_str().map(str::to_string))
                         .collect();
+                    let trigger_message_id = data
+                        .get("triggerMessageId")
+                        .and_then(|value| value.as_str());
+                    let trigger = trigger_message_id
+                        .and_then(|message_id| delivered_messages.remove(message_id));
+                    let handoffs_before_round = trigger_message_id
+                        .and_then(|message_id| handoffs_before_by_message.remove(message_id))
+                        .unwrap_or_default();
+                    if trigger
+                        .as_ref()
+                        .is_some_and(|message| message.kind == TeamMessageKind::Assignment)
+                    {
+                        active_assignment = trigger.clone();
+                    }
                     round += 1;
-                    let (status, summary) = record_member_round(
-                        ledger,
-                        &mut member_row,
-                        assignment.as_ref(),
-                        &turn_text,
-                        &turn_evidence_refs,
+                    let record = MemberRoundRecord {
+                        assignment: active_assignment.as_ref(),
+                        trigger: trigger.as_ref(),
+                        final_text: &turn_text,
+                        evidence_refs: &turn_evidence_refs,
                         round,
-                    )?;
+                        handoffs_before_round: &handoffs_before_round,
+                    };
+                    let (status, summary) = record_member_round(ledger, &mut member_row, &record)?;
                     final_status = status;
                     final_summary = summary;
                     turn_text.clear();
@@ -12236,6 +12243,18 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "interrupted" => {
+                    // A provider interrupt has no semantic handoff. Any
+                    // messages already consumed by that turn remain delivered,
+                    // but must not be reused as causation for a resumed turn.
+                    for message_id in data
+                        .get("abandonedTriggerMessageIds")
+                        .and_then(|value| value.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|value| value.as_str())
+                    {
+                        delivered_messages.remove(message_id);
+                    }
                     ledger.append_action(
                         &member.id,
                         "interrupted",
@@ -12290,6 +12309,8 @@ fn run_claude_agent_sdk_team_member(
             if turn_lease.is_none() {
                 turn_lease = Some(turn_leases.acquire());
             }
+            handoffs_before_by_message
+                .insert(message.id.clone(), member_handoff_ids(ledger, &member.id)?);
             send(serde_json::json!({
                 "command": "deliver",
                 "payload": {
@@ -12364,29 +12385,96 @@ fn run_claude_agent_sdk_team_member(
     Ok(MemberOutcome::new(&member_row, final_status, final_summary))
 }
 
-/// Ledger writes for one completed member round, shared by both Claude modes so
-/// they cannot drift apart: handoff to Host, action row, member status.
-fn record_member_round(
-    ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+/// Resolve the durable assignment chain and the exact TeamMessage that caused
+/// one provider round.
+///
+/// Correlation remains anchored to the member's Assignment. Causation points
+/// at the message actually consumed for this round (the Assignment on round
+/// one, a Host/peer follow-up later). This keeps the model simple while making
+/// multi-round work reconstructable without a task graph.
+fn member_round_lineage(
     assignment: Option<&TeamMessage>,
-    final_text: &str,
-    evidence_refs: &[String],
+    trigger: Option<&TeamMessage>,
+) -> (Option<String>, String, Option<String>) {
+    let origin_wave_id = trigger
+        .and_then(|message| message.origin_wave_id.clone())
+        .or_else(|| assignment.and_then(|message| message.origin_wave_id.clone()));
+    let correlation_id = assignment
+        .map(|message| message.correlation_id.clone())
+        .or_else(|| trigger.map(|message| message.correlation_id.clone()))
+        .unwrap_or_else(|| generated_id("corr"));
+    let causation_id = trigger.or(assignment).map(|message| message.id.clone());
+    (origin_wave_id, correlation_id, causation_id)
+}
+
+fn active_assignment_for_round(
+    current: Option<&TeamMessage>,
+    accepted_messages: &[TeamMessage],
+) -> Option<TeamMessage> {
+    accepted_messages
+        .iter()
+        .rev()
+        .find(|message| message.kind == TeamMessageKind::Assignment)
+        .cloned()
+        .or_else(|| current.cloned())
+}
+
+fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<HashSet<String>> {
+    Ok(ledger
+        .team_messages()?
+        .into_iter()
+        .filter(|message| {
+            message.from_member_id == member_run_id && message.kind == TeamMessageKind::Handoff
+        })
+        .map(|message| message.id)
+        .collect())
+}
+
+struct MemberRoundRecord<'a> {
+    assignment: Option<&'a TeamMessage>,
+    trigger: Option<&'a TeamMessage>,
+    final_text: &'a str,
+    evidence_refs: &'a [String],
     round: u32,
-) -> CliResult<(MemberRunStatus, String)> {
+    handoffs_before_round: &'a HashSet<String>,
+}
+
+fn record_round_handoff(
+    ledger: &TeamRunLedger,
+    member_row: &MemberRun,
+    record: &MemberRoundRecord<'_>,
+) -> CliResult<TeamMessage> {
+    let (origin_wave_id, correlation_id, causation_id) =
+        member_round_lineage(record.assignment, record.trigger);
+    if let Some(mut explicit) = ledger.team_messages()?.into_iter().rev().find(|message| {
+        message.from_member_id == member_row.id
+            && message.kind == TeamMessageKind::Handoff
+            && message.correlation_id == correlation_id
+            && !record.handoffs_before_round.contains(&message.id)
+    }) {
+        let mut changed = false;
+        for evidence_ref in record.evidence_refs {
+            if !explicit.evidence_refs.contains(evidence_ref) {
+                explicit.evidence_refs.push(evidence_ref.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            ledger.save_message(&explicit)?;
+        }
+        return Ok(explicit);
+    }
     let handoff = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: ledger.run_id.clone(),
-        origin_wave_id: assignment.and_then(|message| message.origin_wave_id.clone()),
+        origin_wave_id,
         from_member_id: member_row.id.clone(),
         to_member_ids: vec!["host".to_string()],
         kind: TeamMessageKind::Handoff,
-        body: final_text.to_string(),
-        correlation_id: assignment
-            .map(|message| message.correlation_id.clone())
-            .unwrap_or_else(|| generated_id("corr")),
-        causation_id: assignment.map(|message| message.id.clone()),
-        evidence_refs: evidence_refs.to_vec(),
+        body: record.final_text.to_string(),
+        correlation_id,
+        causation_id,
+        evidence_refs: record.evidence_refs.to_vec(),
         deliveries: vec![TeamMessageDelivery {
             member_id: "host".to_string(),
             policy: TeamDeliveryPolicy::ManualAck,
@@ -12403,21 +12491,35 @@ fn record_member_round(
         "message",
         &handoff.id,
         "created",
-        &format!("handoff from {} to host (round {round})", member_row.name),
+        &format!(
+            "handoff from {} to host (round {})",
+            member_row.name, record.round
+        ),
     )?;
+    Ok(handoff)
+}
 
-    let (action_type, action_status) = match parse_round_result(final_text) {
+/// Ledger writes for one completed member round: handoff to Host, action row,
+/// and member status.
+fn record_member_round(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    record: &MemberRoundRecord<'_>,
+) -> CliResult<(MemberRunStatus, String)> {
+    record_round_handoff(ledger, member_row, record)?;
+
+    let (action_type, action_status) = match parse_round_result(record.final_text) {
         MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
         MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
         MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
     };
     let result_section =
-        extract_report_section(final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+        extract_report_section(record.final_text, "RESULT").unwrap_or_else(|| "done".to_string());
     let action = ledger.append_action(
         &member_row.id,
         action_type,
         action_status,
-        &format!("round {round} {action_type}"),
+        &format!("round {} {action_type}", record.round),
         &result_section,
     )?;
     ledger.fold_event(
@@ -12426,15 +12528,21 @@ fn record_member_round(
         "action",
         &action.id,
         "created",
-        &format!("{} round {round}: {action_type}", member_row.name),
+        &format!("{} round {}: {action_type}", member_row.name, record.round),
     )?;
     member_row.status = MemberRunStatus::Idle;
     member_row.finished_at = None;
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(member_row)?;
 
-    let summary = extract_report_section(final_text, "SUMMARY")
-        .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+    let summary = extract_report_section(record.final_text, "SUMMARY").unwrap_or_else(|| {
+        record
+            .final_text
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
     Ok((MemberRunStatus::Idle, summary))
 }
 
@@ -12649,6 +12757,7 @@ fn run_kimi_member(
     )?;
 
     let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let mut active_assignment = assignment.clone();
     let assignment_body = assignment
         .as_ref()
         .map(|message| message.body.clone())
@@ -12746,6 +12855,9 @@ fn run_kimi_member(
     }
     loop {
         round += 1;
+        active_assignment =
+            active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
+        let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let mut close_requested = false;
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let outcome = {
@@ -12808,6 +12920,7 @@ fn run_kimi_member(
                 },
             )?
         };
+        let round_trigger = accepted_messages.last().cloned();
         for message in &accepted_messages {
             mark_message_delivered(ledger, message, &member.id, &member.name)?;
         }
@@ -12854,39 +12967,17 @@ fn run_kimi_member(
             let result = parse_round_result(&final_text);
 
             // Handoff to the host: the full final report, manual-ack delivery.
-            let handoff = TeamMessage {
-                id: generated_id("tmsg"),
-                team_run_id: ledger.run_id.clone(),
-                origin_wave_id: assignment
-                    .as_ref()
-                    .and_then(|message| message.origin_wave_id.clone()),
-                from_member_id: member.id.clone(),
-                to_member_ids: vec!["host".to_string()],
-                kind: TeamMessageKind::Handoff,
-                body: final_text.clone(),
-                correlation_id: assignment
-                    .as_ref()
-                    .map(|message| message.correlation_id.clone())
-                    .unwrap_or_else(|| generated_id("corr")),
-                causation_id: assignment.as_ref().map(|message| message.id.clone()),
-                evidence_refs: Vec::new(),
-                deliveries: vec![TeamMessageDelivery {
-                    member_id: "host".to_string(),
-                    policy: TeamDeliveryPolicy::ManualAck,
-                    status: TeamDeliveryStatus::Delivered,
-                    attempt: 1,
-                    updated_at: now_string(),
-                }],
-                created_at: now_string(),
-            };
-            ledger.save_message(&handoff)?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "message",
-                &handoff.id,
-                "created",
-                &format!("handoff from {} to host (round {round})", member.name),
+            record_round_handoff(
+                ledger,
+                &member_row,
+                &MemberRoundRecord {
+                    assignment: active_assignment.as_ref(),
+                    trigger: round_trigger.as_ref(),
+                    final_text: &final_text,
+                    evidence_refs: &[],
+                    round,
+                    handoffs_before_round: &handoffs_before_round,
+                },
             )?;
 
             let (action_type, action_status) = match result {
@@ -30002,6 +30093,57 @@ mod tests {
             Some(1)
         );
         assert_eq!(detail["latest_handoff"]["body"], "Module A complete");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completed_round_keeps_assignment_correlation_and_uses_exact_trigger_as_cause() {
+        let (store, root) = temp_store("member-round-lineage");
+        let created = create_two_member_team_run(&store);
+        let member = &created.member_runs[0];
+        let assignment = &created.assignment_messages[0];
+        let follow_up = send_team_message(
+            &store,
+            &created.team_run.id,
+            "host",
+            vec![member.id.clone()],
+            TeamMessageKind::Message,
+            "Continue with the reviewed adjustment",
+            Some(assignment.correlation_id.clone()),
+            Some(assignment.id.clone()),
+            None,
+        )
+        .expect("follow-up");
+
+        let (origin_wave_id, correlation_id, causation_id) =
+            member_round_lineage(Some(assignment), Some(&follow_up));
+        assert_eq!(origin_wave_id, assignment.origin_wave_id);
+        assert_eq!(correlation_id, assignment.correlation_id);
+        assert_eq!(causation_id.as_deref(), Some(follow_up.id.as_str()));
+
+        let replacement = send_team_message(
+            &store,
+            &created.team_run.id,
+            "host",
+            vec![member.id.clone()],
+            TeamMessageKind::Assignment,
+            "Own the next independent lane",
+            None,
+            None,
+            None,
+        )
+        .expect("replacement assignment");
+        let active =
+            active_assignment_for_round(Some(assignment), std::slice::from_ref(&replacement))
+                .expect("active assignment");
+        let (_, replacement_correlation, replacement_causation) =
+            member_round_lineage(Some(&active), Some(&replacement));
+        assert_eq!(active.id, replacement.id);
+        assert_eq!(replacement_correlation, replacement.correlation_id);
+        assert_eq!(
+            replacement_causation.as_deref(),
+            Some(replacement.id.as_str())
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1000,6 +1000,7 @@ function LeadInbox({
                   <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-foreground/85">{message.body || "No message body"}</p>
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
                     <span>correlation · {message.correlation_id ? shortId(message.correlation_id) : "missing"}</span>
+                    <span>caused by · {message.causation_id ? shortId(message.causation_id) : "root message"}</span>
                     <span>delivery · {delivery?.policy ?? "unknown"} / {delivery?.status ?? "unknown"}</span>
                     {delivery?.status === "acknowledged" && <span className="text-status-good">ACK</span>}
                   </div>
@@ -1256,7 +1257,9 @@ function toActivityItems(
           </span>
         ),
         body: message.body ? <Markdown source={message.body} compact /> : undefined,
-        actor: message.correlation_id ? `work chain ${shortId(message.correlation_id)}` : undefined,
+        actor: message.correlation_id
+          ? `work chain ${shortId(message.correlation_id)}${message.causation_id ? ` · reply to ${shortId(message.causation_id)}` : ""}`
+          : undefined,
         timestamp: formatTime(message.created_at),
         evidenceRefs,
         tone: messageTone(message.kind),
@@ -1267,7 +1270,7 @@ function toActivityItems(
           ...(message.from_member_id ? [message.from_member_id] : []),
           ...(message.to_member_ids ?? []),
         ],
-        rawText: `${message.kind ?? ""} ${message.body ?? ""} ${actor} ${recipients} ${message.correlation_id ?? ""}`,
+        rawText: `${message.kind ?? ""} ${message.body ?? ""} ${actor} ${recipients} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
         actorLabel: actor,
         statusLabel: deliverySummary,
         messageKind: message.kind ?? "message",

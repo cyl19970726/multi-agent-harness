@@ -152,6 +152,12 @@ For each actionable message:
 3. send a causation-linked reply when a semantic response is needed; and
 4. keep acceptance separate from receipt.
 
+Treat correlation and causation as two different facts. Correlation stays
+anchored to the Member's Assignment across every round. Causation names the
+exact message being answered; a later Member Handoff should therefore point to
+the Host or peer follow-up that triggered that round, not always back to the
+initial Assignment.
+
 ```bash
 harness team-run ack --id <team-run-id> \
   --message-id <message-id> --member-id host
