@@ -10803,7 +10803,8 @@ pub(crate) fn drive_prepared_team_run(
 
         let finished_member_ids = handles
             .iter()
-            .filter_map(|(member_id, (_, handle))| handle.is_finished().then(|| member_id.clone()))
+            .filter(|(_, (_, handle))| handle.is_finished())
+            .map(|(member_id, _)| member_id.clone())
             .collect::<Vec<_>>();
         for member_id in finished_member_ids {
             let Some((member, handle)) = handles.remove(&member_id) else {
@@ -11103,12 +11104,14 @@ fn run_codex_member(
         let turn = run_codex_app_server_turn(
             &mut app_server,
             &prompt_text,
-            &member_row,
-            idle_timeout,
-            live_sink.clone(),
-            ledger,
-            &live_control,
-            &accepted_messages,
+            CodexTeamTurnContext {
+                member: &member_row,
+                idle_timeout,
+                live_sink: live_sink.clone(),
+                ledger,
+                controls: &live_control,
+                accepted_messages: &accepted_messages,
+            },
         )?;
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
@@ -11292,6 +11295,15 @@ struct CodexTeamTurn {
     close_requested_by_harness: bool,
 }
 
+struct CodexTeamTurnContext<'a> {
+    member: &'a MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    ledger: &'a TeamRunLedger,
+    controls: &'a ControlReceiver<MemberControlCommand>,
+    accepted_messages: &'a [TeamMessage],
+}
+
 fn project_codex_team_event_live(
     ledger: &TeamRunLedger,
     member: &MemberRun,
@@ -11363,13 +11375,16 @@ fn project_codex_team_event_live(
 fn run_codex_app_server_turn(
     client: &mut codex_app_server::CodexAppServerClient,
     prompt: &str,
-    member: &MemberRun,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
-    ledger: &TeamRunLedger,
-    controls: &ControlReceiver<MemberControlCommand>,
-    accepted_messages: &[TeamMessage],
+    context: CodexTeamTurnContext<'_>,
 ) -> CliResult<CodexTeamTurn> {
+    let CodexTeamTurnContext {
+        member,
+        idle_timeout,
+        live_sink,
+        ledger,
+        controls,
+        accepted_messages,
+    } = context;
     let mut turn_id = client.start_turn(prompt)?;
     for message in accepted_messages {
         mark_message_delivered(ledger, message, &member.id, &member.name)?;
