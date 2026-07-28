@@ -38,6 +38,54 @@ The four-system bootstrap baseline contains:
 | Custom page metadata | base module pages plus work/finance control page definitions |
 | Software source sync | 20 `product_doc_snapshot` observations from the local Wanchengwanling worktree |
 
+### Store-backed Docs foundation status
+
+On 2026-07-28, the first dogfood Docs foundation pass moved `00 Project Home`
+and `01 Business Model` beyond prose-only pages. The live Store now contains
+page contracts, structured business facts, standard Views, and explicit
+Document ↔ TypedRecord Relations for both pages. This was done through
+`harness company docs ...` CLI commands with `HARNESS_COMPANY_OS_TOKEN`, not by
+editing JSONL ledgers directly and not by rerunning a seed script.
+
+Verified Store:
+
+```text
+/Users/hhh0x/.harness/projects/new-day-wanchengwanling
+```
+
+Current completed slice:
+
+| Page | Store-backed records | Views | Health |
+| --- | ---: | ---: | --- |
+| `document-wcw-project-home` | 4 records: `project_overview`, `page_contract`, `module_directory`, `operating_loop` | 3 | no findings from `docs query` |
+| `document-wcw-business-model` | 11 records: page contract, revenue, value, merchant, incentive, cost, finance-boundary, replication, metric records | 3 | no findings from `docs query` |
+
+Important record ids:
+
+- `record-wcw-page-contract-project-home`
+- `record-wcw-module-directory-v1`
+- `record-wcw-operating-loop-mvp`
+- `record-wcw-page-contract-business-model`
+- `record-wcw-revenue-line-physical-bracelet`
+- `record-wcw-revenue-line-virtual-bracelet`
+- `record-wcw-merchant-value-capability-tags`
+- `record-wcw-incentive-rules-8-12`
+- `record-wcw-finance-boundary-business-model`
+- `record-wcw-mvp-metric-definitions`
+
+Verification commands:
+
+```bash
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-project-home --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-business-model --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs traverse --document document-wcw-root --depth 2 --json
+```
+
 The completion-roadmap seed adds the unfinished backlog on top of that
 baseline. The persistent local project Store has been verified with:
 

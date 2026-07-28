@@ -179,6 +179,33 @@ markdown and generated reports may explain or visualize the product, but the
 operating records for this commercial project should be queryable from this
 Store.
 
+### Docs foundation verified on 2026-07-28
+
+The first dogfood authoring pass established the two root commercial pages as
+Store-backed operating pages:
+
+- `00 Project Home / 商业总览` now has a `page_contract`,
+  `module_directory`, `operating_loop`, and expanded `project_overview`
+  records, with explicit active Relations and standard Views.
+- `01 Business Model / 商业模式` now has a `page_contract`, physical and
+  virtual bracelet revenue lines, merchant capability value model, 8/12
+  incentive model, Finance boundary model, cost model, replication model, MVP
+  metric definitions, and explicit active Relations and standard Views.
+
+Both pages were updated through the governed Docs CLI and verified with:
+
+```bash
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-project-home --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-business-model --json
+```
+
+The resulting health findings for these two pages are empty. The next dogfood
+slice should build `02 Bracelet & Product` and `03 Route & AR Experience` with
+the same pattern before custom-page work is expanded.
+
 ## Repo PRD mapping
 
 Register the GitHub repo as an `ExternalProject`:
