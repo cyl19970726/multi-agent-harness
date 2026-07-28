@@ -71,6 +71,11 @@ explicit acceptance decision.
 Do not reject a provider merely because it lacks Goal mode. Keep it
 `host_driven`. See `docs/member-continuation-model.md` and ADR 0041.
 
+Treat `--max-concurrency` as an active provider-turn limit. Persistent idle
+Members keep their native sessions and mailboxes but consume no execution
+permit. Increasing the roster therefore does not require increasing concurrency
+unless more Members must execute at the same moment.
+
 ## Choose The Smallest Truthful Executor
 
 | Situation | Choose |
@@ -146,6 +151,12 @@ For each actionable message:
 2. acknowledge receipt explicitly;
 3. send a causation-linked reply when a semantic response is needed; and
 4. keep acceptance separate from receipt.
+
+Treat correlation and causation as two different facts. Correlation stays
+anchored to the Member's Assignment across every round. Causation names the
+exact message being answered; a later Member Handoff should therefore point to
+the Host or peer follow-up that triggered that round, not always back to the
+initial Assignment.
 
 ```bash
 harness team-run ack --id <team-run-id> \
@@ -256,6 +267,15 @@ harness team-run create --mission-id <mission-id> \
   --agent-team-id <team-id> --objective "<team objective>" --json
 harness team-run start --id <team-run-id>
 ```
+
+When a reusable team contains durable `AgentMember` identifiers, creating its
+TeamRun preserves each identifier as `MemberRun.agent_member_id`. If a Company
+OS `StandingAgent` intentionally uses the same stable ID, the Organization
+projection may show that participation and deep-link to the MemberRun. This is
+an explicit identity join only: never infer a Standing Agent from a display
+name, role, provider, model, or running process, and never treat runtime status
+as organization authority. Use an ad-hoc member for temporary execution that
+must not appear as standing organization work.
 
 Assign and evolve work:
 

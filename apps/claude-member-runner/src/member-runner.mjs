@@ -47,6 +47,11 @@ import { buildHooks } from "./gates.mjs";
 export function createMemberRunner({ sdk, config, emit }) {
   const mailbox = new Mailbox();
   const evidence = [];
+  // `delivered` means the runner accepted a TeamMessage into its mailbox.
+  // `consumedMessageIds` records the stronger fact that the provider stream
+  // actually pulled that message as the input for a turn. The Rust control
+  // plane uses the matching id as the handoff's causation id.
+  const consumedMessageIds = [];
 
   const state = {
     sessionId: null,
@@ -83,7 +88,7 @@ export function createMemberRunner({ sdk, config, emit }) {
    * `listSessions()` filtered by this tag IS the list of a TeamRun's members,
    * which is why the tag encodes both ids.
    */
-  async function bindSession(sessionId) {
+  async function bindSession(sessionId, providerVersion = null) {
     if (state.registered) return;
     state.sessionId = sessionId;
     state.registered = true;
@@ -94,18 +99,31 @@ export function createMemberRunner({ sdk, config, emit }) {
       await sdk.tagSession(sessionId, tag, { dir: config.cwd });
       await sdk.renameSession(sessionId, title, { dir: config.cwd });
     } catch (error) {
-      // Registration is a convenience for discovery and for humans opening the
-      // session in Claude. It must not take the member down.
+      // Registration is a convenience for SDK-native discovery and resume.
+      // Agent SDK sessions do not automatically enter Claude Desktop's session
+      // picker, so registry metadata must not be described as a Desktop bridge.
+      // A registry write failure still must not take the member down.
       emit("registry_write_failed", { sessionId, error: String(error) });
     }
-    emit("session_bound", { sessionId, tag, title });
+    emit("session_bound", { sessionId, tag, title, providerVersion });
   }
 
   function openQuery(resumeSessionId) {
     return sdk.query({
-      prompt: mailbox.stream(renderTeamMessage),
+      prompt: mailbox.stream((message) => {
+        consumedMessageIds.push(message.id);
+        return renderTeamMessage(message);
+      }),
       options: {
         cwd: config.cwd,
+        // Make the coordination identity an explicit part of the provider
+        // subprocess contract. The SDK currently documents omitted `env` as
+        // inheriting `process.env`, but the live canary showed that relying on
+        // that implicit hop can leave the provider's Bash tool pointed at the
+        // wrong Harness project. Rust injects only non-secret HARNESS_* values
+        // into this runner; forwarding the complete runner environment also
+        // preserves PATH, HOME, credentials, and provider configuration.
+        env: { ...process.env },
         allowedTools: config.allowedTools,
         disallowedTools: config.disallowedTools,
         model: config.model ?? undefined,
@@ -154,7 +172,7 @@ export function createMemberRunner({ sdk, config, emit }) {
         try {
           for await (const message of query) {
             if (message.type === "system" && message.subtype === "init") {
-              await bindSession(message.session_id);
+              await bindSession(message.session_id, message.claude_code_version ?? null);
               continue;
             }
             if (message.type === "assistant") {
@@ -168,11 +186,12 @@ export function createMemberRunner({ sdk, config, emit }) {
               // A result ends a TURN. It does not end the member; the mailbox
               // decides that. This distinction is the entire fix.
               if (!state.sessionId && message.session_id) {
-                await bindSession(message.session_id);
+                await bindSession(message.session_id, message.claude_code_version ?? null);
               }
               emit("turn_complete", {
                 sessionId: message.session_id ?? state.sessionId,
                 subtype: message.subtype,
+                triggerMessageId: consumedMessageIds.shift() ?? null,
                 evidenceRefs: evidence.map((e) => e.ref),
               });
             }
@@ -216,6 +235,9 @@ export function createMemberRunner({ sdk, config, emit }) {
       if (!query) throw new Error("member not started");
       interruptedGeneration = true;
       const receipt = await query.interrupt();
+      // The interrupted turn has no semantic handoff. Do not let its input id
+      // become the causation of a later resumed turn.
+      const abandonedTriggerMessageIds = consumedMessageIds.splice(0);
       // Retire this query's consumer, then end its iterator, so `start()`
       // leaves the for-await and opens a fresh query on the same session.
       // Without this the member hangs: the stream stops yielding but never
@@ -226,7 +248,10 @@ export function createMemberRunner({ sdk, config, emit }) {
       } catch {
         // already torn down
       }
-      emit("interrupted", { stillQueued: receipt?.still_queued ?? null });
+      emit("interrupted", {
+        stillQueued: receipt?.still_queued ?? null,
+        abandonedTriggerMessageIds,
+      });
       return receipt;
     },
 

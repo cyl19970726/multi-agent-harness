@@ -8,7 +8,11 @@ use std::time::{Duration, Instant};
 
 mod fake_provider;
 mod harness_env;
-use harness_env::{collect_sse_data, current_project_id, run_harness, ServeHandle, TempHome};
+use harness_env::{
+    collect_sse_data, current_project_id, run_harness, run_harness_with_env, ServeHandle, TempHome,
+};
+
+const COMPANY_OS_TEST_TOKEN: &str = "mission-wave-company-os-test-capability";
 
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
@@ -21,7 +25,12 @@ fn init_project(home: &TempHome, name: &str) -> String {
 fn run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
     let mut full = vec!["--project", project_id];
     full.extend_from_slice(args);
-    let out = run_harness(home, home.base(), &full);
+    let out = run_harness_with_env(
+        home,
+        home.base(),
+        &full,
+        &[("HARNESS_COMPANY_OS_TOKEN", COMPANY_OS_TEST_TOKEN)],
+    );
     assert!(
         out.status.success(),
         "harness {args:?} failed: {}",
@@ -89,6 +98,42 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             ],
         );
     }
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "org",
+            "actor",
+            "create-human",
+            "--id",
+            "human-owner",
+            "--name",
+            "Human Owner",
+            "--responsibility",
+            "Final company authority",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "org",
+            "actor",
+            "create-agent",
+            "--authority",
+            "human-owner",
+            "--id",
+            "agent-build",
+            "--name",
+            "PrimaryBuilder",
+            "--role",
+            "primary builder",
+            "--responsibility",
+            "Own persistent implementation work",
+        ],
+    );
     run_json(
         &home,
         &project_id,
@@ -191,6 +236,35 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         created["team_run"]["mission_id"].as_str(),
         Some("mission-host-plan")
+    );
+    assert_eq!(
+        created["member_runs"][0]["agent_member_id"].as_str(),
+        Some("agent-build")
+    );
+    assert_eq!(
+        created["member_runs"][1]["agent_member_id"].as_str(),
+        Some("agent-review")
+    );
+    let snapshot = run_json(&home, &project_id, &["dashboard", "snapshot"]);
+    let standing_assignments = snapshot["company_os"]["standing_assignments"]
+        .as_array()
+        .expect("standing assignment projection");
+    assert_eq!(
+        standing_assignments.len(),
+        1,
+        "only a MemberRun explicitly linked to an existing StandingAgent may appear"
+    );
+    assert_eq!(
+        standing_assignments[0]["agent_member_id"].as_str(),
+        Some("agent-build")
+    );
+    assert_eq!(
+        standing_assignments[0]["member_run_id"].as_str(),
+        created["member_runs"][0]["id"].as_str()
+    );
+    assert_eq!(
+        standing_assignments[0]["correlation_id"].as_str(),
+        created["assignment_messages"][0]["correlation_id"].as_str()
     );
     assert!(created["team_run"]["wave_id"].is_null());
     let team_run_id = created["team_run"]["id"].as_str().unwrap();

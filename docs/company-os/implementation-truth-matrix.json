@@ -100,15 +100,15 @@
       "implementationState": "partial",
       "truthRefs": {
         "contract": ["docs/company-os/organization-and-actors.md"],
-        "schema": ["schemas/company-os/actors.schema.json"],
+        "schema": ["schemas/company-os/actors.schema.json", "schemas/member-run.schema.json"],
         "store": ["crates/harness-store/src/company_os.rs"],
         "api": ["crates/harness-cli/src/company_os_api.rs"],
         "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
         "skills": ["skills/company-org-operator/SKILL.md"],
-        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "scripts/check-company-os-org-cli-smoke.mjs", "pnpm check:dashboard"]
+        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "crates/harness-cli/tests/mission_wave_api.rs", "scripts/check-company-os-org-cli-smoke.mjs", "pnpm check:dashboard"]
       },
-      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the Human administrative authoring boundary"],
-      "blockingGaps": ["governed organization-change proposal/approval lifecycle", "governance-led Organization Actual"]
+      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "explicit stable StandingAgent/AgentMember/MemberRun identity join and read-only Agent Team participation projection", "Organization-to-profile and Standing-Agent-to-MemberRun navigation", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the Human administrative authoring boundary"],
+      "blockingGaps": ["implemented availability and capacity ownership", "Workflow participation and direct durable-agent messaging projection", "durable cross-client Team Supervisor runtime health", "governed organization-change proposal/approval lifecycle", "governance-led Organization Actual"]
     },
     {
       "id": "work",
@@ -222,6 +222,6 @@
       "nonFinancial": "zero Commitment and zero Approval",
       "monetary": "Finance-owned Commitment plus named Human Approval"
     },
-    "blockingGaps": ["governed OrgChangeProposal and Standing Agent provisioning lifecycle", "live Standing Agent message transport"]
+    "blockingGaps": ["governed OrgChangeProposal and Standing Agent provisioning lifecycle", "live Standing Agent message transport", "Workflow and direct-assignment participation projection", "durable cross-client Team Supervisor runtime health"]
   }
 }

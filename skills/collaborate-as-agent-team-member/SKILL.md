@@ -30,11 +30,16 @@ line says `QUESTION:`. Do not invent it from a display name or provider chat.
 Read current work:
 
 ```bash
-harness team-run inbox --id <team-run-id> \
+"$HARNESS_BIN" team-run inbox --id <team-run-id> \
   --member-run-id <member-run-id> --json
-harness team-run inbox --id <team-run-id> \
+"$HARNESS_BIN" team-run inbox --id <team-run-id> \
   --member-run-id <member-run-id> --all --json
 ```
+
+Use the exact executable supplied by the collaboration envelope. Do not replace
+`"$HARNESS_BIN"` with another `harness` found on `PATH`. Treat
+`HARNESS_PROJECT_ID` as identity and `HARNESS_PROJECT` as the executable
+Workspace selector.
 
 The default view is actionable coordination. `--all` returns every received
 Harness message at its latest stored state, not raw append revisions and not
@@ -83,22 +88,29 @@ Ask the Host to create a Reviewer Member when risk needs independent review.
 Use the Assignment correlation for every work-chain message:
 
 ```bash
-harness team-run send --id <team-run-id> \
+"$HARNESS_BIN" team-run send --id <team-run-id> \
   --from <member-run-id> --to host --kind message \
   --body "<decision-shaped question and recommendation>" \
   --correlation-id <correlation-id>
 
-harness team-run send --id <team-run-id> \
+"$HARNESS_BIN" team-run send --id <team-run-id> \
   --from <member-run-id> --to <peer-member-run-id> --kind message \
   --body "<coordination needed by the peer>" \
   --correlation-id <correlation-id>
 
-harness team-run send --id <team-run-id> \
+"$HARNESS_BIN" team-run send --id <team-run-id> \
   --from <member-run-id> --to host --kind message \
   --body "<Markdown execution plan>" \
   --correlation-id <correlation-id> \
   --causation-id <host-message-id>
 ```
+
+Keep the Assignment correlation stable, but set `causation_id` to the exact
+message you are answering. For the first result that is usually the Assignment
+id; after a Host or peer follow-up it is that follow-up's id. The persistent
+provider adapters apply the same rule to their automatic round Handoffs. Send
+one explicit Handoff when the lane is ready; the Adapter treats it as
+authoritative and does not add a duplicate final-reply Handoff.
 
 Use `message` for questions, answers, progress, blockers, planning, review, and
 peer coordination. State the intent in the first sentence. Use `handoff` only

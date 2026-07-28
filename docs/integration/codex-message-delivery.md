@@ -51,6 +51,19 @@ Provider-native questions and approvals that pause the current turn are
 - Assignment ownership is proven only by the Assignment message and its
   correlation id.
 
+Each completed provider round preserves that Assignment correlation while its
+Handoff `causation_id` names the exact TeamMessage consumed for that round.
+Round one normally points to the Assignment; a later round points to the
+Host/peer follow-up that woke it. Delivery state shows any other messages
+accepted in the same batch. Harness does not infer causation from message body
+text or reset ownership for every round.
+
+If the Member explicitly sends one correlated Handoff through the CLI during
+the round, that record is authoritative. The Adapter enriches it with newly
+observed evidence references and does not append a second Handoff from the
+provider's final reply. If no explicit Handoff exists, the final reply becomes
+the automatic fallback Handoff.
+
 Reading `harness team-run inbox` or `harness member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 
@@ -185,5 +198,9 @@ alone; it receives mail at its next prompt or resume. See
 4. Member → Host delivery is immediately visible.
 5. Closed or incompatible members reject delivery.
 6. `member-run show`, Inbox and Dashboard reconstruct the same mailbox state.
-7. Native Codex transcript, tools, commands, files, reasoning and subagent
+7. A second-round Handoff retains the Assignment correlation and points its
+   causation at the exact follow-up message.
+8. An explicit Member Handoff and Adapter fallback never produce duplicate
+   Handoffs for one provider round.
+9. Native Codex transcript, tools, commands, files, reasoning and subagent
    transcript remain outside Harness storage.

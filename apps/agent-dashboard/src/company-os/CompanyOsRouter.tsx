@@ -222,7 +222,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
     case "workboard": content = <WorkOperatingPage source={resolved.value} />; break;
     case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
-    case "agents-organization": content = <OrganizationPage data={operations} />; break;
+    case "agents-organization": content = <OrganizationPage data={operations} onSelectionChange={onSelectionChange} />; break;
     case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} onSelectionChange={onSelectionChange} />; break;
     case "governance-proposal": content = <GovernanceProposalFocus data={operations} />; break;
     case "approval-focus": content = <ApprovalFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDecision={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;

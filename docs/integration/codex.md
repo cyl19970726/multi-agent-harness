@@ -137,9 +137,10 @@ and the provider-owned turn used a different sandbox posture. The Goal turn
 eventually completed the work; that does not make dual-driver operation valid.
 
 The required posture until the adapter implements and live-validates an
-exclusive `provider_driven` lease is `host_driven`. The current implementation
-that calls both native Goal activation and `turn/start` is nonconforming and
-must remain `review_required` until repaired:
+exclusive `provider_driven` lease is `host_driven`. The Agent Team adapter now
+enforces that posture: it snapshots `execution_driver=host_driven`, starts
+mailbox work with `turn/start`, and does not call `thread/goal/set`. Native Goal
+remains a provider capability, not an active Team scheduler:
 
 - do not combine `thread/goal/set(active)` with Harness `turn/start` for one
   Assignment;
@@ -147,6 +148,10 @@ must remain `review_required` until repaired:
 - do not infer Host acceptance from native Goal satisfaction; and
 - keep version/mode compatibility `review_required` when continuation or
   permission behavior has not been canaried.
+
+`--max-concurrency` limits active provider turns through a shared execution
+lease. Idle persistent Members remain alive and addressable without consuming a
+permit.
 
 ## Pending Interactions
 

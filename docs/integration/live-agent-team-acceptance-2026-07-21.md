@@ -12,6 +12,38 @@ canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted
 > is not the target storage contract. The 2026-07-22 acceptance below replaces
 > its storage claim with native-session reads and no mirrored provider history.
 
+## 2026-07-28 persistent lifecycle and Workspace addendum
+
+Mission `mission-1785227648994-p85779-0` revalidated the current persistent
+Team modes after the single-execution-driver change.
+
+| Provider mode | TeamRun / MemberRun | Native session | Accepted facts |
+| --- | --- | --- | --- |
+| Codex `codex_app_server` 0.145.0 | `team-run-1785228644132-p55579-0` / `member-run-1785228644132-p55579-1` | `019fa7eb-9d46-7160-b2d9-a894c66c906d` | two Host rounds on one thread, host-driven execution, explicit Host close |
+| Claude `claude_agent_sdk` 2.1.220 | `team-run-1785230417407-p72711-0` / `member-run-1785230417407-p72711-1` | `ec91628d-a514-4d40-ae9c-7f73ecf3c40f` | exact `HARNESS_BIN`, correct project/store resolution, handoff, second-round continuation, explicit Host close, SDK `listSessions` discovery |
+| Kimi `kimi_acp` 0.29.1 | `team-run-1785230571586-p78529-0` / `member-run-1785230571586-p78529-1` | none | requested `k2.5` rejected before bind because that alias is absent from operator configuration |
+
+The Kimi attempt is blocked evidence, not an accepted provider canary. Harness
+did not switch to another configured model, edit `~/.kimi-code/config.toml`, or
+change the installed provider version without Human approval.
+
+The Claude native file contains 36 JSONL records and the installed Agent SDK's
+`listSessions({dir})` resolves the exact id, cwd, branch, first prompt, and last
+summary. Claude's documented product boundary says Agent SDK sessions do not
+enter the Claude Desktop/session-picker history. This acceptance therefore
+claims provider-native storage and resume, not Desktop sidebar visibility.
+
+The live run also exposed and fixed an execution-root edge case: a `serve`
+started from an unregistered external worktree must retain its exact
+`ProjectContext`; nested Member commands use `HARNESS_PROJECT` as an executable
+root selector and `HARNESS_PROJECT_ID` as identity. Members invoke the Host's
+exact `HARNESS_BIN`, not a stale binary found on `PATH`.
+
+One correlation defect remains deliberately assigned to the following Wave:
+second-round handoff causation must name the triggering follow-up message rather
+than always naming the initial Assignment. The lifecycle canary is accepted
+without pretending that message-lineage defect is complete.
+
 ## 2026-07-22 provider-native storage acceptance
 
 The post-ADR 0032 acceptance is Mission
@@ -130,13 +162,69 @@ the Host; the Store contains explicit progress and completion actions.
 - Both Assignment messages moved from queued to delivered with attempt `1`.
 - Codex and Kimi MemberRuns have real provider-native session identifiers and terminal
   timestamps.
-- Both handoffs name their originating assignment as `causation_id` and reuse
-  its `correlation_id`.
+- Both initial-round handoffs name their originating assignment as
+  `causation_id` and reuse its `correlation_id`. Persistent multi-round adapters
+  now keep that correlation while later handoffs name the exact follow-up
+  TeamMessage that triggered their round.
 - Dashboard snapshot joins Mission, Wave, selected TeamRun, both MemberRuns,
   assignments, handoffs, and MemberActions.
 - No `thinking`, `thinking_preview`, or provider `reasoning` field occurs in
   `team_messages.jsonl`, `member_actions.jsonl`, `team_run_events.jsonl`, or
   `member_runs.jsonl`.
+
+## Persistent lineage canary — 2026-07-28
+
+Wave 4 added one read-only Codex app-server canary after deterministic
+lineage tests:
+
+- TeamRun `team-run-1785234011645-p94238-0`;
+- MemberRun `member-run-1785234011646-p94238-1`;
+- native thread `019fa83d-59bb-7922-91e1-9ae69352282a`;
+- Assignment correlation `corr-1785234011670-p94238-5`; and
+- Host follow-up `tmsg-1785234060005-p96204-0`.
+
+The same native thread completed two rounds. The first explicit Handoff points
+to the Assignment; the second points to the exact Host follow-up while keeping
+the Assignment correlation. Exactly two Handoffs remain. The Member had used
+the collaboration CLI to submit each one, so the Adapter correctly treated
+those explicit records as authoritative and did not append duplicate copies of
+the final provider replies. The Host then explicitly stopped the idle member
+and completed the TeamRun.
+
+An earlier exploratory run,
+`team-run-1785233710585-p85372-0`, is preserved as cancelled evidence: it
+revealed the former duplicate-Handoff behavior and was intentionally stopped
+before the replacement canary verified the fix.
+
+## Standing Agent identity canary — 2026-07-28
+
+Wave 5 verified the explicit Organization-to-execution identity join without
+collapsing their lifecycles:
+
+- Company OS StandingAgent and reusable AgentMember
+  `agent-org-runtime-dogfood`;
+- Mission-linked reusable team `team-org-runtime-dogfood`;
+- TeamRun `team-run-1785235941106-p35827-0`;
+- MemberRun `member-run-1785235941106-p35827-1`;
+- Assignment correlation `corr-1785235941131-p35827-5`;
+- acknowledged Handoff `tmsg-1785235997733-p37319-0`; and
+- Codex app-server thread `019fa85b-0b68-7270-aab4-e09dc01fbb3c` on reviewed
+  Codex `0.145.0`.
+
+Creating the TeamRun from its independent Team definition automatically
+preserved `MemberRun.agent_member_id`. Before provider execution, the Company
+OS snapshot already projected the exact Assignment. After the first provider
+turn, the same projection included the idle MemberRun, native-session locator,
+Mission, TeamRun, correlation, and Team/Member navigation target. The Member
+submitted exactly one explicit correlated Handoff, the Host acknowledged it,
+and the runtime remained idle and resumable until the Host sent an explicit
+Close through the same supervising service. Only then did the MemberRun become
+`stopped`; the Host subsequently completed the TeamRun.
+
+The canary was read-only. Organization availability remained its declared
+`available` value throughout and was not derived from `running`, `idle`, or
+`stopped`. No membership or authority row changed when execution completed.
+Unlinked MemberRuns remain absent from the Standing Agent projection.
 
 ## Acceptance boundary
 

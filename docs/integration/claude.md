@@ -122,7 +122,9 @@ Host-handoff commands, so correctness does not depend on a provider-specific
 Claude Skill fork. When the Star Harness Skill is also installed, it must match
 that canonical contract rather than redefine mailbox semantics.
 
-A Claude Member sends Host mail explicitly with `harness team-run send
+The envelope supplies `HARNESS_BIN`, the exact Harness executable selected by
+the Host. A Claude Member sends Host mail explicitly with `"$HARNESS_BIN"
+team-run send
 --to host`. Harness stores it immediately in the Host Inbox as delivered mail
 requiring manual ACK. This does not interrupt the Host's current turn; the Host
 reads it at the next safe boundary, ACKs transport separately, and sends a
@@ -185,25 +187,47 @@ or owned paths and make integration conflicts explicit.
 
 The runner binds the real `system(init).session_id`, tags the provider session
 with TeamRun/MemberRun identity, and stores only a `NativeSessionRef` in
-Harness. Native history is read on demand from Claude's own project session
-store.
+Harness. The same `system(init)` event supplies `claude_code_version`; this is
+the execution-mode version stored in the Member profile and native-session
+reference. An unrelated `claude --version` binary on `PATH` must not stand in
+for the SDK runtime.
 
-Claude Desktop does not automatically list sessions created by an external
-process. A session can be opened through Claude's provider-owned import path:
+Native history is read on demand from Claude's own project session store. The
+SDK can enumerate and resume it:
 
-```bash
-open "claude://resume?session=<native_session_id>"
+```text
+listSessions({ dir: <member-cwd> })
+claude --resume <native-session-id>
 ```
 
-This does not change Harness storage ownership; it is only a Desktop view of
-the same provider-native session.
+This is not a Claude Desktop projection. Claude documents that Agent SDK and
+`claude -p` sessions do not appear in the session picker, and Desktop, Web, and
+VS Code keep separate session histories. There is no supported existing-session
+Desktop deep link for an Agent SDK session. The `/desktop` transfer command is
+an interactive CLI workflow; transferring a running Team member would exit its
+runner and violate Host-owned lifecycle, so Harness does not invoke it.
+
+The operator sees the Member and coordination in the Harness Dashboard and may
+resume the provider-native session explicitly from Claude Code CLI. “SDK
+registry can enumerate and resume” is an adapter acceptance claim; “conversation
+appears in Claude Desktop” is not.
+
+References:
+
+- <https://code.claude.com/docs/en/agent-sdk/sessions>
+- <https://code.claude.com/docs/en/sessions>
+- <https://code.claude.com/docs/en/desktop>
 
 ## Capability and version governance
 
-The current `claude_agent_sdk` profile intentionally remains
-`review_required`. Deterministic runner tests cover mailbox delivery,
-interrupt/resume, explicit close, and session binding, but they do not replace
-a proportional live-provider canary.
+The adapter remains version-specific. Deterministic runner tests cover mailbox
+delivery, interrupt/resume, explicit close, execution-environment propagation,
+session binding, and SDK-reported version capture. The 2026-07-28 canary proved
+two Host rounds on native session
+`ec91628d-a514-4d40-ae9c-7f73ecf3c40f`, correct project/store selection,
+Member-to-Host handoff, same-session continuation, and explicit Host close.
+That session is enumerable by SDK `listSessions`; it is intentionally absent
+from Claude Desktop's picker as described above.
 
 Never install, upgrade, downgrade, or switch Claude Code or the Agent SDK
 without explicit Human confirmation naming the candidate version. After an
@@ -233,3 +257,5 @@ Minimum live canary:
 4. interrupt a live turn and verify same-session continuation;
 5. close from the Host and observe runner termination;
 6. reconstruct coordination from Harness and execution from Claude storage.
+7. verify `listSessions({dir})` resolves the bound id without claiming Desktop
+   sidebar visibility.

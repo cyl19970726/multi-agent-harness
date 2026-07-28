@@ -63,6 +63,11 @@ Events: `member_started`, `session_bound`, `assistant_message`, `turn_complete`,
 
 **`turn_complete` is not a lifecycle event.** Only an explicit `close` produces
 `member_closed`. Collapsing those two is the bug this runner exists to remove.
+Every `turn_complete` also carries `triggerMessageId`, the exact TeamMessage
+consumed for that turn, so Harness can preserve Assignment correlation while
+recording truthful round causation. When the Member already submitted an
+explicit correlated Handoff during the turn, Harness keeps that record and
+uses the final provider reply only as an Adapter fallback, not a duplicate.
 
 `start` payload:
 

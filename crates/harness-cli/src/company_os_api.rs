@@ -4,7 +4,7 @@
 //! projection and dispatch declared ActionCommands, but never receive a generic
 //! store-write primitive.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -12,7 +12,7 @@ use harness_core::{
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
     MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, Relation, RiskTier,
-    TypedRecord, ValidateCompanyOs, View, WorkItem, WorkItemStatus, WorkQuery,
+    TeamMessageKind, TypedRecord, ValidateCompanyOs, View, WorkItem, WorkItemStatus, WorkQuery,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -192,6 +192,7 @@ fn authenticate_write_transport(token: Option<&str>) -> Result<(), ApiError> {
 /// Latest-row-wins projection embedded in the main Dashboard snapshot.
 pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
     let actors = normalized_actors(store.latest_actors()?);
+    let standing_assignments = standing_assignment_projection(store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -230,6 +231,7 @@ pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
         "work_items": store.latest_work_items()?,
         "work": store.work_projection(&WorkQuery::default())?,
         "assignments": store.latest_assignments()?,
+        "standing_assignments": standing_assignments,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
         "commitments": commitments,
@@ -257,6 +259,92 @@ pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
         "revision": revision,
         "projection": "latest_row_wins",
     });
+    Ok(projection)
+}
+
+/// Read-only join from durable Organization identity to explicitly linked
+/// Agent Team participation. It is intentionally rebuilt from latest rows and
+/// never infers identity from display names, roles, providers, or timestamps.
+fn standing_assignment_projection(store: &HarnessStore) -> Result<Vec<Value>, StoreError> {
+    let standing_agent_ids = store
+        .latest_standing_agents()?
+        .into_iter()
+        .map(|agent| agent.id)
+        .collect::<BTreeSet<_>>();
+    let member_runs =
+        store
+            .member_runs()?
+            .into_iter()
+            .fold(BTreeMap::new(), |mut latest, member| {
+                latest.insert(member.id.clone(), member);
+                latest
+            });
+    let team_runs = store
+        .team_runs()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut latest, run| {
+            latest.insert(run.id.clone(), run);
+            latest
+        });
+    let messages =
+        store
+            .team_messages()?
+            .into_iter()
+            .fold(BTreeMap::new(), |mut latest, message| {
+                latest.insert(message.id.clone(), message);
+                latest
+            });
+    let mut assignment_by_member = BTreeMap::new();
+    for message in messages.values() {
+        if message.kind != TeamMessageKind::Assignment {
+            continue;
+        }
+        for recipient in &message.to_member_ids {
+            assignment_by_member.insert(recipient.clone(), message);
+        }
+    }
+
+    let mut projection = Vec::new();
+    for member in member_runs.values() {
+        let Some(agent_member_id) = member.agent_member_id.as_deref() else {
+            continue;
+        };
+        if !standing_agent_ids.contains(agent_member_id) {
+            continue;
+        }
+        let Some(team_run) = team_runs.get(&member.team_run_id) else {
+            continue;
+        };
+        let Some(assignment) = assignment_by_member.get(&member.id) else {
+            continue;
+        };
+        let source_kind = if team_run.mission_id.is_some() {
+            "mission_wave"
+        } else {
+            "direct_assignment"
+        };
+        projection.push(json!({
+            "id": format!("standing-assignment:{}:{}", member.id, assignment.correlation_id),
+            "agent_member_id": agent_member_id,
+            "source_kind": source_kind,
+            "source_ref": assignment.id,
+            "mission_id": team_run.mission_id,
+            "wave_id": team_run.wave_id,
+            "team_run_id": team_run.id,
+            "member_run_id": member.id,
+            "title": assignment.body,
+            "role": member.role,
+            "status": member.status,
+            "assigned_at": assignment.created_at,
+            "last_activity_at": member.last_event_at,
+            "correlation_id": assignment.correlation_id,
+            "native_session": member.native_session,
+            "navigation_target": format!(
+                "?surface=team&team={}&memberRun={}",
+                team_run.id, member.id
+            ),
+        }));
+    }
     Ok(projection)
 }
 

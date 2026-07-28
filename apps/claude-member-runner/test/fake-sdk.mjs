@@ -12,7 +12,10 @@
  * canary, not here.
  */
 
-export function createFakeSdk({ sessionId = "fake-session-0001" } = {}) {
+export function createFakeSdk({
+  sessionId = "fake-session-0001",
+  claudeCodeVersion = "2.1.220-test",
+} = {}) {
   const calls = { tagSession: [], renameSession: [], permissionModes: [], interrupts: 0 };
   let lastOptions = null;
 
@@ -21,7 +24,12 @@ export function createFakeSdk({ sessionId = "fake-session-0001" } = {}) {
     let interrupted = false;
 
     async function* run() {
-      yield { type: "system", subtype: "init", session_id: sessionId };
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        claude_code_version: claudeCodeVersion,
+      };
       // One turn per inbound user message. The stream ends only when the
       // mailbox closes — which is exactly the property under test.
       for await (const userMessage of prompt) {

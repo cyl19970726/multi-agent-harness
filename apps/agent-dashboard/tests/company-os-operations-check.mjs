@@ -90,6 +90,27 @@ async function main() {
   const emptyTruth = JSON.stringify(emptyAuthoritativeProjection);
   check(!emptyTruth.includes("CN-2026-018") && !emptyTruth.includes("¥3,000") && !emptyTruth.includes("Brand Owner"), "an explicit empty authoritative projection never falls back to prototype trademark facts");
   const canonicalProjection = adapterModule.adaptTrademarkOperationsProjection(fixture);
+  const linkedExecutionProjection = structuredClone(fixture);
+  linkedExecutionProjection.standing_assignments = [{
+    id: "standing-assignment-member-build-corr-build",
+    agent_member_id: "actor-agent-trademark",
+    source_kind: "mission_wave",
+    source_ref: "message-build",
+    mission_id: "mission-build",
+    wave_id: null,
+    team_run_id: "team-run-build",
+    member_run_id: "member-run-build",
+    title: "Implement the linked Organization slice",
+    role: "builder",
+    status: "idle",
+    assigned_at: "2026-07-20T09:15:00+08:00",
+    last_activity_at: "2026-07-20T09:20:00+08:00",
+    correlation_id: "corr-build",
+    native_session: { provider: "codex", native_session_id: "thread-build" },
+    navigation_target: "?surface=team&team=team-run-build&memberRun=member-run-build",
+  }];
+  const linkedExecution = adapterModule.adaptTrademarkOperationsProjection(linkedExecutionProjection);
+  check(linkedExecution.standingAssignments?.length === 1 && linkedExecution.standingAssignments[0].memberRunId === "member-run-build" && linkedExecution.standingAssignments[0].agentMemberId === "actor-agent-trademark", "adapter preserves an explicit StandingAgent-to-MemberRun link without inference");
   const brandUnit = canonicalProjection.organization.units.find((unit) => unit.id === "org-brand-ip");
   check(brandUnit?.actorIds.length === 4 && canonicalProjection.governanceProposal.proposedById === "actor-agent-document-architecture", "adapter retains the actual Brand & IP membership branch and governance proposal author");
   check(brandUnit?.agentLeadActorId === "actor-agent-ip-lead" && pages.includes("leadUnit.actorIds") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "Lead direct reports come from the governed organization unit instead of actor ordering");
@@ -104,6 +125,11 @@ async function main() {
   check(pages.indexOf('Panel title="Evidence"') < pages.indexOf('Panel title="Responsibility"') && pages.includes("approvalTitle") && pages.includes("break-words text-sm leading-6"), "WorkItem focus moves evidence into the first viewport and wraps a human-readable approval summary");
   check(pages.includes("FinanceRecordTable") && ["Record type", "Amount", "Cost context", "Source", "Approval status"].every((label) => pages.includes(`\"${label}\"`)) && !pages.includes("\"Project\""), "finance renders auditable record fields without reintroducing a Project object");
   check(pages.includes("data-standing-agent-workspace") && pages.includes('mainLabel="Standing Agent work and activity"') && pages.includes("<ActivityStream") && !pages.includes('kind: "thinking"'), "Standing Agent focus has a central projection-backed work/activity surface without thinking persistence");
+  check(types.includes("interface StandingExecutionAssignment") && fixtureAdapter.includes("root.standing_assignments"), "Company OS adapter exposes the explicit standing Agent Team assignment projection");
+  check(pages.includes("MemberRun explicitly links this durable identity") && pages.includes("assignment.memberRunId") && pages.includes("assignment.correlationId"), "Standing Agent focus shows exact MemberRun/correlation evidence and an honest unlinked empty state");
+  check(pages.includes('surface: "team"') && pages.includes("teamId: assignment.teamRunId") && pages.includes("memberRunId: assignment.memberRunId"), "Standing Agent participation deep-links to the native Team/Member surface");
+  check(pages.includes('!["completed", "failed", "stopped"].includes(assignment.status)') && pages.includes("Completed participation remains in Activity"), "terminal MemberRuns remain historical activity instead of active Standing Agent work");
+  check(pages.includes("onOpen={onSelectionChange") && router.includes("onSelectionChange={onSelectionChange}"), "Organization actor cards route through the shared selection state");
   check(pages.includes("authoredProposal") && pages.includes("proposal-${authoredProposal.id}") && pages.includes('title="Maintained Docs"'), "Standing Agent distinguishes authored proposal activity from related durable Docs");
   check(pages.includes('title="Prompt, tools & skills"') && pages.includes('title="Permissions"') && pages.includes('title="Work routing"'), "Standing Agent composes native configuration and authority modules in the context rail");
   check(pages.includes("view.workItems ?? [view.workItem]") && pages.includes("view.assignments ?? []"), "Standing Agent workspace consumes all projected WorkItems and native Assignments");

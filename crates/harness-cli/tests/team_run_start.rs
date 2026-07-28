@@ -54,6 +54,10 @@ fn run_with_fake_kimi(
             "FAKE_CODEX_NAME_MARKER",
             home.base().join("codex-thread-name.jsonl"),
         )
+        .env(
+            "FAKE_CODEX_PLAN_MARKER",
+            home.base().join("codex-execution-driver.log"),
+        )
         .env("FAKE_CODEX_AUTO_COMPLETE", "1")
         .env(
             "FAKE_CLAUDE_ENV_MARKER",
@@ -101,8 +105,18 @@ fn assert_collaboration_env(
 ) {
     let text = std::fs::read_to_string(home.base().join(format!("{provider}-collaboration.env")))
         .unwrap_or_else(|error| panic!("{provider} collaboration env missing: {error}"));
+    let metadata_path = home.projects_dir().join(project_id).join("metadata.json");
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&metadata_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", metadata_path.display())),
+    )
+    .expect("project metadata JSON");
+    let project_root = metadata["canonical_path"]
+        .as_str()
+        .expect("canonical_path in metadata");
     for expected in [
-        format!("HARNESS_PROJECT={project_id}"),
+        format!("HARNESS_PROJECT_ID={project_id}"),
+        format!("HARNESS_PROJECT={project_root}"),
         format!("HARNESS_TEAM_RUN_ID={run_id}"),
         format!("HARNESS_MEMBER_RUN_ID={member_id}"),
         "HARNESS_ASSIGNMENT_MESSAGE_ID=".to_string(),
@@ -172,6 +186,8 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
             "start",
             "--id",
             &run_id,
+            "--max-concurrency",
+            "1",
         ],
     );
     assert!(
@@ -661,6 +677,10 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         Some("codex_app_server")
     );
     assert_eq!(
+        codex["provider_profile"]["execution_driver"].as_str(),
+        Some("host_driven")
+    );
+    assert_eq!(
         codex["native_session"]["native_session_id"].as_str(),
         Some("thread_fake_codex_app_server")
     );
@@ -674,6 +694,18 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         native_name.contains("\"name\":\"Agent Team · codex-worker\""),
         "thread/name/set carries the Member identity: {native_name}"
     );
+    let execution_driver = std::fs::read_to_string(home.base().join("codex-execution-driver.log"))
+        .expect("Codex execution-driver marker");
+    assert!(
+        execution_driver
+            .lines()
+            .any(|line| line.starts_with("turn ")),
+        "host-driven Codex must start an explicit mailbox turn: {execution_driver}"
+    );
+    assert!(
+        !execution_driver.contains("goal_set"),
+        "host-driven Codex must not activate an independent native Goal: {execution_driver}"
+    );
     let kimi = members
         .iter()
         .find(|member| member["provider"].as_str() == Some("kimi"))
@@ -682,6 +714,10 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(
         kimi["provider_profile"]["execution_mode"].as_str(),
         Some("kimi_acp")
+    );
+    assert_eq!(
+        kimi["provider_profile"]["execution_driver"].as_str(),
+        Some("host_driven")
     );
     assert_eq!(
         kimi["provider_profile"]["interaction_mode"].as_str(),

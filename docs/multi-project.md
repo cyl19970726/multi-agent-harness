@@ -80,6 +80,25 @@ A store root is resolved by this precedence (highest first):
    (legacy, deprecation-warned).
 6. `_global`.
 
+### Member collaboration environment
+
+Provider processes receive two deliberately different project values:
+
+- `HARNESS_PROJECT_ID` is the stable Workspace identity used in records and UI;
+- `HARNESS_PROJECT` is an executable project selector, normally the canonical
+  `project_root`, which another Harness process can resolve even when the
+  member cwd is an unregistered external worktree.
+
+They also receive `HARNESS_BIN`, the exact Host executable. Member instructions
+and generated examples invoke `"$HARNESS_BIN"` rather than whichever stale
+`harness` happens to be first on `PATH`. The provider subprocess inherits this
+non-secret collaboration environment along with the normal provider
+environment. Harness never serializes the full environment or credentials.
+
+When `serve` starts from an unregistered external worktree, its in-memory
+default `ProjectContext` retains that worktree's `project_root` and central
+`store_root`; it must not reconstruct the project root from the store path.
+
 `--store-source` prints which store was chosen and why (the dual-read decision is
 always logged, never silent):
 

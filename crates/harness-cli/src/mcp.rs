@@ -524,6 +524,7 @@ fn tool_team_run_create(
             }
         };
         members.push(TeamMemberSpec {
+            agent_member_id: optional_str(member, "agent_member_id")?,
             name: member_str("name")?.to_string(),
             role: member_str("role")?.to_string(),
             provider: member_str("provider")?.to_string(),
@@ -603,6 +604,7 @@ fn tool_team_run_add_member(
         Some(_) => return Err("member.owned_paths must be an array".to_string()),
     };
     let member = TeamMemberSpec {
+        agent_member_id: optional_str(&Value::Object(member.clone()), "agent_member_id")?,
         name: member_str("name")?.to_string(),
         role: member_str("role")?.to_string(),
         provider: member_str("provider")?.to_string(),

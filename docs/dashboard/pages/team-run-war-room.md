@@ -110,6 +110,10 @@ Every item shows sender, Assignment correlation, delivery/ACK state, and the
 responsible next action. Answering reuses the source correlation, records the
 source message as causation, and acknowledges the source delivery.
 
+Conversation rows also expose `causation_id` as “reply to” lineage. A later
+Member Handoff therefore remains in the Assignment work chain while visibly
+pointing to the exact Host or peer follow-up that caused that provider round.
+
 ## Actions
 
 - Message the whole team or one explicit member. The composer distinguishes a
