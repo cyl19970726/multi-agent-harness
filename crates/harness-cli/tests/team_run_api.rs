@@ -970,6 +970,59 @@ fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
 }
 
 #[test]
+fn get_host_inbox_is_scoped_to_exact_native_thread() {
+    let home = TempHome::new("host-inbox-http");
+    let _project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise native Host inbox",
+            "host_surface": "codex-app",
+            "host_thread_id": "codex-thread-http-a",
+            "members": [
+                {"name": "member-a", "role": "builder", "provider": "codex"}
+            ]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id");
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id");
+    let assignment = &created["result"]["assignment_messages"][0];
+    let (status, sent) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": member_id,
+            "to_member_ids": ["host"],
+            "kind": "message",
+            "body": "QUESTION: choose A or B",
+            "correlation_id": assignment["correlation_id"],
+            "causation_id": assignment["id"],
+        }),
+    );
+    assert_eq!(status, 200, "body: {sent}");
+
+    let (status, exact) =
+        serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=codex-thread-http-a");
+    assert_eq!(status, 200, "body: {exact}");
+    assert_eq!(exact["runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(exact["runs"][0]["team_run_id"].as_str(), Some(run_id));
+    assert_eq!(
+        exact["runs"][0]["messages"].as_array().map(Vec::len),
+        Some(1)
+    );
+
+    let (status, other) =
+        serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=another-thread");
+    assert_eq!(status, 200, "body: {other}");
+    assert_eq!(other["runs"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
 fn linked_team_run_rejects_previous_attempt_from_another_wave() {
     let home = TempHome::new("team-run-previous-wave");
     let project_id = init_project(&home, "alpha");

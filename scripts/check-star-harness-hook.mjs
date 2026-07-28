@@ -21,10 +21,8 @@ writeFileSync(
   fakeHarness,
   `#!/usr/bin/env bash
 set -euo pipefail
-if [[ "\${1:-} \${2:-} \${3:-}" == "team-run list --json" ]]; then
-  printf '%s\\n' '{"runs":[{"id":"run-1","status":"running","member_run_ids":["member-1"],"project_id":"demo"}]}'
-elif [[ "\${1:-} \${2:-}" == "team-run inbox" ]]; then
-  printf '%s\\n' '[{"id":"msg-1","from_member_id":"member-1","kind":"handoff","correlation_id":"corr-1","body":"RESULT: done\\nChecks passed"}]'
+if [[ "\${1:-} \${2:-}" == "team-run host-inbox" ]]; then
+  printf '%s\\n' '[{"team_run_id":"run-1","team_run_status":"running","mission_id":"mission-1","messages":[{"id":"msg-1","from_member_id":"member-1","kind":"handoff","correlation_id":"corr-1","body":"RESULT: done\\nChecks passed"}]}]'
 elif [[ "\${1:-} \${2:-}" == "hook record" ]]; then
   exit 0
 else
@@ -35,9 +33,13 @@ fi
 );
 chmodSync(fakeHarness, 0o755);
 
-function run(event, extraEnv = {}) {
+function run(event, extraEnv = {}, extraPayload = {}) {
   const result = spawnSync("bash", [hook], {
-    input: JSON.stringify({ hook_event_name: event }),
+    input: JSON.stringify({
+      hook_event_name: event,
+      session_id: "codex-session-1",
+      ...extraPayload,
+    }),
     encoding: "utf8",
     env: {
       ...process.env,
@@ -55,8 +57,12 @@ function run(event, extraEnv = {}) {
 
 try {
   const started = run("SessionStart");
-  if (!started.includes("active TeamRun=run-1")) {
-    throw new Error("SessionStart must orient the Host to the active TeamRun");
+  if (
+    !started.includes(
+      "Host native binding: surface=codex-app thread=codex-session-1",
+    )
+  ) {
+    throw new Error("SessionStart must expose the exact native Host binding");
   }
   if (
     !started.includes("Needs you: TeamRun=run-1 pending_host_messages=1") ||
@@ -66,8 +72,8 @@ try {
   }
 
   const prompt = run("UserPromptSubmit");
-  if (prompt.includes("active TeamRun=")) {
-    throw new Error("UserPromptSubmit should not repeat active-run orientation");
+  if (prompt.includes("Host native binding:")) {
+    throw new Error("UserPromptSubmit should not repeat Host binding orientation");
   }
   if (!prompt.includes("Needs you: TeamRun=run-1 pending_host_messages=1")) {
     throw new Error("UserPromptSubmit must surface actionable Host mail");
@@ -80,9 +86,24 @@ try {
     throw new Error("A Member hook must not receive the Lead Inbox");
   }
 
-  const stopped = run("Stop");
-  if (stopped.trim()) {
-    throw new Error("Stop must not inject Host Inbox orientation");
+  const stopped = JSON.parse(
+    run("Stop", {}, { turn_id: "turn-1", stop_hook_active: false }),
+  );
+  if (
+    stopped.decision !== "block" ||
+    !stopped.reason.includes("received new coordination mail") ||
+    !stopped.reason.includes("TeamRun=run-1")
+  ) {
+    throw new Error(
+      "Codex Stop must continue the same native task with bounded Host mail",
+    );
+  }
+
+  const continued = JSON.parse(
+    run("Stop", {}, { turn_id: "turn-2", stop_hook_active: true }),
+  );
+  if (Object.keys(continued).length !== 0) {
+    throw new Error("A continued Stop hook must not create a continuation loop");
   }
 
   console.log("Star Harness Host Inbox hook contract is valid");

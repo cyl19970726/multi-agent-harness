@@ -9161,6 +9161,39 @@ pub(crate) fn team_run_inbox(
         .collect())
 }
 
+/// Aggregate Host mail for the exact provider-native Host thread bound to each
+/// TeamRun. A plugin in one desktop task must never receive mail owned by
+/// another task merely because both use the same project store.
+pub(crate) fn host_inbox_for_native_thread(
+    store: &HarnessStore,
+    host_surface: &str,
+    host_thread_id: &str,
+    include_all: bool,
+) -> CliResult<Vec<serde_json::Value>> {
+    if host_surface.trim().is_empty() || host_thread_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "Host surface and native thread id must not be empty".to_string(),
+        ));
+    }
+    let mut entries = Vec::new();
+    for run in latest_team_runs_in_append_order(store)? {
+        if run.host_surface != host_surface || run.host_thread_id.as_deref() != Some(host_thread_id)
+        {
+            continue;
+        }
+        let messages = team_run_inbox(store, &run.id, "host", include_all)?;
+        if include_all || !messages.is_empty() {
+            entries.push(serde_json::json!({
+                "team_run_id": run.id,
+                "team_run_status": run.status,
+                "mission_id": run.mission_id,
+                "messages": messages,
+            }));
+        }
+    }
+    Ok(entries)
+}
+
 /// Resolve and verify manual message lineage without requiring legacy Task
 /// records. An Assignment establishes a unique correlation anchor. A
 /// non-assignment message that explicitly names a correlation must point at an
@@ -9512,7 +9545,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
+        "team-run create|list|status|host-inbox|bind-host|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -9715,6 +9748,74 @@ fn team_run_command(
                     );
                 }
                 println!("unacked_messages (delivered manual ACKs): {unacked_messages}");
+            }
+        }
+        "host-inbox" => {
+            let surface = required(args, "--surface")?;
+            let thread_id = required(args, "--thread-id")?;
+            let inbox =
+                host_inbox_for_native_thread(store, &surface, &thread_id, has_flag(args, "--all"))?;
+            if json {
+                print_json(&inbox)?;
+            } else {
+                for entry in &inbox {
+                    let run_id = entry["team_run_id"].as_str().unwrap_or("?");
+                    for message in entry["messages"].as_array().into_iter().flatten() {
+                        println!(
+                            "{}\t{}\tfrom={}\t{}",
+                            run_id,
+                            message["id"].as_str().unwrap_or("?"),
+                            message["from_member_id"].as_str().unwrap_or("?"),
+                            message["body"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .lines()
+                                .next()
+                                .unwrap_or_default()
+                        );
+                    }
+                }
+            }
+        }
+        "bind-host" => {
+            let id = required(args, "--id")?;
+            let surface = required(args, "--surface")?;
+            let thread_id = required(args, "--thread-id")?;
+            if surface.trim().is_empty() || thread_id.trim().is_empty() {
+                return Err(CliError::Usage(
+                    "--surface and --thread-id must not be empty".to_string(),
+                ));
+            }
+            let current = latest_team_run(store, &id)?;
+            let mut next = current.clone();
+            next.host_surface = surface;
+            next.host_thread_id = Some(thread_id);
+            next.updated_at = now_string();
+            store_conflict_as_usage(store.compare_and_append_team_run(&current, &next))?;
+            append_team_run_event(
+                store,
+                &id,
+                next_team_run_seq(store, &id)?,
+                TeamRunEventSourceKind::Host,
+                None,
+                "host_binding",
+                &id,
+                "updated",
+                &format!(
+                    "Host binding set to {}:{}",
+                    next.host_surface,
+                    next.host_thread_id.as_deref().unwrap_or("?")
+                ),
+            )?;
+            if json {
+                print_json(&next)?;
+            } else {
+                println!(
+                    "{}\t{}:{}",
+                    next.id,
+                    next.host_surface,
+                    next.host_thread_id.as_deref().unwrap_or("?")
+                );
             }
         }
         "inbox" => {
@@ -14118,6 +14219,25 @@ fn handle_http_connection(
     if method == "GET" {
         if let Some(response) = company_os_api::handle_get(store, &path_only) {
             write_http_json(&mut stream, response.status, &response.body)?;
+            return Ok(());
+        }
+        if path_only == "/v1/team-runs/host-inbox" {
+            let surface = query_param(&path, "surface").unwrap_or_default();
+            let thread_id = query_param(&path, "thread_id").unwrap_or_default();
+            let include_all = query_param(&path, "all")
+                .as_deref()
+                .is_some_and(|value| matches!(value, "1" | "true" | "yes"));
+            match host_inbox_for_native_thread(store, &surface, &thread_id, include_all) {
+                Ok(runs) => {
+                    write_http_json(&mut stream, "200 OK", &serde_json::json!({"runs": runs}))?
+                }
+                Err(CliError::Usage(detail)) => write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"error": "invalid_host_binding", "detail": detail}),
+                )?,
+                Err(error) => return Err(error),
+            }
             return Ok(());
         }
         if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
@@ -24215,7 +24335,7 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|host-inbox|bind-host|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
   member-run show --id <member-run-id> [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
@@ -29508,6 +29628,53 @@ mod tests {
             None,
         )
         .expect("Host instructs execution");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_inbox_is_scoped_to_exact_native_thread_binding() {
+        let (store, root) = temp_store("host-native-inbox");
+        let created = create_two_member_team_run(&store);
+        let member = &created.member_runs[0];
+        let assignment = &created.assignment_messages[0];
+        let current = latest_team_run(&store, &created.team_run.id).expect("current run");
+        let mut bound = current.clone();
+        bound.host_surface = "codex-app".into();
+        bound.host_thread_id = Some("codex-thread-a".into());
+        bound.updated_at = "unix-ms:host-bound".into();
+        store
+            .compare_and_append_team_run(&current, &bound)
+            .expect("bind native Host");
+
+        let mail = send_team_message(
+            &store,
+            &bound.id,
+            &member.id,
+            vec!["host".into()],
+            TeamMessageKind::Message,
+            "QUESTION: choose interface A or B",
+            Some(assignment.correlation_id.clone()),
+            Some(assignment.id.clone()),
+            None,
+        )
+        .expect("member asks Host");
+
+        let exact = host_inbox_for_native_thread(&store, "codex-app", "codex-thread-a", false)
+            .expect("exact Host inbox");
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0]["team_run_id"], bound.id);
+        assert_eq!(exact[0]["messages"][0]["id"], mail.id);
+        assert!(
+            host_inbox_for_native_thread(&store, "codex-app", "another-thread", false,)
+                .expect("other Host inbox")
+                .is_empty(),
+            "one native Host task must never receive another task's mail"
+        );
+        assert!(
+            host_inbox_for_native_thread(&store, "claude-code", "codex-thread-a", false)
+                .expect("other surface")
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

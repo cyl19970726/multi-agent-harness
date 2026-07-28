@@ -38,6 +38,7 @@ consequences, affected modules, and validation path.
 | [0037](0037-agent-member-autonomy-and-collaboration.md) | active | Members own end-to-end assignments; TeamMessage is the collaboration mailbox; subagents remain member-internal |
 | [0038](0038-provider-native-member-plan-negotiation.md) | superseded | Historical provider-native Plan Gate, replaced by ordinary correlated planning |
 | [0039](0039-ordinary-member-planning-and-durable-mailbox-delivery.md) | active | Planning is ordinary Host/Member conversation; Harness owns durable mailbox and adapters prove delivery |
+| [0040](0040-native-host-inbox-delivery.md) | active | Host mail is scoped to an exact native task; Codex busy delivery uses a one-shot Stop continuation and unowned idle tasks remain safe-boundary pull |
 
 ## Split Rule
 

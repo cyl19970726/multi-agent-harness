@@ -27,7 +27,7 @@ use crate::{
     acknowledge_team_message, add_team_run_member, advance_wave, close_mission,
     close_team_member_value, create_mission, create_team_run, create_wave,
     deactivate_team_run_member, drive_prepared_team_run, gate_wave,
-    has_actionable_delivered_manual_ack, interrupt_team_member_value,
+    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start,
@@ -180,6 +180,7 @@ fn call_tool(
         "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
+        "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
         "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
@@ -546,8 +547,10 @@ fn tool_team_run_create(
         optional_str(arguments, "execution_root")?,
         objective,
         budget_limit_usd,
-        "mcp",
-        None,
+        optional_str(arguments, "host_surface")?
+            .as_deref()
+            .unwrap_or("mcp"),
+        optional_str(arguments, "host_thread_id")?,
         optional_str(arguments, "previous_run_id")?,
         agent_team_id,
         optional_str(arguments, "mission_id")?,
@@ -789,6 +792,20 @@ fn tool_team_run_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value,
     Ok(json!({"messages": messages}))
 }
 
+/// `team_run_host_inbox` — aggregate actionable Host mail only for TeamRuns
+/// bound to the exact provider-native Host thread.
+fn tool_team_run_host_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let host_surface = required_str(arguments, "host_surface")?;
+    let host_thread_id = required_str(arguments, "host_thread_id")?;
+    let include_all = arguments
+        .get("all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let runs = host_inbox_for_native_thread(store, host_surface, host_thread_id, include_all)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"runs": runs}))
+}
+
 /// `team_run_events` — the run's folded event log, seq-ordered, optionally
 /// resumed after a seen seq (pass the last seq you have as `after_seq`).
 fn tool_team_run_events(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -962,6 +979,8 @@ fn tool_definitions() -> Value {
                     "mission_id": {"type": "string", "description": "Optional durable Mission relation. Mission-only is the primary long-lived team path."},
                     "wave_id": {"type": "string", "description": "Legacy direct-Wave executor compatibility only."},
                     "execution_root": {"type": "string", "minLength": 1, "description": "Optional TeamRun execution root. Must be the selected project_root or a Git worktree sharing its git common directory; defaults to project_root."},
+                    "host_surface": {"type": "string", "minLength": 1, "description": "Exact provider-native Host surface, for example codex-app. Defaults to mcp when the calling Host does not bind itself."},
+                    "host_thread_id": {"type": "string", "minLength": 1, "description": "Exact native Host task/session id. Required for Plugin safe-boundary delivery to this Host."},
                     "members": {
                         "type": "array",
                         "description": "One entry per team member.",
@@ -1086,6 +1105,19 @@ fn tool_definitions() -> Value {
                     "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."}
                 },
                 "required": ["team_run_id"]
+            }
+        },
+        {
+            "name": "team_run_host_inbox",
+            "description": "Read Host mail across only those TeamRuns explicitly bound to one exact provider-native Host surface/thread. This is the safe Plugin/App integration path: it never leaks another Host task's inbox. By default returns actionable mail; all=true includes acknowledged history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "host_surface": {"type": "string", "description": "Provider-native Host surface, for example codex-app."},
+                    "host_thread_id": {"type": "string", "description": "Exact native Host task/session id stored on AgentTeamRun."},
+                    "all": {"type": "boolean", "default": false}
+                },
+                "required": ["host_surface", "host_thread_id"]
             }
         },
         {

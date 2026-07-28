@@ -126,6 +126,12 @@ requiring manual ACK. This does not interrupt the Host's current turn; the Host
 reads it at the next safe boundary, ACKs transport separately, and sends a
 causation-linked semantic response when needed.
 
+This repository does not claim that a Claude Code/Desktop Host session owned by
+another process can be background-woken. A future Claude Host adapter must own
+the live Agent SDK streaming connection before it reports idle push delivery.
+Without that connection, it uses the same exact native binding and
+safe-boundary pull contract as [ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+
 Provider-paused questions and approvals use `PendingInteraction`. A provider
 `completed` status alone is not proof that an answer, approval, or semantic
 handoff occurred.

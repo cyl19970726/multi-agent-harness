@@ -128,10 +128,28 @@ harness team-run send --id <team-run-id> --from host --to <member-run-id> \
   --correlation-id <assignment-correlation> --causation-id <message-id>
 ```
 
+Bind every TeamRun to this exact native Host task using `host_surface` and
+`host_thread_id`. Never read all active runs merely because they share a
+project:
+
+```bash
+harness team-run host-inbox --surface <provider-surface> \
+  --thread-id <native-host-task-id> --json
+harness team-run bind-host --id <run> --surface <provider-surface> \
+  --thread-id <native-host-task-id>
+```
+
 The Star Harness Plugin injects a bounded `Needs you` summary at supported
-SessionStart and user-prompt boundaries. Treat it as orientation, not as the
-mailbox truth: always use the Inbox command before acting. No hook may silently
-ACK, answer, accept, or wake the Host in the middle of a turn.
+SessionStart and user-prompt boundaries. For Codex, a `Stop` hook may continue
+the same native task once when actionable mail arrived while the Host was busy.
+It never interrupts the middle of a turn, never loops after
+`stop_hook_active`, and never scans another native task's Inbox.
+
+Treat hook context as orientation, not mailbox truth: read the canonical Inbox
+before acting. No hook may silently ACK, answer, or accept. If a Desktop/CLI
+task is already idle and Harness does not own its live provider connection,
+mail remains durable until the next prompt or resume; knowing a thread id is
+not authority to claim background wake.
 
 The Host owns Member lifecycle explicitly:
 
