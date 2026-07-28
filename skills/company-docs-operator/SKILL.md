@@ -415,7 +415,7 @@ Use:
 - `--kind heading --text <heading>` for section headings;
 - `--kind callout --content-json <json>` for durable notes, decisions, risks,
   or warnings;
-- `--kind table --content-json <json>` for simple table content when the data
+- `--kind simple_table --content-json <json>` for simple table content when the data
   is document-local prose. Use `typed-record append` plus a `view create` when
   rows are canonical business records.
 
