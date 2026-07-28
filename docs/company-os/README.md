@@ -140,10 +140,12 @@ rules live in [Documentation Governance](../documentation-governance.md).
   page/design scope and visual evidence.
 - [Trademark registration example](examples/trademark-registration.md): first
   cross-system acceptance scenario.
-- [Wanchengwanling AR tourism operations example](examples/wanchengwanling-operations.md):
-  first real external-project mapping example, connecting GitHub-hosted
-  software PRDs to Company OS commercial, merchant, procurement, content,
-  creator, finance, and launch-readiness modules.
+- [Wanchengwanling AR tourism dogfood project](examples/wanchengwanling-operations.md):
+  first real commercial Company OS dogfood project. Its live operating truth
+  belongs in the registered Store `new-day-wanchengwanling`; GitHub-hosted
+  software PRDs, repo docs, generated reports, and bootstrap scripts are source
+  observations, design references, or acceptance evidence, not the commercial
+  operating database.
 - [Wanchengwanling completion roadmap](examples/wanchengwanling-completion-roadmap.md):
   storage-backed unfinished-goal map for CLI/API, skills, custom pages, GitHub
   source sync, SQL read/search, real launch data, and replication templates.

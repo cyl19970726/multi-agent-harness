@@ -293,6 +293,12 @@ For Wanchengwanling, the intended local project Store is:
 /Users/hhh0x/.harness/projects/new-day-wanchengwanling
 ```
 
+Treat Wanchengwanling as the first real commercial Company OS dogfood project,
+not as a sample dataset. Repo markdown, design images, generated reports, and
+scripts are useful only when they point back to Store-backed Documents,
+TypedRecords, Relations, Views, WorkItems, Actors, Finance records, source-sync
+observations, and custom page definitions.
+
 Do not use repository markdown as the operating database. The durable business
 workspace must be readable from the Company OS Store; markdown docs, generated
 reports, and seed scripts are references or acceptance evidence.

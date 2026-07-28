@@ -1,9 +1,11 @@
-# Wanchengwanling: AR Tourism Operations Example
+# Wanchengwanling: AR Tourism Company OS Dogfood
 
 ```text
-status: product example and module seed
-example_id: wanchengwanling-ar-tourism-ops
+status: active commercial dogfood project
+dogfood_project_id: new-day-wanchengwanling
+external_software_project_id: wanchengwanling
 canonical_for: applying Company OS to a real AR tourism project whose software PRDs live in GitHub
+live_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
 ```
 
 ## Scenario
@@ -34,6 +36,40 @@ Company OS
      procurement, merchant relations, content operations, creator relations,
      launch readiness, and linked result memory
 ```
+
+## Dogfood contract
+
+Wanchengwanling is the first real commercial project used to operate Company
+OS against a non-toy business. This document is not the operating database. The
+accepted dogfood target is the registered Company OS Store:
+
+```text
+Company OS project id: new-day-wanchengwanling
+project root: /Users/hhh0x/new-day/wanchengwanling
+Store root: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+```
+
+For this project, “done” means a future Agent can inspect the Store and answer:
+
+- what the business sells, how money is split, and which rules are still
+  planned;
+- which Docs pages define the commercial model and product structure;
+- which WorkItems exist, which Milestone/WorkType/module owns them, and who is
+  assigned;
+- which Organization actors are governance agents versus business agents;
+- which Finance records exist, which are only commitments, and whether any
+  payment evidence exists;
+- which GitHub `dev` PRD/source observations have been synced and where they
+  drift from commercial truth;
+- which custom pages are Store-backed UI projections rather than static
+  screenshots.
+
+Repo markdown, generated HTML reports, expected images, and scripts can explain
+or verify the product. They do not replace Store-backed Docs, Work,
+Organization, Finance, source-sync records, or custom-page definitions.
+Project-specific scripts are allowed only as bootstrap/acceptance fixtures
+until the corresponding CLI/API/skill path exists; they must not become the
+normal authoring interface for this commercial dogfood project.
 
 ## Initial module map
 

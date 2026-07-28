@@ -45,6 +45,11 @@ Agents through CLI/API. Seed or materialization scripts may remain acceptance
 fixtures, but they are not the normal authoring path for a registered project
 Store.
 
+`new-day-wanchengwanling` is the first real commercial dogfood project for this
+suite. Its GitHub `dev` branch is an external software product source; the
+commercial operating truth must remain in the Company OS Store through Docs,
+Work, Organization, Finance, source-sync records, and custom page definitions.
+
 Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
 Agent interface for reading, editing, governing, and verifying document truth.
 The UI is primarily for Humans to inspect, review, approve, and supervise what

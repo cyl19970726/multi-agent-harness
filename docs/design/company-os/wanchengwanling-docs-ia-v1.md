@@ -1,7 +1,7 @@
 # Wanchengwanling Company OS Docs IA v1
 
 ```text
-status: design contract for Store-backed project Docs
+status: design contract for the first Store-backed commercial dogfood project Docs
 owner_role: Docs Governance Agent + Human Owner
 canonical_for: Wanchengwanling document hierarchy, page responsibilities, page linking, and custom-page candidates
 source_evidence:
@@ -18,6 +18,12 @@ UI exists mainly for humans to understand the business; Agents operate the same
 truth through CLI/API. Core pages should therefore be designed as operating
 surfaces over native `Document`, `Block`, `TypedRecord`, `Relation`, `View`,
 `WorkItem`, `ActorRef`, and `FinancialRecord` objects.
+
+This IA is the product/page contract for the live Company OS dogfood project
+`new-day-wanchengwanling`. The authoritative business records should be
+inspectable from `/Users/hhh0x/.harness/projects/new-day-wanchengwanling`.
+Repo docs, expected images, generated HTML reports, and scripts can guide or
+verify the surface, but they are not the live commercial memory.
 
 The commercial thesis is:
 
