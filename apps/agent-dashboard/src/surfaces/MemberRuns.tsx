@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock3,
+  ExternalLink,
   FileCheck2,
   FileText,
   GitBranch,
@@ -48,6 +49,17 @@ import type { NativeActivityItem, NativeActivityProjection, TeamMessage, Wave } 
 import type { SelectionState } from "@/app/selection";
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to message this member";
+
+function claudeDesktopSessionUri(member: MemberRunContext["member"]): string | undefined {
+  const session = member.native_session;
+  if (
+    member.provider !== "claude"
+    || session?.provider !== "claude"
+    || session.execution_mode !== "claude_agent_sdk"
+    || !session.native_session_id
+  ) return undefined;
+  return `claude://resume?session=${encodeURIComponent(session.native_session_id)}`;
+}
 
 export interface MemberRunFocusProps {
   model: WorkbenchModel;
@@ -301,6 +313,7 @@ function MemberHeroHeader({
   onBack: () => void;
 }) {
   const name = context.member.name ?? context.member.id;
+  const desktopUri = claudeDesktopSessionUri(context.member);
   return (
     <header className="flex h-full min-w-0 items-center justify-between gap-6">
       <div className="flex min-w-0 items-end gap-9 self-stretch">
@@ -321,6 +334,16 @@ function MemberHeroHeader({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {desktopUri && (
+          <Button asChild size="sm" variant="outline">
+            <a
+              href={desktopUri}
+              title="Import this provider-native session into Claude Desktop. Observe only while Harness drives the member."
+            >
+              <ExternalLink className="size-3.5" /> Open in Claude Desktop
+            </a>
+          </Button>
+        )}
         {context.member.status === "running" && context.member.provider_profile?.supports_cancel && (
           <Button size="sm" variant="outline" disabled={!actionsEnabled} onClick={() => dispatch(onAction, interruptTeamMember(context.run.id, context.member.id))}>
             <Square className="size-3 fill-current" /> Interrupt
@@ -643,6 +666,11 @@ function MemberContextRail({
           <RailKeyValue label="Actual cwd" value={context.member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono />
           <RailKeyValue label="Git branch" value={context.member.workspace_snapshot?.git_branch ?? "Detached or not captured"} mono />
           <RailKeyValue label="Last activity" value={formatRelative(context.member.last_event_at)} />
+          {claudeDesktopSessionUri(context.member) && (
+            <p className="rounded-md border border-status-warn/25 bg-status-warn/5 px-2.5 py-2 text-[10px] leading-4 text-muted-foreground">
+              Desktop import is an observation surface while Harness drives this Member. Simultaneous SDK and Desktop generation is not verified.
+            </p>
+          )}
           <details className="pt-1 text-[10px] text-muted-foreground">
             <summary className="cursor-pointer font-medium hover:text-foreground">Advanced runtime facts</summary>
             <div className="mt-2 space-y-1.5 border-l border-border pl-2.5 text-[11px]">

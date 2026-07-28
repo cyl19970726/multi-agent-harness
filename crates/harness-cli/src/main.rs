@@ -10063,7 +10063,7 @@ fn team_run_command(
 /// coordination facts needed by a Host or operator; `native_session` remains
 /// a locator to the provider-owned execution truth.
 fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member-run show")?;
+    require_subcommand(args, "member-run show|open-native")?;
     match args[0].as_str() {
         "show" => {
             let detail = member_run_detail_json(store, &required(args, "--id")?)?;
@@ -10111,6 +10111,34 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 }
             }
         }
+        "open-native" => {
+            let member_run_id = required(args, "--id")?;
+            let member = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .find(|member| member.id == member_run_id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            let mut target = native_session_open_target(&member)?;
+            let print_only = has_flag(args, "--print-only");
+            if !print_only {
+                open_native_session_target(
+                    target["uri"]
+                        .as_str()
+                        .expect("native-session target always has a URI"),
+                )?;
+            }
+            target["opened"] = serde_json::Value::Bool(!print_only);
+            if has_flag(args, "--json") {
+                print_json(&target)?;
+            } else if print_only {
+                println!("{}", target["uri"].as_str().unwrap_or_default());
+            } else {
+                println!(
+                    "opened {}\tdesktop_session={}",
+                    target["uri"].as_str().unwrap_or_default(),
+                    target["desktop_session_id"].as_str().unwrap_or_default()
+                );
+            }
+        }
         other => {
             return Err(CliError::Usage(format!(
                 "unknown member-run command: {other}"
@@ -10118,6 +10146,70 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve an explicit provider-owned UI target without changing the native
+/// session binding. Claude Desktop imports SDK/CLI sessions through this deep
+/// link and deterministically exposes them as `local_<native-id>`.
+fn native_session_open_target(member: &MemberRun) -> CliResult<serde_json::Value> {
+    let session = member.native_session.as_ref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "member run {} has no bound provider-native session",
+            member.id
+        ))
+    })?;
+    if member.provider != "claude" || session.provider != "claude" {
+        return Err(CliError::Usage(format!(
+            "member run {} uses provider {}; open-native currently supports only Claude Agent SDK sessions",
+            member.id, member.provider
+        )));
+    }
+    if session.execution_mode != "claude_agent_sdk" {
+        return Err(CliError::Usage(format!(
+            "member run {} uses Claude mode {}; Desktop import is verified only for claude_agent_sdk",
+            member.id, session.execution_mode
+        )));
+    }
+    let native_id = session.native_session_id.trim();
+    if native_id.is_empty()
+        || !native_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(CliError::Usage(format!(
+            "member run {} has an unsafe native session id; refusing to build a Desktop deep link",
+            member.id
+        )));
+    }
+    Ok(serde_json::json!({
+        "member_run_id": member.id,
+        "provider": "claude",
+        "execution_mode": session.execution_mode,
+        "native_session_id": native_id,
+        "uri": format!("claude://resume?session={native_id}"),
+        "desktop_session_id": format!("local_{native_id}"),
+        "ownership": "provider_native",
+        "concurrency_warning": "Use Claude Desktop for observation while Harness drives this Member; simultaneous SDK and Desktop generation is not verified.",
+    }))
+}
+
+fn open_native_session_target(uri: &str) -> CliResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open").arg(uri).status()?;
+        if !status.success() {
+            return Err(CliError::Usage(format!(
+                "macOS could not open the provider-native session target: {uri}"
+            )));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CliError::Usage(format!(
+            "opening provider-native session targets is currently supported only on macOS; inspect it with --print-only: {uri}"
+        )))
+    }
 }
 
 fn member_run_detail_json(
@@ -24938,6 +25030,7 @@ fn print_help() {
   wave create|list|show|history|update|advance|gate
   team-run create|list|status|host-inbox|bind-host|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
   member-run show --id <member-run-id> [--json]
+  member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
   company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
@@ -28911,6 +29004,102 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_open_test_member(provider: &str, mode: &str, session_id: &str) -> MemberRun {
+        MemberRun {
+            id: "member-native-open".into(),
+            team_run_id: "team-native-open".into(),
+            slot_id: None,
+            agent_member_id: None,
+            name: "DesktopObserver".into(),
+            role: "reviewer".into(),
+            provider: provider.into(),
+            model: None,
+            provider_profile: None,
+            status: MemberRunStatus::Idle,
+            native_session: Some(NativeSessionRef {
+                provider: provider.into(),
+                execution_mode: mode.into(),
+                native_session_id: session_id.into(),
+                native_locator_kind: "claude_project_jsonl".into(),
+                provider_version: None,
+                adapter_contract_version: "test".into(),
+                availability: NativeSessionAvailability::Available,
+                supports_resume: true,
+                last_verified_at: None,
+                parent_native_session_id: None,
+            }),
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn claude_sdk_native_session_has_deterministic_desktop_import_target() {
+        let target = native_session_open_target(&native_open_test_member(
+            "claude",
+            "claude_agent_sdk",
+            "851b37dd-1234-5678-9abc-0123456789ab",
+        ))
+        .expect("Claude SDK target");
+        assert_eq!(
+            target["uri"],
+            "claude://resume?session=851b37dd-1234-5678-9abc-0123456789ab"
+        );
+        assert_eq!(
+            target["desktop_session_id"],
+            "local_851b37dd-1234-5678-9abc-0123456789ab"
+        );
+        assert_eq!(target["ownership"], "provider_native");
+    }
+
+    #[test]
+    fn native_session_open_target_rejects_unsupported_or_unsafe_sessions() {
+        let codex = native_session_open_target(&native_open_test_member(
+            "codex",
+            "codex_app_server",
+            "thread-1",
+        ))
+        .expect_err("Codex has no registered native UI target");
+        assert!(codex.to_string().contains("supports only Claude Agent SDK"));
+
+        let unsafe_id = native_session_open_target(&native_open_test_member(
+            "claude",
+            "claude_agent_sdk",
+            "session&unexpected=true",
+        ))
+        .expect_err("unsafe deep-link value must fail closed");
+        assert!(unsafe_id.to_string().contains("unsafe native session id"));
+    }
+
+    #[test]
+    fn member_run_open_native_print_only_never_launches_an_application() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("native-open")));
+        let store = HarnessStore::new(&root);
+        store
+            .append_member_run(&native_open_test_member(
+                "claude",
+                "claude_agent_sdk",
+                "851b37dd-1234-5678-9abc-0123456789ab",
+            ))
+            .expect("append member run");
+        member_run_command(
+            &store,
+            &[
+                "open-native".into(),
+                "--id".into(),
+                "member-native-open".into(),
+                "--print-only".into(),
+            ],
+        )
+        .expect("print-only route");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn persistent_member_profiles_default_to_one_host_execution_driver() {

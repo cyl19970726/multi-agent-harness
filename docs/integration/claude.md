@@ -200,23 +200,27 @@ listSessions({ dir: <member-cwd> })
 claude --resume <native-session-id>
 ```
 
-This is not a Claude Desktop projection. Claude documents that Agent SDK and
-`claude -p` sessions do not appear in the session picker, and Desktop, Web, and
-VS Code keep separate session histories. There is no supported existing-session
-Desktop deep link for an Agent SDK session. The `/desktop` transfer command is
-an interactive CLI workflow; transferring a running Team member would exit its
-runner and violate Host-owned lifecycle, so Harness does not invoke it.
+Claude Desktop does not list an externally created Agent SDK session
+automatically. The provider-owned import path was live-verified on Claude Code
+2.1.220 / Agent SDK 0.3.220:
 
-The operator sees the Member and coordination in the Harness Dashboard and may
-resume the provider-native session explicitly from Claude Code CLI. “SDK
-registry can enumerate and resume” is an adapter acceptance claim; “conversation
-appears in Claude Desktop” is not.
+```bash
+open "claude://resume?session=<native-session-id>"
+```
 
-References:
+Desktop imports it as `local_<native-session-id>`. A sequential SDK resume after
+import appended coherently to the same native session in the canary. Concurrent
+SDK and Desktop generation was not tested, so the operating rule is strict:
+Desktop is observation-only while Harness owns the Member's execution driver.
+Import is always an explicit operator action; member startup never opens
+Desktop automatically.
 
-- <https://code.claude.com/docs/en/agent-sdk/sessions>
-- <https://code.claude.com/docs/en/sessions>
-- <https://code.claude.com/docs/en/desktop>
+`harness member-run open-native --id <member-run-id>` performs that explicit
+macOS import. `--print-only` returns the target without opening an application.
+The Dashboard exposes the same provider URI only for a bound
+`claude_agent_sdk` session. Harness continues storing the original SDK session
+id; `local_...` is a deterministic Desktop presentation id, not another
+Harness-owned transcript or lifecycle.
 
 ## Capability and version governance
 
@@ -226,8 +230,8 @@ session binding, and SDK-reported version capture. The 2026-07-28 canary proved
 two Host rounds on native session
 `ec91628d-a514-4d40-ae9c-7f73ecf3c40f`, correct project/store selection,
 Member-to-Host handoff, same-session continuation, and explicit Host close.
-That session is enumerable by SDK `listSessions`; it is intentionally absent
-from Claude Desktop's picker as described above.
+That session is enumerable by SDK `listSessions`; Desktop visibility requires
+the explicit provider-owned import described above.
 
 Never install, upgrade, downgrade, or switch Claude Code or the Agent SDK
 without explicit Human confirmation naming the candidate version. After an

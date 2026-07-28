@@ -188,6 +188,13 @@ it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
 execution fact, not an implicit Wave advance.
 
+For a bound Claude `claude_agent_sdk` session, Member Focus may expose **Open in
+Claude Desktop** using `claude://resume?session=<native-session-id>`. This is an
+explicit provider-owned import/view action, not a Harness resume or transcript
+copy. The control must warn that Desktop is observation-only while Harness
+drives the Member because simultaneous writers are not verified. Other provider
+modes do not receive a fabricated Desktop target.
+
 ## Empty, Loading, And Failure States
 
 - **No assignment:** show `No assignment recorded` prominently; preserve
