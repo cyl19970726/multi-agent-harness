@@ -2,10 +2,13 @@
 
 ```text
 status: active commercial dogfood project
-dogfood_project_id: new-day-wanchengwanling
+compat_project_id: new-day-wanchengwanling
 external_software_project_id: wanchengwanling
 canonical_for: applying Company OS to a real AR tourism project whose software PRDs live in GitHub
-live_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+compat_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+company_store_id: agent-company
+company_store: /Users/hhh0x/.harness/companies/agent-company
+target_boundary: ADR 0042 Agent Company Workspace / Company Store
 ```
 
 ## Scenario
@@ -41,13 +44,21 @@ Company OS
 
 Wanchengwanling is the first real commercial project used to operate Company
 OS against a non-toy business. This document is not the operating database. The
-accepted dogfood target is the registered Company OS Store:
+current local dogfood data lives in the repo-derived compatibility Store:
 
 ```text
 Company OS project id: new-day-wanchengwanling
 project root: /Users/hhh0x/new-day/wanchengwanling
 Store root: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
 ```
+
+ADR 0040 changes the target boundary: Wanchengwanling should become an
+operating area inside one Agent Company Workspace / Company Store, alongside
+AgentOS / Star Harness. The `wanchengwanling` Git repository remains an
+external software source / Project Binding, not the owner of company truth.
+
+The first local Company Store migration is recorded in
+[Wanchengwanling Company Store migration](wanchengwanling-company-store-migration.md).
 
 For this project, “done” means a future Agent can inspect the Store and answer:
 
@@ -174,10 +185,71 @@ The real local project Store currently contains the native bootstrap:
 | Organization | Lead Agent, four Governance Agents, six Business Agents, human owner, external participant, org units, memberships |
 | Finance / Approval | approved ¥10 CNY merchant-share unit Commitment; no Payment inferred |
 
-This is the correct target for Wanchengwanling Company OS records. Repository
-markdown and generated reports may explain or visualize the product, but the
-operating records for this commercial project should be queryable from this
-Store.
+This remains the verified compatibility Store source for Wanchengwanling Company
+OS records. Repository markdown and generated reports may explain or visualize
+the product, but active dogfood should now prefer the migrated Company Store
+`agent-company`, where Wanchengwanling and AgentOS can share Docs, Work,
+Organization, Finance, governance, and cross-operating-area relations.
+
+### Docs foundation verified on 2026-07-28
+
+The first dogfood authoring pass established the two root commercial pages as
+Store-backed operating pages:
+
+- `00 Project Home / 商业总览` now has a `page_contract`,
+  `module_directory`, `operating_loop`, and expanded `project_overview`
+  records, with explicit active Relations and standard Views.
+- `01 Business Model / 商业模式` now has a `page_contract`, physical and
+  virtual bracelet revenue lines, merchant capability value model, 8/12
+  incentive model, Finance boundary model, cost model, replication model, MVP
+  metric definitions, and explicit active Relations and standard Views.
+
+Both pages were updated through the governed Docs CLI and verified with:
+
+```bash
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-project-home --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-business-model --json
+```
+
+The resulting health findings for these two pages are empty. The next dogfood
+slice should build `02 Bracelet & Product` and `03 Route & AR Experience` with
+the same pattern before custom-page work is expanded.
+
+### Product and route foundation verified on 2026-07-28
+
+The second dogfood authoring pass established the next two commercial pages:
+
+- `02 Bracelet & Product / 手环与产品售卖` now has a page contract, physical
+  and virtual bracelet records, entitlement rules, sales channels, the
+  ¥30/¥10/¥20 consignment split, and a design/inventory dependency record.
+- `03 Route & AR Experience / 景点路线与 AR 体验` now has a page contract, site
+  record, route catalog, twelve spot records from the Wanchengwanling software
+  source `docs/reference/stamps/new-twelve-stamps.md`, distinct 8-spot magnet
+  and 12-spot lottery rules, AR asset readiness, and field validation models.
+
+Both pages were verified through CLI and frontend Store-live rendering:
+
+```bash
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-bracelet-product --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-route-ar-experience --json
+```
+
+Frontend evidence is recorded in
+[`docs/design/company-os-v4/wanchengwanling-dogfood-docs-v1`](../../design/company-os-v4/wanchengwanling-dogfood-docs-v1/README.md).
+
+The follow-up dogfood pass also completed the Store-backed foundation for
+`04 Merchant Network` and `05 Rewards, Procurement & Inventory`: merchant role
+segments, merchant onboarding/contact models, reward and prize-pool records,
+procurement items, inventory/logistics models, redemption evidence, and the
+Finance boundary are now native Docs records with empty health findings.
+Frontend evidence is recorded in the same artifact directory. The next slice
+should move to `06 Content Growth` and `07 Creator Outreach`.
 
 ## Repo PRD mapping
 

@@ -128,6 +128,7 @@ impl ServeHandle {
             .envs(home.envs())
             .env_remove("HARNESS_ROOT")
             .env_remove("HARNESS_PROJECT")
+            .env_remove("HARNESS_COMPANY")
             // Production supervisors never retire an idle Member implicitly.
             // Integration processes need a bounded escape after they have
             // asserted the idle state so test teardown can join cleanly.
@@ -346,7 +347,8 @@ pub fn run_harness(home: &TempHome, cwd: &Path, args: &[&str]) -> std::process::
     run_harness_with_env(home, cwd, args, &[])
 }
 
-/// Run `harness <args...>` with explicit additional environment variables.
+/// Run `harness <args...>` from `cwd` against `home` with explicit additional
+/// environment variables.
 pub fn run_harness_with_env(
     home: &TempHome,
     cwd: &Path,
@@ -357,13 +359,16 @@ pub fn run_harness_with_env(
     for a in args {
         cmd.arg(a);
     }
-    cmd.current_dir(cwd)
+    let command = cmd
+        .current_dir(cwd)
         .envs(home.envs())
-        .envs(extra_env.iter().copied())
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
-        .output()
-        .expect("run harness")
+        .env_remove("HARNESS_COMPANY");
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    command.output().expect("run harness")
 }
 
 /// Read the current project id from the registry written under `home`.

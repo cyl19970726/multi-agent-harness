@@ -151,6 +151,23 @@ function typedRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefin
     : undefined;
 }
 
+function workItemLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
+  return entry ? { id: text(entry.id), label: text(entry.title, "Untitled work"), kind: "work" } : undefined;
+}
+
+function financialRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
+  if (!entry) return undefined;
+  const financialType = text(entry.type);
+  return {
+    id: text(entry.id),
+    label: [text(entry.display_name, "Financial record"), text(entry.display_amount)].filter(Boolean).join(" · "),
+    kind: "finance",
+    financialRecordType: ["commitment", "invoice", "payment", "budget"].includes(financialType)
+      ? financialType as CompanyOsLink["financialRecordType"]
+      : undefined,
+  };
+}
+
 function linkEntries(values: Array<CompanyOsLink | undefined>): CompanyOsLink[] {
   return values
     .filter((value): value is CompanyOsLink => Boolean(value?.id))
@@ -666,23 +683,48 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const applicationLink = application
     ? { id: text(application.id), label: text(field(application, "display_id"), text(application.display_name, text(application.title, "Untitled record"))), kind: "record" as const }
     : undefined;
-  const workLink = work ? { id: text(work.id), label: text(work.title, "Untitled work"), kind: "work" as const } : undefined;
+  const workLink = workItemLink(work);
   const financialType = text(financial?.type);
-  const financeLink = financial
-    ? {
-        id: text(financial.id),
-        label: [text(financial.display_name, "Financial record"), text(financial.display_amount)].filter(Boolean).join(" · "),
-        kind: "finance" as const,
-        financialRecordType: ["commitment", "invoice", "payment", "budget"].includes(financialType)
-          ? financialType as CompanyOsLink["financialRecordType"]
-          : undefined,
-      }
-    : undefined;
+  const financeLink = financialRecordLink(financial);
   const decisionTitle = approvalTitle(approval, financial, work);
   const decisionSummary = approvalSummary(approval, decisionTitle, financial, work);
   const approvalLink = approval ? { id: text(approval.id), label: decisionTitle, kind: "approval" as const, href: `?surface=approvals&approval=${encodeURIComponent(text(approval.id))}` } : undefined;
   const proposalLink = proposal ? { id: text(proposal.id), label: text(field(proposal, "title"), text(proposal.title, "Structure proposal")), kind: "module" as const } : undefined;
   const selectedModuleLink = moduleLink(module);
+  const focusDocumentId = text(focusDocument?.id);
+  const focusParentDocument = record(documents, focusDocument?.parent_document_id);
+  const focusTypedRecords = focusDocumentId
+    ? typedRecords.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
+      || hasRelationBetween(relations, focusDocumentId, text(entry.id)))
+    : [];
+  const focusTypedRecordIds = new Set(focusTypedRecords.map((entry) => text(entry.id)).filter(Boolean));
+  const focusWorkItems = focusDocumentId
+    ? workItems.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
+      || focusTypedRecordIds.has(text(entry.business_record_ref, text(entry.source_record_ref))))
+    : [];
+  const focusWorkItemIds = new Set(focusWorkItems.map((entry) => text(entry.id)).filter(Boolean));
+  const focusFinancialRecords = financialRecords.filter((entry) => focusWorkItemIds.has(text(entry.work_item_ref))
+    || focusTypedRecordIds.has(text(entry.business_record_ref)));
+  const focusFinancialRecordIds = new Set(focusFinancialRecords.map((entry) => text(entry.id)).filter(Boolean));
+  const focusApprovals = approvals.filter((entry) => {
+    const subjectRefs = strings(entry.subject_refs);
+    const subjectId = text(entry.subject_ref);
+    return [...subjectRefs, subjectId].some((id) => focusWorkItemIds.has(id) || focusFinancialRecordIds.has(id) || focusTypedRecordIds.has(id));
+  });
+  const focusSourceLinks = linkEntries([focusParentDocument && text(focusParentDocument.id) !== focusDocumentId ? documentLink(focusParentDocument) : undefined]);
+  const focusResultLinks = linkEntries(focusWorkItems.map(workItemLink));
+  const focusConnectedRecordLinks = linkEntries([
+    ...focusTypedRecords.map(typedRecordLink),
+    ...focusApprovals.map((entry) => {
+      const relatedFinancial = focusFinancialRecords.find((candidate) => strings(entry.subject_refs).includes(text(candidate.id)));
+      const relatedWork = focusWorkItems.find((candidate) => strings(entry.subject_refs).includes(text(candidate.id)));
+      return { id: text(entry.id), label: approvalTitle(entry, relatedFinancial, relatedWork), kind: "approval" as const, href: `?surface=approvals&approval=${encodeURIComponent(text(entry.id))}` };
+    }),
+    ...focusFinancialRecords.map(financialRecordLink),
+  ]);
+  const documentSourceLinks = selected.documentId ? focusSourceLinks : linkEntries([sourceLink]);
+  const documentResultLinks = selected.documentId ? focusResultLinks : linkEntries([workLink]);
+  const documentConnectedRecords = selected.documentId ? focusConnectedRecordLinks : linkEntries([applicationLink, approvalLink, financeLink]);
 
   const focusActorRefs = refs(root, "document-focus");
   const moduleActorRefs = refs(root, "business-module-focus");
@@ -696,7 +738,13 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const referencedActorIds = items(focusDocument?.reference_refs)
     .filter((reference) => text(reference.kind) === "actor")
     .map((reference) => text(reference.id));
-  const focusActors = linkEntries(distinct([...focusActorRefs, refId(focusDocument?.owner_ref), ...referencedActorIds, ...workActorRefs]).map((id) => actorLink(actors, id)));
+  const focusWorkActorRefs = focusWorkItems.flatMap((entry) => [
+    entry.requested_by_ref ?? entry.requested_by, entry.submitted_by_ref ?? entry.submitted_by, entry.accountable_owner_ref ?? entry.accountable_owner,
+    ...(Array.isArray(entry.assignee_refs) ? entry.assignee_refs : Array.isArray(entry.assignees) ? entry.assignees : []),
+    ...(Array.isArray(entry.contributor_refs) ? entry.contributor_refs : Array.isArray(entry.contributors) ? entry.contributors : []),
+    entry.reviewer_ref ?? entry.reviewer, entry.legal_reviewer_ref, entry.approver_ref ?? entry.approver,
+  ].map(refId).filter(Boolean));
+  const focusActors = linkEntries(distinct([...focusActorRefs, refId(focusDocument?.owner_ref), ...referencedActorIds, ...focusWorkActorRefs]).map((id) => actorLink(actors, id)));
   const moduleActors = linkEntries(distinct([...moduleActorRefs, ...workActorRefs]).map((id) => actorLink(actors, id)));
   const owner = actorLink(actors, focusDocument?.owner_ref ?? focusDocument?.created_by) ?? actorLink(actors, work?.accountable_owner_ref ?? work?.accountable_owner);
   const decisionActor = actorLink(actors, approval?.accountable_owner_ref ?? work?.approver_ref ?? work?.approver);
@@ -805,8 +853,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       : [{ id: "empty", type: "paragraph", content: "No rich document blocks are supplied." }];
   const documentActivity = [
     focusDocument?.updated_at && { id: `document:${text(focusDocument.id)}`, label: "Document updated", at: humanTimestamp(focusDocument.updated_at) },
-    work?.updated_at && { id: `work:${text(work.id)}`, label: "Linked work updated", detail: text(work.title), at: humanTimestamp(work.updated_at) },
-    financial?.updated_at && { id: `financial:${text(financial.id)}`, label: "Financial record updated", detail: text(financial.display_name), at: humanTimestamp(financial.updated_at) },
+    ...focusWorkItems.map((entry) => entry.updated_at && { id: `work:${text(entry.id)}`, label: "Linked work updated", detail: text(entry.title), at: humanTimestamp(entry.updated_at) }),
+    ...focusFinancialRecords.map((entry) => entry.updated_at && { id: `financial:${text(entry.id)}`, label: "Financial record updated", detail: text(entry.display_name), at: humanTimestamp(entry.updated_at) }),
   ].filter(Boolean) as NonNullable<CompanyOsDocumentPageData["activity"]>;
   const structureLinks = linkEntries([selectedModuleLink, proposalLink, sourceLink, applicationLink, financeLink]);
   const documentDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
@@ -1081,9 +1129,9 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       documentTree: workspaceTree,
       properties: documentProperties,
       blocks: documentBlocks,
-      sourceLinks: linkEntries([sourceLink]),
-      resultLinks: linkEntries([workLink]),
-      connectedRecords: linkEntries([applicationLink, approvalLink, financeLink]),
+      sourceLinks: documentSourceLinks,
+      resultLinks: documentResultLinks,
+      connectedRecords: documentConnectedRecords,
       activity: documentActivity,
       authoring: documentAuthoring,
       updatedLabel: focusDocument?.updated_at ? `Last updated ${humanTimestamp(focusDocument.updated_at)}` : undefined,

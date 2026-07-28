@@ -241,6 +241,32 @@ async function main() {
     work_items: [{ id: "work-live-1", title: "Prepare live brief", source_document_ref: "document-live-1" }],
   });
   check(alternatePages.document.id === "document-live-1" && alternatePages.document.title === "Live operating brief" && alternatePages.home.changes.every((link) => !/trademark|brand a/i.test(link.label)), "a different live projection maps only its supplied records");
+  const selectedDocumentPages = adaptCompanyOsDocsProjection({
+    documents: [
+      { id: "document-selected-a", title: "Selected A", space: "Operations", parent_document_id: null, block_ids: [] },
+      { id: "document-selected-b", title: "Selected B", space: "Operations", parent_document_id: null, block_ids: [] },
+    ],
+    typed_records: [
+      { id: "record-selected-a", title: "Selected A record", record_type: "brief", source_document_ref: "document-selected-a" },
+      { id: "record-selected-b", title: "Selected B record", record_type: "brief", source_document_ref: "document-selected-b" },
+    ],
+    work_items: [
+      { id: "work-selected-a", title: "Work for selected A", source_document_ref: "document-selected-a" },
+      { id: "work-selected-b", title: "Work for selected B", source_document_ref: "document-selected-b" },
+    ],
+    financial_records: [
+      { id: "finance-selected-a", display_name: "Finance for selected A", type: "commitment", work_item_ref: "work-selected-a" },
+      { id: "finance-selected-b", display_name: "Finance for selected B", type: "commitment", work_item_ref: "work-selected-b" },
+    ],
+  }, { documentId: "document-selected-b" });
+  check(
+    selectedDocumentPages.document.connectedRecords?.some((link) => link.id === "record-selected-b")
+      && selectedDocumentPages.document.connectedRecords?.some((link) => link.id === "finance-selected-b")
+      && selectedDocumentPages.document.resultLinks?.some((link) => link.id === "work-selected-b")
+      && !selectedDocumentPages.document.connectedRecords?.some((link) => link.id === "record-selected-a" || link.id === "finance-selected-a")
+      && !selectedDocumentPages.document.resultLinks?.some((link) => link.id === "work-selected-a"),
+    "selected Document Focus scopes context rail records to the selected document",
+  );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
 
   const pageRefs = {

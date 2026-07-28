@@ -11,6 +11,26 @@ product authority; it helps Agents choose governed CLI commands and verify recor
 Docs are Agent-operated and Human-reviewed. CLI/API is the primary Agent
 interface; UI is Human review context, not the authoritative machine interface.
 
+## Select the Company Store
+
+Before reading or writing Company OS records, identify the Company Store. Prefer
+one of:
+
+```bash
+harness company current
+harness --company <company-id> company docs ...
+HARNESS_COMPANY=<company-id> harness company docs ...
+```
+
+If no Company is selected, `harness company ...` falls back to the current
+project-derived compatibility Store. Treat that as legacy compatibility, not
+the target Agent Company Workspace boundary.
+
+To move legacy Company OS rows into a real Company Store, use
+`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+It copies only `company_os_*.jsonl`; it does not migrate execution records,
+provider sessions, prompts, or runtimes.
+
 ## Load the contracts
 
 Before writing or proposing a durable Docs change, read:
@@ -395,7 +415,7 @@ Use:
 - `--kind heading --text <heading>` for section headings;
 - `--kind callout --content-json <json>` for durable notes, decisions, risks,
   or warnings;
-- `--kind table --content-json <json>` for simple table content when the data
+- `--kind simple_table --content-json <json>` for simple table content when the data
   is document-local prose. Use `typed-record append` plus a `view create` when
   rows are canonical business records.
 

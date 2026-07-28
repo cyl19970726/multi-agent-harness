@@ -19,6 +19,19 @@ system. A Mission, Wave, AgentTeamRun, WorkflowRun, native session reference, or
 does not own a company business domain merely because it executed some work for
 it.
 
+ADR 0040 formalizes the identity boundary:
+
+```text
+Company Store       Execution Space       Project Binding
+     \                    |                    /
+      \------ explicit, optional relations ---/
+```
+
+Company WorkItems may reference execution. Execution must not require a
+Company. Project/repository selection is a runtime binding, not Company truth.
+The current project-scoped store routing is compatibility behavior until the
+Execution Space and Company Store registries are implemented.
+
 ## Execution objects retained from the Harness
 
 ### Mission and Wave
@@ -31,6 +44,8 @@ container, synchronization barrier, or provider-session boundary.
 In the Company OS, a WorkItem may initiate or reference a Mission/Wave when its
 business outcome needs staged execution. The WorkItem remains the document- and
 responsibility-facing record; Mission/Wave remains the execution-facing record.
+Outside Company OS, the same Mission/Wave objects remain usable in a standalone
+Execution Space with `company_id = null`.
 
 ### AgentTeamRun and MemberRun
 
@@ -63,6 +78,11 @@ identifier also exists. This is an explicit cross-layer join, not lifecycle
 collapse: the StandingAgent owns organization identity and authority, the
 AgentMember definition owns reusable execution configuration, and MemberRun
 owns participation in one TeamRun.
+
+An AgentTeamRun may execute against one Project Binding, while another TeamRun
+inside the same Mission uses a different Project Binding. The Mission/Wave
+history belongs to the Execution Space, not to any one repository-derived
+store.
 
 The Host owns member lifecycle explicitly. Starting a Team member creates or
 resumes its persistent provider runtime; ordinary turn completion does not
@@ -181,23 +201,27 @@ Mission, WorkItem, Approval, or organization membership.
 
 1. A WorkItem can exist before an executor is selected; execution selection is
    not business intake.
-2. A selected executor cannot overwrite accountable ownership, approval
+2. Execution can exist without a Company Store; Company linkage is optional for
+   every Mission, Wave, TeamRun, MemberRun, WorkflowRun, and provider session.
+3. A selected executor cannot overwrite accountable ownership, approval
    authority, or document provenance held by the WorkItem.
-3. Agent Team lane ownership is proved by TeamMessage correlation, not an
+4. Agent Team lane ownership is proved by TeamMessage correlation, not an
    assignee display field.
-4. A TeamRun/MemberRun never becomes a standing Agent or OrgUnit by inference.
-5. Provider-native subagents stay implementation detail unless explicitly
+5. A TeamRun/MemberRun never becomes a standing Agent or OrgUnit by inference.
+6. Provider-native subagents stay implementation detail unless explicitly
    materialized through a truthful observation or promotion contract.
-6. Workflow and Host execution preserve their own semantics; shared sessions,
+7. Workflow and Host execution preserve their own semantics; shared sessions,
    artifacts, and events do not collapse them into one universal run object.
-7. Execution outcomes are returned as explicit summaries, artifact/check
+8. Execution outcomes are returned as explicit summaries, artifact/check
    references, metric observations, and result-document/record updates. Native
    transcripts remain provider-owned and referenced; thinking is never durable.
-8. Dashboard activity joins durable Harness coordination with an ephemeral,
+9. Dashboard activity joins durable Harness coordination with an ephemeral,
    rebuildable provider-native projection. That projection is not a second
    ledger and cannot make the Host's Wave decision.
-9. Advancing a Wave never implicitly stops a TeamRun, MemberRun, assignment, or
+10. Advancing a Wave never implicitly stops a TeamRun, MemberRun, assignment, or
    native session. Closing a Mission never deletes or archives a linked team.
-10. Organization identity is joined to execution only by a stable explicit
+11. Organization identity is joined to execution only by a stable explicit
     identifier. Runtime status never grants business authority and organization
     status never fabricates a running provider session.
+12. Provider cwd is selected from Project Binding roots or validated worktrees;
+     Company Store and Execution Space directories are never provider cwd.

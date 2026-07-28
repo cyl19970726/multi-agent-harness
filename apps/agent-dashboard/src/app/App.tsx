@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyFrame,
+  fetchCompanies,
   fetchProjects,
   fetchSnapshot,
   fetchWorkflowDefs,
   matchesStreamProject,
   postAction,
+  switchCompany as switchCompanyApi,
   switchProject as switchProjectApi,
   SnapshotFrameBuffer,
   type SseFrame,
   type SnapshotRequestToken,
 } from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
-import type { DashboardSnapshot, Project, WorkflowDef } from "../types";
+import type { Company, DashboardSnapshot, Project, WorkflowDef } from "../types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   defaultSelection,
@@ -42,6 +44,7 @@ function apiFromLocation(): string {
  * reload returns to the same project even without a `?project=` deep link.
  */
 const projectStorageKey = "harness.selectedProjectId";
+const companyStorageKey = "harness.selectedCompanyId";
 /**
  * Seed the selected project from the URL (`?project=<id>`) first — a deep link
  * wins — then the last choice persisted in localStorage. Returns "" when neither
@@ -62,6 +65,21 @@ function projectFromLocation(): string {
     return "";
   }
 }
+
+function companyFromLocation(): string {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("company");
+    if (fromUrl && fromUrl.trim()) return fromUrl.trim();
+  } catch {
+    // fall through to localStorage
+  }
+  try {
+    const stored = window.localStorage.getItem(companyStorageKey);
+    return stored && stored.trim() ? stored.trim() : "";
+  } catch {
+    return "";
+  }
+}
 /** Mirror the selected project into the URL (`?project=<id>`) without a reload so
  * the address bar is shareable; an empty id removes the param. */
 function syncProjectToLocation(project: string): void {
@@ -71,6 +89,20 @@ function syncProjectToLocation(project: string): void {
       url.searchParams.set("project", project);
     } else {
       url.searchParams.delete("project");
+    }
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // best-effort; the in-memory state remains correct
+  }
+}
+
+function syncCompanyToLocation(company: string): void {
+  try {
+    const url = new URL(window.location.href);
+    if (company) {
+      url.searchParams.set("company", company);
+    } else {
+      url.searchParams.delete("company");
     }
     window.history.replaceState(null, "", url.toString());
   } catch {
@@ -104,6 +136,8 @@ export function App() {
   // snapshot/SSE fetches are scoped to it so the view shows exactly one project.
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projectFromLocation);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>(companyFromLocation);
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(emptySnapshot);
   // The registered workflow catalog (GET /v1/workflows) is run-independent and
   // lives outside the snapshot, so it is fetched alongside the snapshot.
@@ -158,14 +192,14 @@ export function App() {
     [],
   );
   const fetchReadSnapshot = useCallback(
-    async (baseUrl: string, project: string): Promise<{
+    async (baseUrl: string, project: string, company: string): Promise<{
       request: SnapshotRequestToken;
       snapshot: DashboardSnapshot;
     } | null> => {
       const request = beginReadSnapshotRequest();
       if (!request) return null;
       try {
-        return { request, snapshot: await fetchSnapshot(baseUrl, project) };
+        return { request, snapshot: await fetchSnapshot(baseUrl, project, company) };
       } catch (error) {
         discardSnapshotRequest(request);
         throw error;
@@ -221,15 +255,16 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+        const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
         if (!result) return;
         if (cancelled) {
           discardSnapshotRequest(result.request);
           return;
         }
-        if (adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSource(liveSource);
+        if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+          setSnapshot(result.snapshot);
         }
+        setSource(liveSource);
         try {
           const defs = await fetchWorkflowDefs(apiUrl);
           if (!cancelled) setWorkflowDefs(defs);
@@ -243,7 +278,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [adoptSnapshotResponse, apiUrl, discardSnapshotRequest, fetchReadSnapshot, selectedProjectId]);
+  }, [adoptSnapshotResponse, apiUrl, discardSnapshotRequest, fetchReadSnapshot, selectedCompanyId, selectedProjectId]);
 
   // Auto-retry while offline: if the initial connect failed or the backend went
   // away, silently re-attempt the default URL every few seconds so the dashboard
@@ -253,18 +288,19 @@ export function App() {
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+          const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
           if (!result) return;
-          if (adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSource(liveSource);
+          if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+            setSnapshot(result.snapshot);
           }
+          setSource(liveSource);
         } catch {
           // still offline; retry next tick
         }
       })();
     }, 4000);
     return () => window.clearInterval(id);
-  }, [source, apiUrl, selectedProjectId, adoptSnapshotResponse, fetchReadSnapshot]);
+  }, [source, apiUrl, selectedCompanyId, selectedProjectId, adoptSnapshotResponse, fetchReadSnapshot]);
 
   // Load the project list (goal-multi-project P6) once a live source is up, and
   // re-load on apiUrl change (a different serve has a different registry). If no
@@ -293,6 +329,31 @@ export function App() {
     };
   }, [source, apiUrl]);
 
+  // Load Company Store list once live. If no URL/localStorage company was
+  // selected, adopt the backend's active company. This selector controls only
+  // Company OS truth (`company_os`), not the project execution/SSE boundary.
+  useEffect(() => {
+    if (source !== liveSource) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { companies: list, current } = await fetchCompanies(apiUrl);
+        if (cancelled) return;
+        setCompanies(list);
+        if (!selectedCompanyId && current) {
+          setSelectedCompanyId(current);
+          syncCompanyToLocation(current);
+        }
+      } catch {
+        // Old backend / raw --store mode: leave company picker hidden and let
+        // snapshots fall back to the project store's company_os projection.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [source, apiUrl, selectedCompanyId]);
+
   // Persist + mirror the selected project so a reload (localStorage) or a shared
   // link (URL) returns to it.
   useEffect(() => {
@@ -305,6 +366,17 @@ export function App() {
     }
     syncProjectToLocation(selectedProjectId);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    try {
+      if (selectedCompanyId) {
+        window.localStorage.setItem(companyStorageKey, selectedCompanyId);
+      }
+    } catch {
+      // private mode / blocked storage: in-memory selection still works
+    }
+    syncCompanyToLocation(selectedCompanyId);
+  }, [selectedCompanyId]);
 
   // Switch the active project: clear the stale snapshot so the previous project's
   // data is never shown as current, flip the active project server-side (so
@@ -332,7 +404,7 @@ export function App() {
           if (response.snapshot) {
             adoptSnapshotResponse(request, response.snapshot);
           } else {
-            adoptSnapshotResponse(request, await fetchSnapshot(apiUrl, projectId));
+            adoptSnapshotResponse(request, await fetchSnapshot(apiUrl, projectId, selectedCompanyId));
           }
           setSourceError(null);
         } catch (error) {
@@ -347,8 +419,46 @@ export function App() {
       apiUrl,
       beginMutationSnapshotRequest,
       finishMutationSnapshotRequest,
+      selectedCompanyId,
       source,
       selectedProjectId,
+    ],
+  );
+
+  const handleSelectCompany = useCallback(
+    (companyId: string) => {
+      if (companyId === selectedCompanyId) return;
+      snapshotFrames.current.reset();
+      const request = beginMutationSnapshotRequest();
+      setSelectedCompanyId(companyId);
+      setSnapshot(emptySnapshot);
+      if (source !== liveSource) {
+        finishMutationSnapshotRequest(request);
+        return;
+      }
+      void (async () => {
+        try {
+          await switchCompanyApi(apiUrl, companyId);
+          adoptSnapshotResponse(
+            request,
+            await fetchSnapshot(apiUrl, selectedProjectId, companyId),
+          );
+          setSourceError(null);
+        } catch (error) {
+          setSourceError(error instanceof Error ? error.message : String(error));
+        } finally {
+          finishMutationSnapshotRequest(request);
+        }
+      })();
+    },
+    [
+      adoptSnapshotResponse,
+      apiUrl,
+      beginMutationSnapshotRequest,
+      finishMutationSnapshotRequest,
+      selectedCompanyId,
+      selectedProjectId,
+      source,
     ],
   );
 
@@ -364,11 +474,12 @@ export function App() {
     setIsLoading(true);
     setSourceError(null);
     try {
-      const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+      const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
       if (!result) return;
-      if (adoptSnapshotResponse(result.request, result.snapshot)) {
-        setSource(liveSource);
+      if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+        setSnapshot(result.snapshot);
       }
+      setSource(liveSource);
       try {
         setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
       } catch {
@@ -395,16 +506,17 @@ export function App() {
     if (!matchesStreamProject(selectedProjectRef.current, streamProject)) return;
     void (async () => {
       try {
-        const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+        const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
         if (!result) return;
-        if (adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSourceError(null);
+        if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+          setSnapshot(result.snapshot);
         }
+        setSourceError(null);
       } catch (error) {
         setSourceError(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [adoptSnapshotResponse, apiUrl, fetchReadSnapshot, selectedProjectId]);
+  }, [adoptSnapshotResponse, apiUrl, fetchReadSnapshot, selectedCompanyId, selectedProjectId]);
 
   // SSE delta: merge the frame into the in-memory snapshot (append/replace by
   // id, latest-wins) so the read model and Member action stream update WITHOUT
@@ -459,15 +571,16 @@ export function App() {
     const id = window.setInterval(() => {
       void (async () => {
         try {
-          const result = await fetchReadSnapshot(apiUrl, selectedProjectId);
+          const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId);
           if (!result) return;
           if (cancelled) {
             discardSnapshotRequest(result.request);
             return;
           }
-          if (adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSourceError(null);
+          if (!adoptSnapshotResponse(result.request, result.snapshot)) {
+            setSnapshot(result.snapshot);
           }
+          setSourceError(null);
         } catch (error) {
           if (!cancelled) {
             setSourceError(error instanceof Error ? error.message : String(error));
@@ -482,6 +595,7 @@ export function App() {
   }, [
     shouldPoll,
     apiUrl,
+    selectedCompanyId,
     selectedProjectId,
     adoptSnapshotResponse,
     discardSnapshotRequest,
@@ -502,9 +616,11 @@ export function App() {
     const request = beginMutationSnapshotRequest();
     let needsRefresh = false;
     try {
-      const response = await postAction(apiUrl, path, body, selectedProjectId, options);
+      const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, options);
       if (response.snapshot) {
-        adoptSnapshotResponse(request, response.snapshot);
+        if (!adoptSnapshotResponse(request, response.snapshot)) {
+          setSnapshot(response.snapshot);
+        }
       } else {
         needsRefresh = true;
       }
@@ -534,8 +650,11 @@ export function App() {
         apiUrl={apiUrl}
         isLoading={isLoading}
         model={model}
+        companies={companies}
         projects={projects}
+        selectedCompanyId={selectedCompanyId}
         selectedProjectId={selectedProjectId}
+        onSelectCompany={handleSelectCompany}
         onSelectProject={handleSelectProject}
         onApiUrlChange={setApiUrl}
         onRefresh={refreshLive}

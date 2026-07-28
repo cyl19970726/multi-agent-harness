@@ -155,6 +155,81 @@ fn create_run(home: &TempHome, root: &Path) -> String {
 }
 
 #[test]
+fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
+    let home = TempHome::new("agent-sdk-company-store-boundary");
+    let project_id = init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let runner = write_fake_runner(&home.base().join("runner"), false);
+
+    let company = run_harness(
+        &home,
+        &root,
+        &[
+            "company",
+            "init",
+            "--id",
+            "agent-company",
+            "--name",
+            "Agent Company",
+        ],
+    );
+    assert!(company.status.success(), "company init failed: {company:?}");
+
+    let run_id = create_run(&home, &root);
+    let started = start_with_fake_runner(&home, &root, &runner, "200", &run_id);
+    assert!(started.status.success(), "start failed: {started:?}");
+
+    let status = run_harness(
+        &home,
+        &root,
+        &["team-run", "status", "--id", &run_id, "--json"],
+    );
+    assert!(status.status.success(), "status failed: {status:?}");
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status JSON");
+    let member_id = status_json["members"][0]["member_run"]["id"]
+        .as_str()
+        .expect("member id");
+
+    let target = run_harness(
+        &home,
+        &root,
+        &[
+            "member-run",
+            "open-native",
+            "--id",
+            member_id,
+            "--print-only",
+            "--json",
+        ],
+    );
+    assert!(target.status.success(), "open-native failed: {target:?}");
+    let target_json: serde_json::Value =
+        serde_json::from_slice(&target.stdout).expect("open-native JSON");
+    assert_eq!(target_json["provider"], "claude");
+    assert_eq!(target_json["execution_mode"], "claude_agent_sdk");
+    assert_eq!(
+        target_json["uri"],
+        "claude://resume?session=fake-native-session-0001"
+    );
+    assert_eq!(target_json["opened"], false);
+
+    let company_store = home.harness_home().join("companies").join("agent-company");
+    assert!(
+        !company_store.join("member_runs.jsonl").exists(),
+        "Company Store must not capture execution MemberRuns or native-session bindings"
+    );
+    assert!(
+        home.harness_home()
+            .join("projects")
+            .join(project_id)
+            .join("member_runs.jsonl")
+            .is_file(),
+        "MemberRun and its native-session binding remain in the execution/project store"
+    );
+}
+
+#[test]
 fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let home = TempHome::new("agent-sdk-late-message");
     init_project(&home, "proj");
