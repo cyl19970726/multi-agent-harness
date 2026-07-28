@@ -230,23 +230,6 @@ impl CodexAppServerClient {
         Ok(())
     }
 
-    /// Bind the durable Harness Assignment objective to Codex's native thread
-    /// Goal. Harness still owns assignment correlation; the provider Goal is
-    /// session-local execution state and is never promoted into a second
-    /// product Goal object.
-    pub(crate) fn set_goal(&mut self, objective: &str, status: &str) -> CliResult<()> {
-        self.request_blocking(
-            "thread/goal/set",
-            serde_json::json!({
-                "threadId": self.thread_id,
-                "objective": objective,
-                "status": status
-            }),
-            HANDSHAKE_TIMEOUT,
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn start_turn(&mut self, text: &str) -> CliResult<String> {
         let response = self.request_blocking(
             "turn/start",

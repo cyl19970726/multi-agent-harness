@@ -198,9 +198,10 @@ own version-specific evidence.
 | Kimi `kimi_acp` | no reviewed native continuation contract | `host_driven` | Native plan updates do not imply native continuation. |
 | Future provider | optional | `host_driven` | Add native continuation only after capability and lifecycle review. |
 
-“Initial driver posture” is the required product routing, not a statement that
-the current adapter already enforces the lease. A detected dual-driver adapter
-is nonconforming and `review_required` until repaired and canaried.
+“Initial driver posture” is the required product routing. Current Agent Team
+profiles snapshot `host_driven`, and the Codex adapter no longer activates a
+native Goal beside Harness turns. A detected dual-driver adapter remains
+nonconforming and `review_required` until repaired and canaried.
 
 ## Host And Member Rules
 

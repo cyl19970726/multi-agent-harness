@@ -165,6 +165,10 @@ reviewed native protocol, but it must not independently start a competing
 top-level cycle. The lease is scoped to one MemberRun, native session, and
 writable Workspace; it is not a claim that a Member can perform only one turn.
 
+Team `max_concurrency` applies to active execution leases, not Member
+supervisors. An idle Member retains its native session, mailbox and Host control
+handle without occupying a provider-turn permit.
+
 Provider context is ephemeral. Harness state is durable. Each delivery should
 include only the bounded context needed for that turn: objective, acceptance
 criteria, relevant executor-native assignments/messages, artifact refs, skill

@@ -1789,6 +1789,12 @@ impl Validate for MemberRun {
 pub struct ProviderIntegrationProfile {
     pub provider: String,
     pub execution_mode: String,
+    /// The exclusive owner allowed to start top-level provider execution
+    /// cycles for this MemberRun. Agent Team modes currently default to
+    /// Harness-owned mailbox delivery; provider-owned continuation must be
+    /// reviewed explicitly before it can be selected.
+    #[serde(default)]
+    pub execution_driver: MemberExecutionDriver,
     #[serde(default)]
     pub provider_version: Option<String>,
     #[serde(default)]
@@ -1818,6 +1824,14 @@ pub struct ProviderIntegrationProfile {
     /// Product policy, not a provider claim. Thinking may only appear through
     /// the sanitized transient live channel and is never durable or replayed.
     pub thinking_transient_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberExecutionDriver {
+    #[default]
+    HostDriven,
+    ProviderDriven,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

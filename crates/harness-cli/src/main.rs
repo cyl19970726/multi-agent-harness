@@ -9,25 +9,25 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
     AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
     AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, LaunchMcp, LaunchPermission,
-    LaunchSpec, MemberAction, MemberActionStatus, MemberRun, MemberRunStatus,
-    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
-    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
-    ProviderFeatureMode, ProviderIntegrationProfile, ProviderInteractionMode, SenderKind,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
-    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus, WorkflowTerminalReason,
+    LaunchSpec, MemberAction, MemberActionStatus, MemberExecutionDriver, MemberRun,
+    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability,
+    NativeSessionRef, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
+    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
+    ProviderCapabilities, ProviderCompatibilityStatus, ProviderEventFidelity,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMode, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
+    TeamMessageDelivery, TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
 use thiserror::Error;
@@ -7996,6 +7996,7 @@ fn team_member_provider_profile_for_mode(
         return ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "claude_agent_sdk".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
             // Deliberately empty. A Human approved installing Claude Code
@@ -8037,6 +8038,7 @@ fn team_member_provider_profile_for_mode(
         return ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "codex_app_server".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("codex-app-server-v1".to_string()),
             reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
@@ -8061,6 +8063,7 @@ fn team_member_provider_profile_for_mode(
         "kimi" => ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "kimi_acp".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("kimi-acp-v1".to_string()),
             reviewed_provider_versions: vec!["0.27.0".to_string()],
@@ -8081,6 +8084,7 @@ fn team_member_provider_profile_for_mode(
         "codex" => ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "codex_exec".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("codex-exec-v1".to_string()),
             reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
@@ -8104,6 +8108,7 @@ fn team_member_provider_profile_for_mode(
         "claude" => ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "claude_cli".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("claude-cli-native-v1".to_string()),
             reviewed_provider_versions: vec!["2.1.181".to_string()],
@@ -8127,6 +8132,7 @@ fn team_member_provider_profile_for_mode(
         _ => ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "unsupported_team_member".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: None,
             reviewed_provider_versions: Vec::new(),
@@ -10138,10 +10144,13 @@ fn member_run_detail_json(
 // and Claude CLI. Other providers or modes fail explicitly instead of being
 // silently skipped or substituted.
 //
-// Concurrency: one OS thread per member, bounded by a semaphore
-// (--max-concurrency, default 4). All seq-assigning ledger writes serialize
-// through one mutex — `next_team_run_seq` is a read-max-then-append pair that
-// would race across member threads otherwise.
+// Persistence and execution concurrency are intentionally separate. Every
+// unclosed Member owns one lightweight supervisor thread, while
+// --max-concurrency limits only provider turns that currently hold an
+// ActiveTurnLease. Idle members remain addressable without consuming permits.
+// All seq-assigning ledger writes serialize through one mutex —
+// `next_team_run_seq` is a read-max-then-append pair that would race across
+// member threads otherwise.
 // ---------------------------------------------------------------------------
 
 /// Default cap on concurrently-running member ACP sessions.
@@ -10151,6 +10160,48 @@ const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
 /// rounds deliver messages queued while the member worked). Prevents a
 /// message ping-pong from looping the orchestrator forever.
 const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
+
+struct ActiveTurnLeasePool {
+    active: Mutex<usize>,
+    available: Condvar,
+    limit: usize,
+}
+
+impl ActiveTurnLeasePool {
+    fn new(limit: usize) -> Self {
+        Self {
+            active: Mutex::new(0),
+            available: Condvar::new(),
+            limit,
+        }
+    }
+
+    fn acquire(self: &Arc<Self>) -> ActiveTurnLease {
+        let mut active = self.active.lock().expect("active turn lease poisoned");
+        while *active >= self.limit {
+            active = self
+                .available
+                .wait(active)
+                .expect("active turn lease poisoned");
+        }
+        *active += 1;
+        ActiveTurnLease {
+            pool: Arc::clone(self),
+        }
+    }
+}
+
+struct ActiveTurnLease {
+    pool: Arc<ActiveTurnLeasePool>,
+}
+
+impl Drop for ActiveTurnLease {
+    fn drop(&mut self) {
+        let mut active = self.pool.active.lock().expect("active turn lease poisoned");
+        *active = active.saturating_sub(1);
+        self.pool.available.notify_one();
+    }
+}
 
 /// Test-only escape hatch for foreground integration tests. Production
 /// supervisors have no implicit idle retirement.
@@ -10645,6 +10696,14 @@ struct MemberOutcome {
     summary: String,
 }
 
+struct MemberRuntimeContext {
+    project_id: Option<String>,
+    cwd: PathBuf,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    turn_leases: Arc<ActiveTurnLeasePool>,
+}
+
 impl MemberOutcome {
     fn new(member: &MemberRun, status: MemberRunStatus, summary: String) -> Self {
         Self {
@@ -10751,7 +10810,7 @@ pub(crate) fn team_run_start(
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     project_context: Option<ProjectContext>,
-    _max_concurrency: usize,
+    max_concurrency: usize,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
 ) -> CliResult<()> {
@@ -10768,6 +10827,7 @@ pub(crate) fn drive_prepared_team_run(
     let mut pending_members = members;
     let mut handles = HashMap::new();
     let mut outcomes = Vec::new();
+    let turn_leases = Arc::new(ActiveTurnLeasePool::new(max_concurrency));
     loop {
         for mut member in pending_members.drain(..) {
             seen_member_ids.insert(member.id.clone());
@@ -10787,15 +10847,19 @@ pub(crate) fn drive_prepared_team_run(
             let handle_member = member.clone();
             let member_live_sink = live_sink.clone();
             let member_project_id = project_id.clone();
+            let member_turn_leases = Arc::clone(&turn_leases);
             let handle = std::thread::spawn(move || {
                 run_member_orchestration(
                     &member_ledger,
                     &member_objective,
-                    member_project_id.as_deref(),
                     handle_member,
-                    &cwd,
-                    idle_timeout,
-                    member_live_sink,
+                    MemberRuntimeContext {
+                        project_id: member_project_id,
+                        cwd,
+                        idle_timeout,
+                        live_sink: member_live_sink,
+                        turn_leases: member_turn_leases,
+                    },
                 )
             });
             handles.insert(member.id.clone(), (member, handle));
@@ -10889,11 +10953,8 @@ pub(crate) fn drive_prepared_team_run(
 fn run_member_orchestration(
     ledger: &TeamRunLedger,
     objective: &str,
-    project_id: Option<&str>,
     member: MemberRun,
-    cwd: &Path,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
+    context: MemberRuntimeContext,
 ) -> MemberOutcome {
     let mut generation = 0u64;
     loop {
@@ -10925,39 +10986,15 @@ fn run_member_orchestration(
             .as_ref()
             .map(|profile| profile.execution_mode.as_str());
         let result = if current.provider.eq_ignore_ascii_case("kimi") {
-            run_kimi_member(
-                ledger,
-                objective,
-                project_id,
-                &current,
-                cwd,
-                idle_timeout,
-                live_sink.clone(),
-            )
+            run_kimi_member(ledger, objective, &current, &context)
         } else if current.provider.eq_ignore_ascii_case("codex")
             && matches!(execution_mode, Some("codex_app_server") | None)
         {
-            run_codex_member(
-                ledger,
-                objective,
-                project_id,
-                &current,
-                cwd,
-                idle_timeout,
-                live_sink.clone(),
-            )
+            run_codex_member(ledger, objective, &current, &context)
         } else if current.provider.eq_ignore_ascii_case("claude")
             && matches!(execution_mode, Some("claude_agent_sdk") | None)
         {
-            run_claude_agent_sdk_team_member(
-                ledger,
-                objective,
-                project_id,
-                &current,
-                cwd,
-                idle_timeout,
-                live_sink.clone(),
-            )
+            run_claude_agent_sdk_team_member(ledger, objective, &current, &context)
         } else {
             Err(CliError::Usage(format!(
                 "team member adapter not implemented for provider {}",
@@ -10995,12 +11032,14 @@ fn run_member_orchestration(
 fn run_codex_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    project_id: Option<&str>,
     member: &MemberRun,
-    cwd: &Path,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
+    context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
+    let project_id = context.project_id.as_deref();
+    let cwd = &context.cwd;
+    let idle_timeout = context.idle_timeout;
+    let live_sink = context.live_sink.clone();
+    let turn_leases = &context.turn_leases;
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
     if let Some(profile) = member_row.provider_profile.as_mut() {
@@ -11062,7 +11101,6 @@ fn run_codex_member(
     let mut accepted_messages = assignment.iter().cloned().collect::<Vec<_>>();
     let mut final_summary = String::new();
     if assignment.is_some() {
-        app_server.set_goal(&assignment_body, "active")?;
         prompt_text = contract_prompt(objective, &member_row, &assignment_body, &envelope);
     } else {
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
@@ -11081,7 +11119,6 @@ fn run_codex_member(
                     ));
                 }
                 accepted_messages = messages;
-                app_server.set_goal(&assignment_body, "active")?;
             }
             IdleMemberWake::Closed => {
                 return Ok(MemberOutcome::new(
@@ -11101,18 +11138,21 @@ fn run_codex_member(
     }
     loop {
         round += 1;
-        let turn = run_codex_app_server_turn(
-            &mut app_server,
-            &prompt_text,
-            CodexTeamTurnContext {
-                member: &member_row,
-                idle_timeout,
-                live_sink: live_sink.clone(),
-                ledger,
-                controls: &live_control,
-                accepted_messages: &accepted_messages,
-            },
-        )?;
+        let turn = {
+            let _turn_lease = turn_leases.acquire();
+            run_codex_app_server_turn(
+                &mut app_server,
+                &prompt_text,
+                CodexTeamTurnContext {
+                    member: &member_row,
+                    idle_timeout,
+                    live_sink: live_sink.clone(),
+                    ledger,
+                    controls: &live_control,
+                    accepted_messages: &accepted_messages,
+                },
+            )?
+        };
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
@@ -11234,9 +11274,6 @@ fn run_codex_member(
             member_row.status = MemberRunStatus::Idle;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
-            if result == MemberRoundResult::Done {
-                app_server.set_goal(&assignment_body, "complete")?;
-            }
             ledger.save_member_run(&member_row)?;
             ledger.fold_event(
                 TeamRunEventSourceKind::Member,
@@ -11266,7 +11303,6 @@ fn run_codex_member(
                     ));
                 }
                 accepted_messages = messages;
-                app_server.set_goal(&assignment_body, "active")?;
             }
             IdleMemberWake::Closed => {
                 drop(live_control_registration.take());
@@ -11836,14 +11872,15 @@ fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
 fn run_claude_agent_sdk_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    project_id: Option<&str>,
     member: &MemberRun,
-    cwd: &Path,
-    idle_timeout: Duration,
-    _live_sink: Option<LiveMemberActivitySink>,
+    context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     use std::io::Write as _;
 
+    let project_id = context.project_id.as_deref();
+    let cwd = &context.cwd;
+    let idle_timeout = context.idle_timeout;
+    let turn_leases = &context.turn_leases;
     let runner = claude_agent_sdk_runner_path(cwd)?;
 
     let mut member_row = member.clone();
@@ -11941,6 +11978,7 @@ fn run_claude_agent_sdk_team_member(
                 .map(|session| session.native_session_id.clone()),
         }
     }))?;
+    let mut turn_lease = assignment.as_ref().map(|_| turn_leases.acquire());
     if let Some(assignment) = &assignment {
         send(serde_json::json!({
             "command": "deliver",
@@ -12127,6 +12165,7 @@ fn run_claude_agent_sdk_team_member(
                     final_summary = summary;
                     turn_text.clear();
                     idle_since = Some(Instant::now());
+                    turn_lease.take();
                 }
                 "interrupted" => {
                     ledger.append_action(
@@ -12136,6 +12175,7 @@ fn run_claude_agent_sdk_team_member(
                         "Claude turn interrupted",
                         "The Agent SDK acknowledged interrupt and will resume the same native session.",
                     )?;
+                    turn_lease.take();
                 }
                 "member_closed" => {
                     ledger.append_action(
@@ -12178,6 +12218,9 @@ fn run_claude_agent_sdk_team_member(
                 || delivered_message_ids.contains(&message.id)
             {
                 continue;
+            }
+            if turn_lease.is_none() {
+                turn_lease = Some(turn_leases.acquire());
             }
             send(serde_json::json!({
                 "command": "deliver",
@@ -12511,12 +12554,14 @@ fn project_claude_team_event_live(
 fn run_kimi_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    project_id: Option<&str>,
     member: &MemberRun,
-    cwd: &Path,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
+    context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
+    let project_id = context.project_id.as_deref();
+    let cwd = &context.cwd;
+    let idle_timeout = context.idle_timeout;
+    let live_sink = context.live_sink.clone();
+    let turn_leases = &context.turn_leases;
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
     member_row.last_event_at = Some(now_string());
@@ -12629,63 +12674,66 @@ fn run_kimi_member(
         round += 1;
         let mut close_requested = false;
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
-        let outcome = client.prompt(
-            &prompt_text,
-            idle_timeout,
-            |update| mapper.handle(update),
-            |request| handle_kimi_provider_request(ledger, &member_row, request),
-            || {
-                let mut cancel = false;
-                while let Ok(command) = live_control.try_recv() {
-                    match command {
-                        MemberControlCommand::Interrupt {
-                            reason,
-                            requested_by,
-                            reply,
-                        } => {
-                            ledger.append_action(
-                                &member.id,
-                                "interrupt_requested",
-                                MemberActionStatus::Progress,
-                                "Kimi cancellation requested",
-                                &format!("{requested_by}: {reason}"),
-                            )?;
-                            cancel = true;
-                            let _ = reply.send(Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "status": "cancel_requested",
-                            })));
-                        }
-                        MemberControlCommand::Steer { reply, .. } => {
-                            let _ = reply.send(Err(CliError::Usage(
-                                "kimi_acp does not support mid-turn steer".to_string(),
-                            )));
-                        }
-                        MemberControlCommand::Close {
-                            reason,
-                            requested_by,
-                            reply,
-                        } => {
-                            ledger.append_action(
-                                &member.id,
-                                "close_requested",
-                                MemberActionStatus::Progress,
-                                "Kimi member close requested",
-                                &format!("{requested_by}: {reason}"),
-                            )?;
-                            close_requested = true;
-                            cancel = true;
-                            let _ = reply.send(Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "status": "close_requested",
-                                "provider_ack": "session_cancel_requested",
-                            })));
+        let outcome = {
+            let _turn_lease = turn_leases.acquire();
+            client.prompt(
+                &prompt_text,
+                idle_timeout,
+                |update| mapper.handle(update),
+                |request| handle_kimi_provider_request(ledger, &member_row, request),
+                || {
+                    let mut cancel = false;
+                    while let Ok(command) = live_control.try_recv() {
+                        match command {
+                            MemberControlCommand::Interrupt {
+                                reason,
+                                requested_by,
+                                reply,
+                            } => {
+                                ledger.append_action(
+                                    &member.id,
+                                    "interrupt_requested",
+                                    MemberActionStatus::Progress,
+                                    "Kimi cancellation requested",
+                                    &format!("{requested_by}: {reason}"),
+                                )?;
+                                cancel = true;
+                                let _ = reply.send(Ok(serde_json::json!({
+                                    "member_run_id": member.id,
+                                    "status": "cancel_requested",
+                                })));
+                            }
+                            MemberControlCommand::Steer { reply, .. } => {
+                                let _ = reply.send(Err(CliError::Usage(
+                                    "kimi_acp does not support mid-turn steer".to_string(),
+                                )));
+                            }
+                            MemberControlCommand::Close {
+                                reason,
+                                requested_by,
+                                reply,
+                            } => {
+                                ledger.append_action(
+                                    &member.id,
+                                    "close_requested",
+                                    MemberActionStatus::Progress,
+                                    "Kimi member close requested",
+                                    &format!("{requested_by}: {reason}"),
+                                )?;
+                                close_requested = true;
+                                cancel = true;
+                                let _ = reply.send(Ok(serde_json::json!({
+                                    "member_run_id": member.id,
+                                    "status": "close_requested",
+                                    "provider_ack": "session_cancel_requested",
+                                })));
+                            }
                         }
                     }
-                }
-                Ok(cancel)
-            },
-        )?;
+                    Ok(cancel)
+                },
+            )?
+        };
         for message in &accepted_messages {
             mark_message_delivered(ledger, message, &member.id, &member.name)?;
         }
@@ -28635,6 +28683,39 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persistent_member_profiles_default_to_one_host_execution_driver() {
+        for provider in ["codex", "claude", "kimi"] {
+            assert_eq!(
+                team_member_provider_profile(provider).execution_driver,
+                MemberExecutionDriver::HostDriven,
+                "{provider} Agent Team mode must not start an independent native continuation loop"
+            );
+        }
+    }
+
+    #[test]
+    fn active_turn_lease_limits_execution_without_limiting_idle_members() {
+        let pool = Arc::new(ActiveTurnLeasePool::new(1));
+        let first = pool.acquire();
+        let contender_pool = Arc::clone(&pool);
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            let _second = contender_pool.acquire();
+            acquired_tx.send(()).expect("report second lease");
+        });
+
+        assert!(
+            acquired_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "a second active provider turn must wait while the only lease is held"
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("idle/finished turn must release the lease");
+        contender.join().expect("contender");
+    }
 
     #[test]
     fn public_team_message_writes_use_four_durable_shapes() {

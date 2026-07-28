@@ -71,6 +71,11 @@ explicit acceptance decision.
 Do not reject a provider merely because it lacks Goal mode. Keep it
 `host_driven`. See `docs/member-continuation-model.md` and ADR 0041.
 
+Treat `--max-concurrency` as an active provider-turn limit. Persistent idle
+Members keep their native sessions and mailboxes but consume no execution
+permit. Increasing the roster therefore does not require increasing concurrency
+unless more Members must execute at the same moment.
+
 ## Choose The Smallest Truthful Executor
 
 | Situation | Choose |

@@ -20,6 +20,7 @@
       "properties": {
         "provider": { "type": "string", "minLength": 1 },
         "execution_mode": { "type": "string", "minLength": 1 },
+        "execution_driver": { "type": "string", "enum": ["host_driven", "provider_driven"] },
         "provider_version": { "type": ["string", "null"], "minLength": 1 },
         "adapter_contract_version": { "type": ["string", "null"], "minLength": 1 },
         "reviewed_provider_versions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
