@@ -415,7 +415,7 @@ export function TeamWarRoom({
             onOpen={() => navigationWave && onSelectionChange({ surface: "missions", missionId: navigationWave.mission_id, waveId: navigationWave.id, teamId: undefined })}
           />
           {wave && <GateReadinessModule wave={wave} runStatus={status} needsYouCount={needsYou.total} />}
-          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
+          <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} hostThreadId={run.host_thread_id} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
           <SelectedMemberModule
             member={selectedMember}
             assignment={selectedAssignment?.body}
@@ -1205,8 +1205,9 @@ function teamGateReadiness(wave: Wave | undefined, total: number): number | unde
   return spelled ? Math.min(total, words[spelled[1]]) : undefined;
 }
 
-function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, executionRoot, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; executionRoot?: string | null; createdAt?: string; completedAt?: string | null }) {
-  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Execution root" value={executionRoot ?? "Not recorded (legacy run)"} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{hostSurface && <Fact label="Host" value={hostSurface} />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
+function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, hostThreadId, executionRoot, createdAt, completedAt }: { runId: string; status: string; attempt: number; previousRunId?: string | null; hostSurface?: string | null; hostThreadId?: string | null; executionRoot?: string | null; createdAt?: string; completedAt?: string | null }) {
+  const hostBinding = hostSurface && hostThreadId ? `${hostSurface} · ${shortId(hostThreadId)}` : hostSurface ? `${hostSurface} · unbound` : "Not recorded";
+  return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Host binding" value={hostBinding} mono /><Fact label="Execution root" value={executionRoot ?? "Not recorded (legacy run)"} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
 }
 
 function SelectedMemberModule({ member, assignment, currentAction, onMessage, onOpen }: { member?: MemberRun; assignment?: string; currentAction?: string; onMessage: () => void; onOpen: () => void }) {

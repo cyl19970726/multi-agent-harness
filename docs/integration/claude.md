@@ -112,6 +112,26 @@ Ordinary collaboration uses `TeamMessage`:
 - Member → Host question, blocker, progress, review request, or handoff;
 - Member → Member peer coordination.
 
+Claude uses the same provider-neutral
+`collaborate-as-agent-team-member` contract as Codex app-server and Kimi ACP.
+The first SDK turn receives a self-contained collaboration envelope with the
+TeamRun, MemberRun, Assignment correlation, roster, Inbox, peer-message, and
+Host-handoff commands, so correctness does not depend on a provider-specific
+Claude Skill fork. When the Star Harness Skill is also installed, it must match
+that canonical contract rather than redefine mailbox semantics.
+
+A Claude Member sends Host mail explicitly with `harness team-run send
+--to host`. Harness stores it immediately in the Host Inbox as delivered mail
+requiring manual ACK. This does not interrupt the Host's current turn; the Host
+reads it at the next safe boundary, ACKs transport separately, and sends a
+causation-linked semantic response when needed.
+
+This repository does not claim that a Claude Code/Desktop Host session owned by
+another process can be background-woken. A future Claude Host adapter must own
+the live Agent SDK streaming connection before it reports idle push delivery.
+Without that connection, it uses the same exact native binding and
+safe-boundary pull contract as [ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+
 Provider-paused questions and approvals use `PendingInteraction`. A provider
 `completed` status alone is not proof that an answer, approval, or semantic
 handoff occurred.

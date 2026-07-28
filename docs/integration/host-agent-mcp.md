@@ -148,15 +148,36 @@ queued
   -> explicit Host resolution or outcome
 ```
 
-Today, messages created while a Member is running are delivered at the next
-provider round boundary. A completed or idle Member is not automatically
-resumed by a new message; the Host must explicitly create the follow-up run and
-bind the same provider-native session. Host-bound handoffs require a manual
-ACK. The Host is not automatically woken or injected merely because a durable
-message exists, so the plugin/MCP client must poll the Host inbox/status at safe
-turn boundaries. The complete recipient inbox, wake, response, and resolution
-contract remains tracked by issue
-[#230](https://github.com/cyl19970726/multi-agent-harness/issues/230).
+Messages created while a Member is running are delivered at the next provider
+round boundary. A completed or idle Member is not automatically resumed by a
+new message; the Host must explicitly create the follow-up run and bind the
+same provider-native session.
+
+Host-bound mail is scoped by the TeamRun's exact `host_surface +
+host_thread_id`. The Codex Plugin reads only that native task's aggregate
+Inbox. At `Stop`, it may use Codex's real one-shot continuation protocol to
+handle mail that arrived while the Host was busy. Mail arriving after an
+unowned Codex Desktop task is already idle remains actionable until the next
+`UserPromptSubmit` or `SessionStart`; Harness does not spawn a second app-server
+and pretend it owns the open Desktop task. See
+[ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+
+This boundary is intentionally provider-neutral:
+
+```text
+Member native session
+  -> explicit TeamMessage(to=host)
+  -> Harness Host Inbox (delivered + manual_ack)
+  -> exact native Host binding
+  -> bounded Plugin context or one-shot Codex Stop continuation
+  -> Host reads Inbox and ACKs transport
+  -> Host sends a causation-linked answer/review/acceptance
+```
+
+Codex and Claude do not own separate mailbox Skills. Both use the canonical
+`orchestrate-mission-waves` Host contract and
+`collaborate-as-agent-team-member` Member contract; app-server versus Agent SDK
+differences remain Adapter capabilities, not different team semantics.
 
 An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
 and not “the Host accepts the work.” A reviewer must receive the actual

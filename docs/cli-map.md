@@ -25,7 +25,7 @@ dedicated CLI.
 | Mission | `mission create/list/show/update-context/create-team/link-team/unlink-team/close` | Implemented | Current durable intent surface. |
 | Wave | `wave create/list/show/history/update/advance/gate` | Implemented | Lightweight host plan/judgment record. |
 | Agent Team definition | `team create/list/show/rename/add-member/remove-member/close/archive` | Implemented | Defines reusable teams independent of Mission/Wave. |
-| Agent Team run | `team-run create/list/status/inbox/add-member/rename-member/deactivate-member/start/send/resolve-interaction/events/complete/cancel` | Implemented | Runtime control plane for MemberRuns and assignment/message correlation. |
+| Agent Team run | `team-run create/list/status/inbox/ack/add-member/rename-member/deactivate-member/close-member/start/send/resolve-interaction/events/complete/cancel` | Implemented | Runtime control plane for MemberRuns, recipient acknowledgement, and assignment/message correlation. |
 | Members/providers | `member register/list/providers` | Implemented | Provider compatibility review is exposed through `member providers`. |
 | Standing Agent runtime | `agent create/list/show/start/health/send/deliver/retry-delivery/reconcile-delivery/gateway/close` | Implemented | Current standing-agent operational CLI. |
 | Dynamic Workflow | `workflow list/run/run-script/get-output/patch/gc-worktrees/reap-workers/reap` | Implemented | WorkflowRun/WorkflowStep remain their own execution truth. |

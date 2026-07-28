@@ -152,6 +152,7 @@ MemberRun.
 The same application behavior is exposed through:
 
 - `harness team-run inbox --id <run> --member-run-id <member> [--all] --json`;
+- `harness team-run host-inbox --surface <surface> --thread-id <native-host-task> [--all] --json`;
 - `harness member-run show --id <member> --json`;
 - Team message/status commands;
 - HTTP and MCP equivalents; and
@@ -169,6 +170,12 @@ process. A second CLI process cannot inject into a foreground
 `team-run start` child merely because it can read the same JSONL store. Until a
 durable Team Supervisor exists, that case must remain visibly queued or fail
 honestly rather than claim delivery.
+
+Host delivery follows the same ownership rule. Codex `Stop` is a real
+same-task safe boundary and may continue once with actionable Host mail.
+An already-idle Desktop task cannot be asynchronously woken by its thread id
+alone; it receives mail at its next prompt or resume. See
+[ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
 
 ## Acceptance
 

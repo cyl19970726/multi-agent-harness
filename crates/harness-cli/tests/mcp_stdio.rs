@@ -185,6 +185,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_message_acknowledge",
             "team_run_list",
             "team_run_status",
+            "team_run_host_inbox",
             "team_run_inbox",
             "team_run_send_message",
             "team_run_resolve_interaction",
@@ -219,6 +220,12 @@ fn mcp_stdio_agent_team_tools() {
             .get("execution_root")
             .is_some(),
         "MCP create accepts execution_root: {create_schema}"
+    );
+    assert!(
+        create_schema["inputSchema"]["properties"]
+            .get("host_thread_id")
+            .is_some(),
+        "MCP create accepts exact native Host binding: {create_schema}"
     );
     assert!(
         create_schema["inputSchema"]["properties"]["members"]["items"]["properties"]
@@ -287,6 +294,8 @@ fn mcp_stdio_agent_team_tools() {
                 "wave_id": "wave-mcp",
                 "execution_root": project_root,
                 "budget_limit_usd": 5.5,
+                "host_surface": "codex-app",
+                "host_thread_id": "codex-host-mcp",
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi"},
                     {"name": "worker-1", "role": "implementer", "provider": "codex", "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a", "docs"]}
@@ -467,8 +476,8 @@ fn mcp_stdio_agent_team_tools() {
                 "to_member_ids": [member_ids[1]],
                 "kind": "handoff",
                 "body": "handing off the slice",
-                "correlation_id": assignment_correlation,
-                "causation_id": assignment_id
+                "correlation_id": assignment_correlation.clone(),
+                "causation_id": assignment_id.clone()
             }
         }),
     );
@@ -504,6 +513,68 @@ fn mcp_stdio_agent_team_tools() {
         "peer handoff must be actionable in MCP inbox: {payload}"
     );
 
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": member_ids[0],
+                "to_member_ids": ["host"],
+                "kind": "message",
+                "body": "QUESTION: choose interface A or B",
+                "correlation_id": assignment_correlation.clone(),
+                "causation_id": assignment_id
+            }
+        }),
+    );
+    let host_message = call_payload(&response)["message_id"]
+        .as_str()
+        .expect("Host message id")
+        .to_string();
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_host_inbox",
+            "arguments": {
+                "host_surface": "codex-app",
+                "host_thread_id": "codex-host-mcp"
+            }
+        }),
+    );
+    let payload = call_payload(&response);
+    assert_eq!(payload["runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        payload["runs"][0]["messages"][0]["id"].as_str(),
+        Some(host_message.as_str())
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_host_inbox",
+            "arguments": {
+                "host_surface": "codex-app",
+                "host_thread_id": "another-host"
+            }
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["runs"].as_array().map(Vec::len),
+        Some(0)
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_message_acknowledge",
+            "arguments": {"message_id": host_message, "member_id": "host"}
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["message"]["deliveries"][0]["status"].as_str(),
+        Some("acknowledged"),
+        "Host intake ACK remains separate from the message's semantic answer"
+    );
+
     // 9. team_run_events → strictly increasing seq, and the send above is
     //    journaled as a message/created event. after_seq resumes the tail.
     let response = mcp.request(
@@ -517,7 +588,7 @@ fn mcp_stdio_agent_team_tools() {
     //    create journals 1 (run) + 2×2 (member + assignment) = 5 events,
     //    add-member journals two and the handoff adds one more.
     let events = payload.as_array().expect("events array");
-    assert!(events.len() >= 8, "events: {}", events.len());
+    assert!(events.len() >= 9, "events: {}", events.len());
     let seqs: Vec<u64> = events
         .iter()
         .map(|event| event["seq"].as_u64().expect("event seq"))

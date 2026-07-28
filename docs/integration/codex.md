@@ -72,6 +72,29 @@ understanding requires an explicit reply or Handoff.
 The complete message-selection and delivery contract is in
 [Codex Message Delivery](codex-message-delivery.md).
 
+## Codex Host Inbox
+
+Codex Members and a Codex Host use different adapters. A Member app-server is
+owned by Harness; the user's Codex Desktop Host task is normally owned by the
+Desktop app. TeamRuns therefore bind the Host explicitly:
+
+```bash
+harness team-run create ... \
+  --host-surface codex-app \
+  --host-thread-id <Codex hook session_id>
+```
+
+The Star Harness hook queries `team-run host-inbox` with that exact pair.
+`SessionStart` and `UserPromptSubmit` surface actionable mail. When mail exists
+at `Stop`, Codex's native continuation protocol keeps the same task running
+once and supplies the bounded Inbox summary. `stop_hook_active` prevents a
+continuation loop.
+
+If mail arrives after Desktop is already idle, no hook event occurs. Unless
+Harness owns a live app-server connection for that Host, the mail remains
+durable until the next prompt/resume. Known thread identity is not live
+connection ownership. Full contract: [ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+
 ## Collaboration And Planning
 
 The Assignment message plus correlation id is the durable Member Goal.

@@ -1,10 +1,31 @@
 #!/usr/bin/env bash
-# Fail-open lifecycle telemetry plus SessionStart active-run orientation.
+# Fail-open lifecycle telemetry plus native-thread-scoped Host Inbox delivery.
 set -uo pipefail
 
 payload="$(cat 2>/dev/null || true)"
 harness_bin="${HARNESS_BIN:-harness}"
 command -v "$harness_bin" >/dev/null 2>&1 || exit 0
+
+hook_fields="$(
+  HOOK_PAYLOAD="$payload" python3 - 2>/dev/null <<'PY'
+import json
+import os
+
+try:
+    value = json.loads(os.environ.get("HOOK_PAYLOAD", "") or "{}")
+except ValueError:
+    value = {}
+items = []
+for key in ("hook_event_name", "session_id", "turn_id", "stop_hook_active"):
+    item = value.get(key, "")
+    if isinstance(item, bool):
+        item = "true" if item else "false"
+    items.append(str(item).replace("|", " ").replace("\n", " "))
+print("|".join(items))
+PY
+)"
+IFS='|' read -r event_name session_id turn_id stop_hook_active <<<"$hook_fields"
+stop_hook_active="${stop_hook_active:-false}"
 
 # Forward bound lifecycle events to Harness. Core ingestion owns sanitization;
 # unbound raw hook payloads are deliberately not persisted by this plugin.
@@ -14,56 +35,164 @@ if [[ -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then
     args+=(--runtime "$HARNESS_AGENT_RUNTIME_ID")
   fi
   printf '%s' "$payload" | "$harness_bin" "${args[@]}" >/dev/null 2>&1 || true
+  # Codex Stop requires JSON stdout. A Member owns its own Inbox and must never
+  # receive the Lead Inbox simply because both use the same provider plugin.
+  if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+    printf '{}\n'
+  fi
+  exit 0
 fi
 
-event_name="$(printf '%s' "$payload" |
-  sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-  head -1)"
 case "$event_name" in
-  SessionStart|session_start|"")
+  SessionStart|session_start)
+    show_binding=1
+    ;;
+  UserPromptSubmit|user_prompt_submit)
+    show_binding=0
+    ;;
+  Stop|stop)
+    show_binding=0
     ;;
   *)
     exit 0
     ;;
 esac
 
-list_json="$("$harness_bin" team-run list --json 2>/dev/null)" || exit 0
-[[ -n "$list_json" ]] || exit 0
+# Common hook input identifies the provider-native task. The surface can be
+# overridden by another provider integration; Kimi's plugin root is a reliable
+# local discriminator for its current manifest.
+if [[ -n "${HARNESS_HOST_SURFACE:-}" ]]; then
+  host_surface="$HARNESS_HOST_SURFACE"
+elif [[ -n "${KIMI_PLUGIN_ROOT:-}" ]]; then
+  host_surface="kimi-cli"
+else
+  host_surface="codex-app"
+fi
 
-LIST_JSON="$list_json" python3 - 2>/dev/null <<'PY'
+if [[ -z "$session_id" ]]; then
+  # Only Codex Stop requires structured stdout. Without native identity there
+  # is no safe mailbox to inject, so fail open rather than reading every run.
+  if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+    printf '{}\n'
+  fi
+  exit 0
+fi
+
+inbox_json="$("$harness_bin" team-run host-inbox \
+  --surface "$host_surface" --thread-id "$session_id" --json 2>/dev/null)" || {
+  if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+    printf '{}\n'
+  fi
+  exit 0
+}
+
+if [[ "$event_name" == "Stop" || "$event_name" == "stop" ]]; then
+  # A Stop continuation is a real same-thread safe boundary for Codex. It
+  # handles mail that arrived while the Host was busy without mid-turn
+  # interruption. `stop_hook_active` prevents a continuation loop. Kimi Stop
+  # does not expose Codex's `turn_id`, so it remains a normal fail-open hook.
+  if [[ -z "$turn_id" || "$stop_hook_active" == "true" ]]; then
+    [[ -n "$turn_id" ]] && printf '{}\n'
+    exit 0
+  fi
+  INBOX_JSON="$inbox_json" python3 - 2>/dev/null <<'PY'
 import json
 import os
+import re
 
 try:
-    data = json.loads(os.environ.get("LIST_JSON", ""))
+    entries = json.loads(os.environ.get("INBOX_JSON", ""))
 except ValueError:
+    entries = []
+messages = []
+for entry in entries if isinstance(entries, list) else []:
+    if not isinstance(entry, dict):
+        continue
+    run_id = str(entry.get("team_run_id", ""))
+    for message in entry.get("messages", []):
+        if isinstance(message, dict):
+            messages.append((run_id, message))
+if not messages:
+    print("{}")
     raise SystemExit(0)
 
-runs = data.get("runs", data) if isinstance(data, dict) else data
-if not isinstance(runs, list):
-    raise SystemExit(0)
-
-active_states = {"planning", "running", "waiting", "reviewing", "blocked"}
-active = [run for run in runs
-          if isinstance(run, dict) and run.get("status") in active_states]
-if not active:
-    raise SystemExit(0)
-
-run = active[-1]
-run_id = run.get("id", "?")
-status = run.get("status", "?")
-members = run.get("member_run_ids") or run.get("members") or []
-project = run.get("project_id") or os.environ.get("HARNESS_PROJECT") or ""
-parts = [
-    "[star-harness]",
-    f"active TeamRun={run_id}",
-    f"status={status}",
-    f"members={len(members)}",
+lines = [
+    "Star Harness Host Inbox received new coordination mail while this Host was busy.",
+    "Process it now in the same native task. Read the full message before deciding; "
+    "reply in its correlation when needed, then ACK only after it has entered your working context.",
 ]
-if project:
-    parts.append(f"project={project}")
-parts.append("use `harness team-run status --id " + str(run_id) + "`")
-print(" ".join(parts))
+for run_id, message in messages[:5]:
+    body = re.sub(r"\s+", " ", str(message.get("body", ""))).strip()
+    if len(body) > 180:
+        body = body[:177] + "..."
+    lines.append(
+        f"- TeamRun={run_id} from={message.get('from_member_id', '?')} "
+        f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
+        f"correlation={message.get('correlation_id', '?')}: {body}"
+    )
+if len(messages) > 5:
+    lines.append(f"- ... and {len(messages) - 5} more; use `harness team-run host-inbox "
+                 f"--surface codex-app --thread-id <session-id> --json`.")
+lines.append(
+    "Use `harness team-run ack --id <team-run-id> --message-id <message-id> "
+    "--member-id host` after intake. Do not treat transport ACK as semantic acceptance."
+)
+print(json.dumps({"decision": "block", "reason": "\n".join(lines)}))
+PY
+  exit 0
+fi
+
+INBOX_JSON="$inbox_json" HOST_SURFACE="$host_surface" HOST_SESSION_ID="$session_id" \
+SHOW_BINDING="$show_binding" python3 - 2>/dev/null <<'PY'
+import json
+import os
+import re
+
+try:
+    entries = json.loads(os.environ.get("INBOX_JSON", ""))
+except ValueError:
+    entries = []
+if not isinstance(entries, list):
+    entries = []
+
+surface = os.environ.get("HOST_SURFACE", "?")
+session_id = os.environ.get("HOST_SESSION_ID", "?")
+if os.environ.get("SHOW_BINDING") == "1":
+    print(f"[star-harness] Host native binding: surface={surface} thread={session_id}")
+    print(
+        "  New TeamRuns must use `--host-surface "
+        + surface
+        + " --host-thread-id "
+        + session_id
+        + "`; bind an existing run with `harness team-run bind-host`."
+    )
+
+for entry in entries:
+    if not isinstance(entry, dict):
+        continue
+    run_id = str(entry.get("team_run_id", "?"))
+    messages = entry.get("messages", [])
+    if not isinstance(messages, list) or not messages:
+        continue
+    print(f"[star-harness] Needs you: TeamRun={run_id} pending_host_messages={len(messages)}")
+    for message in messages[:3]:
+        if not isinstance(message, dict):
+            continue
+        body = re.sub(r"\s+", " ", str(message.get("body", ""))).strip()
+        if len(body) > 120:
+            body = body[:117] + "..."
+        print(
+            f"- from={message.get('from_member_id', '?')} "
+            f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
+            f"correlation={message.get('correlation_id', '?')}: {body}"
+        )
+    if len(messages) > 3:
+        print(f"- ... and {len(messages) - 3} more")
+    print(
+        "  read with `harness team-run inbox --id "
+        + run_id
+        + " --member-run-id host --json`; ACK only after intake"
+    )
 PY
 
 exit 0

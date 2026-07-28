@@ -103,6 +103,54 @@ internal test subagent is not independent review.
 11. Close the Mission with an explicit outcome. Leave linked teams and their
     independent lifecycle untouched.
 
+At every safe Host turn boundary—session start, after the user sends a new
+prompt, before re-planning, and before accepting a handoff—read the Lead Inbox.
+Member mail is durable immediately, but it does not asynchronously interrupt
+the Host's current reasoning:
+
+```bash
+harness team-run inbox --id <team-run-id> \
+  --member-run-id host --json
+```
+
+For each actionable message:
+
+1. inspect its sender, kind, Assignment correlation, causation, and body;
+2. acknowledge receipt explicitly;
+3. send a causation-linked reply when a semantic response is needed; and
+4. keep acceptance separate from receipt.
+
+```bash
+harness team-run ack --id <team-run-id> \
+  --message-id <message-id> --member-id host
+harness team-run send --id <team-run-id> --from host --to <member-run-id> \
+  --kind message --body "<answer, revision, or acceptance decision>" \
+  --correlation-id <assignment-correlation> --causation-id <message-id>
+```
+
+Bind every TeamRun to this exact native Host task using `host_surface` and
+`host_thread_id`. Never read all active runs merely because they share a
+project:
+
+```bash
+harness team-run host-inbox --surface <provider-surface> \
+  --thread-id <native-host-task-id> --json
+harness team-run bind-host --id <run> --surface <provider-surface> \
+  --thread-id <native-host-task-id>
+```
+
+The Star Harness Plugin injects a bounded `Needs you` summary at supported
+SessionStart and user-prompt boundaries. For Codex, a `Stop` hook may continue
+the same native task once when actionable mail arrived while the Host was busy.
+It never interrupts the middle of a turn, never loops after
+`stop_hook_active`, and never scans another native task's Inbox.
+
+Treat hook context as orientation, not mailbox truth: read the canonical Inbox
+before acting. No hook may silently ACK, answer, or accept. If a Desktop/CLI
+task is already idle and Harness does not own its live provider connection,
+mail remains durable until the next prompt or resume; knowing a thread id is
+not authority to claim background wake.
+
 The Host owns Member lifecycle explicitly:
 
 ```bash
@@ -208,6 +256,10 @@ harness team-run inbox --id <team-run-id> \
   --member-run-id <member-run-id> --all --json
 harness member-run show --id <member-run-id> --json
 ```
+
+`member-run show` explains one Member's assignment, mailbox, latest action,
+native-session binding, handoff, and runtime facts. It does not mirror the
+provider transcript.
 
 ## Use Messages Deliberately
 

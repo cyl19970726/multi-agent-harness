@@ -370,6 +370,52 @@ impl HarnessStore {
         self.append_jsonl("team_runs.jsonl", value)
     }
 
+    /// Compare-and-append one TeamRun revision.
+    ///
+    /// Host binding is mutable coordination metadata, but changing it must not
+    /// silently overwrite a concurrent lifecycle/member update. Keep the
+    /// identity, execution scope, and creation time stable while allowing the
+    /// caller to revise addressability fields and `updated_at`.
+    pub fn compare_and_append_team_run(
+        &self,
+        expected: &AgentTeamRun,
+        next: &AgentTeamRun,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "team run {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        if next.id != current.id
+            || next.created_at != current.created_at
+            || next.mission_id != current.mission_id
+            || next.wave_id != current.wave_id
+            || next.agent_team_id != current.agent_team_id
+            || next.definition_id != current.definition_id
+            || next.previous_run_id != current.previous_run_id
+            || next.execution_root != current.execution_root
+            || next.member_run_ids != current.member_run_ids
+            || next.status != current.status
+            || next.objective != current.objective
+            || next.budget_limit_usd != current.budget_limit_usd
+            || next.completed_at != current.completed_at
+        {
+            return Err(StoreError::Conflict(
+                "Host binding revision must preserve TeamRun identity, scope, members, lifecycle, and objective"
+                    .to_string(),
+            ));
+        }
+        self.append_jsonl_unlocked("team_runs.jsonl", next)
+    }
+
     /// Atomically append a newly-created TeamRun. Mission-scoped runs are the
     /// primary path and intentionally have no Wave id. Rows with both ids are
     /// retained only for legacy direct-Wave executor compatibility.

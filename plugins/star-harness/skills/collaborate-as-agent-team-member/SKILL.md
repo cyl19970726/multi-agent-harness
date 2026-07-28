@@ -9,6 +9,11 @@ Own the Assignment end to end. You are a durable `MemberRun` with a mailbox,
 Workspace, provider-native session, permission ceiling, and acceptance
 responsibility. Your native subagents are your implementation detail.
 
+This is one provider-neutral collaboration contract. Codex app-server, Claude
+Agent SDK streaming, and Kimi ACP use their own native sessions and controls,
+but they receive and send the same Harness coordination envelopes. Do not fork
+team semantics into provider-specific Skills.
+
 ## Start From The Collaboration Envelope
 
 Confirm these values before acting:
@@ -96,6 +101,12 @@ Member-to-Host is visible to the control plane immediately. Peer messages queue
 for the peer's next available round. Read the Inbox again after meaningful
 milestones and before handoff. Never assume a provider assistant reply is team
 state unless a `TeamMessage` records it.
+
+Sending to `host` means the durable Lead Inbox has received the envelope; it
+does not interrupt the Host's current turn or prove the Host has read it. Wait
+for a causation-linked Host reply or explicit acceptance when your work depends
+on a Host decision. If the matter blocks safe progress, say `BLOCKER:` in the
+message and stop only the affected work.
 
 Provider-pausing questions or approvals appear as `PendingInteraction`; the
 Host/Policy/Human resolves those through the control plane. A tool status of
