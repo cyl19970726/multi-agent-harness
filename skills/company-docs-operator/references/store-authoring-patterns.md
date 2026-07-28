@@ -48,7 +48,7 @@ harness company docs health
 harness company docs block append \
   --definition <page-definition-id> \
   --document <document-id> \
-  --kind table \
+  --kind simple_table \
   --content-json '<json>' \
   --actor <actor-id>
 

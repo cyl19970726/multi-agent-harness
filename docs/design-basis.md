@@ -10,6 +10,19 @@ The PRD explains why Star Harness exists. Architecture and schemas describe
 what is implemented. This document explains why the product is decomposed into
 Company OS truth systems plus a separate execution foundation.
 
+ADR 0040 adds the storage/identity boundary behind that decomposition:
+
+```text
+Company Store       Execution Space       Project Binding
+     \                    |                    /
+      \------ explicit, optional relations ---/
+```
+
+An Agent Company Workspace is the product-level company operating subject. Its
+Company Store owns company truth. Execution Spaces own provider-neutral
+coordination and must work without any Company. Project Bindings own
+repository/worktree/runtime-resource selection and must not own company truth.
+
 ## Core thesis
 
 An AI-native company needs durable memory, accountable capability, explicit
@@ -50,7 +63,7 @@ flowchart TD
 | Company product | the company needs one durable model for knowledge, actors, commitments and effects | each fact has one owning system and linked projections never become copies |
 | Governance | sensitive effects need named policy and authority | Approval is distinct from comments, execution completion and Wave gates |
 | Execution foundation | long or parallel work needs provider-neutral coordination | Mission has ordered Host-plan Wave revisions; independent runtimes own execution truth and are related by Mission, assignments, and evidence |
-| Runtime | providers differ in process, session, tool and observation capability | provider state never becomes organization identity or business authority |
+| Runtime / Project Binding | providers and repositories differ in process, session, tool, worktree, instruction, and observation capability | provider cwd comes from a project root or validated worktree; provider state never becomes organization identity or business authority |
 | Outcome/evidence | accepted claims must be reconstructable | outcomes point to useful artifacts, checks and durable records without storing private thinking |
 | Interface | humans and Agents need comprehensible operating views | Company OS presents business truth; Agent Dashboard presents execution truth |
 
@@ -67,6 +80,7 @@ flowchart TD
 | Agent Team | independent reusable Team identity, Mission relations, long-lived TeamRuns, run-scoped members, assignment messages, correlations, actions and handoffs | Standing Organization membership or Wave ownership | ownership is proven by assignment/message lineage and native-session bindings |
 | Dynamic Workflow | WorkflowRun, steps, outputs and artifacts | universal company coordination | workflow truth stays inside its executor contract |
 | Provider/runtime | sessions, processes, events, workspace and capability observation | WorkItem or Organization truth | optional hooks may observe only what the provider actually exposes |
+| Company Store / Execution Space / Project Binding | company truth, execution coordination, and repository/worktree selection as distinct identities | repo path as Company Store owner, Company as mandatory execution dependency, or store directory as provider cwd | Company linkage is optional for execution; Project Binding never reroutes company writes |
 | Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |
 
 There is no active `Goal`, `GoalPhase`, Project-like task container or Task

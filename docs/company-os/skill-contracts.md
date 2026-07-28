@@ -37,7 +37,7 @@ decisions.
 For real commercial projects, the operator suite must produce more than a
 folder tree or a sequence of CLI writes. It must define the operating page
 architecture, write the corresponding page contracts and business facts into
-the project Store, and then link Work, Organization, Finance, external software
+the selected Company Store, and then link Work, Organization, Finance, external software
 sources, Views, and any custom page presentation to those contracts. A page such
 as a commercial Project Home or Business Model page is not accepted when it
 only contains generic prose; it must be legible to humans in UI and operable by
@@ -45,10 +45,33 @@ Agents through CLI/API. Seed or materialization scripts may remain acceptance
 fixtures, but they are not the normal authoring path for a registered project
 Store.
 
-`new-day-wanchengwanling` is the first real commercial dogfood project for this
-suite. Its GitHub `dev` branch is an external software product source; the
-commercial operating truth must remain in the Company OS Store through Docs,
+`agent-company` is the active local Company Store for the first real commercial
+dogfood path: Wanchengwanling and AgentOS dogfood records now live in the same
+Company Store. The older `new-day-wanchengwanling` project-derived Store is
+compatibility/migration evidence, not the normal operating target. The
+Wanchengwanling GitHub `dev` branch is an external software product source;
+commercial operating truth must remain in Company OS records through Docs,
 Work, Organization, Finance, source-sync records, and custom page definitions.
+
+## Company Store selection
+
+All operator skills must make Store selection explicit before reading or
+writing durable company records:
+
+```bash
+harness company current
+harness company init --id <company-id> --name <display-name>
+harness company migrate-from-project --from-project <project-id|path> --id <company-id> --name <display-name>
+harness --company <company-id> company docs query --document <doc-id>
+HARNESS_COMPANY=<company-id> harness company work list
+```
+
+If no Company is selected, current commands still fall back to the
+project-derived compatibility Store. That fallback is allowed for legacy reads
+and migration work, but new dogfood/company operations should prefer an
+explicit Company Store. `migrate-from-project` copies only `company_os_*.jsonl`
+ledgers and must not be treated as Execution Space, Project Binding, provider
+session, prompt, or runtime migration.
 
 Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
 Agent interface for reading, editing, governing, and verifying document truth.

@@ -117,6 +117,14 @@ function dateLabel(value?: string): string {
   return `${day}/${month}/${year}`;
 }
 
+function isActiveWork(status: string): boolean {
+  return !new Set(["draft", "completed", "cancelled", "archived"]).has(status);
+}
+
+function priorityWeight(priority?: string): number {
+  return priority === "critical" ? 4 : priority === "high" ? 3 : priority === "medium" ? 2 : priority === "low" ? 1 : 0;
+}
+
 function buildModel(source: unknown): WorkModel {
   const root = source && typeof source === "object" && !Array.isArray(source) ? source as Json : {};
   const projection = root.work && typeof root.work === "object" && !Array.isArray(root.work) ? root.work as Json : {};
@@ -204,14 +212,13 @@ function buildModel(source: unknown): WorkModel {
     };
   });
   const summaryRecord = projection.summary && typeof projection.summary === "object" ? projection.summary as Json : {};
-  const isActive = (status: string) => !new Set(["draft", "completed", "cancelled", "archived"]).has(status);
   return {
     items,
     milestones,
     actors: [...actorMap.values()],
     summary: {
       total: Number(summaryRecord.total ?? items.length),
-      active: Number(summaryRecord.active ?? items.filter((item) => isActive(item.status)).length),
+      active: Number(summaryRecord.active ?? items.filter((item) => isActiveWork(item.status)).length),
       completed: Number(summaryRecord.completed ?? items.filter((item) => item.status === "completed").length),
       blocked: Number(summaryRecord.blocked ?? items.filter((item) => item.status === "blocked").length),
       waiting: Number(summaryRecord.waiting_for_approval ?? items.filter((item) => item.status === "waiting_for_approval").length),
@@ -231,7 +238,7 @@ const viewOptions: Array<{ id: WorkView; label: string; icon: typeof LayoutDashb
 
 export function WorkOperatingPage({ source }: { source: unknown }) {
   const model = useMemo(() => buildModel(source), [source]);
-  const [activeView, setActiveView] = useState<WorkView>("board");
+  const [activeView, setActiveView] = useState<WorkView>("overview");
   const [query, setQuery] = useState("");
   const visible = model.items.filter((item) => `${item.title} ${item.businessLine} ${item.workType} ${item.milestone}`.toLowerCase().includes(query.toLowerCase()));
   return (
@@ -259,12 +266,29 @@ export function WorkOperatingPage({ source }: { source: unknown }) {
 
 function Overview({ model, items }: { model: WorkModel; items: WorkRow[] }) {
   const attention = items.filter((item) => item.status === "blocked" || item.status === "waiting_for_approval" || item.assignees.length === 0);
-  const businessLines = [...new Set(items.map((item) => item.businessLine))];
+  const activeItems = items.filter((item) => isActiveWork(item.status));
+  const operatingQueue = (attention.length > 0 ? attention : activeItems)
+    .sort((left, right) => priorityWeight(right.priority) - priorityWeight(left.priority) || right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 10);
+  const businessLines = [...new Set(items.map((item) => item.businessLine))]
+    .map((line) => ({ line, count: items.filter((item) => item.businessLine === line).length, active: activeItems.filter((item) => item.businessLine === line).length }))
+    .sort((left, right) => right.active - left.active || left.line.localeCompare(right.line));
+  const workTypes = [...new Set(items.map((item) => item.workType))]
+    .map((type) => ({ type, count: items.filter((item) => item.workType === type).length }))
+    .sort((left, right) => right.count - left.count || left.type.localeCompare(right.type));
+  const activeMilestones = [...model.milestones].sort((left, right) => {
+    const statusWeight = (status: string) => status === "active" ? 3 : status === "at_risk" ? 2 : status === "planned" ? 1 : 0;
+    return statusWeight(right.status) - statusWeight(left.status) || right.total - left.total;
+  });
   return <div className="w-full min-w-0 max-w-full space-y-6 overflow-hidden">
     <section className="flex w-full min-w-0 max-w-full gap-3 overflow-x-auto sm:grid sm:grid-cols-3 sm:overflow-visible xl:grid-cols-6"><Metric label="Active" value={model.summary.active} icon={CircleDot} tone="primary" /><Metric label="Completed" value={model.summary.completed} icon={CheckCircle2} tone="good" /><Metric label="Blocked" value={model.summary.blocked} icon={AlertTriangle} tone="danger" /><Metric label="Waiting" value={model.summary.waiting} icon={Clock3} tone="warn" /><Metric label="Unassigned" value={model.summary.unassigned} icon={UserRound} tone="quiet" /><Metric label="All Work" value={model.summary.total} icon={ListChecks} tone="quiet" /></section>
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.55fr)]">
-      <section className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><SectionTitle eyebrow="Operational pressure" title="Needs attention" detail="The next actor and business consequence stay visible." /><div className="divide-y divide-border">{attention.length > 0 ? attention.map((item) => <WorkListRow key={item.id} item={item} />) : <p className="p-6 text-sm text-muted-foreground">No blocked, approval-bound, or unassigned WorkItems.</p>}</div></section>
-      <div className="space-y-6"><section className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Business lines</p><div className="mt-4 space-y-3">{businessLines.map((line) => { const count = items.filter((item) => item.businessLine === line).length; return <div key={line}><div className="flex items-center justify-between text-sm"><span>{line}</span><span className="font-semibold">{count}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(8, count / Math.max(1, items.length) * 100)}%` }} /></div></div>; })}</div></section><section className="rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/[0.08] to-card p-5 shadow-sm"><div className="flex items-center gap-2 text-primary"><Flag className="size-4" /><p className="text-[10px] font-semibold uppercase tracking-[0.18em]">Milestone pulse</p></div><p className="company-editorial-title mt-4 text-3xl">{model.milestones.length}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Native business checkpoints. They do not become Mission Waves.</p></section></div>
+      <section className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><SectionTitle eyebrow={attention.length > 0 ? "Operational pressure" : "Operating queue"} title={attention.length > 0 ? "Needs attention" : "Next WorkItems"} detail="The first screen shows what the company has committed to, who owns it, and which business line it affects." /><div className="divide-y divide-border">{operatingQueue.length > 0 ? operatingQueue.map((item) => <WorkListRow key={item.id} item={item} />) : <p className="p-6 text-sm text-muted-foreground">No active WorkItems match the current filter.</p>}</div></section>
+      <div className="space-y-6">
+        <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Business lines</p><div className="mt-4 space-y-3">{businessLines.map(({ line, count, active }) => <div key={line}><div className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate">{line}</span><span className="shrink-0 font-semibold">{active}/{count}</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(8, count / Math.max(1, items.length) * 100)}%` }} /></div></div>)}</div></section>
+        <section className="rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/[0.08] to-card p-5 shadow-sm"><div className="flex items-center gap-2 text-primary"><Flag className="size-4" /><p className="text-[10px] font-semibold uppercase tracking-[0.18em]">Milestone pulse</p></div><div className="mt-4 space-y-3">{activeMilestones.slice(0, 3).map((milestone) => <div key={milestone.id} data-company-os-ref={milestone.id} className="rounded-xl border border-border/80 bg-background/60 p-3"><div className="flex items-center justify-between gap-3"><p className="min-w-0 truncate text-sm font-semibold">{milestone.title}</p><Status status={milestone.status} /></div><div className="mt-3 flex items-center justify-between text-[10px] text-muted-foreground"><span>{milestone.completed}/{milestone.total} completed</span><span>{milestone.progress}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-gradient-to-r from-primary to-status-good" style={{ width: `${milestone.progress}%` }} /></div></div>)}</div><p className="mt-4 text-xs leading-5 text-muted-foreground">Milestones group WorkItems. They are not Project objects, Task Graphs, or Mission Waves.</p></section>
+        <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Work types</p><div className="mt-4 grid grid-cols-2 gap-2">{workTypes.slice(0, 8).map(({ type, count }) => <div key={type} className="rounded-lg border border-border/70 bg-background/55 p-3"><p className="truncate text-xs font-medium">{humanize(type)}</p><p className="mt-2 company-editorial-title text-xl">{count}</p></div>)}</div></section>
+      </div>
     </div>
   </div>;
 }

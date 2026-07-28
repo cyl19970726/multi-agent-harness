@@ -34,6 +34,7 @@ use thiserror::Error;
 
 mod codex_app_server;
 mod company_os_api;
+mod company_store;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
@@ -99,6 +100,15 @@ enum StoreSource {
     WorkflowChildEnv,
     /// `HARNESS_ROOT` env override (deprecated, kept for tests/back-compat).
     HarnessRootEnv,
+    /// `--company <id>` explicit Company Store selector. Only applies to
+    /// `harness company ...` commands.
+    CompanyFlag,
+    /// `HARNESS_COMPANY` Company Store selector. Only applies to
+    /// `harness company ...` commands.
+    CompanyEnv,
+    /// Active Company Store marker / registry current. Only applies to
+    /// `harness company ...` commands.
+    CompanyCurrent,
     /// `--project <id|path>` explicit selector.
     ProjectFlag,
     /// `HARNESS_PROJECT` env selector.
@@ -118,6 +128,7 @@ pub(crate) struct ResolvedStore {
     root: PathBuf,
     source: StoreSource,
     pub(crate) context: Option<harness_core::ProjectContext>,
+    pub(crate) company_context: Option<company_store::CompanyContext>,
 }
 
 /// Resolve the harness store root, preserving today's behavior while routing
@@ -142,37 +153,40 @@ pub(crate) struct ResolvedStore {
 /// override (1/2) apply, the result is the SAME directory today's code would have
 /// used (walk-up → otherwise the GLOBAL store), so existing serve + run-script
 /// flows keep converging on one store.
-fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore {
+fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<ResolvedStore> {
     // 1. --store override (deprecated, but still wins for tests/back-compat).
     if let Some(path) = take_flag_value(args, "--store") {
         warn_deprecated_override("--store", "harness project switch");
-        return ResolvedStore {
+        return Ok(ResolvedStore {
             root: PathBuf::from(path),
             source: StoreSource::StoreFlag,
             context: None,
-        };
+            company_context: None,
+        });
     }
     // Internal workflow-child guard. This intentionally wins over `--project` /
     // `HARNESS_PROJECT`, so a worker in a writable leaf cannot accidentally write
     // the parent project's central store just by running `harness ...`.
     if let Ok(root) = env::var(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV) {
         if !root.is_empty() {
-            return ResolvedStore {
+            return Ok(ResolvedStore {
                 root: PathBuf::from(root),
                 source: StoreSource::WorkflowChildEnv,
                 context: None,
-            };
+                company_context: None,
+            });
         }
     }
     // 2. HARNESS_ROOT env override (deprecated).
     if let Ok(root) = env::var("HARNESS_ROOT") {
         if !root.is_empty() {
             warn_deprecated_override("HARNESS_ROOT", "harness project switch");
-            return ResolvedStore {
+            return Ok(ResolvedStore {
                 root: PathBuf::from(root),
                 source: StoreSource::HarnessRootEnv,
                 context: None,
-            };
+                company_context: None,
+            });
         }
     }
 
@@ -180,13 +194,48 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
         Ok(h) => h,
         // No HOME: fall back to the historical `./.harness` so we never panic.
         Err(_) => {
-            return ResolvedStore {
+            return Ok(ResolvedStore {
                 root: PathBuf::from(".harness"),
                 source: StoreSource::CwdWalkUp,
                 context: None,
-            };
+                company_context: None,
+            });
         }
     };
+
+    if command == Some("company") {
+        let (company_selector, selector_source) = match take_flag_value(args, "--company") {
+            Some(v) => (Some(v), StoreSource::CompanyFlag),
+            None => match env::var("HARNESS_COMPANY").ok().filter(|s| !s.is_empty()) {
+                Some(v) => (Some(v), StoreSource::CompanyEnv),
+                None => (None, StoreSource::CompanyFlag),
+            },
+        };
+        if let Some(selector) = company_selector {
+            let ctx = company_store::context_for_id(&harness_home, &selector)
+                .map_err(company_store_err)?
+                .ok_or_else(|| CliError::Usage(format!("unknown company: {selector}")))?;
+            return Ok(ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: selector_source,
+                context: None,
+                company_context: Some(ctx),
+            });
+        }
+        if let Some(id) =
+            company_store::active_company_id(&harness_home).map_err(company_store_err)?
+        {
+            let ctx = company_store::context_for_id(&harness_home, &id)
+                .map_err(company_store_err)?
+                .ok_or_else(|| CliError::Usage(format!("active company is unknown: {id}")))?;
+            return Ok(ResolvedStore {
+                root: ctx.store_root.clone(),
+                source: StoreSource::CompanyCurrent,
+                context: None,
+                company_context: Some(ctx),
+            });
+        }
+    }
 
     // 3/4. Explicit project selector by id or path: `--project` then
     // `HARNESS_PROJECT`. The source records which signal won.
@@ -199,11 +248,12 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
     };
     if let Some(selector) = project_selector {
         if let Some(ctx) = resolve_project_selector(&harness_home, &selector) {
-            return ResolvedStore {
+            return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: selector_source,
                 context: Some(ctx),
-            };
+                company_context: None,
+            });
         }
     }
 
@@ -248,11 +298,12 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
                                 is_git_repo: meta.is_git_repo,
                             }
                         });
-                        return ResolvedStore {
+                        return Ok(ResolvedStore {
                             root: target,
                             source: StoreSource::RegistryCurrent,
                             context,
-                        };
+                            company_context: None,
+                        });
                     }
                     Ok(Some(_)) => {
                         // Marked migrated but pointer-less: ignore the local store and
@@ -276,11 +327,12 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
                             "cwd .harness walk-up",
                             "harness init / harness project switch",
                         );
-                        return ResolvedStore {
+                        return Ok(ResolvedStore {
                             root: found,
                             source: StoreSource::CwdWalkUp,
                             context: None,
-                        };
+                            company_context: None,
+                        });
                     }
                 }
             }
@@ -292,29 +344,32 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> ResolvedStore
     // `init`ed project) and the cross-cwd convergence point (issue #89).
     if let Ok(Some(id)) = project::active_project_id(&harness_home) {
         if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
-            return ResolvedStore {
+            return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::RegistryCurrent,
                 context: Some(ctx),
-            };
+                company_context: None,
+            });
         }
     }
 
     // 7. Reserved GLOBAL project, auto-created on first use.
     if let Ok(ctx) = project::global_context(&harness_home) {
-        return ResolvedStore {
+        return Ok(ResolvedStore {
             root: ctx.store_root.clone(),
             source: StoreSource::GlobalDefault,
             context: Some(ctx),
-        };
+            company_context: None,
+        });
     }
 
     // Absolute last resort (no HOME / global failed): historical default.
-    ResolvedStore {
+    Ok(ResolvedStore {
         root: PathBuf::from(".harness"),
         source: StoreSource::CwdWalkUp,
         context: None,
-    }
+        company_context: None,
+    })
 }
 
 /// Resolve a `--project`/`HARNESS_PROJECT` selector that may be a registered id OR
@@ -361,7 +416,9 @@ fn warn_deprecated_override(what: &str, replacement: &str) {
 #[cfg(test)]
 fn resolve_store_root(args: &mut Vec<String>) -> PathBuf {
     let command = args.first().cloned();
-    resolve_store(args, command.as_deref()).root
+    resolve_store(args, command.as_deref())
+        .expect("resolve store")
+        .root
 }
 
 /// Walk up from `start` returning the first existing `<dir>/.harness` directory,
@@ -400,6 +457,25 @@ fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
     } else {
         false
     }
+}
+
+fn command_name_for_resolution(args: &[String]) -> Option<String> {
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--store" | "--project" | "--company" => {
+                index += 2;
+            }
+            "--store-source" => {
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                index += 1;
+            }
+            value => return Some(value.to_string()),
+        }
+    }
+    None
 }
 
 /// `harness init` routing (goal-multi-project init-routing task).
@@ -462,6 +538,21 @@ fn project_err(e: project::ProjectError) -> CliError {
         project::ProjectError::Json(j) => CliError::Json(j),
         project::ProjectError::NoHome => {
             CliError::Usage("could not determine home directory".to_string())
+        }
+    }
+}
+
+/// Map a `company_store::CompanyStoreError` onto `CliError` at the command
+/// boundary.
+fn company_store_err(e: company_store::CompanyStoreError) -> CliError {
+    match e {
+        company_store::CompanyStoreError::Io(io) => CliError::Io(io),
+        company_store::CompanyStoreError::Json(j) => CliError::Json(j),
+        company_store::CompanyStoreError::InvalidId(msg) => CliError::Usage(format!(
+            "invalid company id `{msg}`; use letters, digits, '.', '_' or '-'"
+        )),
+        company_store::CompanyStoreError::NoHome => {
+            CliError::Usage("could not determine harness home".to_string())
         }
     }
 }
@@ -851,14 +942,17 @@ fn run() -> CliResult<()> {
     // `args` so the subcommand parsers never see them). `serve` and `run-script`
     // started from different working directories converge on ONE store via the
     // registry's current project (issue #89 item 3, now project-routed).
-    let command = args.first().cloned();
-    let resolved = resolve_store(&mut args, command.as_deref());
+    let command = command_name_for_resolution(&args);
+    let resolved = resolve_store(&mut args, command.as_deref())?;
     if store_source_debug {
         eprintln!(
             "store-source: {:?} root={}",
             resolved.source,
             resolved.root.display()
         );
+        if let Some(company) = &resolved.company_context {
+            eprintln!("company-context: id={} name={}", company.id, company.name);
+        }
     }
     if args.is_empty() || args[0] == "help" || args[0] == "--help" {
         print_help();
@@ -920,17 +1014,213 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ...")?;
+    require_subcommand(args, "company init|list|current|switch|show|migrate-from-project | company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ...")?;
     match args[0].as_str() {
+        "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
+        "list" => company_store_list_command(),
+        "current" => company_store_current_command(),
+        "switch" => company_store_switch_command(args.get(1..).unwrap_or(&[])),
+        "show" => company_store_show_command(args.get(1..).unwrap_or(&[])),
+        "migrate-from-project" => {
+            company_store_migrate_from_project_command(args.get(1..).unwrap_or(&[]))
+        }
         "docs" => company_docs_command(store, &args[1..]),
         "work" => company_work_command(store, &args[1..]),
         "org" => company_org_command(store, &args[1..]),
         "approval" => company_approval_command(store, &args[1..]),
         "finance" => company_finance_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ..."
+            "unknown company command: {other}; usage: harness company init|list|current|switch|show|migrate-from-project | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ..."
         ))),
     }
+}
+
+fn company_store_init_command(args: &[String]) -> CliResult<()> {
+    let id = required(args, "--id")?;
+    let name = value(args, "--name").unwrap_or_else(|| id.clone());
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let ctx = company_store::register_and_activate(&harness_home, &id, &name, &now_string())
+        .map_err(company_store_err)?;
+    HarnessStore::new(ctx.store_root.clone()).init()?;
+    print_json(&company_context_json(&ctx, &ctx.id))
+}
+
+fn company_store_list_command() -> CliResult<()> {
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let current = company_store::active_company_id(&harness_home)
+        .map_err(company_store_err)?
+        .unwrap_or_default();
+    let companies = company_store::list_companies(&harness_home).map_err(company_store_err)?;
+    let json: Vec<serde_json::Value> = companies
+        .iter()
+        .map(|ctx| company_context_json(ctx, &current))
+        .collect();
+    print_json(&json)
+}
+
+fn company_store_current_command() -> CliResult<()> {
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    match company_store::active_company_id(&harness_home).map_err(company_store_err)? {
+        Some(id) => {
+            match company_store::context_for_id(&harness_home, &id).map_err(company_store_err)? {
+                Some(ctx) => print_json(&company_context_json(&ctx, &id)),
+                None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
+            }
+        }
+        None => print_json(&serde_json::json!({
+            "id": serde_json::Value::Null,
+            "is_current": false,
+        })),
+    }
+}
+
+fn company_store_switch_command(args: &[String]) -> CliResult<()> {
+    let id = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| CliError::Usage("usage: harness company switch <id>".to_string()))?;
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let ctx = company_store::switch_current_company(&harness_home, &id, &now_string())
+        .map_err(company_store_err)?;
+    print_json(&company_context_json(&ctx, &ctx.id))
+}
+
+fn company_store_show_command(args: &[String]) -> CliResult<()> {
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let current = company_store::active_company_id(&harness_home)
+        .map_err(company_store_err)?
+        .unwrap_or_default();
+    let id = match selector {
+        Some(id) => id,
+        None => return company_store_current_command(),
+    };
+    let ctx = company_store::context_for_id(&harness_home, &id)
+        .map_err(company_store_err)?
+        .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
+    print_json(&company_context_json(&ctx, &current))
+}
+
+fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> {
+    let from_project = required(args, "--from-project")?;
+    let id = required(args, "--id")?;
+    let name = value(args, "--name").unwrap_or_else(|| id.clone());
+    let force = has_flag(args, "--force");
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let source_project =
+        resolve_project_selector(&harness_home, &from_project).ok_or_else(|| {
+            CliError::Usage(format!(
+                "unknown source project: {from_project}; pass a registered project id or path"
+            ))
+        })?;
+    let ctx = company_store::register_and_activate(&harness_home, &id, &name, &now_string())
+        .map_err(company_store_err)?;
+    let outcome = copy_company_os_ledgers(&source_project.store_root, &ctx.store_root, force)
+        .map_err(|err| {
+            CliError::Usage(format!(
+                "Company Store migration refused from {} to {}: {err}",
+                source_project.store_root.display(),
+                ctx.store_root.display()
+            ))
+        })?;
+    HarnessStore::new(ctx.store_root.clone()).init()?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company migrate-from-project",
+        "company": company_context_json(&ctx, &ctx.id),
+        "source_project": project_context_json(&source_project, ""),
+        "copied_files": outcome.copied_files,
+        "copied_records": outcome.copied_records,
+        "skipped_identical_files": outcome.skipped_identical_files,
+        "boundary": {
+            "copied": "company_os_*.jsonl only",
+            "not_copied": ["missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
+            "execution_space_migration": false,
+            "project_binding_migration": false,
+            "dual_write": false
+        },
+        "next_commands": [
+            format!("harness --company {} company docs health", ctx.id),
+            format!("harness --company {} company work list", ctx.id),
+            format!("harness --company {} company org list", ctx.id)
+        ]
+    }))
+}
+
+#[derive(Debug, Clone, Default)]
+struct CompanyLedgerCopyOutcome {
+    copied_files: u64,
+    copied_records: u64,
+    skipped_identical_files: u64,
+}
+
+fn copy_company_os_ledgers(
+    src: &Path,
+    dst: &Path,
+    force: bool,
+) -> Result<CompanyLedgerCopyOutcome, String> {
+    if !src.is_dir() {
+        return Err(format!("source store is missing: {}", src.display()));
+    }
+    fs::create_dir_all(dst).map_err(|err| err.to_string())?;
+    let mut outcome = CompanyLedgerCopyOutcome::default();
+    let mut saw_company_ledger = false;
+    for entry in fs::read_dir(src).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with("company_os_") || !file_name.ends_with(".jsonl") {
+            continue;
+        }
+        saw_company_ledger = true;
+        let target = dst.join(file_name);
+        if target.exists() {
+            let src_bytes = fs::read(&path).map_err(|err| err.to_string())?;
+            let dst_bytes = fs::read(&target).map_err(|err| err.to_string())?;
+            if src_bytes == dst_bytes {
+                outcome.skipped_identical_files += 1;
+                outcome.copied_records +=
+                    count_non_empty_lines(&path).map_err(|e| e.to_string())?;
+                continue;
+            }
+            if !force {
+                return Err(format!(
+                    "target ledger already exists with different content: {} (pass --force to overwrite Company OS ledgers only)",
+                    target.display()
+                ));
+            }
+        }
+        fs::copy(&path, &target).map_err(|err| err.to_string())?;
+        outcome.copied_files += 1;
+        outcome.copied_records += count_non_empty_lines(&path).map_err(|e| e.to_string())?;
+    }
+    if !saw_company_ledger {
+        return Err(format!(
+            "source store has no company_os_*.jsonl ledgers: {}",
+            src.display()
+        ));
+    }
+    Ok(outcome)
+}
+
+fn count_non_empty_lines(path: &Path) -> std::io::Result<u64> {
+    let text = fs::read_to_string(path)?;
+    Ok(text.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+}
+
+fn company_context_json(ctx: &company_store::CompanyContext, current: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": ctx.id,
+        "name": ctx.name,
+        "store_root": ctx.store_root.display().to_string(),
+        "is_current": ctx.id == current,
+        "identity_boundary": "company_store",
+        "execution_dependency": "optional",
+        "project_binding": "external",
+    })
 }
 
 fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -10063,7 +10353,7 @@ fn team_run_command(
 /// coordination facts needed by a Host or operator; `native_session` remains
 /// a locator to the provider-owned execution truth.
 fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member-run show")?;
+    require_subcommand(args, "member-run show|open-native")?;
     match args[0].as_str() {
         "show" => {
             let detail = member_run_detail_json(store, &required(args, "--id")?)?;
@@ -10111,6 +10401,34 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 }
             }
         }
+        "open-native" => {
+            let member_run_id = required(args, "--id")?;
+            let member = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .find(|member| member.id == member_run_id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            let mut target = native_session_open_target(&member)?;
+            let print_only = has_flag(args, "--print-only");
+            if !print_only {
+                open_native_session_target(
+                    target["uri"]
+                        .as_str()
+                        .expect("native-session target always has a URI"),
+                )?;
+            }
+            target["opened"] = serde_json::Value::Bool(!print_only);
+            if has_flag(args, "--json") {
+                print_json(&target)?;
+            } else if print_only {
+                println!("{}", target["uri"].as_str().unwrap_or_default());
+            } else {
+                println!(
+                    "opened {}\tdesktop_session={}",
+                    target["uri"].as_str().unwrap_or_default(),
+                    target["desktop_session_id"].as_str().unwrap_or_default()
+                );
+            }
+        }
         other => {
             return Err(CliError::Usage(format!(
                 "unknown member-run command: {other}"
@@ -10118,6 +10436,70 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve an explicit provider-owned UI target without changing the native
+/// session binding. Claude Desktop imports SDK/CLI sessions through this deep
+/// link and deterministically exposes them as `local_<native-id>`.
+fn native_session_open_target(member: &MemberRun) -> CliResult<serde_json::Value> {
+    let session = member.native_session.as_ref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "member run {} has no bound provider-native session",
+            member.id
+        ))
+    })?;
+    if member.provider != "claude" || session.provider != "claude" {
+        return Err(CliError::Usage(format!(
+            "member run {} uses provider {}; open-native currently supports only Claude Agent SDK sessions",
+            member.id, member.provider
+        )));
+    }
+    if session.execution_mode != "claude_agent_sdk" {
+        return Err(CliError::Usage(format!(
+            "member run {} uses Claude mode {}; Desktop import is verified only for claude_agent_sdk",
+            member.id, session.execution_mode
+        )));
+    }
+    let native_id = session.native_session_id.trim();
+    if native_id.is_empty()
+        || !native_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(CliError::Usage(format!(
+            "member run {} has an unsafe native session id; refusing to build a Desktop deep link",
+            member.id
+        )));
+    }
+    Ok(serde_json::json!({
+        "member_run_id": member.id,
+        "provider": "claude",
+        "execution_mode": session.execution_mode,
+        "native_session_id": native_id,
+        "uri": format!("claude://resume?session={native_id}"),
+        "desktop_session_id": format!("local_{native_id}"),
+        "ownership": "provider_native",
+        "concurrency_warning": "Use Claude Desktop for observation while Harness drives this Member; simultaneous SDK and Desktop generation is not verified.",
+    }))
+}
+
+fn open_native_session_target(uri: &str) -> CliResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open").arg(uri).status()?;
+        if !status.success() {
+            return Err(CliError::Usage(format!(
+                "macOS could not open the provider-native session target: {uri}"
+            )));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CliError::Usage(format!(
+            "opening provider-native session targets is currently supported only on macOS; inspect it with --print-only: {uri}"
+        )))
+    }
 }
 
 fn member_run_detail_json(
@@ -14553,6 +14935,45 @@ impl ServeProjects {
         }
         map
     }
+
+    fn current_company_id(&self) -> Option<String> {
+        let home = self.harness_home.as_ref()?;
+        company_store::active_company_id(home).ok().flatten()
+    }
+
+    fn list_companies(&self) -> Vec<company_store::CompanyContext> {
+        match &self.harness_home {
+            Some(home) => company_store::list_companies(home).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
+    fn company_store_for(
+        &self,
+        company: Option<&str>,
+    ) -> CliResult<Option<(String, HarnessStore)>> {
+        let Some(home) = &self.harness_home else {
+            if company.is_some() {
+                return Err(CliError::Usage(
+                    "serve is running with a raw --store/HARNESS_ROOT override; Company Store selection is unavailable"
+                        .to_string(),
+                ));
+            }
+            return Ok(None);
+        };
+        let id = match company {
+            Some(id) if !id.is_empty() => Some(id.to_string()),
+            Some(_) => None,
+            None => company_store::active_company_id(home).map_err(company_store_err)?,
+        };
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let ctx = company_store::context_for_id(home, &id)
+            .map_err(company_store_err)?
+            .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
+        Ok(Some((ctx.id.clone(), HarnessStore::new(ctx.store_root))))
+    }
 }
 
 fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
@@ -14726,7 +15147,31 @@ fn handle_http_connection(
     // OS writes reject an explicit unknown selector below to prevent misrouting.
     let project_param = query_param(&path, "project");
     let (project_id, store_owned) = projects.store_for(project_param.as_deref());
-    let store = &store_owned;
+    let company_param = query_param(&path, "company");
+    let company_os_path = path_only.starts_with("/v1/company-os/");
+    let dashboard_snapshot_path = matches!(
+        path_only.as_str(),
+        "/v1/snapshot" | "/v1/dashboard/snapshot"
+    );
+    let company_store_owned = if company_os_path || dashboard_snapshot_path {
+        match projects.company_store_for(company_param.as_deref()) {
+            Ok(store) => store,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "404 Not Found",
+                    &serde_json::json!({"ok": false, "error": error.to_string()}),
+                )?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    let store = company_store_owned
+        .as_ref()
+        .map(|(_, company_store)| company_store)
+        .unwrap_or(&store_owned);
     let mut content_length = 0usize;
     let mut company_os_token = None;
     loop {
@@ -14776,6 +15221,7 @@ fn handle_http_connection(
     }
     if method == "POST"
         && path_only.starts_with("/v1/company-os/")
+        && company_store_owned.is_none()
         && project_param
             .as_deref()
             .is_some_and(|requested| requested != project_id)
@@ -14844,9 +15290,16 @@ fn handle_http_connection(
                 "200 OK",
                 &serde_json::json!({"status": "ok", "generated_at": now_string()}),
             )?,
-            "/v1/snapshot" | "/v1/dashboard/snapshot" => {
-                write_http_json(&mut stream, "200 OK", &dashboard_snapshot(store)?)?
-            }
+            "/v1/snapshot" | "/v1/dashboard/snapshot" => write_http_json(
+                &mut stream,
+                "200 OK",
+                &dashboard_snapshot_with_company(
+                    &store_owned,
+                    company_store_owned
+                        .as_ref()
+                        .map(|(_, company_store)| company_store),
+                )?,
+            )?,
             // GET /v1/projects — enumerate known projects (registry + on-disk stores
             // + reserved `_global`) for the dashboard picker. `current` marks the
             // active project (multi-project P6 / project-api task).
@@ -14877,6 +15330,42 @@ fn handle_http_connection(
                         "current": id,
                         "store_root": current_store.root().display().to_string(),
                         "project": context_json,
+                    }),
+                )?
+            }
+            "/v1/companies" => {
+                let current = projects.current_company_id().unwrap_or_default();
+                let list: Vec<serde_json::Value> = projects
+                    .list_companies()
+                    .into_iter()
+                    .map(|ctx| company_context_json(&ctx, &current))
+                    .collect();
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({"companies": list, "current": current}),
+                )?
+            }
+            "/v1/companies/current" => {
+                let current = projects.current_company_id();
+                let company = current.as_deref().and_then(|id| {
+                    projects
+                        .list_companies()
+                        .into_iter()
+                        .find(|company| company.id == id)
+                });
+                let store_root = company
+                    .as_ref()
+                    .map(|ctx| ctx.store_root.display().to_string());
+                let company_json =
+                    company.map(|ctx| company_context_json(&ctx, current.as_deref().unwrap_or("")));
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "current": current,
+                        "store_root": store_root,
+                        "company": company_json,
                     }),
                 )?
             }
@@ -15041,7 +15530,15 @@ fn handle_http_connection(
         let mut response_body = response.body;
         if response.status.starts_with('2') {
             if let Some(object) = response_body.as_object_mut() {
-                object.insert("snapshot".to_string(), dashboard_snapshot(store)?);
+                object.insert(
+                    "snapshot".to_string(),
+                    dashboard_snapshot_with_company(
+                        &store_owned,
+                        company_store_owned
+                            .as_ref()
+                            .map(|(_, company_store)| company_store),
+                    )?,
+                );
             }
         }
         write_http_json(&mut stream, response.status, &response_body)?;
@@ -15054,13 +15551,44 @@ fn handle_http_connection(
     // store-action dispatch. The response's snapshot is the NEW active project's.
     if path_only == "/v1/projects/switch" {
         match handle_project_switch(projects, &body_json) {
+            Ok((id, switch_store)) => {
+                let active_company_store = projects.company_store_for(None)?;
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "ok": true,
+                        "result": {"current": id},
+                        "snapshot": dashboard_snapshot_with_company(
+                            &switch_store,
+                            active_company_store
+                                .as_ref()
+                                .map(|(_, company_store)| company_store),
+                        )?,
+                    }),
+                )?
+            }
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
+    // POST /v1/companies/switch — flip the active Company Store selector.
+    // This is independent from project selection and does not affect
+    // Mission/Wave, Agent Team, Workflow, or provider cwd routing.
+    if path_only == "/v1/companies/switch" {
+        match handle_company_switch(projects, &body_json) {
             Ok((id, switch_store)) => write_http_json(
                 &mut stream,
                 "200 OK",
                 &serde_json::json!({
                     "ok": true,
                     "result": {"current": id},
-                    "snapshot": dashboard_snapshot(&switch_store)?,
+                    "company_os_snapshot": company_os_api::snapshot(&switch_store)?,
                 }),
             )?,
             Err(error) => write_http_json(
@@ -15277,6 +15805,28 @@ fn handle_project_switch(
         )
     })?;
     let ctx = project::switch_current_project(home, &id, &now_string()).map_err(project_err)?;
+    Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
+}
+
+/// Apply a `POST /v1/companies/switch {company: <id>}` request. This switches
+/// only the active Company Store marker/registry pointer; project selection and
+/// execution routing are intentionally unchanged.
+fn handle_company_switch(
+    projects: &ServeProjects,
+    body: &serde_json::Value,
+) -> CliResult<(String, HarnessStore)> {
+    let id = json_string(body, "company")
+        .or_else(|| json_string(body, "id"))
+        .or_else(|| json_string(body, "company_id"))
+        .ok_or_else(|| CliError::Usage("missing `company` id to switch to".to_string()))?;
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
+        CliError::Usage(
+            "serve is running with a raw --store/HARNESS_ROOT override; Company Store switch is unavailable"
+                .to_string(),
+        )
+    })?;
+    let ctx = company_store::switch_current_company(home, &id, &now_string())
+        .map_err(company_store_err)?;
     Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
 }
 
@@ -21931,6 +22481,22 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     }))
 }
 
+fn dashboard_snapshot_with_company(
+    project_store: &HarnessStore,
+    company_store: Option<&HarnessStore>,
+) -> CliResult<serde_json::Value> {
+    let mut snapshot = dashboard_snapshot(project_store)?;
+    if let Some(company_store) = company_store {
+        if let Some(object) = snapshot.as_object_mut() {
+            object.insert(
+                "company_os".to_string(),
+                company_os_api::snapshot(company_store)?,
+            );
+        }
+    }
+    Ok(snapshot)
+}
+
 fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<AgentMember> {
     latest_members(store)?
         .remove(member_id)
@@ -24938,8 +25504,12 @@ fn print_help() {
   wave create|list|show|history|update|advance|gate
   team-run create|list|status|host-inbox|bind-host|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
   member-run show --id <member-run-id> [--json]
+  member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
+  company init --id <company-id> [--name <name>]
+  company list | company current | company switch <company-id> | company show [company-id]
+  company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
   company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
   company docs module create | page scaffold|verify|publish | page-definition create
   company docs document create|rename|move|archive | template create|status
@@ -28911,6 +29481,102 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_open_test_member(provider: &str, mode: &str, session_id: &str) -> MemberRun {
+        MemberRun {
+            id: "member-native-open".into(),
+            team_run_id: "team-native-open".into(),
+            slot_id: None,
+            agent_member_id: None,
+            name: "DesktopObserver".into(),
+            role: "reviewer".into(),
+            provider: provider.into(),
+            model: None,
+            provider_profile: None,
+            status: MemberRunStatus::Idle,
+            native_session: Some(NativeSessionRef {
+                provider: provider.into(),
+                execution_mode: mode.into(),
+                native_session_id: session_id.into(),
+                native_locator_kind: "claude_project_jsonl".into(),
+                provider_version: None,
+                adapter_contract_version: "test".into(),
+                availability: NativeSessionAvailability::Available,
+                supports_resume: true,
+                last_verified_at: None,
+                parent_native_session_id: None,
+            }),
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn claude_sdk_native_session_has_deterministic_desktop_import_target() {
+        let target = native_session_open_target(&native_open_test_member(
+            "claude",
+            "claude_agent_sdk",
+            "851b37dd-1234-5678-9abc-0123456789ab",
+        ))
+        .expect("Claude SDK target");
+        assert_eq!(
+            target["uri"],
+            "claude://resume?session=851b37dd-1234-5678-9abc-0123456789ab"
+        );
+        assert_eq!(
+            target["desktop_session_id"],
+            "local_851b37dd-1234-5678-9abc-0123456789ab"
+        );
+        assert_eq!(target["ownership"], "provider_native");
+    }
+
+    #[test]
+    fn native_session_open_target_rejects_unsupported_or_unsafe_sessions() {
+        let codex = native_session_open_target(&native_open_test_member(
+            "codex",
+            "codex_app_server",
+            "thread-1",
+        ))
+        .expect_err("Codex has no registered native UI target");
+        assert!(codex.to_string().contains("supports only Claude Agent SDK"));
+
+        let unsafe_id = native_session_open_target(&native_open_test_member(
+            "claude",
+            "claude_agent_sdk",
+            "session&unexpected=true",
+        ))
+        .expect_err("unsafe deep-link value must fail closed");
+        assert!(unsafe_id.to_string().contains("unsafe native session id"));
+    }
+
+    #[test]
+    fn member_run_open_native_print_only_never_launches_an_application() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("native-open")));
+        let store = HarnessStore::new(&root);
+        store
+            .append_member_run(&native_open_test_member(
+                "claude",
+                "claude_agent_sdk",
+                "851b37dd-1234-5678-9abc-0123456789ab",
+            ))
+            .expect("append member run");
+        member_run_command(
+            &store,
+            &[
+                "open-native".into(),
+                "--id".into(),
+                "member-native-open".into(),
+                "--print-only".into(),
+            ],
+        )
+        .expect("print-only route");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn persistent_member_profiles_default_to_one_host_execution_driver() {

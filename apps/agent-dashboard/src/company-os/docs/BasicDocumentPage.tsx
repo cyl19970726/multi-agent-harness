@@ -1,13 +1,29 @@
-import { ChevronDown, FolderKanban, Link2, MoreHorizontal } from "lucide-react";
-import { useRef, useState } from "react";
+import {
+  ArrowUpRight,
+  BookOpen,
+  ChevronDown,
+  CircleDollarSign,
+  ClipboardList,
+  FileText,
+  FolderKanban,
+  Link2,
+  MapPinned,
+  MoreHorizontal,
+  PackageCheck,
+  Route,
+  Store,
+  UsersRound,
+} from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DocSection, DocumentSurface } from "@/components/workbench/atoms";
 import { cn } from "@/lib/utils";
+import { EditorialTitle, ObjectEmblem } from "../visuals";
 
 import { buildDocsAppendBlockCommands, buildDocsChildDocumentCommand, buildDocsInstantiateTemplateBlockCommands, buildDocsReorderBlocksCommand } from "./documentAction";
 import { RelationChips } from "./RelationChips";
-import type { CompanyOsDocsActionCommand, CompanyOsDocumentBlock, CompanyOsDocumentPageData, CompanyOsWorkspaceTreeItem } from "./types";
+import type { CompanyOsDocsActionCommand, CompanyOsDocumentBlock, CompanyOsDocumentPageData, CompanyOsLink, CompanyOsWorkspaceTreeItem } from "./types";
 import { preserveCompanyOsWorkbenchContext } from "./url";
 
 type DocsBlockKind = "rich_text" | "heading" | "callout" | "table";
@@ -165,6 +181,449 @@ function BlockOrderBoundary({
   );
 }
 
+function nodeText(value: ReactNode): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(nodeText).join("");
+  return "";
+}
+
+function isWanchengwanlingDocument(document: CompanyOsDocumentPageData): boolean {
+  const haystack = `${document.id ?? ""} ${document.title ?? ""} ${document.breadcrumb?.join(" ") ?? ""}`;
+  return Boolean(document.id?.startsWith("document-wcw-") || /wanchengwanling|万城万灵|agentos dogfood|external gateway/i.test(haystack));
+}
+
+function wcwMetric(document: CompanyOsDocumentPageData, key: "physical" | "virtual" | "merchant" | "company" | "magnet" | "lottery" | "gateway" | "workitem"): string {
+  const body = document.blocks.map((block) => {
+    if (block.type === "table") {
+      return [
+        block.table.caption,
+        ...block.table.columns,
+        ...block.table.rows.flat().map(nodeText),
+      ].filter(Boolean).join(" ");
+    }
+    return nodeText("content" in block ? block.content : "");
+  }).join(" ");
+  const patterns: Record<typeof key, RegExp[]> = {
+    physical: [/实体\s*NFC\s*手环[^¥￥]*([¥￥]\s*\d+)/i, /实体手环[^¥￥]*([¥￥]\s*\d+)/i],
+    virtual: [/虚拟手环[^¥￥]*([¥￥]\s*\d+)/i],
+    merchant: [/商家分成?\s*([¥￥]\s*\d+)/i, /商家\s*([¥￥]\s*\d+)/i],
+    company: [/公司(?:留|分成?)?\s*([¥￥]\s*\d+)/i],
+    magnet: [/(\d+)\s*个?景点兑换\s*AR\s*冰箱贴/i, /(\d+)\s*点位冰箱贴/i],
+    lottery: [/(\d+)\s*个?景点获得抽奖资格/i, /(\d+)\s*点位抽奖/i],
+    gateway: [/Gateway\s*v?(\d+)/i, /企业微信\s*Gateway\s*v?(\d+)/i],
+    workitem: [/WorkItem[s]?\s*候选/i, /WorkItems/i],
+  };
+  for (const pattern of patterns[key]) {
+    const match = body.match(pattern);
+    if (match?.[1]) return match[1].replace("￥", "¥").replace(/\s+/g, "");
+  }
+  return "待确认";
+}
+
+function wcwDocumentKind(document: CompanyOsDocumentPageData): "project" | "business" | "merchant" | "rewards" | "route" | "agentos" | "generic" {
+  const id = document.id ?? "";
+  const haystack = `${document.id ?? ""} ${document.title ?? ""}`;
+  if (/agentos|external-gateway|自举|外部接入/i.test(haystack)) return "agentos";
+  if (id === "document-wcw-project-home") return "project";
+  if (id === "document-wcw-business-model") return "business";
+  if (id.includes("merchant")) return "merchant";
+  if (id.includes("rewards") || id.includes("procurement") || id.includes("inventory")) return "rewards";
+  if (id.includes("route") || id.includes("ar-experience")) return "route";
+  return "generic";
+}
+
+function WcwMetrics({ document, tableBlocks }: { document: CompanyOsDocumentPageData; tableBlocks: Array<Extract<CompanyOsDocumentBlock, { type: "table" }>> }) {
+  const kind = wcwDocumentKind(document);
+  const firstTableRows = tableBlocks[0]?.table.rows.length ?? 0;
+  const workCount = (document.resultLinks ?? []).filter((link) => link.kind === "work").length;
+  const recordCount = document.connectedRecords?.length ?? 0;
+  const agentCount = document.properties?.filter((property) => property.actorType === "Standing Agent").length ?? 0;
+
+  if (kind === "agentos") {
+    return (
+      <>
+        <WcwMetricCard label="Store model" value="1" detail="One Company Store holds Wanchengwanling and AgentOS dogfood truth." icon={<BookOpen className="size-4" />} />
+        <WcwMetricCard label="Gateway slice" value="v0" detail="WeCom enters through service actor, Merchant Ops Agent, Docs, and WorkItem." icon={<UsersRound className="size-4" />} />
+        <WcwMetricCard label="CLI first" value="Agent" detail="Agents operate through skill + CLI; UI remains the human review surface." icon={<ClipboardList className="size-4" />} />
+        <WcwMetricCard label="Custom pages" value={String(tableBlocks.length)} detail="Code-declared pages render Store-backed blocks, tables, Work, Org, and Gateway context." icon={<FileText className="size-4" />} />
+      </>
+    );
+  }
+
+  if (kind === "merchant") {
+    return (
+      <>
+        <WcwMetricCard label="Merchant roles" value={String(firstTableRows || "待建")} detail="Seller, redemption, supplier, benefit, listing roles" icon={<Store className="size-4" />} />
+        <WcwMetricCard label="Linked work" value={String(workCount)} detail="Onboarding, list cleanup, communication and console tasks" icon={<ClipboardList className="size-4" />} />
+        <WcwMetricCard label="Responsible agents" value={String(agentCount || "待确认")} detail="Merchant Ops plus governance participants" icon={<UsersRound className="size-4" />} />
+        <WcwMetricCard label="Finance boundary" value="按需" detail="Settlement, procurement and payout records stay in Finance" icon={<CircleDollarSign className="size-4" />} />
+      </>
+    );
+  }
+
+  if (kind === "rewards") {
+    return (
+      <>
+        <WcwMetricCard label="Reward objects" value={String(firstTableRows || "待建")} detail="Magnet, Polaroid, local snack coupon, logistics and evidence" icon={<PackageCheck className="size-4" />} />
+        <WcwMetricCard label="Linked work" value={String(workCount)} detail="Quotes, procurement, logistics, inventory and finance console tasks" icon={<ClipboardList className="size-4" />} />
+        <WcwMetricCard label="Connected records" value={String(recordCount)} detail="Inventory policy, procurement boundary and redemption records" icon={<FileText className="size-4" />} />
+        <WcwMetricCard label="Finance boundary" value="Commitment" detail="Any purchase must create Finance commitment before payment" icon={<CircleDollarSign className="size-4" />} />
+      </>
+    );
+  }
+
+  if (kind === "route") {
+    return (
+      <>
+        <WcwMetricCard label="Route spots" value="12" detail="MVP route configuration target" icon={<MapPinned className="size-4" />} />
+        <WcwMetricCard label="Magnet unlock" value={wcwMetric(document, "magnet")} detail="Fridge magnet redemption rule" icon={<PackageCheck className="size-4" />} />
+        <WcwMetricCard label="Lottery unlock" value={wcwMetric(document, "lottery")} detail="Lottery qualification rule" icon={<ClipboardList className="size-4" />} />
+        <WcwMetricCard label="Experience records" value={String(recordCount || firstTableRows || "待建")} detail="AR assets, check-in gates and acceptance evidence" icon={<Route className="size-4" />} />
+      </>
+    );
+  }
+
+  const merchantShare = wcwMetric(document, "merchant");
+  const companyShare = wcwMetric(document, "company");
+  const splitDetail = merchantShare === "待确认" || companyShare === "待确认"
+    ? "Seller split is defined in 01 Business Model"
+    : `Merchant ${merchantShare} · Company ${companyShare}`;
+
+  return (
+    <>
+      <WcwMetricCard label="Physical bracelet" value={wcwMetric(document, "physical")} detail={splitDetail} icon={<Store className="size-4" />} />
+      <WcwMetricCard label="Virtual bracelet" value={wcwMetric(document, "virtual")} detail="Mini program purchase path" icon={<PackageCheck className="size-4" />} />
+      <WcwMetricCard label="Magnet unlock" value={wcwMetric(document, "magnet")} detail="AR fridge magnet redemption rule" icon={<MapPinned className="size-4" />} />
+      <WcwMetricCard label="Lottery unlock" value={wcwMetric(document, "lottery")} detail="Full route lottery qualification" icon={<ClipboardList className="size-4" />} />
+    </>
+  );
+}
+
+function WcwMetricCard({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-border bg-card/80 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
+        <span className="grid size-8 shrink-0 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary">{icon}</span>
+      </div>
+      <p className="mt-3 text-3xl font-semibold tracking-tight text-foreground">{value}</p>
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function WcwLinkCard({ link }: { link: CompanyOsLink }) {
+  return (
+    <a
+      href={preserveCompanyOsWorkbenchContext(link.href ?? `?surface=docs&document=${encodeURIComponent(link.id)}`)}
+      data-company-os-ref={link.id}
+      className="group flex min-w-0 items-start gap-3 rounded-xl border border-border bg-background/70 p-3 text-left hover:border-primary/30 hover:bg-primary/[0.045]"
+    >
+      <FileText className="mt-0.5 size-4 shrink-0 text-primary" />
+      <span className="min-w-0 flex-1">
+        <span className="block break-words text-sm font-semibold leading-5 group-hover:text-primary">{link.label}</span>
+        {link.meta && <span className="mt-1 block text-xs text-muted-foreground">{link.meta}</span>}
+      </span>
+      <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+    </a>
+  );
+}
+
+function WcwDocumentDirectory({ tree }: { tree?: CompanyOsDocumentPageData["documentTree"] }) {
+  const wcwRoot = tree?.find((item) => /wanchengwanling|万城万灵/i.test(`${item.label} ${item.ref}`)) ?? tree?.[0];
+  const children = wcwRoot?.children ?? tree ?? [];
+  if (!children.length) return null;
+  return (
+    <section className="rounded-2xl border border-border bg-card/80 p-4 shadow-sm" data-docs-document-architecture="true">
+      <div className="flex items-center gap-2">
+        <ObjectEmblem kind="docs" className="size-9 rounded-xl" />
+        <div>
+          <h2 className="text-sm font-semibold">Wanchengwanling Docs Map</h2>
+          <p className="text-xs text-muted-foreground">Store-backed document architecture</p>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+        {children.map((item) => (
+          <a
+            key={item.id}
+            href={preserveCompanyOsWorkbenchContext(item.href ?? `?surface=docs&document=${encodeURIComponent(item.ref ?? item.id)}`)}
+            data-company-os-ref={item.ref}
+            data-docs-document-architecture-link="true"
+            className={cn(
+              "rounded-xl border border-border bg-background/70 px-3 py-2.5 text-xs hover:border-primary/30 hover:bg-primary/[0.045]",
+              item.selected && "border-primary/30 bg-primary/[0.08] text-primary",
+            )}
+          >
+            <span className="block font-semibold leading-4">{item.label}</span>
+            {item.meta && <span className="mt-1 block text-[11px] text-muted-foreground">{item.meta}</span>}
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WcwTableCards({ block }: { block: Extract<CompanyOsDocumentBlock, { type: "table" }> }) {
+  const { caption, columns, rows } = block.table;
+  const normalizedCaption = caption ?? "Table";
+  const pageMap = /核心页面职责|页面职责/i.test(normalizedCaption);
+  const merchantTags = /商家能力标签/i.test(normalizedCaption);
+  const incentiveRules = /8\s*\/\s*12|激励规则/i.test(normalizedCaption);
+  const economics = /收入|产品模型|价格|分成/i.test(normalizedCaption);
+  const replication = /复制模型/i.test(normalizedCaption);
+
+  if (pageMap) {
+    return (
+      <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm" data-company-os-ref={block.id}>
+        <div className="flex items-center gap-2">
+          <BookOpen className="size-4 text-primary" />
+          <h2 className="text-lg font-semibold tracking-tight">{normalizedCaption}</h2>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {rows.map((row, index) => (
+            <article key={index} className="rounded-xl border border-border bg-background/70 p-3">
+              <p className="text-sm font-semibold text-foreground">{nodeText(row[0])}</p>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">{nodeText(row[1])}</p>
+              <p className="mt-2 text-xs leading-5 text-foreground">{nodeText(row[2])}</p>
+              <p className="mt-3 inline-flex rounded-full border border-primary/20 bg-primary/[0.06] px-2.5 py-1 text-[11px] font-medium text-primary">{nodeText(row[3])}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  if (merchantTags) {
+    return (
+      <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm" data-company-os-ref={block.id}>
+        <div className="flex items-center gap-2">
+          <UsersRound className="size-4 text-primary" />
+          <h2 className="text-lg font-semibold tracking-tight">{normalizedCaption}</h2>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {rows.map((row, index) => (
+            <article key={index} className="rounded-xl border border-border bg-background/70 p-3">
+              <code className="rounded-md bg-muted px-2 py-1 text-[11px] text-primary">{nodeText(row[0])}</code>
+              <p className="mt-3 text-sm font-medium">{nodeText(row[1])}</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">{nodeText(row[2])}</p>
+              <p className="mt-2 text-[11px] text-muted-foreground">Linked: {nodeText(row[3])}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  if (incentiveRules) {
+    return (
+      <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm" data-company-os-ref={block.id}>
+        <div className="flex items-center gap-2">
+          <Route className="size-4 text-primary" />
+          <h2 className="text-lg font-semibold tracking-tight">{normalizedCaption}</h2>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          {rows.map((row, index) => (
+            <article key={index} className="rounded-xl border border-primary/20 bg-primary/[0.045] p-4">
+              <p className="text-sm font-semibold text-primary">{nodeText(row[0])}</p>
+              <p className="mt-2 text-xl font-semibold tracking-tight">{nodeText(row[1])}</p>
+              <p className="mt-2 text-sm leading-5">{nodeText(row[2])}</p>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">{nodeText(row[3])}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  if (economics || replication) {
+    return (
+      <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm" data-company-os-ref={block.id}>
+        <div className="flex items-center gap-2">
+          {economics ? <CircleDollarSign className="size-4 text-primary" /> : <MapPinned className="size-4 text-primary" />}
+          <h2 className="text-lg font-semibold tracking-tight">{normalizedCaption}</h2>
+        </div>
+        <div className={cn("mt-4 grid gap-3", economics ? "xl:grid-cols-2" : "md:grid-cols-2 xl:grid-cols-3")}>
+          {rows.map((row, index) => (
+            <article key={index} className="rounded-xl border border-border bg-background/70 p-4">
+              <p className="text-sm font-semibold">{nodeText(row[0])}</p>
+              <dl className="mt-3 space-y-2 text-xs leading-5">
+                {row.slice(1).map((cell, cellIndex) => (
+                  <div key={cellIndex}>
+                    <dt className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{columns[cellIndex + 1]}</dt>
+                    <dd className="mt-0.5 text-foreground">{cell}</dd>
+                  </div>
+                ))}
+              </dl>
+            </article>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm" data-company-os-ref={block.id}>
+      <h2 className="text-lg font-semibold tracking-tight">{normalizedCaption}</h2>
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        {rows.map((row, index) => (
+          <article key={index} className="rounded-xl border border-border bg-background/70 p-3">
+            <p className="text-sm font-semibold">{nodeText(row[0])}</p>
+            <dl className="mt-2 space-y-1.5 text-xs leading-5 text-muted-foreground">
+              {row.slice(1).map((cell, cellIndex) => (
+                <div key={cellIndex}>
+                  <dt className="inline font-medium text-foreground">{columns[cellIndex + 1]}: </dt>
+                  <dd className="inline">{cell}</dd>
+                </div>
+              ))}
+            </dl>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WcwNarrativeSections({ blocks }: { blocks: CompanyOsDocumentBlock[] }) {
+  const sections: Array<{ heading?: ReactNode; items: CompanyOsDocumentBlock[] }> = [];
+  for (const block of blocks) {
+    if (block.type === "heading") {
+      sections.push({ heading: block.content, items: [] });
+    } else if (block.type !== "table") {
+      const current = sections[sections.length - 1];
+      if (current) current.items.push(block);
+      else sections.push({ items: [block] });
+    }
+  }
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      {sections.filter((section) => section.items.length || section.heading).slice(0, 6).map((section, index) => (
+        <section key={index} className="rounded-2xl border border-border bg-card/75 p-4 shadow-sm">
+          {section.heading && <h2 className="text-base font-semibold tracking-tight">{section.heading}</h2>}
+          <div className="mt-3 space-y-3">
+            {section.items.map((block) => <Block key={block.id} block={block} />)}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function WanchengwanlingDocumentPage({
+  document,
+  actionEnabled,
+  onRequestAction,
+}: {
+  document: CompanyOsDocumentPageData;
+  actionEnabled: boolean;
+  onRequestAction?: (action: "new-action" | "ask-agent", document: CompanyOsDocumentPageData) => void;
+}) {
+  const firstParagraph = document.blocks.find((block) => block.type === "paragraph");
+  const paragraphText = firstParagraph ? nodeText(firstParagraph.content) : document.description ?? "";
+  const journey = document.blocks
+    .filter((block) => block.type === "paragraph")
+    .map((block) => nodeText(block.content))
+    .find((content) => content.includes("→"));
+  const journeySteps = journey?.split("→").map((item) => item.trim()).filter(Boolean).slice(0, 7) ?? [];
+  const tableBlocks = document.blocks.filter((block): block is Extract<CompanyOsDocumentBlock, { type: "table" }> => block.type === "table");
+  const narrativeBlocks = document.blocks.filter((block) => block.type !== "table");
+  const relatedLinks = [...(document.resultLinks ?? []), ...(document.connectedRecords ?? [])].slice(0, 8);
+
+  return (
+    <main
+      data-company-os-page="document-focus"
+      data-company-os-fixture={document.fixtureId}
+      data-company-os-ref={document.id}
+      data-company-os-ready="true"
+      data-wcw-document-layout="business-operating-page"
+      className="company-workbench h-full overflow-auto bg-[radial-gradient(circle_at_82%_-10%,hsl(var(--primary)/0.13),transparent_30%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--muted)/0.28))]"
+    >
+      <div className="mx-auto grid min-w-0 max-w-[1500px] gap-6 px-5 py-7 lg:grid-cols-[minmax(0,1fr)_330px] lg:px-9">
+        <div className="min-w-0 space-y-6">
+          <header className="rounded-3xl border border-border bg-card/75 p-6 shadow-sm">
+            {document.breadcrumb?.length ? <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">{document.breadcrumb.join(" / ")}</nav> : null}
+            <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-3">
+                  <ObjectEmblem kind="module" className="size-12 rounded-2xl" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">{wcwDocumentKind(document) === "agentos" ? "AgentOS dogfood operating document" : "Wanchengwanling operating document"}</p>
+                </div>
+                <EditorialTitle className="mt-5 max-w-4xl text-4xl sm:text-5xl">{document.title}</EditorialTitle>
+                <p className="mt-4 max-w-4xl text-sm leading-6 text-muted-foreground">{paragraphText || document.description}</p>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => onRequestAction?.("new-action", document)}>New action</Button>
+                <Button size="sm" onClick={() => onRequestAction?.("ask-agent", document)}>Ask agent</Button>
+                <Button variant="ghost" size="icon" aria-label="More document options"><MoreHorizontal /></Button>
+              </div>
+            </div>
+          </header>
+
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <WcwMetrics document={document} tableBlocks={tableBlocks} />
+          </section>
+
+          {journeySteps.length ? (
+            <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm">
+              <div className="flex items-center gap-2">
+                <Route className="size-4 text-primary" />
+                <h2 className="text-lg font-semibold tracking-tight">MVP journey and business loop</h2>
+              </div>
+              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {journeySteps.map((step, index) => (
+                  <div key={`${step}:${index}`} className="rounded-xl border border-border bg-background/70 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Step {index + 1}</p>
+                    <p className="mt-2 text-sm leading-5 text-foreground">{step}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <WcwNarrativeSections blocks={narrativeBlocks} />
+
+          <div className="space-y-5">
+            {tableBlocks.map((block) => <WcwTableCards key={block.id} block={block} />)}
+          </div>
+
+          {document.updatedLabel && <p className="text-xs text-muted-foreground">{document.updatedLabel}</p>}
+        </div>
+
+        <aside className="space-y-5 lg:sticky lg:top-6 lg:self-start" aria-label="Document context">
+          <WcwDocumentDirectory tree={document.documentTree} />
+          <section className="rounded-2xl border border-border bg-card/80 p-4 shadow-sm">
+            <h2 className="text-sm font-semibold">Operating links</h2>
+            <div className="mt-3 space-y-2">
+              <ContextBlock label="Source" links={document.sourceLinks} />
+              <ContextBlock label="Results" links={document.resultLinks} />
+              <ContextBlock label="Connected records" links={document.connectedRecords} />
+            </div>
+          </section>
+          {relatedLinks.length ? (
+            <section className="rounded-2xl border border-border bg-card/80 p-4 shadow-sm">
+              <h2 className="text-sm font-semibold">Next records to inspect</h2>
+              <div className="mt-3 space-y-2">
+                {relatedLinks.map((link) => <WcwLinkCard key={link.id} link={link} />)}
+              </div>
+            </section>
+          ) : null}
+          {document.activity?.length ? (
+            <section className="rounded-2xl border border-border bg-card/80 p-4 shadow-sm">
+              <h2 className="text-sm font-semibold">Activity</h2>
+              <ol className="mt-3 space-y-3 border-l border-border pl-3">
+                {document.activity.map((item) => <li key={item.id} className="space-y-0.5"><p className="text-xs font-medium text-foreground">{item.label}</p>{item.detail && <p className="text-xs leading-5 text-muted-foreground">{item.detail}</p>}{item.at && <time className="text-[11px] text-muted-foreground">{item.at}</time>}</li>)}
+              </ol>
+            </section>
+          ) : null}
+          <section className="rounded-2xl border border-primary/20 bg-primary/[0.055] p-4 text-xs leading-5" aria-label="Store-live Docs authoring" data-docs-authoring-panel="document-focus">
+            <h2 className="text-sm font-semibold text-foreground">Write boundary</h2>
+            <p className="mt-2 text-muted-foreground">This page is optimized for human review. Durable edits should normally be made by Docs CLI or a governed Agent action. Browser writing is {actionEnabled ? "available when a capability token is supplied" : "disabled until Store-live action capability is connected"}.</p>
+          </section>
+        </aside>
+      </div>
+    </main>
+  );
+}
+
 /** A focused, free-form Company OS page. It displays data supplied by the host; it owns no mutations. */
 export function BasicDocumentPage({
   document,
@@ -206,6 +665,10 @@ export function BasicDocumentPage({
   const reorderUnavailableReason = !displayedBlocksMatchNativeOrder
     ? "Reorder is disabled for generated fallback content; only native Store Blocks in Document.block_ids can be reordered."
     : unavailableReason;
+
+  if (isWanchengwanlingDocument(document)) {
+    return <WanchengwanlingDocumentPage document={document} actionEnabled={actionEnabled} onRequestAction={onRequestAction} />;
+  }
 
   function chooseSlashCommand(kind: DocsBlockKind) {
     setBlockKind(kind);

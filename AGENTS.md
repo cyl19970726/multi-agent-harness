@@ -197,6 +197,16 @@ explicit execution and permission boundary. See ADR 0033 and
   with no data loss; marks the old store). Full reference:
   [docs/multi-project.md](docs/multi-project.md).
 
+This is the current compatibility implementation for repo-scoped execution and
+project-derived stores. ADR 0042 defines the target split between Company
+Store, Execution Space, and Project Binding. Do not infer from the current
+`ProjectContext` that a Git repository owns Company OS truth. In the target
+model, an Agent Company Workspace / Company Store may contain multiple
+operating areas such as Wanchengwanling and AgentOS, while external Git
+repositories are Project Bindings or source/delivery mappings. Mission/Wave,
+Agent Team, Dynamic Workflow, and Host execution must also remain usable with
+no Company Store at all.
+
 ## Skills Are Optional Capabilities
 
 Repository skills are implementation and distribution artifacts, not the

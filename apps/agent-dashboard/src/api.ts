@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  Company,
   DashboardSnapshot,
   DocRegistryEntry,
   LiveMemberActivity,
@@ -52,22 +53,55 @@ export function matchesStreamProject(
  * Project ids are restricted to `[A-Za-z0-9._-]`, so no percent-encoding is
  * needed to match the backend's `query_param` parser.
  */
-function withProject(path: string, project?: string | null): string {
-  const id = project?.trim();
-  if (!id) return path;
+function withQuery(
+  path: string,
+  params: Readonly<Record<string, string | null | undefined>>,
+): string {
+  const entries = Object.entries(params).filter(([, value]) => value?.trim());
+  if (entries.length === 0) return path;
+  const query = entries
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value?.trim() ?? "")}`)
+    .join("&");
   const sep = path.includes("?") ? "&" : "?";
-  return `${path}${sep}project=${encodeURIComponent(id)}`;
+  return `${path}${sep}${query}`;
+}
+
+function withProject(path: string, project?: string | null): string {
+  return withQuery(path, { project });
+}
+
+function withProjectAndCompany(
+  path: string,
+  project?: string | null,
+  company?: string | null,
+): string {
+  return withQuery(path, { project, company });
+}
+
+/**
+ * Company OS requests carry both selectors when needed: Project remains the
+ * execution/source boundary, Company is the truth-store boundary.
+ */
+function withCompanyOsRoute(
+  path: string,
+  project?: string | null,
+  company?: string | null,
+): string {
+  return path.startsWith("/v1/company-os/")
+    ? withProjectAndCompany(path, project, company)
+    : withProject(path, project);
 }
 
 export async function fetchSnapshot(
   baseUrl: string,
   project?: string | null,
+  company?: string | null,
 ): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${withProject("/v1/snapshot", project)}`);
+  const response = await fetch(`${normalized}${withProjectAndCompany("/v1/snapshot", project, company)}`);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -123,6 +157,43 @@ export async function fetchProjects(
 }
 
 /**
+ * Enumerate Company Stores. These are Company OS truth boundaries independent
+ * from Project execution/source bindings.
+ */
+export async function fetchCompanies(
+  baseUrl: string,
+): Promise<{ companies: Company[]; current: string }> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Harness API URL is required");
+  }
+  const response = await fetch(`${normalized}/v1/companies`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as { companies?: Company[]; current?: string };
+  return { companies: data.companies ?? [], current: data.current ?? "" };
+}
+
+export async function fetchCurrentCompany(
+  baseUrl: string,
+): Promise<{ current?: string | null; store_root?: string | null; company?: Company | null }> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Harness API URL is required");
+  }
+  const response = await fetch(`${normalized}/v1/companies/current`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return (await response.json()) as {
+    current?: string | null;
+    store_root?: string | null;
+    company?: Company | null;
+  };
+}
+
+/**
  * Fetch the active project id via `GET /v1/projects/current`. Read live so a
  * `switch` (API or CLI) is reflected without a serve restart.
  */
@@ -155,6 +226,13 @@ export async function switchProject(
   project: string,
 ): Promise<ActionResponse> {
   return postAction(baseUrl, "/v1/projects/switch", { project });
+}
+
+export async function switchCompany(
+  baseUrl: string,
+  company: string,
+): Promise<ActionResponse> {
+  return postAction(baseUrl, "/v1/companies/switch", { company });
 }
 
 /**
@@ -633,13 +711,14 @@ export async function postAction(
   path: string,
   body: unknown = {},
   project?: string | null,
+  company?: string | null,
   options: ActionRequestOptions = {},
 ): Promise<ActionResponse> {
   const normalized = baseUrl.trim().replace(/\/$/, "");
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${withProject(path, project)}`, {
+  const response = await fetch(`${normalized}${withCompanyOsRoute(path, project, company)}`, {
     method: "POST",
     headers: { ...options.headers, "Content-Type": "application/json" },
     body: JSON.stringify(body),

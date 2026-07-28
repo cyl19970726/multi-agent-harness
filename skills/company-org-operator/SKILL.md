@@ -10,6 +10,26 @@ capability, not product authority. It helps an Agent inspect and prepare
 Organization changes while respecting Human approval, permissions, and the
 boundary between durable Standing Agents and one-off execution members.
 
+## Select the Company Store
+
+Before reading or writing Company OS records, identify the Company Store. Prefer
+one of:
+
+```bash
+harness company current
+harness --company <company-id> company org ...
+HARNESS_COMPANY=<company-id> harness company org ...
+```
+
+If no Company is selected, `harness company ...` falls back to the current
+project-derived compatibility Store. Treat that as legacy compatibility, not
+the target Agent Company Workspace boundary.
+
+To move legacy Company OS rows into a real Company Store, use
+`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+It copies only `company_os_*.jsonl`; it does not migrate execution records,
+provider sessions, prompts, or runtimes.
+
 ## Load the contracts
 
 Before proposing or executing a durable Organization change, read:
@@ -69,6 +89,20 @@ When a page contract references actors, require:
 If a page exposes an Agent detail or governance panel, it may reuse UI
 components from Agent Team member pages, but the underlying object must remain
 a durable Organization actor, not a MemberRun.
+
+## Gateway-facing Standing Agents
+
+Business-facing Standing Agents may receive input through external gateways
+such as WeCom, GitHub, email, or future plugins. Organization owns the durable
+Agent identity, role, permissions, tools, skill refs, maintained Docs, and
+escalation policy. The gateway service is an intake adapter or service actor;
+it does not grant authority to the Agent.
+
+An Agent detail workspace should show Org identity, current WorkItems, maintained
+Docs, permission/capability refs, and recent gateway summaries. Agent-specific
+knowledge such as merchant FAQ, reply policy, customer requests, or evidence
+should remain in Docs/Relations and be loaded as context, not stored as a
+different Agent-specific database.
 
 ## Current interface state
 

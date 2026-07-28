@@ -1,5 +1,11 @@
 # Multi-Project Harness
 
+```text
+status: implemented compatibility path for repository-scoped execution and
+project-derived stores
+target_boundary: ADR 0042 separates Company Store, Execution Space, and Project Binding
+```
+
 One operator (and one `serve` / dashboard) can manage **many** Workspaces — each
 with its own Mission/Wave coordination and execution records — plus a reserved
 **GLOBAL** Workspace rooted at `~/`. This is the operator-facing reference for
@@ -7,6 +13,21 @@ the layout, Workspace commands, GLOBAL policy, migration, and live acceptance.
 The architectural rationale for Agent Team execution paths is durable in
 [ADR 0033](decisions/0033-agent-team-workspace-contract.md), not in a retired
 Goal ledger.
+
+This page documents the current `ProjectContext` implementation. It remains the
+compatibility path for repo-local execution, worktree validation, provider cwd
+selection, and current project-scoped stores. It is not the final ownership
+boundary for Company OS truth. ADR 0040 defines the target split:
+
+```text
+Company Store       Execution Space       Project Binding
+     \                    |                    /
+      \------ explicit, optional relations ---/
+```
+
+Until that migration lands, current commands still route through the selected
+project store. New product architecture should not infer that a Git repository
+owns company documents, WorkItems, Organization authority, or Finance state.
 
 ## Workspace contract: four distinct paths
 
@@ -30,6 +51,11 @@ values (ADR 0033):
 These are bundled into a `ProjectContext { id, project_root, store_root, kind,
 is_git_repo }` (in `harness-core`) that is threaded through every spawn site
 instead of reading the harness process `env::current_dir()`.
+
+Under ADR 0040, `ProjectContext.project_root` evolves into Project Binding
+behavior, and execution ledgers move toward an Execution Space. The current
+`store_root` is a compatibility store root, not proof that the selected repo is
+the long-term Company Store owner.
 
 ### Worktrees share repository identity, not path containment
 
@@ -126,6 +152,14 @@ The dashboard exposes the same surface over HTTP: `GET /v1/projects`,
 parameter on `/v1/snapshot` and `/v1/events`. A header picker re-points the
 scoped read model + SSE stream on switch and persists the choice to
 `?project=<id>` + `localStorage`.
+
+The dashboard also exposes a separate Company Store selector over
+`GET /v1/companies`, `GET /v1/companies/current`,
+`POST /v1/companies/switch`, and `?company=<id>` on Company OS reads/writes.
+`/v1/snapshot?project=<id>&company=<id>` is intentionally blended: execution
+keys still come from the selected Project Store, while the `company_os` subtree
+comes from the selected Company Store. Future execution UI should add an
+Execution Space selector and treat Project as a runtime binding/filter.
 
 ## Migration path (repo-local `.harness` → central store)
 

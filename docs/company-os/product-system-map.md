@@ -19,19 +19,29 @@ first-class operating systems connected to them. Mission/Wave, Agent Team,
 Dynamic Workflow, Host execution, providers, plugins, and MCP are the shared
 execution foundation rather than a second company model.
 
+The product-level subject is an **Agent Company Workspace**: a company-like
+operating boundary where humans, Standing Agents, Docs, Work, Organization,
+Finance, plugins/gateways, and external repositories are coordinated. The
+technical Store boundary for that subject is the **Company Store**. ADR 0040
+separates that Company Store from standalone **Execution Spaces** and
+repository/worktree **Project Bindings**.
+
 ```mermaid
 flowchart LR
   D["Docs<br/>company memory and business structure"]
   W["Work<br/>commitments, responsibility and outcomes"]
   O["Organization<br/>humans, Standing Agents and authority"]
   F["Finance<br/>monetary state and evidence"]
-  E["Execution foundation<br/>Mission/Wave · Agent Team · Workflow · Host"]
+  E["Execution Space<br/>Mission/Wave · Agent Team · Workflow · Host"]
+  P["Project Bindings<br/>repos · worktrees · delivery refs"]
 
   D -->|"creates context and requests"| W
   O -->|"supplies accountable and assigned Actors"| W
   W -->|"requests governed monetary effects"| F
   W -->|"selects and links execution"| E
   E -->|"returns outcome, artifacts and evidence"| W
+  E -->|"runs against explicit resources"| P
+  P -->|"source and delivery evidence"| D
   W -->|"writes accepted result"| D
   F -->|"projects authorized financial truth"| D
 ```
@@ -89,8 +99,8 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Organization | ActorRef, HumanMember, AgentMember, external/service actors, OrgUnit | identity, reporting, permission, authority and explicit availability/capacity |
 | Work | WorkItem, Milestone, WorkType, Assignment, Approval links, execution/delivery refs | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
-| Execution | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run |
-| External project source | ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are mapped into Company OS |
+| Execution Space | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
+| Project Binding / external source | ProjectBinding, ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how repositories, worktrees, GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are selected or mapped |
 
 There is no native `Project`, Task Graph, GoalPhase, or universal Agent object.
 Mission/Wave is the only new long-task coordination model. Temporary Agent Team
@@ -100,11 +110,16 @@ An external GitHub repository may own the software product contract for a real
 application. Company OS still owns the commercial model, operating modules,
 WorkItems, Organization, Finance, and launch readiness around that application.
 The integration contract is [External Project Product Sources](external-project-product-sources.md).
+Under ADR 0040, the Git repository is a Project Binding and/or external source,
+not the owner of the Company Store. One Agent Company Workspace may contain
+multiple operating areas, such as Wanchengwanling and AgentOS / Star Harness,
+while mapping several repositories.
 
 ## Current delivery truth
 
 | Area | Current truth | Next product gap |
 | --- | --- | --- |
+| Company / execution identity | ADR 0042 defines Company Store, Execution Space, and Project Binding as distinct target identities; Company Store CLI registry, `harness company ...` routing, migration from project-derived Company OS rows, serve API selectors, blended dashboard snapshots, and Dashboard Company Store picker now exist | Execution Space registry and Project Binding migration |
 | Docs substrate | native schemas, stores, APIs, standard views, and Store-live evidence exist | deeper document authoring and governed module evolution |
 | Organization substrate | actor kinds, OrgUnit membership, and mixed-actor UI exist | governance-led reporting records, governed organization mutation, and the target Organization Overview |
 | Work read model | native Milestone/WorkType/business-line projection and six responsive Store-live views exist | governed intake, reassignment, Milestone mutation, saved views, and delivery adapters |

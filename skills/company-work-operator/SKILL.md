@@ -10,6 +10,26 @@ product authority. It helps an Agent choose the right governed operation,
 prepare safe inputs, and verify native Work records without reintroducing
 Project, Task Graph, GoalPhase, or execution-run state as company work.
 
+## Select the Company Store
+
+Before reading or writing Company OS records, identify the Company Store. Prefer
+one of:
+
+```bash
+harness company current
+harness --company <company-id> company work ...
+HARNESS_COMPANY=<company-id> harness company work ...
+```
+
+If no Company is selected, `harness company ...` falls back to the current
+project-derived compatibility Store. Treat that as legacy compatibility, not
+the target Agent Company Workspace boundary.
+
+To move legacy Company OS rows into a real Company Store, use
+`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+It copies only `company_os_*.jsonl`; it does not migrate execution records,
+provider sessions, prompts, or runtimes.
+
 ## Load the contracts
 
 Before proposing or executing a durable Work change, read:
@@ -68,6 +88,19 @@ Docs page contract references Work, require:
 If a page needs a Work board or task list, prefer a saved View or explicit
 related-record panel. Do not let Docs text or a custom page mark work done
 without `work_item.transition` / `close` and result provenance.
+
+## Gateway and dogfood intake
+
+External gateways and plugins create Work only when a message or event requires
+follow-up. A gateway-created WorkItem must still include source document,
+business module, WorkType, Milestone when known, requester, submitter,
+accountable owner, assignee, priority, and result/evidence return path. The
+gateway event itself is evidence/source context, not Work completion.
+
+For Wanchengwanling merchant intake, WeCom messages should route to Merchant
+Ops Agent for answerable questions and to Work Governance for follow-up
+WorkItems. Finance, Organization, and legal effects remain owned by their
+systems.
 
 ## Current interface state
 

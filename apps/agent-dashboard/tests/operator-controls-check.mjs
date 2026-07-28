@@ -193,6 +193,13 @@ async function main() {
     "Member Focus invokes same-turn steer only for an explicit Steer action and otherwise queues Host coordination",
   );
   check(
+    memberSource.includes("claudeDesktopSessionUri")
+      && memberSource.includes("claude://resume?session=")
+      && memberSource.includes("Open in Claude Desktop")
+      && memberSource.includes("Simultaneous SDK and Desktop generation is not verified"),
+    "Member Focus exposes explicit Claude Desktop import with a single-writer warning",
+  );
+  check(
     teamSource.includes("missionId: navigationMission?.id")
       && teamSource.includes("waveId: navigationWave?.id")
       && memberSource.includes("missionId: navigationMissionId")
