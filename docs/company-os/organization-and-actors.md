@@ -273,6 +273,15 @@ execution history on an eligible Standing Agent profile only through an
 explicit stable link; they are not organization members and cannot populate a
 chart.
 
+The first implemented link uses the same stable identifier for the Company OS
+`StandingAgent`, the reusable Agent Team `AgentMember` definition, and
+`MemberRun.agent_member_id`. TeamRuns created from a reusable team preserve the
+member identifier automatically. The Company OS read projection only joins
+MemberRuns whose identifier resolves to an existing StandingAgent; ad-hoc or
+unlinked members remain execution-only. Organization cards route to Actor
+profiles, and explicitly linked Agent Team participation deep-links to the
+Team/Member execution page.
+
 ## Non-goals
 
 - No universal employee object that erases human, agent, external, and service

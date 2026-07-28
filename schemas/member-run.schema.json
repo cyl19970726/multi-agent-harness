@@ -9,6 +9,11 @@
     "id": { "type": "string", "minLength": 1 },
     "team_run_id": { "type": "string", "minLength": 1 },
     "slot_id": { "type": ["string", "null"], "minLength": 1 },
+    "agent_member_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Explicit stable link to a durable AgentMember / StandingAgent identity. Never inferred from name, role, provider, model, or time."
+    },
     "name": { "type": "string", "minLength": 1 },
     "role": { "type": "string", "minLength": 1 },
     "provider": { "type": "string", "minLength": 1 },

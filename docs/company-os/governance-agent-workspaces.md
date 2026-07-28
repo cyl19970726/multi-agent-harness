@@ -61,6 +61,13 @@ governance roles still need governed organization-change provisioning and
 role-specific queues. Private thinking never appears. Skills reduce execution
 variance but never grant authority or replace product Actions.
 
+The workspace also projects Agent Team participation when, and only when, a
+MemberRun carries an explicit `agent_member_id` matching the StandingAgent's
+stable ID. It shows exact TeamRun, MemberRun, assignment correlation, status,
+native-session locator, and a deep link to execution. It does not infer a link
+from names or providers, and it does not treat runtime health as organization
+availability or authority.
+
 The native `StandingAgent` schema now carries configuration references for
 `system_prompt_ref`, tools, Skills, maintained Documents, accepted WorkTypes,
 escalation and permission policy. Prompt content remains in Docs; reporting

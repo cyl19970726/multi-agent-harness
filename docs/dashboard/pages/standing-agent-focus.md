@@ -1,7 +1,7 @@
 # Standing Agent Focus Page Spec
 
 ```text
-status: proposed — object contract approval required before implementation
+status: partial implementation — explicit Agent Team participation projection is implemented
 owner_role: product-design
 canonical_for: one durable AgentMember across assignments and provider sessions
 route_or_surface: Agents -> AgentMember
@@ -16,6 +16,14 @@ and can I safely message it now?
 This is not a `MemberRun` page. A standing `AgentMember` retains identity across
 provider restarts and may participate in multiple Missions or Workflows. A
 `MemberRun` remains one participation in one `AgentTeamRun` attempt.
+
+The first implemented slice uses the same explicit stable identifier across the
+Organization `StandingAgent`, the independent Agent Team `AgentMember`
+definition, and `MemberRun.agent_member_id`. Creating a TeamRun from an
+AgentTeam definition preserves that identifier on each MemberRun. Ad-hoc
+members may supply the link explicitly only when the referenced AgentMember
+exists. The Company OS snapshot then derives `standing_assignments` from latest
+native rows; it never creates another assignment ledger.
 
 ## Object boundary
 
@@ -76,6 +84,10 @@ Projection rules:
 
 - Mission/Wave participation requires an explicit `MemberRun.agent_member_id`
   or equivalent stable source link.
+- The current implementation projects Agent Team assignments only. It includes
+  a Mission reference when the TeamRun is Mission-scoped; a Wave reference is
+  shown only when an existing compatibility record supplies one. A Wave does
+  not own the MemberRun.
 - Workflow participation uses an explicit step owner and the step's
   `NativeSessionRef` when provider-native activity is available.
 - A direct assignment must be an explicit assignment/task message addressed to
@@ -126,7 +138,23 @@ fixed composer; context remains a disclosure rather than disappearing.
 - no fake capacity, capability, assignment, interrupt, or wake state;
 - no reuse of legacy `Tasks` as the primary cross-executor model.
 
-## Representative state
+## Implemented state
+
+The Store-live Organization chart routes Human and Standing Agent cards to
+their profile. A Standing Agent profile now shows:
+
+- WorkItems linked through Company OS Actor references;
+- Agent Team assignments linked through `MemberRun.agent_member_id`;
+- the exact TeamRun, MemberRun, assignment correlation, status, and optional
+  provider-native session locator;
+- a deep link to the Team/Member execution surface; and
+- an explicit empty state when no MemberRun is linked.
+
+The profile continues to keep organizational status, business authority, and
+runtime participation separate. A running member does not grant authority, and
+an offline runtime does not retire a Standing Agent.
+
+## Remaining representative state
 
 `available-multi-assignment` proves:
 
@@ -137,13 +165,14 @@ fixed composer; context remains a disclosure rather than disappearing.
 - a delivered artifact and durable message history;
 - no single Wave owns the page and no thinking is persisted.
 
-## Design gate
+## Remaining gates
 
-Implementation may begin only when:
+This page is not complete until:
 
-1. availability and capacity ownership are approved;
-2. the explicit AgentMember-to-MemberRun link and Workflow projection rule are
-   approved;
+1. availability and capacity ownership are implemented rather than inferred;
+2. Workflow participation and direct durable-agent messaging gain equally
+   explicit source links;
 3. the candidate expected design is marked approved in the visual contract;
-4. a deterministic fixture validates that unlinked MemberRuns never appear as
-   Standing Agent assignments.
+4. deterministic Dashboard interaction coverage proves chart-to-profile and
+   profile-to-MemberRun navigation at supported viewports; and
+5. a durable Team Supervisor can report cross-client member runtime health.

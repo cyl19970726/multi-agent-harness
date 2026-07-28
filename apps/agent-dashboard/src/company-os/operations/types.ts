@@ -74,6 +74,30 @@ export interface AssignmentView {
   assignedAt: string;
 }
 
+/** Read-only execution participation joined by explicit MemberRun.agent_member_id. */
+export interface StandingExecutionAssignment {
+  id: string;
+  agentMemberId: string;
+  sourceKind: "mission_wave" | "direct_assignment";
+  sourceRef: string;
+  missionId?: string;
+  waveId?: string;
+  teamRunId: string;
+  memberRunId: string;
+  title: string;
+  role: string;
+  status: string;
+  assignedAt: string;
+  lastActivityAt?: string;
+  correlationId: string;
+  nativeSession?: {
+    provider?: string;
+    execution_mode?: string;
+    native_session_id?: string;
+    availability?: string;
+  };
+}
+
 export type WorkItemTransitionStatus = "in_progress" | "blocked" | "in_review" | "completed";
 
 export interface WorkItemTransitionContext {
@@ -194,6 +218,7 @@ export interface TrademarkOperationsProjection {
   workItem: WorkItemView;
   workItems?: WorkItemView[];
   assignments?: AssignmentView[];
+  standingAssignments?: StandingExecutionAssignment[];
   commitment: FinancialRecordView;
   approval: ApprovalView;
   evidence: RelatedLink[];

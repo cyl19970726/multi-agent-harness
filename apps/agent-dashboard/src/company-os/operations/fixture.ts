@@ -2,6 +2,7 @@ import type {
   ActorAvailability,
   ActorKind,
   ActorSummary,
+  StandingExecutionAssignment,
   AssignmentView,
   CanonicalActorRef,
   CanonicalEntityRef,
@@ -355,6 +356,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const typedRecords = records(root.typed_records);
   const workRecords = records(root.work_items);
   const assignmentRecords = records(root.assignments);
+  const standingAssignmentRecords = records(root.standing_assignments);
   const financeRecords = records(root.financial_records);
   const approvalRecords = records(root.approvals);
   const pageDefinitions = records(root.custom_page_definitions);
@@ -364,6 +366,25 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "governance_proposal"),
   ];
   const moduleRecords = records(root.business_modules);
+  const standingAssignments: StandingExecutionAssignment[] = standingAssignmentRecords.map((record): StandingExecutionAssignment => ({
+    id: text(record.id),
+    agentMemberId: text(record.agent_member_id),
+    sourceKind: text(record.source_kind) === "mission_wave" ? "mission_wave" : "direct_assignment",
+    sourceRef: text(record.source_ref),
+    missionId: text(record.mission_id) || undefined,
+    waveId: text(record.wave_id) || undefined,
+    teamRunId: text(record.team_run_id),
+    memberRunId: text(record.member_run_id),
+    title: text(record.title, "Agent Team assignment"),
+    role: text(record.role, "member"),
+    status: text(record.status, "unknown"),
+    assignedAt: text(record.assigned_at),
+    lastActivityAt: text(record.last_activity_at) || undefined,
+    correlationId: text(record.correlation_id),
+    nativeSession: record.native_session && typeof record.native_session === "object"
+      ? record.native_session as StandingExecutionAssignment["nativeSession"]
+      : undefined,
+  })).filter((assignment) => assignment.agentMemberId && assignment.teamRunId && assignment.memberRunId);
   const metrics = [
     ...records(root.explicit_metrics),
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
@@ -546,6 +567,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     fixtureId: text(root.fixture_id) || undefined,
     actors: actorById,
     actorList: Object.values(actorById),
+    standingAssignments,
     organization: {
       company: asRef(companyUnit.id, field(companyUnit, "name")),
       brandUnit: asRef(brandUnit.id, field(brandUnit, "name")),

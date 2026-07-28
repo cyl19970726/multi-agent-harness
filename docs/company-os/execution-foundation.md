@@ -55,6 +55,15 @@ when an explicit stable link exists (for example,
 its displayed name, provider, model, role, or timestamps resemble a standing
 Agent.
 
+The implemented Agent Team path preserves this link when a TeamRun is created
+from an independent AgentTeam definition: the definition's member identifier is
+copied into `MemberRun.agent_member_id`. The Organization projection includes
+the participation only when a Company OS `StandingAgent` with that same stable
+identifier also exists. This is an explicit cross-layer join, not lifecycle
+collapse: the StandingAgent owns organization identity and authority, the
+AgentMember definition owns reusable execution configuration, and MemberRun
+owns participation in one TeamRun.
+
 The Host owns member lifecycle explicitly. Starting a Team member creates or
 resumes its persistent provider runtime; ordinary turn completion does not
 destroy that member. The Host may message, inspect, interrupt one current turn,
@@ -112,6 +121,13 @@ responsibility, interaction routing, explicit outcomes, artifact/check refs,
 and gates. It does not keep a second provider event history. Private thinking
 remains sanitized, transient live state only: it is not stored, replayed,
 forwarded to peers, or used as evidence.
+
+Provider-native visibility is mode-specific. A Codex `app-server` thread can be
+opened in Codex Desktop when the app exposes that native thread. A Claude Agent
+SDK session is the native execution record for `claude_agent_sdk`, but it is not
+a Claude Desktop conversation and Harness must not claim that it appears
+there. The same rule applies to every provider: native session truth does not
+imply visibility in an unrelated consumer UI.
 
 ## Selection from a WorkItem
 
@@ -182,3 +198,6 @@ Mission, WorkItem, Approval, or organization membership.
    ledger and cannot make the Host's Wave decision.
 9. Advancing a Wave never implicitly stops a TeamRun, MemberRun, assignment, or
    native session. Closing a Mission never deletes or archives a linked team.
+10. Organization identity is joined to execution only by a stable explicit
+    identifier. Runtime status never grants business authority and organization
+    status never fabricates a running provider session.

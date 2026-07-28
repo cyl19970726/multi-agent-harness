@@ -1636,6 +1636,7 @@ mod tests {
             id: "mr-1".into(),
             team_run_id: "tr-1".into(),
             slot_id: Some("slot-1".into()),
+            agent_member_id: Some("agent-worker-1".into()),
             name: "worker-1".into(),
             role: "worker".into(),
             provider: "kimi".into(),
@@ -1673,6 +1674,7 @@ mod tests {
         assert_eq!(sparse.id, "mr-sparse");
         assert_eq!(sparse.status, MemberRunStatus::Idle);
         assert!(sparse.slot_id.is_none());
+        assert!(sparse.agent_member_id.is_none());
         assert!(sparse.model.is_none());
         assert!(sparse.worktree_ref.is_none());
         assert!(sparse.workspace_snapshot.is_none());

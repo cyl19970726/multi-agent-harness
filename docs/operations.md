@@ -72,13 +72,19 @@ cargo run -p harness-cli -- init
 cargo run -p harness-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
 cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
 cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
-cargo run -p harness-cli -- team-run create --mission-id <mission-id> --agent-team-id <team-id> --objective <objective> --member name:role:provider
+cargo run -p harness-cli -- team-run create --mission-id <mission-id> --agent-team-id <team-id> --objective <objective>
 cargo run -p harness-cli -- team-run start --id <team-run-id>
 cargo run -p harness-cli -- wave advance --id <wave-id> --outcome "<host-decision>" --advanced-by host
 cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <next-title> --objective <next-objective> --context "<next-wave-markdown>"
 cargo run -p harness-cli -- dashboard snapshot
 cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
 ```
+
+Omit ad-hoc `--member` overrides when starting from a reusable AgentTeam
+definition. That path preserves each registered AgentMember's stable identifier
+as `MemberRun.agent_member_id`; an intentionally matching Company OS
+StandingAgent can then project the participation without inferring identity or
+authority.
 
 Set `HARNESS_ROOT` to point the file store somewhere other than `.harness`.
 The local store writes append-only Harness-owned coordination and product

@@ -1703,6 +1703,11 @@ pub struct MemberRun {
     pub team_run_id: String,
     #[serde(default)]
     pub slot_id: Option<String>,
+    /// Optional stable link to a durable AgentMember / Company OS
+    /// StandingAgent identity. Absence means this remains a temporary execution
+    /// participant; callers must never infer the link from display fields.
+    #[serde(default)]
+    pub agent_member_id: Option<String>,
     pub name: String,
     pub role: String,
     pub provider: String,
@@ -1768,6 +1773,9 @@ impl Validate for MemberRun {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "MemberRun.id")?;
         require_non_empty(&self.team_run_id, "MemberRun.team_run_id")?;
+        if let Some(agent_member_id) = &self.agent_member_id {
+            require_non_empty(agent_member_id, "MemberRun.agent_member_id")?;
+        }
         require_non_empty(&self.name, "MemberRun.name")?;
         require_non_empty(&self.role, "MemberRun.role")?;
         require_non_empty(&self.provider, "MemberRun.provider")?;

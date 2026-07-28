@@ -343,12 +343,23 @@ fn split_status_body(raw: &str) -> (u16, String) {
 
 /// Run `harness <args...>` from `cwd` against `home`; return its Output.
 pub fn run_harness(home: &TempHome, cwd: &Path, args: &[&str]) -> std::process::Output {
+    run_harness_with_env(home, cwd, args, &[])
+}
+
+/// Run `harness <args...>` with explicit additional environment variables.
+pub fn run_harness_with_env(
+    home: &TempHome,
+    cwd: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
     for a in args {
         cmd.arg(a);
     }
     cmd.current_dir(cwd)
         .envs(home.envs())
+        .envs(extra_env.iter().copied())
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
         .output()

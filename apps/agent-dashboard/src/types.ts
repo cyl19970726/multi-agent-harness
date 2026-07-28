@@ -313,6 +313,8 @@ export interface MemberRun {
   id: string;
   team_run_id?: string;
   slot_id?: string | null;
+  /** Explicit durable AgentMember / StandingAgent identity link; never inferred from display fields. */
+  agent_member_id?: string | null;
   name?: string | null;
   role?: string | null;
   provider?: "codex" | "claude" | "kimi" | string;

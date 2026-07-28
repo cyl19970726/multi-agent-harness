@@ -7910,6 +7910,7 @@ fn append_team_run_event(
 /// `--member name:role:provider[:model][@path1,path2]` spelling or the HTTP
 /// JSON body.
 struct TeamMemberSpec {
+    agent_member_id: Option<String>,
     name: String,
     role: String,
     provider: String,
@@ -7937,6 +7938,7 @@ fn team_member_specs_from_definition(
                 ))
             })?;
             Ok(TeamMemberSpec {
+                agent_member_id: Some(member.id.clone()),
                 name: member.name.clone(),
                 role: member.role.clone(),
                 provider: member.provider.clone(),
@@ -7981,6 +7983,24 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
                 member.provider
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) -> CliResult<()> {
+    let Some(agent_member_id) = member.agent_member_id.as_deref() else {
+        return Ok(());
+    };
+    if agent_member_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team member agent_member_id must not be empty".to_string(),
+        ));
+    }
+    if !latest_members(store)?.contains_key(agent_member_id) {
+        return Err(CliError::Usage(format!(
+            "team member {} references missing AgentMember {agent_member_id}",
+            member.name
+        )));
     }
     Ok(())
 }
@@ -8338,6 +8358,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
         _ => (parts[2].to_string(), None),
     };
     Ok(TeamMemberSpec {
+        agent_member_id: None,
         name: parts[0].to_string(),
         role: parts[1].to_string(),
         provider,
@@ -8490,6 +8511,7 @@ fn build_member_run_for_team(
         id: generated_id("member-run"),
         team_run_id: team_run_id.to_string(),
         slot_id: None,
+        agent_member_id: member.agent_member_id.clone(),
         name: member.name.clone(),
         role: member.role.clone(),
         provider: member.provider.clone(),
@@ -8604,6 +8626,7 @@ fn create_team_run(
         if let Some(worktree_ref) = member.worktree_ref.as_deref() {
             validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
         }
+        validate_team_member_identity(store, member)?;
         validate_team_member_execution_mode(member)?;
     }
     let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
@@ -8771,6 +8794,7 @@ fn add_team_run_member(
     assignment: &str,
     origin_wave_id: Option<String>,
 ) -> CliResult<(AgentTeamRun, MemberRun, TeamMessage)> {
+    validate_team_member_identity(store, member)?;
     validate_team_member_execution_mode(member)?;
     if assignment.trim().is_empty() {
         return Err(CliError::Usage(
@@ -10076,6 +10100,9 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     "team_run={}\tinbox={inbox_count}\toutbox={outbox_count}",
                     member.team_run_id
                 );
+                if let Some(agent_member_id) = member.agent_member_id.as_deref() {
+                    println!("agent_member_id={agent_member_id}\tidentity_link=explicit");
+                }
                 if let Some(session) = member.native_session.as_ref() {
                     println!(
                         "native_session={}\tlocator_kind={}",
@@ -15379,6 +15406,7 @@ fn handle_http_action(
         .and_then(|rest| rest.strip_suffix("/members"))
     {
         let member = TeamMemberSpec {
+            agent_member_id: optional_json_string(body, "agent_member_id")?,
             name: required_json_string(body, "name")?,
             role: required_json_string(body, "role")?,
             provider: required_json_string(body, "provider")?,
@@ -16072,6 +16100,7 @@ fn create_team_run_value(
             }
         };
         members.push(TeamMemberSpec {
+            agent_member_id: optional_json_string(member, "agent_member_id")?,
             name: required_json_string(member, "name")?,
             role: required_json_string(member, "role")?,
             provider: required_json_string(member, "provider")?,
@@ -30018,6 +30047,7 @@ mod tests {
             None,
             &[
                 TeamMemberSpec {
+                    agent_member_id: None,
                     name: "BuilderA".into(),
                     role: "module_a".into(),
                     provider: "codex".into(),
@@ -30028,6 +30058,7 @@ mod tests {
                     resume_native_session_id: None,
                 },
                 TeamMemberSpec {
+                    agent_member_id: None,
                     name: "BuilderB".into(),
                     role: "module_b".into(),
                     provider: "codex".into(),
@@ -30040,6 +30071,79 @@ mod tests {
             ],
         )
         .expect("create team run")
+    }
+
+    #[test]
+    fn team_member_identity_link_requires_registered_agent_member() {
+        let (store, root) = temp_store("member-identity-link");
+        let linked = TeamMemberSpec {
+            agent_member_id: Some("agent-standing-builder".into()),
+            name: "StandingBuilder".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            worktree_ref: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+        };
+        let missing = match create_team_run(
+            &store,
+            None,
+            None,
+            "Verify explicit identity",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            std::slice::from_ref(&linked),
+        ) {
+            Ok(_) => panic!("an explicit identity link must resolve to AgentMember"),
+            Err(error) => error,
+        };
+        assert!(missing
+            .to_string()
+            .contains("references missing AgentMember agent-standing-builder"));
+
+        let member = build_member_from_args(
+            &[
+                "create".into(),
+                "--id".into(),
+                "agent-standing-builder".into(),
+                "--name".into(),
+                "StandingBuilder".into(),
+                "--role".into(),
+                "builder".into(),
+                "--provider".into(),
+                "codex".into(),
+            ],
+            AgentMemberStatus::Idle,
+        )
+        .expect("registered member");
+        store.append_member(&member).expect("append member");
+        let created = create_team_run(
+            &store,
+            None,
+            None,
+            "Verify explicit identity",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[linked],
+        )
+        .expect("registered identity link succeeds");
+        assert_eq!(
+            created.member_runs[0].agent_member_id.as_deref(),
+            Some("agent-standing-builder")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -30371,6 +30475,7 @@ mod tests {
             None,
             None,
             &[TeamMemberSpec {
+                agent_member_id: None,
                 name: "BatchMember".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -30396,6 +30501,7 @@ mod tests {
             None,
             &created.team_run.id,
             &TeamMemberSpec {
+                agent_member_id: None,
                 name: "LateBatchMember".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -30788,6 +30894,7 @@ mod sse_tests {
             id: "member-cwd".into(),
             team_run_id: "team-cwd".into(),
             slot_id: None,
+            agent_member_id: None,
             name: "RuntimeFixer".into(),
             role: "implementer".into(),
             provider: "codex".into(),

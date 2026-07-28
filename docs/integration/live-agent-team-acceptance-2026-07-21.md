@@ -196,6 +196,36 @@ An earlier exploratory run,
 revealed the former duplicate-Handoff behavior and was intentionally stopped
 before the replacement canary verified the fix.
 
+## Standing Agent identity canary — 2026-07-28
+
+Wave 5 verified the explicit Organization-to-execution identity join without
+collapsing their lifecycles:
+
+- Company OS StandingAgent and reusable AgentMember
+  `agent-org-runtime-dogfood`;
+- Mission-linked reusable team `team-org-runtime-dogfood`;
+- TeamRun `team-run-1785235941106-p35827-0`;
+- MemberRun `member-run-1785235941106-p35827-1`;
+- Assignment correlation `corr-1785235941131-p35827-5`;
+- acknowledged Handoff `tmsg-1785235997733-p37319-0`; and
+- Codex app-server thread `019fa85b-0b68-7270-aab4-e09dc01fbb3c` on reviewed
+  Codex `0.145.0`.
+
+Creating the TeamRun from its independent Team definition automatically
+preserved `MemberRun.agent_member_id`. Before provider execution, the Company
+OS snapshot already projected the exact Assignment. After the first provider
+turn, the same projection included the idle MemberRun, native-session locator,
+Mission, TeamRun, correlation, and Team/Member navigation target. The Member
+submitted exactly one explicit correlated Handoff, the Host acknowledged it,
+and the runtime remained idle and resumable until the Host sent an explicit
+Close through the same supervising service. Only then did the MemberRun become
+`stopped`; the Host subsequently completed the TeamRun.
+
+The canary was read-only. Organization availability remained its declared
+`available` value throughout and was not derived from `running`, `idle`, or
+`stopped`. No membership or authority row changed when execution completed.
+Unlinked MemberRuns remain absent from the Standing Agent projection.
+
 ## Acceptance boundary
 
 This proves Codex exec transport, Kimi ACP transport, native attempt lineage,
