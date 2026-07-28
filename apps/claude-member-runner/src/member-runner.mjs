@@ -83,7 +83,7 @@ export function createMemberRunner({ sdk, config, emit }) {
    * `listSessions()` filtered by this tag IS the list of a TeamRun's members,
    * which is why the tag encodes both ids.
    */
-  async function bindSession(sessionId) {
+  async function bindSession(sessionId, providerVersion = null) {
     if (state.registered) return;
     state.sessionId = sessionId;
     state.registered = true;
@@ -94,11 +94,13 @@ export function createMemberRunner({ sdk, config, emit }) {
       await sdk.tagSession(sessionId, tag, { dir: config.cwd });
       await sdk.renameSession(sessionId, title, { dir: config.cwd });
     } catch (error) {
-      // Registration is a convenience for discovery and for humans opening the
-      // session in Claude. It must not take the member down.
+      // Registration is a convenience for SDK-native discovery and resume.
+      // Agent SDK sessions do not automatically enter Claude Desktop's session
+      // picker, so registry metadata must not be described as a Desktop bridge.
+      // A registry write failure still must not take the member down.
       emit("registry_write_failed", { sessionId, error: String(error) });
     }
-    emit("session_bound", { sessionId, tag, title });
+    emit("session_bound", { sessionId, tag, title, providerVersion });
   }
 
   function openQuery(resumeSessionId) {
@@ -106,6 +108,14 @@ export function createMemberRunner({ sdk, config, emit }) {
       prompt: mailbox.stream(renderTeamMessage),
       options: {
         cwd: config.cwd,
+        // Make the coordination identity an explicit part of the provider
+        // subprocess contract. The SDK currently documents omitted `env` as
+        // inheriting `process.env`, but the live canary showed that relying on
+        // that implicit hop can leave the provider's Bash tool pointed at the
+        // wrong Harness project. Rust injects only non-secret HARNESS_* values
+        // into this runner; forwarding the complete runner environment also
+        // preserves PATH, HOME, credentials, and provider configuration.
+        env: { ...process.env },
         allowedTools: config.allowedTools,
         disallowedTools: config.disallowedTools,
         model: config.model ?? undefined,
@@ -154,7 +164,7 @@ export function createMemberRunner({ sdk, config, emit }) {
         try {
           for await (const message of query) {
             if (message.type === "system" && message.subtype === "init") {
-              await bindSession(message.session_id);
+              await bindSession(message.session_id, message.claude_code_version ?? null);
               continue;
             }
             if (message.type === "assistant") {
@@ -168,7 +178,7 @@ export function createMemberRunner({ sdk, config, emit }) {
               // A result ends a TURN. It does not end the member; the mailbox
               // decides that. This distinction is the entire fix.
               if (!state.sessionId && message.session_id) {
-                await bindSession(message.session_id);
+                await bindSession(message.session_id, message.claude_code_version ?? null);
               }
               emit("turn_complete", {
                 sessionId: message.session_id ?? state.sessionId,

@@ -6904,7 +6904,7 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             let providers: Vec<serde_json::Value> = provider_registry()
                 .iter()
                 .map(|adapter| {
-                    let detected = provider_version_output(adapter.name());
+                    let detected = team_member_provider_version_output(adapter.name());
                     let mut profile = team_member_provider_profile(adapter.name());
                     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
                     needs_review |= matches!(
@@ -7999,26 +7999,16 @@ fn team_member_provider_profile_for_mode(
             execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
-            // Deliberately empty. A Human approved installing Claude Code
-            // 2.1.220, but approving a version is not the same as reviewing the
-            // adapter against it: AGENTS.md requires mode-specific deterministic
-            // checks plus a proportional live canary first. Leaving this empty
-            // is what makes `member providers --fail-on-review` report the mode
-            // as review_required instead of silently compatible.
-            reviewed_provider_versions: Vec::new(),
+            reviewed_provider_versions: vec!["2.1.220".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: None,
+            adapter_reviewed_at: Some("2026-07-28".to_string()),
             compatibility_note: Some(
                 "Persistent member over the Agent SDK streaming-input mode. \
-                 Interrupt, steer and PreToolUse gates exist in the runner and \
-                 pass deterministic tests, but have not been exercised against a \
-                 live provider, so they are not claimed here yet."
+                 Deterministic lifecycle coverage and a proportional live canary \
+                 verified two Host rounds on one native session, correct project \
+                 selection, explicit close, and SDK-native session discovery."
                     .to_string(),
             ),
-            // Claimed capabilities are limited to what has actually run against
-            // the real provider: multi-round continuation on one native session
-            // and explicit resume. Deterministic interrupt coverage does not
-            // replace the required live canary.
             interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
             plan_mode: ProviderFeatureMode::Emulated,
             goal_mode: ProviderFeatureMode::Emulated,
@@ -8041,11 +8031,14 @@ fn team_member_provider_profile_for_mode(
             execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("codex-app-server-v1".to_string()),
-            reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string()],
+            reviewed_provider_versions: vec!["0.145.0-alpha.18".to_string(), "0.145.0".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-07-22".to_string()),
+            adapter_reviewed_at: Some("2026-07-28".to_string()),
             compatibility_note: Some(
-                "Interactive contract reviewed against generated app-server schemas.".to_string(),
+                "Interactive contract reviewed against generated app-server schemas; \
+                 0.145.0 passed a persistent two-round native-session canary and \
+                 explicit Host close."
+                    .to_string(),
             ),
             interaction_mode: ProviderInteractionMode::PauseAndResume,
             plan_mode: ProviderFeatureMode::Native,
@@ -8263,6 +8256,51 @@ fn provider_version_output(provider: &str) -> Result<String, String> {
         "claude" => raw.split_whitespace().next().unwrap_or(&raw).to_string(),
         _ => raw,
     })
+}
+
+/// Probe the executable that actually backs the persistent Team mode.
+///
+/// Claude Agent SDK bundles its own Claude Code executable. The unrelated
+/// `claude` on PATH may be a different version, so using `claude --version`
+/// here would audit the Workflow adapter while labeling the result as the Team
+/// adapter. Live MemberRuns still replace this static package fact with
+/// `system(init).claude_code_version`.
+fn team_member_provider_version_output(provider: &str) -> Result<String, String> {
+    if provider != "claude" {
+        return provider_version_output(provider);
+    }
+
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+    let runner = claude_agent_sdk_runner_path(&cwd).map_err(|error| error.to_string())?;
+    let mut visited = HashSet::new();
+    for root in runner
+        .ancestors()
+        .chain(cwd.ancestors())
+        .map(Path::to_path_buf)
+        .filter(|root| visited.insert(root.clone()))
+    {
+        let package = root.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json");
+        if !package.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&package)
+            .map_err(|error| format!("failed to read {}: {error}", package.display()))?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("failed to parse {}: {error}", package.display()))?;
+        if let Some(version) = json
+            .get("claudeCodeVersion")
+            .and_then(|value| value.as_str())
+        {
+            return Ok(version.to_string());
+        }
+        return Err(format!("{} has no claudeCodeVersion", package.display()));
+    }
+
+    Err(
+        "Claude Agent SDK package.json was not found beside the configured member runner"
+            .to_string(),
+    )
 }
 
 /// Parse one `--member name:role:provider[:model][@path1,path2]` spec.
@@ -10698,6 +10736,7 @@ struct MemberOutcome {
 
 struct MemberRuntimeContext {
     project_id: Option<String>,
+    project_selector: Option<String>,
     cwd: PathBuf,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
@@ -10823,6 +10862,9 @@ pub(crate) fn drive_prepared_team_run(
         supervisor_registration: _supervisor_registration,
     } = prepared;
     let project_id = project_context.as_ref().map(|context| context.id.clone());
+    let project_selector = project_context
+        .as_ref()
+        .map(|context| context.project_root.to_string_lossy().into_owned());
     let mut seen_member_ids = HashSet::new();
     let mut pending_members = members;
     let mut handles = HashMap::new();
@@ -10847,6 +10889,7 @@ pub(crate) fn drive_prepared_team_run(
             let handle_member = member.clone();
             let member_live_sink = live_sink.clone();
             let member_project_id = project_id.clone();
+            let member_project_selector = project_selector.clone();
             let member_turn_leases = Arc::clone(&turn_leases);
             let handle = std::thread::spawn(move || {
                 run_member_orchestration(
@@ -10855,6 +10898,7 @@ pub(crate) fn drive_prepared_team_run(
                     handle_member,
                     MemberRuntimeContext {
                         project_id: member_project_id,
+                        project_selector: member_project_selector,
                         cwd,
                         idle_timeout,
                         live_sink: member_live_sink,
@@ -11036,6 +11080,7 @@ fn run_codex_member(
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     let project_id = context.project_id.as_deref();
+    let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
     let idle_timeout = context.idle_timeout;
     let live_sink = context.live_sink.clone();
@@ -11065,8 +11110,13 @@ fn run_codex_member(
         .as_ref()
         .map(|message| message.body.clone())
         .unwrap_or_else(|| objective.to_string());
-    let envelope =
-        member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
+    let envelope = member_collaboration_envelope(
+        ledger,
+        project_id,
+        project_selector,
+        &member_row,
+        assignment.as_ref(),
+    )?;
     let collaboration_env = envelope.environment();
     let mut app_server = codex_app_server::CodexAppServerClient::spawn(
         cwd,
@@ -11674,8 +11724,13 @@ fn run_claude_team_member(
         .as_ref()
         .map(|message| message.body.clone())
         .unwrap_or_else(|| objective.to_string());
-    let envelope =
-        member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
+    let envelope = member_collaboration_envelope(
+        ledger,
+        project_id,
+        Some(cwd.to_string_lossy().as_ref()),
+        &member_row,
+        assignment.as_ref(),
+    )?;
     let collaboration_env = envelope.environment();
 
     let mut round = 0u32;
@@ -11878,6 +11933,7 @@ fn run_claude_agent_sdk_team_member(
     use std::io::Write as _;
 
     let project_id = context.project_id.as_deref();
+    let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
     let idle_timeout = context.idle_timeout;
     let turn_leases = &context.turn_leases;
@@ -11907,8 +11963,13 @@ fn run_claude_agent_sdk_team_member(
         .as_ref()
         .map(|message| message.body.clone())
         .unwrap_or_else(|| objective.to_string());
-    let envelope =
-        member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
+    let envelope = member_collaboration_envelope(
+        ledger,
+        project_id,
+        project_selector,
+        &member_row,
+        assignment.as_ref(),
+    )?;
 
     let mut child = Command::new("node")
         .arg(&runner)
@@ -12119,6 +12180,13 @@ fn run_claude_agent_sdk_team_member(
             match name {
                 "session_bound" => {
                     if let Some(session_id) = data.get("sessionId").and_then(|v| v.as_str()) {
+                        if let Some(provider_version) =
+                            data.get("providerVersion").and_then(|v| v.as_str())
+                        {
+                            if let Some(profile) = member_row.provider_profile.as_mut() {
+                                apply_provider_version(profile, Some(provider_version.to_string()));
+                            }
+                        }
                         member_row.native_session = Some(native_session_ref(
                             &member_row,
                             session_id,
@@ -12558,6 +12626,7 @@ fn run_kimi_member(
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     let project_id = context.project_id.as_deref();
+    let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
     let idle_timeout = context.idle_timeout;
     let live_sink = context.live_sink.clone();
@@ -12584,8 +12653,13 @@ fn run_kimi_member(
         .as_ref()
         .map(|message| message.body.clone())
         .unwrap_or_else(|| objective.to_string());
-    let envelope =
-        member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
+    let envelope = member_collaboration_envelope(
+        ledger,
+        project_id,
+        project_selector,
+        &member_row,
+        assignment.as_ref(),
+    )?;
     let collaboration_env = envelope.environment();
     let mut client = kimi_acp::KimiAcpClient::spawn(
         cwd,
@@ -13793,7 +13867,9 @@ fn extract_report_section(text: &str, name: &str) -> Option<String> {
 
 /// The delivery-contract prompt every member's first round runs on.
 struct MemberCollaborationEnvelope {
+    harness_bin: Option<String>,
     project_id: Option<String>,
+    project_selector: Option<String>,
     mission_id: Option<String>,
     team_run_id: String,
     member_run_id: String,
@@ -13813,7 +13889,14 @@ impl MemberCollaborationEnvelope {
             ),
         ];
         for (key, value) in [
-            ("HARNESS_PROJECT", self.project_id.as_deref()),
+            ("HARNESS_BIN", self.harness_bin.as_deref()),
+            (
+                "HARNESS_PROJECT",
+                self.project_selector
+                    .as_deref()
+                    .or(self.project_id.as_deref()),
+            ),
+            ("HARNESS_PROJECT_ID", self.project_id.as_deref()),
             ("HARNESS_MISSION_ID", self.mission_id.as_deref()),
             (
                 "HARNESS_ASSIGNMENT_MESSAGE_ID",
@@ -13836,6 +13919,7 @@ impl MemberCollaborationEnvelope {
 fn member_collaboration_envelope(
     ledger: &TeamRunLedger,
     project_id: Option<&str>,
+    project_selector: Option<&str>,
     member: &MemberRun,
     assignment: Option<&TeamMessage>,
 ) -> CliResult<MemberCollaborationEnvelope> {
@@ -13845,7 +13929,11 @@ fn member_collaboration_envelope(
         .filter(|candidate| candidate.team_run_id == ledger.run_id)
         .collect();
     Ok(MemberCollaborationEnvelope {
+        harness_bin: std::env::current_exe()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned()),
         project_id: project_id.map(str::to_string),
+        project_selector: project_selector.map(str::to_string),
         mission_id: run.mission_id,
         team_run_id: run.id,
         member_run_id: member.id.clone(),
@@ -13919,12 +14007,13 @@ fn contract_prompt(
          - If Host asks you to plan first, answer with a concise Markdown plan in the same Assignment correlation and wait for an ordinary revise-or-execute message. Harness has no Plan Gate.\n\
          \n\
          COORDINATION CLI (run from this Workspace)\n\
-         - Read actionable inbox: harness team-run inbox --id {team_run_id} --member-run-id {member_run_id} --json\n\
-         - Read all received coordination messages (latest stored state): harness team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
-         - Ask Host: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Message a peer: harness team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
-         - Submit handoff: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Submit a requested plan/revision: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
+         - Use the exact Host binary from `HARNESS_BIN`; do not substitute another `harness` found on PATH.\n\
+         - Read actionable inbox: \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --json\n\
+         - Read all received coordination messages (latest stored state): \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
+         - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
+         - Message a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
+         - Submit handoff: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
+         - Submit a requested plan/revision: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
          \n\
          Report format (your final message MUST follow this):\n\
          ## RESULT\n\
@@ -14235,6 +14324,11 @@ struct ServeProjects {
     default_id: String,
     /// The store resolved at startup — the default project's store.
     default_store: HarnessStore,
+    /// Preserve the exact startup context even when it came from an
+    /// unregistered Git worktree path. Reconstructing it from the synthetic id
+    /// would otherwise collapse project_root into store_root, and provider
+    /// members would receive an unusable HARNESS_PROJECT selector.
+    default_context: Option<ProjectContext>,
 }
 
 impl ServeProjects {
@@ -14250,6 +14344,7 @@ impl ServeProjects {
             harness_home,
             default_id,
             default_store: store.clone(),
+            default_context: resolved.context.clone(),
         }
     }
 
@@ -14272,6 +14367,11 @@ impl ServeProjects {
     /// context rooted at the served store rather than falling back to the
     /// harness server process cwd.
     fn context_for(&self, project_id: &str, store: &HarnessStore) -> ProjectContext {
+        if project_id == self.default_id {
+            if let Some(context) = &self.default_context {
+                return context.clone();
+            }
+        }
         if let Some(home) = &self.harness_home {
             if let Ok(Some(context)) = project::context_for_id(home, project_id) {
                 return context;
@@ -14302,7 +14402,15 @@ impl ServeProjects {
     /// no registry, so only the served store is reported (as the synthetic default).
     fn list(&self) -> Vec<ProjectContext> {
         match &self.harness_home {
-            Some(home) => project::list_projects(home).unwrap_or_default(),
+            Some(home) => {
+                let mut contexts = project::list_projects(home).unwrap_or_default();
+                if let Some(default) = &self.default_context {
+                    if !contexts.iter().any(|context| context.id == default.id) {
+                        contexts.push(default.clone());
+                    }
+                }
+                contexts
+            }
             None => vec![ProjectContext {
                 id: self.default_id.clone(),
                 project_root: self.default_store.root().to_path_buf(),
@@ -30292,6 +30400,7 @@ mod tests {
         let envelope = member_collaboration_envelope(
             &ledger,
             Some("example-project"),
+            Some("/workspace/example-project"),
             member,
             Some(assignment),
         )
@@ -30308,15 +30417,23 @@ mod tests {
         assert!(prompt.contains(&assignment.correlation_id));
         assert!(prompt.contains("BuilderB"));
         assert!(prompt.contains("provider-native subagents"));
-        assert!(prompt.contains("harness team-run inbox"));
-        assert!(prompt.contains("harness team-run send"));
+        assert!(prompt.contains("\"$HARNESS_BIN\" team-run inbox"));
+        assert!(prompt.contains("\"$HARNESS_BIN\" team-run send"));
         let env = envelope
             .environment()
             .into_iter()
             .collect::<HashMap<_, _>>();
         assert_eq!(
             env.get("HARNESS_PROJECT").map(String::as_str),
+            Some("/workspace/example-project")
+        );
+        assert_eq!(
+            env.get("HARNESS_PROJECT_ID").map(String::as_str),
             Some("example-project")
+        );
+        assert!(
+            env.get("HARNESS_BIN").is_some_and(|path| !path.is_empty()),
+            "the member must call the exact Host binary, not a stale PATH install"
         );
         assert_eq!(
             env.get("HARNESS_TEAM_RUN_ID").map(String::as_str),
@@ -30698,6 +30815,39 @@ mod sse_tests {
     /// open and assert a concurrent snapshot still returns promptly. The inline
     /// accept loop mirrors serve_command's per-connection threading.
     #[test]
+    fn serve_preserves_unregistered_default_worktree_context() {
+        let store_root = std::env::temp_dir().join(generated_id("serve-worktree-context-store"));
+        let worktree_root =
+            std::env::temp_dir().join(generated_id("serve-worktree-context-project"));
+        let store = HarnessStore::new(&store_root);
+        store.init().expect("init store");
+        let expected = ProjectContext {
+            id: "synthetic-worktree".to_string(),
+            project_root: worktree_root.clone(),
+            store_root: store_root.clone(),
+            kind: ProjectKind::Repo,
+            is_git_repo: true,
+        };
+        let projects = ServeProjects {
+            harness_home: Some(std::env::temp_dir().join(generated_id("unrelated-registry"))),
+            default_id: expected.id.clone(),
+            default_store: store.clone(),
+            default_context: Some(expected.clone()),
+        };
+
+        let resolved = projects.context_for(&expected.id, &store);
+        assert_eq!(resolved, expected);
+        assert_eq!(resolved.project_root, worktree_root);
+        assert_ne!(
+            resolved.project_root, resolved.store_root,
+            "provider cwd/project selector must never collapse into the JSONL store"
+        );
+
+        let _ = std::fs::remove_dir_all(store_root);
+        let _ = std::fs::remove_dir_all(worktree_root);
+    }
+
+    #[test]
     fn sse_stream_does_not_block_concurrent_requests() {
         use std::io::{BufRead, BufReader, Read, Write};
         use std::net::{TcpListener, TcpStream};
@@ -30721,6 +30871,7 @@ mod sse_tests {
                 harness_home: None,
                 default_id: "_test".to_string(),
                 default_store: serve_store.clone(),
+                default_context: None,
             };
             let watcher_projects = projects.clone();
             sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())

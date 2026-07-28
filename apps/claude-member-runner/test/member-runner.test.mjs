@@ -91,6 +91,11 @@ test("native session is bound once and registered under the TeamRun tag", async 
   await done;
 
   assert.equal(of("session_bound").length, 1, "bind exactly once");
+  assert.equal(
+    of("session_bound")[0].data.providerVersion,
+    "2.1.220-test",
+    "the execution-mode version comes from the SDK system/init event",
+  );
   assert.equal(sdk.calls.tagSession.length, 1);
   assert.equal(sdk.calls.tagSession[0].tag, "trun-1:mrun-runtime");
   assert.equal(sdk.calls.renameSession[0].title, "RuntimeBuilder · Runtime owner");
@@ -162,6 +167,47 @@ test("permission prompts default to off, because nobody can answer them", async 
   assert.ok(sdk.lastOptions.hooks?.PreToolUse?.length > 0, "observers stay wired");
   runner.close("done");
   await done;
+});
+
+test("the provider subprocess inherits Harness coordination identity", async () => {
+  const previous = {
+    project: process.env.HARNESS_PROJECT,
+    team: process.env.HARNESS_TEAM_RUN_ID,
+    member: process.env.HARNESS_MEMBER_RUN_ID,
+    assignment: process.env.HARNESS_ASSIGNMENT_MESSAGE_ID,
+    correlation: process.env.HARNESS_ASSIGNMENT_CORRELATION_ID,
+  };
+  Object.assign(process.env, {
+    HARNESS_PROJECT: "project-live",
+    HARNESS_TEAM_RUN_ID: "trun-live",
+    HARNESS_MEMBER_RUN_ID: "mrun-live",
+    HARNESS_ASSIGNMENT_MESSAGE_ID: "assignment-live",
+    HARNESS_ASSIGNMENT_CORRELATION_ID: "corr-live",
+  });
+  try {
+    const { runner, sdk } = harness();
+    const done = runner.start();
+    await settled();
+    assert.equal(sdk.lastOptions.env.HARNESS_PROJECT, "project-live");
+    assert.equal(sdk.lastOptions.env.HARNESS_TEAM_RUN_ID, "trun-live");
+    assert.equal(sdk.lastOptions.env.HARNESS_MEMBER_RUN_ID, "mrun-live");
+    assert.equal(sdk.lastOptions.env.HARNESS_ASSIGNMENT_MESSAGE_ID, "assignment-live");
+    assert.equal(sdk.lastOptions.env.HARNESS_ASSIGNMENT_CORRELATION_ID, "corr-live");
+    assert.equal(sdk.lastOptions.env.PATH, process.env.PATH);
+    runner.close("done");
+    await done;
+  } finally {
+    for (const [key, value] of Object.entries({
+      HARNESS_PROJECT: previous.project,
+      HARNESS_TEAM_RUN_ID: previous.team,
+      HARNESS_MEMBER_RUN_ID: previous.member,
+      HARNESS_ASSIGNMENT_MESSAGE_ID: previous.assignment,
+      HARNESS_ASSIGNMENT_CORRELATION_ID: previous.correlation,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 

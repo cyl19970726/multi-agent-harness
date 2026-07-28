@@ -133,7 +133,7 @@ Provider
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
 | Claude Code | [claude.md](claude.md) | Agent Team SDK streaming implemented | `claude_agent_sdk` is the only new Claude Team mode; `claude_cli` remains Workflow/historical only. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) | Team Member start implemented through ACP | Current executable Agent Team member adapter. Other Kimi execution slices remain separately scoped. |
-| Codex + Kimi live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted live evidence | Real retry lineage, assignment/handoff correlation, interrupted-run recovery, and no durable thinking. |
+| Provider live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted + blocked live evidence | Codex/Kimi historical acceptance plus 2026-07-28 persistent Codex/Claude lifecycle, Workspace propagation, SDK-native discovery, and an honestly blocked Kimi K2.5 attempt. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
 

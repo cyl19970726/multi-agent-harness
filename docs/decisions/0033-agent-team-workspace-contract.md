@@ -25,6 +25,19 @@ worktree top level whose canonical Git common directory matches the project.
 Provider spawn resolves `worktree_ref > execution_root > project_root` and
 never falls back to `store_root`.
 
+The provider collaboration environment preserves the same separation:
+
+- `HARNESS_PROJECT_ID` carries stable Workspace identity;
+- `HARNESS_PROJECT` carries an executable selector (normally canonical
+  `project_root`) so a nested provider process can resolve the same store even
+  when its cwd is an unregistered linked worktree;
+- `HARNESS_BIN` carries the exact Host executable so Member CLI calls cannot
+  drift to an older binary on `PATH`.
+
+An in-memory `serve` context created from an unregistered worktree retains its
+exact `project_root` and `store_root`. Project enumeration must not reconstruct
+that context by treating `store_root` as a repository root.
+
 Immediately before spawn, Harness records `MemberRun.workspace_snapshot` with
 the actual canonical cwd, Git HEAD/branch when available, and non-secret
 discovered instruction/skill directory paths. It does not copy file contents,

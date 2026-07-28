@@ -105,8 +105,18 @@ fn assert_collaboration_env(
 ) {
     let text = std::fs::read_to_string(home.base().join(format!("{provider}-collaboration.env")))
         .unwrap_or_else(|error| panic!("{provider} collaboration env missing: {error}"));
+    let metadata_path = home.projects_dir().join(project_id).join("metadata.json");
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&metadata_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", metadata_path.display())),
+    )
+    .expect("project metadata JSON");
+    let project_root = metadata["canonical_path"]
+        .as_str()
+        .expect("canonical_path in metadata");
     for expected in [
-        format!("HARNESS_PROJECT={project_id}"),
+        format!("HARNESS_PROJECT_ID={project_id}"),
+        format!("HARNESS_PROJECT={project_root}"),
         format!("HARNESS_TEAM_RUN_ID={run_id}"),
         format!("HARNESS_MEMBER_RUN_ID={member_id}"),
         "HARNESS_ASSIGNMENT_MESSAGE_ID=".to_string(),

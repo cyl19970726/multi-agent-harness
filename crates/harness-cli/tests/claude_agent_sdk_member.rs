@@ -59,7 +59,10 @@ for await (const line of rl) {{
   if (command === "start") {{
     cfg = payload;
     emit("member_started", {{ memberRunId: cfg.memberRunId }});
-    emit("session_bound", {{ sessionId: "fake-native-session-0001" }});
+    emit("session_bound", {{
+      sessionId: "fake-native-session-0001",
+      providerVersion: "2.1.220-test",
+    }});
   }} else if (command === "deliver") {{
     turns += 1;
     emit("delivered", {{ id: payload.id, kind: payload.kind }});
@@ -214,6 +217,10 @@ fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     assert!(
         body.contains("claude_agent_sdk"),
         "member profile should record the agent-sdk execution mode.\n{body}"
+    );
+    assert!(
+        body.contains("2.1.220-test"),
+        "the profile and native session must use the SDK-reported execution-mode version.\n{body}"
     );
     assert!(
         body.contains("\"status\": \"idle\""),
