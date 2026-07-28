@@ -27,6 +27,16 @@ This contract defines how an external repository such as
 - GitHub webhooks or polling may create sync events and review queues, but
   they do not silently overwrite Company OS knowledge.
 
+ADR 0042 separates the long-term identities involved here:
+
+```text
+Company Store       Execution Space       Project Binding
+```
+
+This document describes the Company Store side of external software source
+mapping. A Git repository is a Project Binding and software source; it is not
+the owner of company memory, WorkItems, Organization, or Finance.
+
 ## Ownership boundary
 
 | Truth | Owning system | Examples |
@@ -51,7 +61,7 @@ SQL read/index projections.
 
 | Object | Purpose |
 | --- | --- |
-| `ExternalProject` | A durable external project registration: owner/repo, default branch, project root, GitHub URLs, responsible Company OS module, and sync policy. |
+| `ExternalProject` | A durable external software-source registration: owner/repo, default branch, GitHub URLs, responsible Company OS module, and sync policy. In the ADR 0042 target model this relates to a Project Binding instead of owning Store routing. |
 | `ProductDocSource` | A declared document source inside that project, such as `docs/prd/**/*.md`, `docs/architecture/**/*.md`, or `docs/frontend-design-os/**`. |
 | `ProductDocSnapshot` | A versioned observation of a source file at a commit: path, title, classification, hash, commit, extracted headings, declared business line, and links to owning Company OS records. |
 | `ProductDocMapping` | A governed relation between an external source file and a Company OS `Document`, `BusinessModule`, `WorkType`, `Milestone`, or custom page. |
@@ -74,7 +84,7 @@ An Agent or scheduled job runs a read-only sync against a registered repo and
 branch:
 
 ```bash
-harness --project <company-os-project-selector> \
+harness --project <current-compat-project-selector> \
   company docs source sync \
   --definition <software-source-page-definition-id> \
   --module <software-product-sources-module-id> \
@@ -88,10 +98,12 @@ harness --project <company-os-project-selector> \
   --path <additional-path>
 ```
 
-The top-level `--project` selects the Company OS Store to write into. The
-command-level `--project-id` identifies the external software project being
-observed. The command reads a local Git worktree, records repo metadata and
-file snapshots, and writes native Docs `TypedRecord`s:
+In the current compatibility implementation, the top-level `--project` selects
+the project-scoped Store to write into. Under ADR 0040 this must become an
+explicit Company Store selector, while the command-level `--project-id`
+continues to identify the external software source / future Project Binding
+being observed. The command reads a local Git worktree, records repo metadata
+and file snapshots, and writes native Docs `TypedRecord`s:
 `external_project`, `product_doc_source`, `product_doc_snapshot`, and
 `source_sync_run`.
 
@@ -166,7 +178,8 @@ Company OS WorkItem
 Opening a GitHub issue may create or link a WorkItem when correlation is
 explicit. Merging a PR may complete software delivery evidence, but it does not
 automatically complete the Company OS WorkItem unless the required acceptance
-criteria, review, and result update are present.
+criteria, review, and result update are present. Selecting the repository as a
+Project Binding for execution never reroutes Company Store writes by itself.
 
 ## What belongs outside the external repo
 
@@ -218,6 +231,9 @@ ExternalProject:
   id: wanchengwanling
   repo: github.com/cyl19970726/wanchengwanling
   branch: dev
+  target_company_store: <agent-company-id>
+  target_operating_area: wanchengwanling
+  project_binding: wanchengwanling
   source classes:
     - README.md                  -> external project overview
     - IMPLEMENTATION_PLAN.md     -> implementation planning source
@@ -242,7 +258,8 @@ The project-specific commercial model, merchant plan, procurement plan,
 content strategy, creator strategy, and launch dashboard belong in Company OS
 Docs. The repo PRDs remain mapped software product sources.
 
-The current Wanchengwanling local Store uses:
+The current Wanchengwanling local Store is compatibility state from the
+repo-derived `ProjectContext` implementation:
 
 ```text
 Company OS project id: new-day-wanchengwanling
@@ -251,6 +268,10 @@ store_root: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
 external software project id: wanchengwanling
 ```
 
-This keeps the distinction explicit: Company OS owns the commercial operating
-memory; Git owns software source files and delivery evidence; the source sync
+This keeps the distinction explicit in the current implementation but is not
+the final Store boundary. The ADR 0042 target is one Agent Company Workspace
+that contains both Wanchengwanling and AgentOS operating areas while mapping
+`cyl19970726/wanchengwanling` and `cyl19970726/multi-agent-harness` as separate
+Project Bindings / external sources. Company OS owns the commercial operating
+memory; Git owns software source files and delivery evidence; source sync
 creates linked observations rather than moving either truth into the other.

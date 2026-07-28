@@ -59,6 +59,18 @@ projections. SQL is planned as a derived read/query/index layer for Docs query,
 search, Views, health, diff, and export; it is not the current canonical write
 Store. See [ADR 0035](../decisions/0035-company-os-sql-read-model.md).
 
+The current implementation now has the first explicit Company Store slice:
+`harness company init/list/current/show/switch/migrate-from-project`,
+`--company <id>`, and `HARNESS_COMPANY` route `harness company ...` commands to
+`<HARNESS_HOME>/companies/<id>/`. If no Company is selected, the older
+project-derived Company OS compatibility path still works. The migration command
+copies only `company_os_*.jsonl` ledgers; it does not move Mission/Wave, Agent
+Team, Workflow, provider sessions, prompts, or runtimes. ADR 0040 defines the
+target identity split: Company Store owns Agent Company Workspace truth,
+Execution Space owns Mission/Wave, Agent Team, Workflow, and Host coordination,
+and Project Binding owns repo / worktree / provider-cwd selection. Company is
+optional for execution.
+
 ## Canonical loop
 
 ```text
@@ -119,6 +131,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Finance | [Financial relations](financial-relations.md) |
 | Cross-system ownership | [Four-system collaboration](four-system-collaboration.md) |
 | Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
+| Company / execution / project identity | [ADR 0042](../decisions/0042-company-store-execution-space-project-binding.md), [Execution foundation](execution-foundation.md) |
 | Execution boundary | [Execution foundation](execution-foundation.md) |
 | External software projects and GitHub PRD mapping | [External project product sources](external-project-product-sources.md) |
 | Product experience | [Frontend information architecture](frontend-information-architecture.md) |
@@ -141,11 +154,15 @@ rules live in [Documentation Governance](../documentation-governance.md).
 - [Trademark registration example](examples/trademark-registration.md): first
   cross-system acceptance scenario.
 - [Wanchengwanling AR tourism dogfood project](examples/wanchengwanling-operations.md):
-  first real commercial Company OS dogfood project. Its live operating truth
-  belongs in the registered Store `new-day-wanchengwanling`; GitHub-hosted
-  software PRDs, repo docs, generated reports, and bootstrap scripts are source
-  observations, design references, or acceptance evidence, not the commercial
-  operating database.
+  first real commercial Company OS dogfood project. Its current verified
+  operating truth lives in the compatibility Store `new-day-wanchengwanling`;
+  under ADR 0042 it should migrate into an Agent Company Workspace / Company
+  Store alongside AgentOS. GitHub-hosted software PRDs, repo docs, generated
+  reports, and bootstrap scripts are source observations, design references, or
+  acceptance evidence, not the commercial operating database.
+- [Wanchengwanling Company Store migration](examples/wanchengwanling-company-store-migration.md):
+  local verification that Wanchengwanling Company OS rows were copied into
+  `agent-company` without copying execution ledgers.
 - [Wanchengwanling completion roadmap](examples/wanchengwanling-completion-roadmap.md):
   storage-backed unfinished-goal map for CLI/API, skills, custom pages, GitHub
   source sync, SQL read/search, real launch data, and replication templates.

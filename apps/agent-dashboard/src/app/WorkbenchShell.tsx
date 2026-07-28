@@ -38,7 +38,7 @@ import {
 import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
 
 import type { WorkbenchModel } from "../model/readModel";
-import type { Project } from "../types";
+import type { Company, Project } from "../types";
 import {
   AgentDetail,
   AgentsList,
@@ -59,10 +59,16 @@ interface WorkbenchShellProps {
   /** Known projects for the header picker (goal-multi-project P6); empty for a
    * single-store / pre-multi-project backend, which hides the picker. */
   projects: Project[];
+  /** Known Company Stores for the header picker; empty in raw-store mode. */
+  companies: Company[];
   /** The currently-selected project id ("" before one is chosen/adopted). */
   selectedProjectId: string;
+  /** The currently-selected Company Store id for Company OS truth. */
+  selectedCompanyId: string;
   /** Switch the active project: re-points the scoped snapshot + SSE stream. */
   onSelectProject: (projectId: string) => void;
+  /** Switch the active Company Store without changing the execution project. */
+  onSelectCompany: (companyId: string) => void;
   onApiUrlChange: (value: string) => void;
   onRefresh: () => void;
   onSelectionChange: (selection: SelectionState) => void;
@@ -125,8 +131,11 @@ export function WorkbenchShell({
   apiUrl,
   isLoading,
   model,
+  companies,
   projects,
+  selectedCompanyId,
   selectedProjectId,
+  onSelectCompany,
   onSelectProject,
   onApiUrlChange,
   onRefresh,
@@ -162,8 +171,11 @@ export function WorkbenchShell({
           contextLabel={nativeContextLabel(model, selection)}
           isLoading={isLoading}
           model={model}
+          companies={companies}
           projects={projects}
+          selectedCompanyId={selectedCompanyId}
           selectedProjectId={selectedProjectId}
+          onSelectCompany={onSelectCompany}
           onSelectProject={onSelectProject}
           onApiUrlChange={onApiUrlChange}
           onRefresh={onRefresh}
@@ -248,8 +260,11 @@ function TopBar({
   contextLabel,
   isLoading,
   model,
+  companies,
   projects,
+  selectedCompanyId,
   selectedProjectId,
+  onSelectCompany,
   onSelectProject,
   onApiUrlChange,
   onRefresh,
@@ -297,6 +312,11 @@ function TopBar({
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelectProject={onSelectProject}
+        />
+        <CompanyPicker
+          companies={companies}
+          selectedCompanyId={selectedCompanyId}
+          onSelectCompany={onSelectCompany}
         />
       </div>
 
@@ -439,11 +459,64 @@ function ProjectPicker({
   );
 }
 
+function CompanyPicker({
+  companies,
+  selectedCompanyId,
+  onSelectCompany,
+}: {
+  companies: Company[];
+  selectedCompanyId: string;
+  onSelectCompany: (companyId: string) => void;
+}) {
+  const selected = companies.find((company) => company.id === selectedCompanyId);
+  if (!selected) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <label className="relative ml-1 hidden items-center md:flex" aria-label="Company Store">
+          <span className="pointer-events-none absolute left-2 text-muted-foreground">
+            <Building2 className="size-3.5" />
+          </span>
+          <select
+            aria-label="Active company"
+            value={selectedCompanyId}
+            disabled={companies.length === 1}
+            onChange={(event) => onSelectCompany(event.target.value)}
+            className="h-8 max-w-[210px] appearance-none truncate rounded-md border border-border bg-background/50 pl-7 pr-7 text-[11px] text-foreground outline-none transition-colors hover:border-input focus:border-ring disabled:opacity-100"
+          >
+            {companies.map((company) => (
+              <option key={company.id} value={company.id}>
+                {companyLabel(company)}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
+        </label>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[36rem] space-y-1">
+        <p>
+          <span className="text-muted-foreground">Company truth store:</span>{" "}
+          <span className="font-mono">{selected.store_root}</span>
+        </p>
+        <p>
+          <span className="text-muted-foreground">Boundary:</span>{" "}
+          Docs / Work / Organization / Finance. Project execution remains selected separately.
+        </p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** Human label for a project option: the reserved `_global` reads "Global (~)";
  * every other project shows its id (the slug / content-hash). */
 function projectLabel(project: Project): string {
   if (project.kind === "global" || project.id === "_global") return "Global (~)";
   return project.id;
+}
+
+function companyLabel(company: Company): string {
+  const name = company.name?.trim();
+  return name ? `${name} (${company.id})` : company.id;
 }
 
 /** Beyond this age the snapshot is considered stale and the chip turns amber. */

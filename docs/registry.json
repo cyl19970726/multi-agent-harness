@@ -2470,6 +2470,45 @@
    ]
   },
   {
+   "path": "docs/company-os/examples/wanchengwanling-company-store-migration.md",
+   "ownerRole": "business-operations",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Wanchengwanling Company Store migration evidence",
+    "verification that project-derived Company OS rows moved without execution ledgers"
+   ],
+   "dependsOn": [
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
+    "docs/company-os/examples/wanchengwanling-operations.md",
+    "crates/harness-cli/src/company_store.rs",
+    "crates/harness-cli/tests/company_store_cli.rs"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-27",
+   "lastVerifiedWith": [
+    "target/debug/harness --company agent-company company docs health",
+    "target/debug/harness --company agent-company company work list",
+    "target/debug/harness --company agent-company company org list"
+   ],
+   "reorgTrigger": "Company Store migration command, Wanchengwanling Store ids, Company Store verification counts, or ADR 0042 migration boundary changes.",
+   "authorityClass": "actual_evidence",
+   "implementationState": "verified",
+   "truthRefs": [
+    {
+     "kind": "runtime_evidence",
+     "ref": "/Users/hhh0x/.harness/companies/agent-company"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_store_cli.rs"
+    }
+   ]
+  },
+  {
    "path": "docs/company-os/examples/wanchengwanling-completion-roadmap.md",
    "ownerRole": "business-operations",
    "status": "stable",
@@ -3640,6 +3679,53 @@
    "truthRefs": []
   },
   {
+   "path": "docs/decisions/0042-company-store-execution-space-project-binding.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "target identity boundary between Company Store, Execution Space, and Project Binding",
+    "Company OS truth ownership independent from Git repository paths",
+    "standalone execution capability without a Company Store",
+    "migration direction from project-derived compatibility stores"
+   ],
+   "dependsOn": [
+    "docs/decisions/0033-agent-team-workspace-contract.md",
+    "docs/multi-project.md",
+    "docs/company-os/README.md",
+    "docs/company-os/execution-foundation.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "harness governance check"
+   ],
+   "reorgTrigger": "Company registry, Execution Space registry, Project Binding migration, dashboard selectors, or execution routing boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "https://github.com/cyl19970726/multi-agent-harness/issues/252"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/company_store.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_store_cli.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_store_serve.rs"
+    }
+   ]
+  },
+  {
    "path": "docs/cli-map.md",
    "ownerRole": "lead-operations",
    "status": "stable",
@@ -3675,6 +3761,10 @@
     },
     {
      "kind": "api",
+     "ref": "crates/harness-cli/src/company_store.rs"
+    },
+    {
+     "kind": "api",
      "ref": "crates/harness-cli/src/company_os_api.rs"
     },
     {
@@ -3692,6 +3782,10 @@
     {
      "kind": "test",
      "ref": "scripts/check-company-os-operator-cli-smoke.mjs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/company_store_cli.rs"
     }
    ]
   }

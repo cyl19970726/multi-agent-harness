@@ -2,10 +2,13 @@
 
 ```text
 status: active commercial dogfood project
-dogfood_project_id: new-day-wanchengwanling
+compat_project_id: new-day-wanchengwanling
 external_software_project_id: wanchengwanling
 canonical_for: applying Company OS to a real AR tourism project whose software PRDs live in GitHub
-live_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+compat_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+company_store_id: agent-company
+company_store: /Users/hhh0x/.harness/companies/agent-company
+target_boundary: ADR 0042 Agent Company Workspace / Company Store
 ```
 
 ## Scenario
@@ -41,13 +44,21 @@ Company OS
 
 Wanchengwanling is the first real commercial project used to operate Company
 OS against a non-toy business. This document is not the operating database. The
-accepted dogfood target is the registered Company OS Store:
+current local dogfood data lives in the repo-derived compatibility Store:
 
 ```text
 Company OS project id: new-day-wanchengwanling
 project root: /Users/hhh0x/new-day/wanchengwanling
 Store root: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
 ```
+
+ADR 0040 changes the target boundary: Wanchengwanling should become an
+operating area inside one Agent Company Workspace / Company Store, alongside
+AgentOS / Star Harness. The `wanchengwanling` Git repository remains an
+external software source / Project Binding, not the owner of company truth.
+
+The first local Company Store migration is recorded in
+[Wanchengwanling Company Store migration](wanchengwanling-company-store-migration.md).
 
 For this project, “done” means a future Agent can inspect the Store and answer:
 
@@ -174,10 +185,11 @@ The real local project Store currently contains the native bootstrap:
 | Organization | Lead Agent, four Governance Agents, six Business Agents, human owner, external participant, org units, memberships |
 | Finance / Approval | approved ¥10 CNY merchant-share unit Commitment; no Payment inferred |
 
-This is the correct target for Wanchengwanling Company OS records. Repository
-markdown and generated reports may explain or visualize the product, but the
-operating records for this commercial project should be queryable from this
-Store.
+This remains the verified compatibility Store source for Wanchengwanling Company
+OS records. Repository markdown and generated reports may explain or visualize
+the product, but active dogfood should now prefer the migrated Company Store
+`agent-company`, where Wanchengwanling and AgentOS can share Docs, Work,
+Organization, Finance, governance, and cross-operating-area relations.
 
 ### Docs foundation verified on 2026-07-28
 

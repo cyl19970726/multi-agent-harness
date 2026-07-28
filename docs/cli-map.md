@@ -22,6 +22,7 @@ dedicated CLI.
 | Area | Commands | Status | Notes |
 | --- | --- | --- | --- |
 | Store/project routing | `init`, `project add/list/current/switch/remove/show/migrate` | Implemented | Multi-project routing is centralized. Prefer `--project` / project registry over legacy store overrides. |
+| Company Store routing | `company init/list/current/switch/show/migrate-from-project`, global `--company <id>` for `company ...`, `HARNESS_COMPANY` | Implemented | ADR 0042 Phase 2 first slice. `harness company ...` uses the selected Company Store when explicit/current Company exists; execution commands still use Project routing. |
 | Mission | `mission create/list/show/update-context/create-team/link-team/unlink-team/close` | Implemented | Current durable intent surface. |
 | Wave | `wave create/list/show/history/update/advance/gate` | Implemented | Lightweight host plan/judgment record. |
 | Agent Team definition | `team create/list/show/rename/add-member/remove-member/close/archive` | Implemented | Defines reusable teams independent of Mission/Wave. |
@@ -35,6 +36,17 @@ dedicated CLI.
 | Retired command families | old `goal`, `phase`, `task`, proposal/review/design surfaces | Retired compatibility | These fail explicitly and must not be used for new work. |
 
 ## Company OS CLI map
+
+### Company Store
+
+`harness company init/list/current/switch/show` manages the explicit Company
+Store identity introduced by ADR 0040.
+
+| Capability | Commands | Status | Notes |
+| --- | --- | --- | --- |
+| Registry | `company init --id <company-id> [--name <name>]`, `company list`, `company current`, `company show [company-id]`, `company switch <company-id>` | Implemented | Stores live under `<HARNESS_HOME>/companies/<id>/`; `ACTIVE_COMPANY` and `companies/registry.json` track the current Company. |
+| Company OS routing | `harness --company <id> company ...`, `HARNESS_COMPANY=<id> harness company ...`, or active Company from `company switch/init` | Implemented | Applies only to `harness company ...`; Mission/Wave, Agent Team, Workflow, provider cwd, and Project selection remain separate. |
+| Migration from project-derived stores | `company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]` | Implemented | Copies only `company_os_*.jsonl` into the Company Store and makes that Company current. It does not copy Mission/Wave, Agent Team, Workflow, provider sessions, prompts or runtimes. |
 
 ### Docs
 

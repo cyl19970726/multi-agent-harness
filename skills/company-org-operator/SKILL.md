@@ -10,6 +10,26 @@ capability, not product authority. It helps an Agent inspect and prepare
 Organization changes while respecting Human approval, permissions, and the
 boundary between durable Standing Agents and one-off execution members.
 
+## Select the Company Store
+
+Before reading or writing Company OS records, identify the Company Store. Prefer
+one of:
+
+```bash
+harness company current
+harness --company <company-id> company org ...
+HARNESS_COMPANY=<company-id> harness company org ...
+```
+
+If no Company is selected, `harness company ...` falls back to the current
+project-derived compatibility Store. Treat that as legacy compatibility, not
+the target Agent Company Workspace boundary.
+
+To move legacy Company OS rows into a real Company Store, use
+`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+It copies only `company_os_*.jsonl`; it does not migrate execution records,
+provider sessions, prompts, or runtimes.
+
 ## Load the contracts
 
 Before proposing or executing a durable Organization change, read:

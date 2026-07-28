@@ -14,6 +14,21 @@ export interface Project {
   is_current: boolean;
 }
 
+/**
+ * One Company Store in the Company OS control plane. Unlike a Project, this is
+ * the company truth boundary for Docs / Work / Organization / Finance; project
+ * binding is optional execution/source context.
+ */
+export interface Company {
+  id: string;
+  name?: string;
+  store_root: string;
+  is_current: boolean;
+  identity_boundary?: "company_store" | string;
+  execution_dependency?: "optional" | string;
+  project_binding?: "external" | string;
+}
+
 export type MessageKind = "message" | "task" | "report";
 export type SenderKind = "agent" | "operator" | "system";
 export type ProviderExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
@@ -524,6 +539,7 @@ export interface TeamRunEvent {
 
 export interface DashboardSnapshot {
   generated_at?: string;
+  company_os?: unknown;
   teams?: AgentTeam[];
   members?: AgentMember[];
   messages?: Message[];

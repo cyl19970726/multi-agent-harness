@@ -128,6 +128,7 @@ impl ServeHandle {
             .envs(home.envs())
             .env_remove("HARNESS_ROOT")
             .env_remove("HARNESS_PROJECT")
+            .env_remove("HARNESS_COMPANY")
             // Production supervisors never retire an idle Member implicitly.
             // Integration processes need a bounded escape after they have
             // asserted the idle state so test teardown can join cleanly.
@@ -343,16 +344,30 @@ fn split_status_body(raw: &str) -> (u16, String) {
 
 /// Run `harness <args...>` from `cwd` against `home`; return its Output.
 pub fn run_harness(home: &TempHome, cwd: &Path, args: &[&str]) -> std::process::Output {
+    run_harness_with_env(home, cwd, args, &[])
+}
+
+/// Run `harness <args...>` with additional env vars from `cwd` against `home`.
+pub fn run_harness_with_env(
+    home: &TempHome,
+    cwd: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
     for a in args {
         cmd.arg(a);
     }
-    cmd.current_dir(cwd)
+    let command = cmd
+        .current_dir(cwd)
         .envs(home.envs())
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
-        .output()
-        .expect("run harness")
+        .env_remove("HARNESS_COMPANY");
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    command.output().expect("run harness")
 }
 
 /// Read the current project id from the registry written under `home`.
