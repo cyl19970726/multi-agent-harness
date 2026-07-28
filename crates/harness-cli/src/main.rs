@@ -3423,6 +3423,7 @@ fn company_docs_source_sync_command(store: &HarnessStore, args: &[String]) -> Cl
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn company_docs_source_typed_record(
     store: &HarnessStore,
     module_id: &str,
@@ -3549,8 +3550,7 @@ fn markdown_headings(content: &str) -> Vec<serde_json::Value> {
         .filter_map(|line| {
             let trimmed = line.trim_start();
             let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-            if !(1..=6).contains(&level) || !trimmed.chars().nth(level).is_some_and(|ch| ch == ' ')
-            {
+            if !(1..=6).contains(&level) || trimmed.chars().nth(level).is_none_or(|ch| ch != ' ') {
                 return None;
             }
             Some(serde_json::json!({
@@ -25620,23 +25620,24 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_does_not_kill_a_slow_but_streaming_worker() {
         // The point of the IDLE timeout: a worker that keeps emitting events runs to
-        // completion even though its TOTAL runtime (~800ms) far exceeds the idle
-        // limit (300ms) — because it never goes silent that long. A fixed total-
+        // completion even though its TOTAL runtime (~1.5s) exceeds the idle
+        // limit (1s) — because it never goes silent that long. A fixed total-
         // wall-clock timeout would have wrongly killed it.
         let root = std::env::temp_dir().join(format!("mah-slow-{}", generated_id("t")));
         let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
-        // 8 events, ~100ms apart → ~800ms total, never silent for 300ms.
+        // 15 events, ~100ms apart → ~1.5s total, never silent for 1s. The
+        // generous idle bound keeps this timing test stable under parallel CI.
         cmd.arg("-c")
-            .arg("for i in 1 2 3 4 5 6 7 8; do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
+            .arg("for i in $(seq 1 15); do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
 
         let run = run_ndjson_child(
             cmd,
             &session_dir,
             "s",
             "out.ndjson",
-            300,
+            1_000,
             None,
             None,
             "ephemeral worker",
@@ -25648,7 +25649,7 @@ new file mode 100644
             "a continuously-streaming worker must NOT be killed by the idle timeout"
         );
         assert!(run.process_success, "it should exit cleanly on its own");
-        assert_eq!(run.events.len(), 8, "all streamed events captured");
+        assert_eq!(run.events.len(), 15, "all streamed events captured");
         let _ = fs::remove_dir_all(&root);
     }
 
