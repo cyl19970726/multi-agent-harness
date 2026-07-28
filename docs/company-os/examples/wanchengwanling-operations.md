@@ -206,6 +206,37 @@ The resulting health findings for these two pages are empty. The next dogfood
 slice should build `02 Bracelet & Product` and `03 Route & AR Experience` with
 the same pattern before custom-page work is expanded.
 
+### Product and route foundation verified on 2026-07-28
+
+The second dogfood authoring pass established the next two commercial pages:
+
+- `02 Bracelet & Product / 手环与产品售卖` now has a page contract, physical
+  and virtual bracelet records, entitlement rules, sales channels, the
+  ¥30/¥10/¥20 consignment split, and a design/inventory dependency record.
+- `03 Route & AR Experience / 景点路线与 AR 体验` now has a page contract, site
+  record, route catalog, twelve spot records from the Wanchengwanling software
+  source `docs/reference/stamps/new-twelve-stamps.md`, distinct 8-spot magnet
+  and 12-spot lottery rules, AR asset readiness, and field validation models.
+
+Both pages were verified through CLI and frontend Store-live rendering:
+
+```bash
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-bracelet-product --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-route-ar-experience --json
+```
+
+Frontend evidence is recorded in
+[`docs/design/company-os-v4/wanchengwanling-dogfood-docs-v1`](../../design/company-os-v4/wanchengwanling-dogfood-docs-v1/README.md).
+
+The resulting health findings for these two pages are empty. The next dogfood
+slice should continue with `04 Merchant Network` and
+`05 Rewards, Procurement & Inventory`, because those pages connect the product
+and route model to real merchant onboarding, reward procurement, inventory,
+logistics, and Finance effects.
+
 ## Repo PRD mapping
 
 Register the GitHub repo as an `ExternalProject`:
