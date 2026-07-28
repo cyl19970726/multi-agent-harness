@@ -90,6 +90,20 @@ If a page exposes an Agent detail or governance panel, it may reuse UI
 components from Agent Team member pages, but the underlying object must remain
 a durable Organization actor, not a MemberRun.
 
+## Gateway-facing Standing Agents
+
+Business-facing Standing Agents may receive input through external gateways
+such as WeCom, GitHub, email, or future plugins. Organization owns the durable
+Agent identity, role, permissions, tools, skill refs, maintained Docs, and
+escalation policy. The gateway service is an intake adapter or service actor;
+it does not grant authority to the Agent.
+
+An Agent detail workspace should show Org identity, current WorkItems, maintained
+Docs, permission/capability refs, and recent gateway summaries. Agent-specific
+knowledge such as merchant FAQ, reply policy, customer requests, or evidence
+should remain in Docs/Relations and be loaded as context, not stored as a
+different Agent-specific database.
+
 ## Current interface state
 
 Organization records exist through the Company OS Store/API. The first

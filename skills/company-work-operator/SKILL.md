@@ -89,6 +89,19 @@ If a page needs a Work board or task list, prefer a saved View or explicit
 related-record panel. Do not let Docs text or a custom page mark work done
 without `work_item.transition` / `close` and result provenance.
 
+## Gateway and dogfood intake
+
+External gateways and plugins create Work only when a message or event requires
+follow-up. A gateway-created WorkItem must still include source document,
+business module, WorkType, Milestone when known, requester, submitter,
+accountable owner, assignee, priority, and result/evidence return path. The
+gateway event itself is evidence/source context, not Work completion.
+
+For Wanchengwanling merchant intake, WeCom messages should route to Merchant
+Ops Agent for answerable questions and to Work Governance for follow-up
+WorkItems. Finance, Organization, and legal effects remain owned by their
+systems.
+
 ## Current interface state
 
 Current stable dedicated CLI coverage is strongest for Docs:

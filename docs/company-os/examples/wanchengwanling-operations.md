@@ -2,10 +2,10 @@
 
 ```text
 status: active commercial dogfood project
-compat_project_id: new-day-wanchengwanling
+legacy_compat_project_id: new-day-wanchengwanling
 external_software_project_id: wanchengwanling
 canonical_for: applying Company OS to a real AR tourism project whose software PRDs live in GitHub
-compat_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+legacy_compat_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
 company_store_id: agent-company
 company_store: /Users/hhh0x/.harness/companies/agent-company
 target_boundary: ADR 0042 Agent Company Workspace / Company Store
@@ -44,18 +44,20 @@ Company OS
 
 Wanchengwanling is the first real commercial project used to operate Company
 OS against a non-toy business. This document is not the operating database. The
-current local dogfood data lives in the repo-derived compatibility Store:
+active local dogfood truth now lives in the explicit Company Store:
 
 ```text
-Company OS project id: new-day-wanchengwanling
-project root: /Users/hhh0x/new-day/wanchengwanling
-Store root: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+company_id: agent-company
+store root: /Users/hhh0x/.harness/companies/agent-company
+Wanchengwanling root document: document-wcw-root
+AgentOS dogfood document: document-cli-11-agentos-dogfood-external-gateway-agentos
 ```
 
-ADR 0040 changes the target boundary: Wanchengwanling should become an
-operating area inside one Agent Company Workspace / Company Store, alongside
-AgentOS / Star Harness. The `wanchengwanling` Git repository remains an
-external software source / Project Binding, not the owner of company truth.
+The older `new-day-wanchengwanling` compatibility Store is retained only as
+migration/acceptance evidence. Wanchengwanling is an operating area inside the
+Agent Company Workspace / Company Store, alongside AgentOS dogfood records. The
+`wanchengwanling` Git repository remains an external software source / Project
+Binding, not the owner of company truth.
 
 The first local Company Store migration is recorded in
 [Wanchengwanling Company Store migration](wanchengwanling-company-store-migration.md).
@@ -99,97 +101,57 @@ They should not be buried inside the software repository as markdown-only
 plans, because most of their truth is operational, financial, relational, or
 external.
 
-## Current native bootstrap acceptance
+## Historical native bootstrap acceptance
 
-The current executable acceptance path is:
+The `acceptance:company-os:wanchengwanling-*` commands and old
+`seed-company-os-wanchengwanling-*` scripts are fixture/migration evidence.
+They proved the project could be represented as Docs, Work, Organization,
+Approval, and Finance records without Project, Task Graph, GoalPhase, or
+fixture-only truth. They are not the authoring path for live dogfood.
 
-```bash
-pnpm acceptance:company-os:wanchengwanling-docs
-pnpm acceptance:company-os:wanchengwanling-source
-pnpm acceptance:company-os:wanchengwanling-four-system
-pnpm acceptance:company-os:wanchengwanling-roadmap
-```
-
-The four-system seed composes the Docs seed and then creates native
-Organization, Work, Approval, and Finance records in the same Store. It proves
-that the project can be represented as Company OS data without introducing a
-`Project` container, Task Graph, GoalPhase, or fixture-only business truth.
-
-The verified v1 bootstrap contains:
-
-| Surface | Native rows seeded |
-| --- | --- |
-| Docs | 12 Wanchengwanling Documents, 11 BusinessModules, core TypedRecords, and custom page definitions |
-| Organization | Human Owner, Lead Agent, four Governance Agents, six Business Agents, one external merchant sample, three OrgUnits, and memberships |
-| Work | MVP launch Milestone, replication Milestone, eight initial WorkItems, and eight explicit Assignments |
-| Finance / Approval | one evidence-backed Human Approval and one approved ¥10 CNY merchant-share unit Commitment; zero Payments |
-
-The approved Commitment models the known physical bracelet consignment split:
-¥30 sale price, ¥10 merchant share, ¥20 company share. It is not payment
-evidence and it does not approve any specific bank transfer. Unknown purchasing
-amounts for Polaroids, food coupons, magnets, and bracelet manufacturing remain
-planned until quotes or invoices exist.
-
-The script is:
+Use the explicit Company Store and governed commands instead:
 
 ```bash
-node scripts/seed-company-os-wanchengwanling-four-system-v1.mjs
+HARNESS_COMPANY=agent-company target/debug/harness company docs query \
+  --document document-wcw-project-home --json
+
+HARNESS_COMPANY=agent-company target/debug/harness company work list --json
 ```
 
-By default the acceptance commands use an isolated temporary Store. To operate
-the real Wanchengwanling project as Company OS data, register the project and
-write to its centralized project Store instead:
-
-```bash
-target/debug/harness project add /Users/hhh0x/new-day/wanchengwanling
-
-node scripts/seed-company-os-wanchengwanling-four-system-v1.mjs \
-  --project /Users/hhh0x/new-day/wanchengwanling
-```
-
-That persistent Store is:
-
-```text
-~/.harness/projects/new-day-wanchengwanling
-```
-
-The seed is idempotent for an already-bootstrapped Wanchengwanling Store: if
-the expected Documents and WorkItems exist, it reports `already_exists` and
-does not append duplicate rows. It is still an acceptance/bootstrap path, not
-the long-term user-facing entrypoint. Repeated operations should move into
-stable CLI/API commands and scenario skills.
+If a migration from the legacy compatibility Store is required, use the
+documented migration command and verify copied `company_os_*.jsonl` ledgers; do
+not copy execution, provider, prompt, Mission/Wave, Agent Team, or runtime
+state into company truth.
 
 The unfinished-goal roadmap is maintained in
 [Wanchengwanling Company OS Completion Roadmap](wanchengwanling-completion-roadmap.md)
-and can be seeded into the same Store:
+and should be inspected or updated through the active Company Store:
 
 ```bash
-node scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs \
-  --project /Users/hhh0x/new-day/wanchengwanling
+target/debug/harness --company agent-company company work list --json
 ```
 
 That roadmap covers CLI/API, skills, storage-backed custom pages, GitHub
 source sync, SQL read/search, real launch operating data, and replication
 templates. It is intentionally not CLI-only.
 
-### Persistent Store state verified on 2026-07-27
+### Persistent Store state verified on 2026-07-28
 
-The real local project Store currently contains the native bootstrap:
+The active Company Store currently contains the native bootstrap and follow-up
+dogfood WorkItems:
 
 | Surface | Store evidence |
 | --- | --- |
-| Project registration | `new-day-wanchengwanling` -> `/Users/hhh0x/new-day/wanchengwanling` |
-| Store root | `/Users/hhh0x/.harness/projects/new-day-wanchengwanling` |
+| Company Store | `agent-company` -> `/Users/hhh0x/.harness/companies/agent-company` |
 | Docs | 12 `Document` rows in `space_id=wanchengwanling` |
-| Work | 41 `work-wcw-*` WorkItems after the completion-roadmap seed: 15 MVP launch, 22 Company OS operating-surface, and 4 replication WorkItems |
+| Work | Wanchengwanling launch/replication/Company OS operating WorkItems plus AgentOS dogfood WorkItems such as `work-wcw-agentos-wecom-gateway-v0` |
 | Organization | Lead Agent, four Governance Agents, six Business Agents, human owner, external participant, org units, memberships |
 | Finance / Approval | approved ¥10 CNY merchant-share unit Commitment; no Payment inferred |
 
-This remains the verified compatibility Store source for Wanchengwanling Company
-OS records. Repository markdown and generated reports may explain or visualize
-the product, but active dogfood should now prefer the migrated Company Store
-`agent-company`, where Wanchengwanling and AgentOS can share Docs, Work,
-Organization, Finance, governance, and cross-operating-area relations.
+Repository markdown and generated reports may explain or visualize the product,
+but `agent-company` is the operating Store where Wanchengwanling and AgentOS
+share Docs, Work, Organization, Finance, governance, and cross-operating-area
+relations.
 
 ### Docs foundation verified on 2026-07-28
 
@@ -207,10 +169,10 @@ Store-backed operating pages:
 Both pages were updated through the governed Docs CLI and verified with:
 
 ```bash
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-project-home --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-business-model --json
 ```
 
@@ -233,10 +195,10 @@ The second dogfood authoring pass established the next two commercial pages:
 Both pages were verified through CLI and frontend Store-live rendering:
 
 ```bash
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-bracelet-product --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs query --document document-wcw-route-ar-experience --json
 ```
 
@@ -268,7 +230,7 @@ Docs `TypedRecord`s:
 
 ```bash
 HARNESS_COMPANY_OS_TOKEN=<local-or-server-write-token> \
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/harness --company agent-company \
   company docs source sync \
   --definition page-wcw-software-product-sources \
   --module module-wcw-software-product-sources \
@@ -289,8 +251,7 @@ target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
 
 Important parameter distinction:
 
-- top-level `--project /Users/hhh0x/new-day/wanchengwanling` selects the
-  Company OS project Store;
+- top-level `--company agent-company` selects the Company Store;
 - command-level `--project-id wanchengwanling` names the external software
   product source.
 

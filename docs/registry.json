@@ -2437,6 +2437,40 @@
    ]
   },
   {
+   "path": "docs/company-os/external-gateway-and-plugins.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "external gateway and plugin intake boundary for Company OS",
+    "WeCom merchant-message gateway contract for Wanchengwanling dogfood"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/external-project-product-sources.md",
+    "docs/company-os/examples/wanchengwanling-operations.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-27",
+   "lastVerifiedWith": [
+    "pnpm check:company-os"
+   ],
+   "reorgTrigger": "External gateway schema/API/CLI, plugin intake, WeCom merchant gateway, service actor, or Agent detail gateway inbox boundaries change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "store",
+     "ref": "agent-company:work-wcw-agentos-wecom-gateway-v0"
+    }
+   ]
+  },
+  {
    "path": "docs/company-os/examples/wanchengwanling-operations.md",
    "ownerRole": "business-operations",
    "status": "stable",
@@ -2447,9 +2481,9 @@
    ],
    "dependsOn": [
     "docs/company-os/external-project-product-sources.md",
+    "docs/company-os/external-gateway-and-plugins.md",
     "docs/company-os/examples/wanchengwanling-completion-roadmap.md",
-    "scripts/seed-company-os-wanchengwanling-four-system-v1.mjs",
-    "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
+    "docs/company-os/examples/wanchengwanling-company-store-migration.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2464,8 +2498,8 @@
    "implementationState": "partial",
    "truthRefs": [
     {
-     "kind": "test",
-     "ref": "scripts/seed-company-os-wanchengwanling-four-system-v1.mjs"
+     "kind": "store",
+     "ref": "agent-company"
     }
    ]
   },

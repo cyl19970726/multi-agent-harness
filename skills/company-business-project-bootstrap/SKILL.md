@@ -258,12 +258,12 @@ Every custom page needs:
 - no direct ungoverned mutation;
 - visual contract and actual screenshot when implemented.
 
-### 8. Use scripts only as acceptance fixtures
+### 8. Use scripts only as historical acceptance fixtures
 
 A seed or materialization script may prove that the current CLI/API can create
 the expected records in an isolated fixture Store. It must not become the
-normal way a real commercial project is authored. For a real registered
-project, prefer:
+normal way a real commercial project is authored. For a real Company Store,
+use governed CLI/API commands and module operator skills directly:
 
 1. inspect current Store with `docs query`, `traverse`, `health`, Work, Org, and
    Finance reads;
@@ -276,21 +276,15 @@ Do not leave project-specific seed scripts as active product entrypoints. If a
 script exists, treat it as acceptance evidence or fixture generation only and
 move recurring operations into CLI/API commands or a scenario-specific skill.
 
-To write a real registered project Store rather than an isolated temporary
-acceptance Store:
-
-```bash
-target/debug/harness project add /path/to/project-root
-node scripts/seed-company-os-wanchengwanling-four-system-v1.mjs \
-  --project /path/to/project-root
-node scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs \
-  --project /path/to/project-root
-```
-
-For Wanchengwanling, the intended local project Store is:
+For current Wanchengwanling dogfood, the active local Company Store is:
 
 ```text
-/Users/hhh0x/.harness/projects/new-day-wanchengwanling
+company_id: agent-company
+store: /Users/hhh0x/.harness/companies/agent-company
+root_docs_entry: document-wcw-root
+project_home: document-wcw-project-home
+business_model: document-wcw-business-model
+agentos_dogfood_entry: document-cli-11-agentos-dogfood-external-gateway-agentos
 ```
 
 Treat Wanchengwanling as the first real commercial Company OS dogfood project,
@@ -303,11 +297,11 @@ Do not use repository markdown as the operating database. The durable business
 workspace must be readable from the Company OS Store; markdown docs, generated
 reports, and seed scripts are references or acceptance evidence.
 
-The four-system seed proves the project can exist as Docs, Work, Organization,
-Approval, and Finance records. The roadmap seed then adds unfinished goals for
-CLI/API, skills, storage-backed custom pages, GitHub source sync, SQL
-read/search, real launch data, and replication templates. Treat those seeded
-WorkItems as the execution backlog.
+The historical four-system and roadmap seeds proved that the project could be
+represented as Docs, Work, Organization, Approval, and Finance records. They are
+not the authoring path for new dogfood operations. New business pages,
+WorkItems, actor changes, Finance effects, source-sync observations, and
+custom-page contracts must be created through the owning governed commands.
 
 ## Wanchengwanling example mapping
 
