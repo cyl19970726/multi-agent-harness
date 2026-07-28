@@ -1,4 +1,4 @@
 interface:
   display_name: "Company Module Designer"
-  short_description: "Design governed Company OS modules from business needs"
-  default_prompt: "Use $company-module-designer to design a governed Company OS module for this business process."
+  short_description: "Design governed Company OS modules and page contracts"
+  default_prompt: "Use $company-module-designer to design a governed Company OS module, page contracts, records, relations, views, actions, and approval boundaries for this business process."

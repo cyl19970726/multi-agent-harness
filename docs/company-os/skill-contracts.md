@@ -22,17 +22,33 @@ The suite currently expands to:
 
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
-| [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs, Work, Org, Finance, external software sources, and custom pages | procedural orchestration skill |
-| [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
-| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs | dedicated `harness company work ...` CLI implemented for list/query/create/assign/transition/close plus `work milestone ...` baseline lifecycle |
-| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
-| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
-| [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design and governance proposal | procedural design skill |
-| [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation contract | procedural page-building skill |
+| [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software sources, and custom pages | procedural orchestration skill |
+| [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
+| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/assign/transition/close plus `work milestone ...` baseline lifecycle |
+| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence linked into Docs page contracts | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
+| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
+| [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
+| [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
 
 These are procedural capabilities, not part of the Company OS data model and
 not an authority for product, organization, security, finance, or legal
 decisions.
+
+For real commercial projects, the operator suite must produce more than a
+folder tree or a sequence of CLI writes. It must define the operating page
+architecture, write the corresponding page contracts and business facts into
+the project Store, and then link Work, Organization, Finance, external software
+sources, Views, and any custom page presentation to those contracts. A page such
+as a commercial Project Home or Business Model page is not accepted when it
+only contains generic prose; it must be legible to humans in UI and operable by
+Agents through CLI/API. Seed or materialization scripts may remain acceptance
+fixtures, but they are not the normal authoring path for a registered project
+Store.
+
+`new-day-wanchengwanling` is the first real commercial dogfood project for this
+suite. Its GitHub `dev` branch is an external software product source; the
+commercial operating truth must remain in the Company OS Store through Docs,
+Work, Organization, Finance, source-sync records, and custom page definitions.
 
 Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
 Agent interface for reading, editing, governing, and verifying document truth.

@@ -52,6 +52,23 @@ Do not create a `Project` object to group work. In the current Company OS
 language, WorkItems may be grouped by Milestone, WorkType, business line,
 module, owner, priority, due date, and source document/record.
 
+## Docs page integration
+
+Business Docs pages may show Work panels, milestone boards, assignment status,
+or next actions, but Work remains the source of truth for commitments. When a
+Docs page contract references Work, require:
+
+- source `Document` or `TypedRecord` ref;
+- `WorkItem` id, WorkType, status, priority, Milestone, and business line;
+- requester, submitter, accountable owner, assignee, reviewer, and approver
+  refs as distinct fields when applicable;
+- result document/record refs and evidence refs for completion;
+- no copied task status inside prose when a Work record exists.
+
+If a page needs a Work board or task list, prefer a saved View or explicit
+related-record panel. Do not let Docs text or a custom page mark work done
+without `work_item.transition` / `close` and result provenance.
+
 ## Current interface state
 
 Current stable dedicated CLI coverage is strongest for Docs:
@@ -123,6 +140,8 @@ needs reassignment to affect the Work projection.
 1. Inspect source truth first. Use Docs query/refs when the work starts from a
    Document or TypedRecord. Prefer native Store/API projection reads over UI
    screenshots or fixtures.
+   If the request comes from a business page, inspect the page contract to know
+   where the result must return and which right-rail Work panel should show it.
 2. Decide whether the work is operational, financial, organizational, legal, or
    execution-only. Route cross-system effects to the owning system.
 3. Create or update the WorkItem through the governed Company OS Action path.
@@ -152,6 +171,8 @@ needs reassignment to affect the Work projection.
 - Any required Approval exists and has a real decision actor.
 - Execution evidence resolves to the native executor record when execution ran.
 - Result/evidence returned to Docs and did not become a duplicate truth.
+- Any Docs page that shows the WorkItem does so through Work refs/View data, not
+  copied prose.
 
 ## Report format
 

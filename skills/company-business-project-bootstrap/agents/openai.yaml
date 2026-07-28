@@ -1,4 +1,4 @@
 interface:
   display_name: "Company Business Bootstrap"
-  short_description: "Bootstrap commercial projects in Company OS"
-  default_prompt: "Use $company-business-project-bootstrap to turn this commercial project into a Company OS Docs, Work, Org, and Finance operating map."
+  short_description: "Bootstrap commercial projects into Company OS page contracts and operating records"
+  default_prompt: "Use $company-business-project-bootstrap to turn this commercial project into a Store-backed Company OS Docs IA, page contracts, Work, Org, Finance, software-source, and custom-page plan."

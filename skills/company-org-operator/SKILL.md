@@ -49,6 +49,27 @@ A Standing Agent is a durable company actor. An Agent Team MemberRun is a
 one-off execution participant bound to an AgentTeamRun and provider-native
 session. They may share UI components, but they are not the same product object.
 
+## Docs page integration
+
+Business Docs pages may show responsible humans, Standing Agents, governance
+Agents, external collaborators, and services in right rails or module cards.
+Those UI appearances are references only. Organization remains the source of
+truth for who exists, who reports to whom, and who may act.
+
+When a page contract references actors, require:
+
+- explicit `ActorRef` kind: human, agent, external, or service;
+- OrgUnit / membership / role when relevant;
+- permission and capability refs when the page expects the actor to execute or
+  approve an action;
+- escalation path or Human gate for sensitive operations;
+- no authority inferred from a profile card, avatar, prompt, skill list, or
+  chat participation.
+
+If a page exposes an Agent detail or governance panel, it may reuse UI
+components from Agent Team member pages, but the underlying object must remain
+a durable Organization actor, not a MemberRun.
+
 ## Current interface state
 
 Organization records exist through the Company OS Store/API. The first
@@ -150,6 +171,8 @@ adjust, or retire the actor. Skills are tools; they never grant authority.
 
 1. Inspect the actor, org unit, role, and permission context before proposing a
    change.
+   If the request comes from a Docs page, inspect its page contract and related
+   WorkItems so the actor is linked to the intended business responsibility.
 2. Classify the request: view current org, route work to existing actor, propose
    new business agent, update permission, pause/retire actor, or review
    capability.
@@ -176,6 +199,8 @@ adjust, or retire the actor. Skills are tools; they never grant authority.
 - Related WorkItems and maintained Docs are linked.
 - Skill/tool list is treated as capability, not authority.
 - AgentTeam MemberRun/provider session is not mistaken for a durable Agent.
+- Docs pages show actor refs from Organization, not copied names or inferred
+  permissions.
 
 ## Report format
 

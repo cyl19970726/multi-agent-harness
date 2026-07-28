@@ -4,13 +4,15 @@
 status: active roadmap
 scope: unfinished goals required to make Wanchengwanling operable through Company OS
 store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+dogfood_role: first real commercial Company OS dogfood project
 canonical_boundary: WorkItems in the project Store are the execution backlog; this document explains the grouping and acceptance logic
 ```
 
 ## Purpose
 
-Wanchengwanling is now represented in the Company OS storage layer, but the
-project is not yet fully operable. The remaining goals must cover both sides:
+Wanchengwanling is now represented in the Company OS storage layer as the first
+real commercial dogfood project, but it is not yet fully operable. The
+remaining goals must cover both sides:
 
 1. the commercial project itself: merchants, rewards, content, creators, route
    readiness, IP/product assets, launch evidence, and replication; and
@@ -54,7 +56,8 @@ milestone-wcw-company-os-operating-surface
 
 Outcome: Wanchengwanling can be operated from storage-backed CLI/skills,
 custom pages, GitHub source observations, standard views, and acceptance
-evidence.
+evidence, without treating repository markdown, generated reports, or seed
+scripts as the commercial source of truth.
 
 ## Completion waves
 
