@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
-  BrainCircuit,
   Bot,
   CheckCircle2,
   ChevronRight,
@@ -23,6 +22,7 @@ import {
 import { fetchNativeMemberActivity } from "@/api";
 
 import {
+  closeTeamMember,
   interruptTeamMember,
   resolvePendingInteraction,
   sendTeamMessage,
@@ -42,7 +42,7 @@ import { memberTone } from "@/components/workbench/tones";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { selectMemberPlanNegotiation, selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
+import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
 import type { NativeActivityItem, NativeActivityProjection, TeamMessage, Wave } from "@/types";
 import type { SelectionState } from "@/app/selection";
@@ -260,7 +260,6 @@ export function MemberRunFocus({
           </section>
         )}
         <MemberGoalPanel context={context} />
-        <MemberPlanPanel context={context} />
         <section className="min-h-[18rem] overflow-hidden bg-background" data-native-activity-state={nativeActivityState}>
           <header className="flex h-[58px] items-center justify-between gap-3 border-b border-border/70">
             <h2 className="text-[20px] font-semibold tracking-[-0.025em] text-foreground">Work history</h2>
@@ -325,6 +324,16 @@ function MemberHeroHeader({
         {context.member.status === "running" && context.member.provider_profile?.supports_cancel && (
           <Button size="sm" variant="outline" disabled={!actionsEnabled} onClick={() => dispatch(onAction, interruptTeamMember(context.run.id, context.member.id))}>
             <Square className="size-3 fill-current" /> Interrupt
+          </Button>
+        )}
+        {!["failed", "stopped"].includes(context.member.status ?? "") && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!actionsEnabled}
+            onClick={() => dispatch(onAction, closeTeamMember(context.run.id, context.member.id))}
+          >
+            <Square className="size-3" /> Close
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={onBack}><ArrowLeft className="size-3.5" /> Back to team</Button>
@@ -428,46 +437,6 @@ function MemberGoalPanel({ context }: { context: MemberRunContext }) {
           <GoalFact label="Owned paths" value={context.member.owned_paths?.join(", ") || "No path ownership recorded"} mono />
           <GoalFact label="Latest steer" value={latestSteer ?? "No durable steer recorded"} />
           <GoalFact label="Correlation" value={assignment?.correlationId ?? "Not recorded"} mono />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function MemberPlanPanel({ context }: { context: MemberRunContext }) {
-  const plan = selectMemberPlanNegotiation(context.messages, context.member.id);
-  if (!plan || plan.status === "not_requested") return null;
-  const capability = context.member.provider_profile?.plan_mode ?? "unknown";
-  return (
-    <section aria-label="Member plan negotiation" className="mb-2 overflow-hidden rounded-xl border border-[#8b5cf6]/20 bg-[linear-gradient(135deg,rgba(139,92,246,.055),hsl(var(--background))_58%)] shadow-[0_16px_36px_-32px_rgba(76,29,149,.5)]">
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <BrainCircuit className="size-4 text-[#7653c6]" />
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7653c6]">Execution plan</p>
-            <p className="text-[10px] text-muted-foreground">{capability} provider mode · Assignment correlation retained</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Badge tone={plan.status === "approved" ? "good" : plan.status === "changes_requested" ? "warn" : "decision"}>
-            {plan.status.replace(/_/g, " ")}
-          </Badge>
-          <Badge tone="muted">revision {plan.revision}</Badge>
-        </div>
-      </header>
-      <div className="grid gap-3 px-4 py-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
-        <div className="min-w-0">
-          {plan.latestProposal ? (
-            <Markdown source={plan.latestProposal.body ?? ""} compact />
-          ) : (
-            <p className="text-[11px] text-muted-foreground">Provider-native planning is in progress. Execution has not been approved.</p>
-          )}
-        </div>
-        <div className="space-y-1.5 text-[10px]">
-          <GoalFact label="Requested" value={plan.latestRequest ? formatTime(plan.latestRequest.created_at) : "No"} />
-          <GoalFact label="Challenge" value={plan.latestFeedback?.body ?? "No Host challenge"} />
-          <GoalFact label="Approval" value={plan.approval?.body ?? "Awaiting Host decision"} />
-          <GoalFact label="Mode" value={capability === "native" ? "Provider-native Plan" : capability} />
         </div>
       </div>
     </section>

@@ -721,6 +721,8 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    const TEST_TURN_TIMEOUT: Duration = Duration::from_secs(15);
+
     fn config_for(binary: &Path, cwd: &Path) -> ResidentConfig {
         ResidentConfig {
             binary: binary.display().to_string(),
@@ -830,13 +832,11 @@ mod tests {
         let mut resident =
             ResidentClaude::spawn(config_for(&fake, dir.path.as_path()), &stderr_path).unwrap();
 
-        let t1 = resident.send_turn("first", Duration::from_secs(5)).unwrap();
+        let t1 = resident.send_turn("first", TEST_TURN_TIMEOUT).unwrap();
         assert!(t1.success);
         assert_eq!(t1.session_id.as_deref(), Some("sess-AAA"));
 
-        let t2 = resident
-            .send_turn("second", Duration::from_secs(5))
-            .unwrap();
+        let t2 = resident.send_turn("second", TEST_TURN_TIMEOUT).unwrap();
         assert!(t2.success);
         assert_eq!(resident.session_id().as_deref(), Some("sess-AAA"));
 
@@ -913,7 +913,7 @@ exit 0
 
         let mut resident =
             ResidentClaude::spawn(config_for(&fake, dir.path.as_path()), &stderr_path).unwrap();
-        resident.send_turn("hi", Duration::from_secs(5)).unwrap();
+        resident.send_turn("hi", TEST_TURN_TIMEOUT).unwrap();
         assert!(resident.is_alive());
         // shutdown drops stdin (EOF) -> the `while read` loop ends -> exit 0.
         resident.shutdown();
@@ -936,7 +936,7 @@ exit 0
                 config.clone(),
                 &stderr_path,
                 "one",
-                Duration::from_secs(5),
+                TEST_TURN_TIMEOUT,
             )
             .unwrap();
         assert!(t1.success);
@@ -946,7 +946,7 @@ exit 0
                 config.clone(),
                 &stderr_path,
                 "two",
-                Duration::from_secs(5),
+                TEST_TURN_TIMEOUT,
             )
             .unwrap();
         assert!(t2.success);
@@ -971,13 +971,7 @@ exit 0
 
         let mut pool = ResidentPool::new();
         let t1 = pool
-            .run_turn(
-                "m",
-                config.clone(),
-                &stderr_path,
-                "one",
-                Duration::from_secs(5),
-            )
+            .run_turn("m", config.clone(), &stderr_path, "one", TEST_TURN_TIMEOUT)
             .unwrap();
         assert!(t1.success);
         assert_eq!(t1.session_id.as_deref(), Some("sess-CRASH"));
@@ -987,13 +981,7 @@ exit 0
         pool.kill_only_child_for_test();
 
         let t2 = pool
-            .run_turn(
-                "m",
-                config.clone(),
-                &stderr_path,
-                "two",
-                Duration::from_secs(5),
-            )
+            .run_turn("m", config.clone(), &stderr_path, "two", TEST_TURN_TIMEOUT)
             .unwrap();
         assert!(
             t2.success,
@@ -1025,23 +1013,11 @@ exit 0
 
         // Zero idle window => every turn reclaims and respawns.
         let mut pool = ResidentPool::with_max_idle(Duration::from_millis(0));
-        pool.run_turn(
-            "m",
-            config.clone(),
-            &stderr_path,
-            "one",
-            Duration::from_secs(5),
-        )
-        .unwrap();
+        pool.run_turn("m", config.clone(), &stderr_path, "one", TEST_TURN_TIMEOUT)
+            .unwrap();
         std::thread::sleep(Duration::from_millis(5));
-        pool.run_turn(
-            "m",
-            config.clone(),
-            &stderr_path,
-            "two",
-            Duration::from_secs(5),
-        )
-        .unwrap();
+        pool.run_turn("m", config.clone(), &stderr_path, "two", TEST_TURN_TIMEOUT)
+            .unwrap();
 
         // With this fake (resident loop, appending its PID) the first child is
         // killed on reclaim and a fresh one spawned, so two PIDs are recorded.

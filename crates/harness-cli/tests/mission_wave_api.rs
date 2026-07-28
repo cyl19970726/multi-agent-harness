@@ -963,7 +963,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         &serde_json::json!({
             "from_member_id": "host",
             "to_member_ids": [member_id],
-            "kind": "review_result",
+            "kind": "message",
             "body": "accepted",
             "causation_id": handoff_id,
         }),

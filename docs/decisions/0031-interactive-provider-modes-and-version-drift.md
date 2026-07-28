@@ -44,15 +44,35 @@ or an explicit recovery attestation.
 
 ### Codex mode selection
 
-- `codex_exec` remains the batch/read-only mode for bounded one-shot work.
-- `codex_app_server` is the interactive Agent Team Member mode for chat,
+- `codex_app_server` is the default and only mode for new Codex Agent Team
+  Members. It provides chat,
   same-turn steer, approvals, and interrupt. Its provider thread id is the
   native-session binding. Restart-time `thread/resume` is implemented through
   an explicit resume binding; capability state remains mode/version specific.
-- The two modes have separate ProviderIntegrationProfiles and acceptance gates.
+- `codex_exec` remains a bounded one-shot substrate for Dynamic Workflow and
+  legacy non-Team paths. Historical Team records that name it remain readable,
+  but Harness rejects new Team creation or start attempts for that mode.
+- The two modes retain separate ProviderIntegrationProfiles and acceptance
+  gates because Workflow execution capability is not Team capability.
 - `codex_exec` honestly reports `interaction_mode=unsupported` and
   `supports_cancel=false`; `codex_app_server` reports only the controls its
   live adapter now exercises.
+
+### Claude mode selection
+
+- `claude_agent_sdk` is the default and only mode for new Claude Agent Team
+  Members. Streaming input owns one mailbox and native session; the Host can
+  deliver later messages, call the SDK's real interrupt, close the runtime, or
+  explicitly resume the provider-owned session.
+- `claude_cli` (`claude -p`) remains a bounded Dynamic Workflow substrate and a
+  readable historical execution mode. Harness rejects it for new Team members
+  because an empty queue ends the process and there is no live lifecycle
+  control channel.
+- Missing SDK runner dependencies fail explicitly. There is no fallback to
+  `claude_cli`.
+- The adapter remains `review_required` until a proportional live canary
+  validates the installed Claude version. Deterministic runner tests do not
+  update the reviewed-version set.
 
 ### Version drift governance
 
@@ -104,8 +124,8 @@ per day, not continuous automatic upgrades.
 - Provider name no longer determines chat or interruption capability; execution
   mode does.
 - Agent Team UI can remain shared while buttons are capability-driven.
-- Codex app-server is an explicit selectable execution mode, not a hidden
-  fallback from `codex_exec`.
+- Codex app-server is the only new Agent Team mode, not a selectable batch
+  alternative or a hidden fallback from `codex_exec`.
 - Release monitoring becomes reproducible and suitable for scheduled checks.
 - Daily monitoring is read-only; provider binary changes remain Human-approved.
 - Provider protocol vocabulary alone never proves Harness lifecycle control.

@@ -55,12 +55,20 @@ when an explicit stable link exists (for example,
 its displayed name, provider, model, role, or timestamps resemble a standing
 Agent.
 
-A foreground `team-run start` normally owns provider orchestration until every
-member reaches a terminal state. Status-only cancellation deliberately refuses
-`running -> cancelled`, because changing a row cannot stop provider work. If
-the foreground Host disappears *after the operator has independently confirmed
-that every provider process stopped*, the CLI recovery path is explicit and
-audited:
+The Host owns member lifecycle explicitly. Starting a Team member creates or
+resumes its persistent provider runtime; ordinary turn completion does not
+destroy that member. The Host may message, inspect, interrupt one current turn,
+resume from the native session, or Close the member runtime. TeamRun or Wave
+completion never substitutes for Close.
+
+Current live-control handles are process-local. A Dashboard/MCP server can
+control members it started in that same service process. A foreground
+`team-run start` cannot yet be controlled by a second CLI process; a future
+Team Supervisor may make those handles durable across clients. Status-only
+cancellation deliberately refuses `running -> cancelled`, because changing a
+row cannot stop provider work. If the foreground Host disappears *after the
+operator has independently confirmed that every provider process stopped*, the
+CLI recovery path is explicit and audited:
 
 ```bash
 harness team-run cancel --id <run> --confirm-provider-stopped \

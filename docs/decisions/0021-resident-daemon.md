@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted for resident process reuse. Its former mirrored-session/NDJSON storage
-claims are superseded by ADR 0032.
+Historical for the former resident CLI pool. Its mirrored-session/NDJSON
+storage claims are superseded by ADR 0032, and it is not the Agent Team
+lifecycle model. New Claude Team members use the Agent SDK streaming runner;
+new Codex Team members use app-server. Their current live control is
+process-local pending a future Team Supervisor.
 
 (0020 is the latest prior ADR; 0021 is the next free number.)
 
@@ -47,9 +50,9 @@ protocol:**
    undocumented/Tier-3; this socket carries `run_turn` arguments between two
    pieces of OUR own code, both of which still drive the provider via the
    documented exec-stream contract.
-3. It does not resurrect the app-server fallback path 0018 retains for mid-turn
-   approval; resident children have the same no-mid-turn-interrupt capability as
-   exec, so the honest-capability consequence of 0018 is preserved.
+3. It does not implement the current Codex Agent Team app-server mode.
+   Resident CLI children have the same no-mid-turn-interrupt capability as
+   exec, so they remain bounded Workflow/historical infrastructure.
 
 ## Consequences
 

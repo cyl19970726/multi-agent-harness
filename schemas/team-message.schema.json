@@ -16,7 +16,8 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["assignment", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]
+      "description": "New public writes use assignment, message, handoff, or control. Other enum values remain readable only for historical JSONL compatibility.",
+      "enum": ["assignment", "message", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]
     },
     "body": { "type": "string" },
     "correlation_id": { "type": "string", "minLength": 1 },

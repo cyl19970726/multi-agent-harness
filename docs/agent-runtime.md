@@ -65,21 +65,28 @@ provider-native session. Its provider-native subagents are child execution
 threads, not additional Harness members. The parent member retains permission,
 evidence, and acceptance responsibility.
 
-Harness owns ordinary coordination through `TeamMessage`. Members may send
-question, progress, blocker, review, and handoff messages to the Host, or direct
-peer messages to active members in the same TeamRun. Member-to-Host messages
+Harness owns ordinary coordination through `TeamMessage`. The preferred new
+write model is deliberately small: `assignment`, ordinary `message`, and
+`handoff`; `control` is reserved for real steer/interrupt/resume protocols.
+Question, answer, progress, blocker, plan, review, and peer coordination are
+ordinary message intents, not lifecycle objects. Historical specialized kinds
+remain readable but are read-only on new public writes. Members may send
+ordinary messages to the Host or direct peer
+messages to active members in the same TeamRun. Member-to-Host messages
 are delivered when appended because the control plane already received them.
-Messages addressed to a member remain queued until the adapter claims and
-injects them into the next eligible turn.
+Messages addressed to a member remain queued until the adapter accepts them
+for the selected MemberRun and native session. The adapter must poll or
+subscribe independently of provider turn completion; busy modes that cannot
+inject safely keep mail visibly queued for the next turn.
 
 The member Inbox is a latest-row projection over messages addressed to that
 MemberRun. Its default view contains actionable queued/delivered coordination;
 the historical view contains the complete same-run coordination lineage. It
 does not read or copy provider-native chat.
 
-`PendingInteraction` is reserved for a provider turn paused on a question,
-approval, or plan review. It is not a replacement for ordinary peer or Host
-chat. Steer, interrupt, and resume must reflect the real selected execution
+`PendingInteraction` is reserved for a provider turn actually paused on a
+question or approval. It is not a replacement for ordinary peer or Host chat,
+including planning discussion. Steer, interrupt, and resume must reflect the real selected execution
 mode: unsupported live steer degrades to a clearly labeled queued next-round
 message, never a fake current-turn ACK.
 

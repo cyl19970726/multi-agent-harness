@@ -52,24 +52,6 @@ export interface MessageAssignmentLineage {
   anchored: boolean;
 }
 
-export type MemberPlanStatus =
-  | "not_requested"
-  | "requested"
-  | "proposed"
-  | "changes_requested"
-  | "approved";
-
-export interface MemberPlanNegotiation {
-  assignment: TeamMessage;
-  messages: TeamMessage[];
-  status: MemberPlanStatus;
-  revision: number;
-  latestRequest?: TeamMessage;
-  latestProposal?: TeamMessage;
-  latestFeedback?: TeamMessage;
-  approval?: TeamMessage;
-}
-
 export type StableTeamActivity =
   | {
       id: string;
@@ -305,56 +287,6 @@ export function selectMemberAssignmentCorrelations(
         : [assignment],
     };
   });
-}
-
-/** Provider-neutral planning state derived entirely from one Assignment chain. */
-export function selectMemberPlanNegotiation(
-  messages: TeamMessage[],
-  memberRunId: string,
-): MemberPlanNegotiation | undefined {
-  const assignments = sortMessages(
-    messages.filter(
-      (message) =>
-        message.kind === "assignment" && (message.to_member_ids ?? []).includes(memberRunId),
-    ),
-  );
-  const assignment = assignments[assignments.length - 1];
-  if (!assignment) return undefined;
-  const related = sortMessages(
-    messages.filter(
-      (message) =>
-        message.correlation_id === assignment.correlation_id
-        && ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].includes(message.kind ?? ""),
-    ),
-  );
-  const requests = related.filter((message) => message.kind === "plan_request");
-  const latestRequest = requests[requests.length - 1];
-  const proposals = related.filter((message) => message.kind === "plan_proposal");
-  const latestProposal = proposals[proposals.length - 1];
-  const feedback = related.filter((message) => message.kind === "plan_feedback");
-  const latestFeedback = feedback[feedback.length - 1];
-  const approvals = related.filter((message) => message.kind === "plan_approval");
-  const approval = approvals[approvals.length - 1];
-  let status: MemberPlanStatus = "not_requested";
-  if (latestRequest) status = "requested";
-  if (latestProposal) status = "proposed";
-  if (
-    latestFeedback
-    && (!latestProposal || parseTeamTimestamp(latestFeedback.created_at) > parseTeamTimestamp(latestProposal.created_at))
-  ) {
-    status = "changes_requested";
-  }
-  if (approval) status = "approved";
-  return {
-    assignment,
-    messages: related,
-    status,
-    revision: proposals.length,
-    latestRequest,
-    latestProposal,
-    latestFeedback,
-    approval,
-  };
 }
 
 /** Locate a message's assignment anchor without ever treating a naked correlation as ownership. */

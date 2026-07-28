@@ -59,11 +59,13 @@ Thinking remains sanitized transient live state only. It is never a
 - `kimi_acp`: `session/request_permission` pauses the same turn. Harness writes
   a PendingInteraction, marks the member waiting, and resumes the same ACP
   request after an authorized response.
-- `codex_exec`: structured JSONL tool/artifact events are read from the native
-  Codex session/stream and may be projected live, but are not journaled by
-  Harness. Fresh mid-turn input is unavailable. A future Codex question must end the round as
-  an explicit blocker and continue in a follow-up turn, or use a separately
-  implemented interactive execution mode.
+- `codex_app_server`: the default and only new Codex Agent Team mode. Native
+  reverse requests become PendingInteractions, while `turn/steer` and
+  `turn/interrupt` back the corresponding controls.
+- `codex_exec`: Workflow-only for new bounded work. Its structured
+  JSONL tool/artifact events may be projected from the native Codex
+  session/stream but are not journaled by Harness. It is not a fallback or
+  selectable Team mode; historical Team records remain readable only.
 - unknown reverse-RPC: fail closed and report an adapter gap.
 - provider-native subagents/background tasks: observe honest attribution when
   exposed; do not claim Harness lifecycle control without a wired control path.

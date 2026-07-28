@@ -1,0 +1,80 @@
+/**
+ * A fake Agent SDK surface.
+ *
+ * Exists so the runner's lifecycle — which is the part we actually got wrong —
+ * can be tested deterministically with no provider credentials, no network,
+ * and no installed SDK. It mimics only the shapes the runner consumes:
+ * the init/assistant/result message sequence, `interrupt()`,
+ * `setPermissionMode()`, and the two session-registry writes.
+ *
+ * It is not a provider simulator. Anything that needs real provider behaviour
+ * (actual tool execution, real interrupt acknowledgement) belongs in a live
+ * canary, not here.
+ */
+
+export function createFakeSdk({ sessionId = "fake-session-0001" } = {}) {
+  const calls = { tagSession: [], renameSession: [], permissionModes: [], interrupts: 0 };
+  let lastOptions = null;
+
+  function query({ prompt, options }) {
+    lastOptions = options;
+    let interrupted = false;
+
+    async function* run() {
+      yield { type: "system", subtype: "init", session_id: sessionId };
+      // One turn per inbound user message. The stream ends only when the
+      // mailbox closes — which is exactly the property under test.
+      for await (const userMessage of prompt) {
+        if (interrupted) {
+          interrupted = false;
+          continue;
+        }
+        // Read through the nested `message`, exactly as the real SDK does.
+        // An earlier version of this fake read `userMessage.content` — the
+        // shape the published docs show — so it happily accepted a payload
+        // the real provider rejects. A fake written from the same wrong
+        // assumption as the code under test validates nothing; this one is
+        // pinned to the SDK's `.d.ts` instead.
+        if (userMessage.message?.role !== "user") {
+          throw new Error(
+            `Expected message role 'user', got '${userMessage.message?.role}'`,
+          );
+        }
+        const text = userMessage.message.content?.[0]?.text ?? "";
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: `ack: ${text.slice(0, 40)}` }] },
+        };
+        yield { type: "result", subtype: "success", session_id: sessionId };
+      }
+    }
+
+    const iterator = run();
+    return {
+      [Symbol.asyncIterator]: () => iterator,
+      async interrupt() {
+        calls.interrupts += 1;
+        interrupted = true;
+        return { still_queued: [] };
+      },
+      async setPermissionMode(mode) {
+        calls.permissionModes.push(mode);
+      },
+    };
+  }
+
+  return {
+    query,
+    async tagSession(id, tag, opts) {
+      calls.tagSession.push({ id, tag, opts });
+    },
+    async renameSession(id, title, opts) {
+      calls.renameSession.push({ id, title, opts });
+    },
+    // test affordances
+    calls,
+    get lastOptions() {
+      return lastOptions;
+    },
+  };
+}

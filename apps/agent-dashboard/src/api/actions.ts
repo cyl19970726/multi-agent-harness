@@ -229,7 +229,7 @@ export interface TeamRunMemberSpec {
   role: string;
   provider: string;
   model?: string;
-  executionMode?: "codex_exec" | "codex_app_server" | "kimi_acp" | "claude_cli";
+  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk";
   /** Optional member-specific workspace override validated against project_root. */
   worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */
@@ -529,6 +529,19 @@ export function interruptTeamMember(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/interrupt`,
     body: { reason, requested_by: "operator" },
+  };
+}
+
+/** Explicitly end a Team Member runtime under Host lifecycle ownership. */
+export function closeTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  reason = "Host closed member runtime",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/close`,
+    body: { reason, requested_by: "host" },
   };
 }
 

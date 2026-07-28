@@ -50,7 +50,7 @@ Durable Harness data:
   instruction/skill directory paths Harness discovered relative to that cwd;
 - delivery claim, status, terminal source, and native session reference;
 - assignment, handoff, blocker, review, and Host/Lead/Policy interaction;
-- steer/interrupt/stop/resume request and acknowledgement;
+- steer/interrupt/close/resume request and acknowledgement;
 - explicit outcome summaries, artifacts, checks, and Host Wave decisions.
 
 Ephemeral provider projection:
@@ -92,8 +92,10 @@ interrupt(ref, reason)
 inspect_version_compatibility(ref)
 ```
 
-Codex app-server, Codex exec, Kimi ACP/CLI, and Claude CLI are distinct modes.
-A provider release triggers compatibility review when the observed version no
+Codex app-server, Kimi ACP, and Claude Agent SDK streaming are the executable
+Agent Team modes. Codex exec, Kimi CLI, and Claude CLI are distinct bounded
+Workflow or historical modes and cannot be selected as Team fallbacks. A
+provider release triggers compatibility review when the observed version no
 longer matches the adapter profile. Unsupported controls remain visibly
 unsupported; adapters must not simulate acknowledgements.
 
@@ -114,9 +116,11 @@ Team Activity interleaves two visually distinct sources:
 
 Reconnect reloads Harness state and re-reads native activity. It does not replay
 a hidden Harness provider-event ledger. Provider read errors currently render
-an honest unavailable/empty state. Retry/resume/fresh-start controls remain a
-planned Member Focus extension; today explicit resume is selected through the
-TeamRun retry/create CLI, MCP, or HTTP input.
+an honest unavailable/empty state. Member Focus exposes only mode-backed
+controls. Interrupt stops the current turn; Close explicitly ends the Member
+runtime; Resume must use the bound provider-native session. The Host can
+perform the same lifecycle operations through CLI, HTTP, MCP, and Dashboard
+application logic.
 
 The Team and Member views also expose the registered project/store roots from
 Workspace selection, TeamRun execution root, member worktree override, and

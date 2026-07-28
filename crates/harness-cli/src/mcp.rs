@@ -24,8 +24,9 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, advance_wave, close_mission, create_mission,
-    create_team_run, create_wave, deactivate_team_run_member, drive_prepared_team_run, gate_wave,
+    acknowledge_team_message, add_team_run_member, advance_wave, close_mission,
+    close_team_member_value, create_mission, create_team_run, create_wave,
+    deactivate_team_run_member, drive_prepared_team_run, gate_wave,
     has_actionable_delivered_manual_ack, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
@@ -184,6 +185,7 @@ fn call_tool(
         "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
+        "team_run_close_member" => tool_team_run_close_member(store, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
     };
@@ -211,6 +213,13 @@ fn tool_team_run_interrupt_member(
     let team_run_id = required_str(arguments, "team_run_id")?;
     let member_run_id = required_str(arguments, "member_run_id")?;
     interrupt_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_close_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    close_team_member_value(store, team_run_id, member_run_id, arguments)
         .map_err(|error| error.to_string())
 }
 
@@ -963,7 +972,7 @@ fn tool_definitions() -> Value {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
                                 "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
-                                "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"], "description": "Optional provider-specific execution mode."},
+                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; codex_exec and claude_cli are workflow-only."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
@@ -991,7 +1000,7 @@ fn tool_definitions() -> Value {
                             "name": {"type": "string", "minLength": 1},
                             "role": {"type": "string", "minLength": 1},
                             "provider": {"type": "string", "minLength": 1},
-                            "execution_mode": {"type": "string", "enum": ["codex_exec", "codex_app_server", "kimi_acp", "claude_cli"]},
+                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"]},
                             "model": {"type": "string", "minLength": 1},
                             "worktree_ref": {"type": "string", "minLength": 1},
                             "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
@@ -1031,7 +1040,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Executable modes are Codex batch (codex_exec), Codex interactive (codex_app_server), Kimi ACP (kimi_acp), and Claude CLI (claude_cli); unregistered providers or modes fail honestly. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Kimi ACP (kimi_acp), and Claude Agent SDK streaming (claude_agent_sdk). Bounded codex_exec and claude_cli are workflow-only and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1101,7 +1110,7 @@ fn tool_definitions() -> Value {
                     "team_run_id": {"type": "string"},
                     "from_member_id": {"type": "string", "description": "Sender: a member run id, or `host`."},
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
-                    "kind": {"type": "string", "enum": ["assignment", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]},
+                    "kind": {"type": "string", "enum": ["assignment", "message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Other historical labels are read-only."},
                     "body": {"type": "string"},
                     "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
@@ -1141,7 +1150,21 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_interrupt_member",
-            "description": "Cooperatively interrupt one active provider turn when its execution mode advertises supports_cancel. Codex app-server uses turn/interrupt; Kimi ACP uses session/cancel.",
+            "description": "Cooperatively interrupt one active provider turn when its execution mode advertises supports_cancel. Codex app-server uses turn/interrupt, Kimi ACP uses session/cancel, and Claude Agent SDK uses query.interrupt while preserving its native session.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id"]
+            }
+        },
+        {
+            "name": "team_run_close_member",
+            "description": "Explicitly end one Member runtime under Host ownership. A live Codex app-server, Kimi ACP, or Claude Agent SDK transport receives its real close/cancel protocol; an unstarted member is durably deactivated. Completed/failed/stopped members are idempotent. The live request must be sent through the same Host server process that started the TeamRun.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

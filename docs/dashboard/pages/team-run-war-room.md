@@ -117,8 +117,9 @@ source message as causation, and acknowledges the source delivery.
 - Make it clear that Host-authored coordination comes from the Team Lead;
   Human/operator authorship remains separately attributable where supported.
 - Create a correlated assignment with optional origin Wave metadata.
-- Add, rename, deactivate, steer, interrupt, or resume a member where the
-  selected provider mode honestly supports it.
+- Add, rename, deactivate, steer, interrupt, explicitly close, or resume a
+  member where the selected provider mode honestly supports it. Interrupt ends
+  one turn; Close ends the runtime.
 - Inspect delivery/ACK/correlation lineage and answer PendingInteractions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.
@@ -138,8 +139,10 @@ restarts this TeamRun.
 - Blocked/question: attach pressure and action to the exact record.
 - Provider/session unavailable: retain coordination and show the missing
   source.
-- Completed/stopped: read-only history plus explicit resume/new-run choices;
-  do not imply a Mission or Wave completed.
+- Completed/stopped: coordination history is read-only, but any still-live
+  member runtime retains an explicit Host Close action. Resume/new-run choices
+  follow the provider/session contract; do not imply a Mission or Wave
+  completed.
 - Tablet/mobile: collapse navigation, make the mailbox strip horizontally
   scrollable and keyboard accessible,
   preserve one stream and composer, and move context into sheet/bottom sheet.
@@ -158,8 +161,8 @@ orientation, runtime, and artifacts. Verify:
 
 - member controls open the correct Member Focus and return without state loss;
 - mailbox, participant, message-kind, and search filters preserve Team context;
-- PendingInteraction answer, chat, steer, interrupt, and resume states match
-  real adapter acknowledgements;
+- PendingInteraction answer, chat, steer, interrupt, Close, and resume states
+  match real adapter acknowledgements;
 - Markdown handoffs and tool activity render with suitable icons and density;
 - the same TeamRun remains visible after Mission Wave advance;
 - empty, loading, error, unavailable-native-session, and long-stream behavior;

@@ -8,9 +8,12 @@ To integrate a new agent, provider, or platform, start from the canonical
 [Agent Integration Model](../agent-integration-model.md): it defines the three
 pillars (base configuration, environment, platform adaptation), the
 provider-neutral launch spec, and the step-by-step integration checklist that
-produces a doc from the template below. The primary integration substrate is
-headless exec-stream, per
-[../decisions/0018-exec-stream-primary-substrate.md](../decisions/0018-exec-stream-primary-substrate.md).
+produces a doc from the template below. Execution mode is selected by executor
+contract. New Agent Team members use the provider's persistent, bidirectional
+Team mode: Codex app-server, Kimi ACP, or Claude Agent SDK streaming. Bounded
+exec/CLI modes remain Dynamic Workflow and historical-read substrates; they
+are not Team fallbacks. See
+[ADR 0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
 ## Vision Link
 
@@ -117,10 +120,9 @@ Provider
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
 | Host control | [host-agent-mcp.md](host-agent-mcp.md) | MCP implemented | Codex/Kimi/Claude-style Host contract; independent from the Team Member provider. |
-| Codex | [codex.md](codex.md) | planned / implemented in slices | First provider: headless exec-stream primary (app-server retained as fallback design) + hooks + skills + plugin path. |
-| Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | planned / implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
-| Codex source audit | [codex-source-audit.md](codex.md) | planned / reference | Source-level notes that support Codex integration decisions. |
-| Claude Code | [claude.md](claude.md) | planned / implemented in slices | On-demand provider via claude CLI, native subagent-to-child-thread mapping. |
+| Codex | [codex.md](codex.md) | Agent Team app-server implemented | `codex_app_server` is the only new Codex Team mode; bounded `codex_exec` belongs to Workflow and historical reads. |
+| Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
+| Claude Code | [claude.md](claude.md) | Agent Team SDK streaming implemented | `claude_agent_sdk` is the only new Claude Team mode; `claude_cli` remains Workflow/historical only. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) | Team Member start implemented through ACP | Current executable Agent Team member adapter. Other Kimi execution slices remain separately scoped. |
 | Codex + Kimi live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted live evidence | Real retry lineage, assignment/handoff correlation, interrupted-run recovery, and no durable thinking. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |

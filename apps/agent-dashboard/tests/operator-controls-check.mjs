@@ -110,6 +110,13 @@ async function main() {
       && interrupt.body.reason === "stop now",
     "Provider interruption targets one MemberRun with an auditable reason",
   );
+  const closeRuntime = actions.closeTeamMember("run/a", "member/b", "lane accepted");
+  check(
+    closeRuntime.path === "/v1/team-runs/run%2Fa/members/member%2Fb/close"
+      && closeRuntime.body.reason === "lane accepted"
+      && closeRuntime.body.requested_by === "host",
+    "Host close ends one Member runtime through an explicit action",
+  );
 
   const [teamSource, missionSource, memberSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
@@ -123,19 +130,19 @@ async function main() {
   );
   check(
     teamSource.includes("Lead Inbox")
-      && teamSource.includes("Member questions, blockers, and review requests addressed to the Host.")
+      && teamSource.includes("Every Member message addressed to the Host, with its Assignment work chain.")
+      && teamSource.includes("<LeadInbox")
       && teamSource.includes("correlationId: replyAnchor?.correlation_id")
       && teamSource.includes("causationId: replyAnchor?.id")
       && teamSource.includes("Host coordination only · Member-originated messages come from their provider session."),
     "Team War Room exposes a Host-only Lead Inbox and correlation-anchored replies",
   );
   check(
-    teamSource.includes("Plan review")
-      && teamSource.includes('"plan_request"')
-      && teamSource.includes('"plan_feedback"')
-      && teamSource.includes('"plan_approval"')
-      && teamSource.includes("Member proposes → Host challenges → Member revises → Host approves → execution."),
-    "Team War Room exposes the provider-neutral Member plan debate and approval loop",
+    teamSource.includes('<option value="message">Message</option>')
+      && teamSource.includes('<option value="assignment">Assignment</option>')
+      && !teamSource.includes("Plan review")
+      && !teamSource.includes("sendPlanMessage"),
+    "Team War Room uses ordinary messages instead of a dedicated plan lifecycle",
   );
   check(
     teamSource.includes("KEY_ACTIVITY_MESSAGE_KINDS")
@@ -179,6 +186,7 @@ async function main() {
       && memberSource.includes('execution_mode === "codex_app_server"')
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
+      && memberSource.includes("closeTeamMember(")
       && memberSource.includes("supports_cancel"),
     "Member Focus invokes same-turn steer only for an explicit Steer action and otherwise queues Host coordination",
   );
@@ -198,10 +206,10 @@ async function main() {
     "Member Focus derives its Goal, collaboration threads, latest steer, peers, and native subagent entry",
   );
   check(
-    memberSource.includes("Execution plan")
-      && memberSource.includes("selectMemberPlanNegotiation")
-      && memberSource.includes("provider mode · Assignment correlation retained"),
-    "Member Focus shows native plan capability, revision, feedback, and approval below the Assignment Goal",
+    !memberSource.includes("Execution plan")
+      && !memberSource.includes("selectMemberPlanNegotiation")
+      && memberSource.includes("Current Assignment · Member Goal"),
+    "Member Focus keeps planning inside the Assignment conversation instead of a separate product panel",
   );
 
   console.log(`\n   operator control checks: ${passed} pass, ${failed} fail`);

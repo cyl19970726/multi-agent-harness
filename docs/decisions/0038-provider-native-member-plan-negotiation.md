@@ -1,10 +1,14 @@
 # ADR 0038: Provider-Native Member Plan Negotiation
 
 ```text
-status: active
+status: superseded by ADR 0039
 date: 2026-07-24
 extends: ADR 0032 provider-native execution truth; ADR 0037 member autonomy
 ```
+
+> Historical decision only. ADR 0039 removes the dedicated Plan Mode and Plan
+> Gate. Planning is now ordinary correlated Host/Member conversation, with an
+> optional Markdown artifact and no provider-specific approval state.
 
 ## Context
 

@@ -1,370 +1,182 @@
-# Codex Message Delivery
+# Codex Agent Team Message Delivery
 
-This document explains how a persistent Codex `AgentMember` receives harness
-messages. It is the operational detail behind [codex.md](codex.md) and must
-stay aligned with the provider-neutral runtime contract in
-[../agent-runtime.md](../agent-runtime.md).
+This document defines how a Codex Agent Team Member receives durable Harness
+coordination. It extends [Codex Integration](codex.md) and the
+[provider-neutral runtime contract](../agent-runtime.md).
 
-## Core Answer
+## Boundary
 
-Codex does not poll the harness store by itself.
-
-The harness owns the mailbox. A provider gateway or dispatcher reads durable
-`Message` objects from the harness store and pushes eligible messages to the
-member by spawning its headless exec-stream (`codex exec --json`); the
-app-server `turn/start` path is the retained fallback contract (ADR 0018).
+Harness owns mailbox identity, correlation and delivery facts. Codex
+app-server owns the native thread, turns, chat, tools and execution history.
+Codex does not poll Harness storage.
 
 ```text
-Leader / AgentMember / API
-  -> append Message(to_agent_id=<member>, delivery_status=queued)
-  -> Provider Gateway selects latest queued messages for that member
-  -> record or probe the member's exec-stream runtime
-  -> spawn `codex exec --json` with the harness message envelope
-     (`codex exec resume --json <provider_thread_id> ...` when known)
-  -> provider-native events reduced in memory
-  -> NativeSessionRef + explicit outcome/evidence candidates
-  -> Message delivery update + provider-report Message
-  -> AgentMember runtime/status projections
-  -> Agent Dashboard read model
+TeamMessage
+  -> latest-row mailbox projection
+  -> eligible recipient/runtime
+  -> adapter delivery reservation
+  -> app-server turn/start or turn/steer
+  -> provider receipt / terminal control acknowledgement
+  -> updated Harness delivery fact
 ```
 
-This is the critical design point. If delivery depends on Codex noticing files
-or hooks polling the store, messages can be missed and the multi-agent system
-becomes unreliable. Hooks and plugins help observation and packaging; they are
-not the canonical message bus.
+New Codex Team members always use `codex_app_server`. `codex_exec` delivery is
+bounded Dynamic Workflow or historical behavior and is not a Team fallback.
 
-## Current Status
+## Message Shapes
 
-This document is the target delivery contract. The implementation has the first
-MVP delivery loop, but it is not yet a supervised production runtime.
+New public coordination writes use four durable shapes:
 
-Implemented slices:
+| Shape | Delivery meaning |
+| --- | --- |
+| `assignment` | starts accountable ownership and correlation |
+| `message` | ordinary Host/Member/peer coordination, including planning |
+| `handoff` | returns an explicit lane outcome/evidence |
+| `control` | requests a real supported runtime operation |
 
-- `agent start --id <member>` records an exec-stream `AgentRuntime` for the
-  member (no persistent process; each delivery spawns `codex exec --json`).
-- `agent send --to-agent <member>` can append queued harness `Message` rows.
-- `agent deliver --agent <member>` can act as a manual gateway fixture for
-  exec-stream delivery.
-- Delivery queue selection has a latest-message projection test so stale
-  historical `queued` rows are not selected after a newer terminal row exists.
-- Delivery claim now happens under the store write lock: latest queued message
-  selection, unresolved-delivery blocking, delivery-attempt creation,
-  and `Message.delivery_status=acknowledged` are recorded together.
-- Normal `agent send`, `agent deliver`, and runtime start reject closed,
-  closing, or retired members.
-- The Codex turn input now uses a stable harness envelope with sender,
-  recipient, channel, task, content, and delivery attempt fields.
-- Agent Dashboard warnings expose pending claims, blocking provider sessions,
-  failed delivery, queued task messages, and pending delivery to closed members.
-- `agent gateway` can run a local provider-gateway loop or a single
-  `--once` tick. The tick uses the same delivery path as `agent deliver` and
-  can optionally start runtimes.
-- Safe pre-provider claim recovery exists: a claimed message whose provider
-  session has no provider request or turn id can be requeued by operator action
-  or by the gateway claim TTL.
-- The local HTTP API exposes safe control-plane actions for send message,
-  deliver, retry delivery, reconcile session, request review, close member, and
-  gateway tick.
-- Agent Dashboard has first safe-action controls for member send/deliver/close,
-  provider-session retry/fail, and task review request. These actions call the
-  same API/CLI value paths rather than mutating the store directly.
-- Codex source-audit and Claude Code Agent Teams case notes have been captured
-  as provider-design references.
+Human-readable intents such as `PLAN:`, `QUESTION:`, `BLOCKER:`, `REVIEW:` and
+`DECISION:` remain Markdown inside ordinary messages. Historical specialized
+kinds remain readable but are not new lifecycle machines.
 
-Not yet complete:
+Provider-native questions and approvals that pause the current turn are
+`PendingInteraction`, not ordinary TeamMessage delivery.
 
-- The gateway is still an in-process CLI/API loop. It is not yet a supervised
-  production daemon with durable scheduling, metrics, backoff policy, and
-  deployment packaging.
-- Automatic retry is intentionally narrow. It only requeues safe pre-provider
-  claims where there is no provider request id or turn id. Accepted provider
-  turns still require reconciliation or explicit forced operator action.
-- Live Codex acceptance must still be run before claiming real persistent
-  Codex AgentMember delivery. The quick MVP gate proves the object protocol,
-  static dashboard, hook bridge, adapter surface, and dry-run paths only.
+## Direction And Initial State
 
-Do not claim persistent Codex AgentMember delivery is fully accepted until the
-remaining recovery, safe-action, and daemon/backend gaps are implemented and
-covered by tests.
+- Member → Host is `manual_ack + delivered` when appended because the Harness
+  control plane has received it.
+- Host → Member and Member → Member ordinary coordination begins `queued`.
+- Peer sender, recipient, correlation and causation must resolve inside the
+  same TeamRun.
+- Assignment ownership is proven only by the Assignment message and its
+  correlation id.
 
-## Current CLI Slice
+Reading `harness team-run inbox` or `harness member-run show` is a projection;
+it does not itself consume or semantically acknowledge mail.
 
-The current CLI implementation is the first gateway slice:
+## Latest-Row Selection
+
+Harness stores mutable coordination append-only. A dispatcher selects only the
+latest row for each message id:
 
 ```text
-agent start --id <member>
-  -> records an exec-stream AgentRuntime for that AgentMember
-  -> control endpoint codex-exec-runtime://... (no persistent pid/socket)
+message-1 queued
+message-1 delivered
 
-agent send --to-agent <member>
-  -> appends Message(kind=task|message, delivery_status=queued)
-
-agent deliver --agent <member> [--start-runtime]
-  -> reads latest queued messages for that member
-  -> blocks if a previous provider session is unresolved
-  -> spawns codex exec --json (null stdin)
-  -> reuses provider_thread_id via codex exec resume when known
-  -> reduces the native event stream in memory
-  -> records NativeSessionRef and Message.delivery
-
-agent gateway [--once] [--start-runtime] [--dry-run] [--claim-ttl-ms <ms>]
-  -> expires safe pre-provider claims by policy
-  -> groups latest queued messages by AgentMember
-  -> calls the same delivery path as agent deliver
-  -> keeps later messages queued while a member is busy or unresolved
+deliverable projection: message-1 delivered
 ```
 
-This proves the object protocol and Codex app-server integration path. It does
-not by itself prove production supervision, accepted-turn reconciliation, or
-live provider behavior.
+A stale earlier `queued` row must never be delivered again. The same
+latest-row rule drives CLI inbox, Dashboard mailbox counts and delivery
+warnings.
 
-The production path should be a long-running Provider Gateway daemon or backend
-service that automatically watches the queue and delivers to idle members.
-Manual `agent deliver` should remain an operator tool and CI fixture.
+## Reservation And Receipt
 
-## Message Selection Invariant
-
-The harness store is append-only for mutable objects. Therefore the dispatcher
-must select messages from the latest row per `Message.id`, not from raw append
-order.
+Provider side effects may start a turn, so delivery must reserve the latest
+eligible message before injection:
 
 ```text
-raw rows:
-  message-1 queued
-  message-1 acknowledged
-
-deliverable projection:
-  message-1 acknowledged
+latest queued message
+  -> verify MemberRun, correlation, runtime and native-session binding
+  -> record in-flight reservation/receipt boundary
+  -> submit envelope to the same-process app-server adapter
+  -> adapter accepts or rejects envelope
+  -> record delivered or failed
 ```
 
-Only the latest row with `delivery_status=queued` is deliverable. A stale
-earlier `queued` row must never be delivered again.
+`delivered` means the adapter accepted the envelope for that MemberRun and
+native thread. It does not mean the model understood, executed, or accepted
+the request. Semantic acknowledgement is a correlated reply, Handoff,
+review result, or real control acknowledgement.
 
-This invariant is shared by:
-
-- delivery queue selection;
-- Agent Dashboard message projection;
-- warning generation;
-- review gates that reason about whether work was assigned and reported.
-
-## Claim And Lease Invariant
-
-A dispatcher must claim a deliverable message before provider side effects.
-Provider side effects include runtime start, provider thread creation, and the
-provider spawn (`codex exec --json`; fallback contract: `turn/start`).
-
-The minimal safe order is:
-
-```text
-latest queued Message selected
-  -> atomic claim or lease recorded
-  -> MessageDelivery recorded as running or terminal
-  -> runtime/protocol side effects
-  -> terminal Message update: delivered, failed, stale, canceled
-```
-
-This matters because `turn/start` can succeed while the harness process crashes
-before it records delivery. Without a claim/lease, a later dispatcher cannot
-distinguish "never delivered" from "possibly delivered but not reconciled."
-
-Acceptance-critical requirements:
-
-- claim is atomic with the latest-message status check;
-- claim is visible to Dashboard and later dispatchers;
-- unresolved accepted/running/stale sessions block later normal delivery to the
-  same member;
-- retry requires explicit reconciliation or a safe retry policy;
-- closed, closing, and retired members fail delivery before runtime start.
+If the adapter fails before receipt, mail remains queued or visibly failed.
+The implementation must prevent duplicate injection while a receipt is in
+flight. Exactly-once semantic execution is not inferred from a transport
+receipt.
 
 ## Busy Member Policy
 
-The default V1 policy is conservative:
-
-| Member/runtime state | Normal message behavior |
+| Member/runtime state | Ordinary mail |
 | --- | --- |
-| no runtime | deliver only if the caller allows runtime start |
-| idle runtime | deliver next eligible queued message |
-| running provider session | keep later messages queued |
-| stale provider session | require reconciliation or explicit operator action |
-| failed runtime | fail delivery or restart by policy |
-| closed member | reject or fail delivery |
+| live and idle | deliver next eligible message as a new turn |
+| current turn running | retain queued until the next eligible round |
+| waiting on PendingInteraction | resolve the interaction through its authority route |
+| interrupted but runtime open | allow later ordinary turn |
+| explicitly closed | reject normal delivery |
+| native session unavailable/incompatible | show blocker; do not fabricate resume |
 
-If a message arrives while Codex is already executing a turn, it remains queued
-in the harness store. The gateway should not interrupt the current Codex turn
-unless a policy explicitly marks the new message as interrupting. This keeps
-task execution, review, and Dashboard state explainable.
+Ordinary messages never interrupt a busy turn. A real `Steer` is a separate
+control request and uses `turn/steer` only when the snapshotted mode supports
+it. `Interrupt` uses `turn/interrupt` and waits for acknowledgement. `Close`
+ends the app-server runtime; it is not a message and is not implied by turn,
+TeamRun, Wave or Mission completion.
 
-## Provider Thread Mapping
+## Envelope
 
-One harness `AgentMember` maps to one primary Codex provider thread in V1.
-
-```text
-AgentMember.id
-  -> AgentRuntime(control_endpoint)
-  -> provider_thread_id
-  -> many provider turns
-  -> many MessageDelivery records
-```
-
-The first delivery's `thread.started` event supplies the provider thread id.
-Later deliveries reuse `member.provider_thread_id` via `codex exec resume`
-(fallback contract: `thread/start` + thread reuse). The thread is provider execution
-context, not harness identity. If the thread is lost, the member can be
-recovered by starting or binding a new provider thread while preserving harness
-messages, tasks, evidence, and decisions.
-
-Codex native subagents are a different layer. They are provider child threads
-and should be ingested as `ProviderChildThread` or `AgentEvent` data. They do
-not automatically become harness `AgentMember` identities.
-
-## JSON-RPC Delivery State Machine
-
-The primary exec-stream path is: spawn `codex exec --json` (null stdin), read
-NDJSON until the terminal `turn.completed` / `thread.idle` event or process
-exit; a timeout becomes running or stale, not silent success.
-
-The app-server fallback path (retained contract, ADR 0018) is:
+Each delivered turn includes the smallest stable coordination envelope:
 
 ```text
-connect WebSocket-over-Unix-socket
-  -> initialize
-  -> initialized notification
-  -> thread/start or use known thread id
-  -> turn/start
-  -> read response and notifications
-  -> terminal event or timeout
-  -> reconcile if accepted but not terminal
+project_id
+mission_id? / origin_wave_id?
+team_run_id
+member_run_id
+assignment_message_id
+correlation_id
+sender and recipient
+team roster and roles
+owned paths / worktree / permission boundary
+completion standard
+message Markdown
+exact CLI examples for Inbox, Host/peer message and Handoff
 ```
 
-Terminal signal priority:
+The envelope provides identity and responsibility, not a copy of earlier
+provider chat. The native thread supplies provider history.
 
-1. `turn/completed` notification.
-2. `thread/status/changed` to idle plus `thread/read` reconciliation.
-3. Stop hook report candidate.
-4. Timeout converted to `running` or `stale`, not silent success.
+## Native Thread Continuity
 
-Accepted but unresolved turns block later delivery to the same member. This is
-intentional because pushing another task into a member with an unknown current
-turn would make assignment, report, and evidence ordering ambiguous.
+One live Codex MemberRun binds one native Codex thread. Later ordinary messages
+use new turns on that same thread. Resume after process loss must explicitly
+use the recorded native thread id and verified `thread/resume`.
 
-## Message Envelope
+Harness does not rebuild continuity by concatenating TeamMessages. Missing or
+incompatible native records remain visible as unavailable.
 
-Each delivered turn must include a harness envelope before task content:
+Provider-native subagents remain inside the Member's own thread tree. Their
+activity may appear through an ephemeral native projection, but they do not
+receive Harness mailbox identities unless the Host explicitly creates a new
+MemberRun.
 
-```text
-Harness message id: <message.id>
-kind: <task|message|report|...>
-task: <task.id or none>
-from_agent_id: <sender>
-to_agent_id: <agent member>
-channel: <channel or none>
-delivery_attempt: <attempt id or lease id>
-content:
-<message.content>
-```
+## Read Surfaces
 
-The envelope lets Codex hooks, transcripts, provider events, and Dashboard
-warnings correlate provider behavior back to the canonical harness message.
-Provider chat without this envelope is evidence at best; it is not a delivered
-harness assignment.
+The same application behavior is exposed through:
 
-The envelope should be stable enough for hooks, transcripts, and reconciler
-logic to parse. Debug enum formatting is not a contract.
+- `harness team-run inbox --id <run> --member-run-id <member> [--all] --json`;
+- `harness member-run show --id <member> --json`;
+- Team message/status commands;
+- HTTP and MCP equivalents; and
+- Dashboard Team mailboxes, group conversation and Member Focus.
 
-## Hooks And Plugins
+Default Inbox returns actionable current mail. `--all` returns complete durable
+coordination lineage. Provider-native execution history is represented by a
+locator and on-demand projection, not copied into these results.
 
-Hooks are observation and reconciliation inputs:
+## Process Boundary
 
-- `SessionStart` can record runtime start context.
-- `UserPromptSubmit` can verify the harness envelope.
-- `PostToolUse` can produce evidence candidates.
-- `SubagentStart` and `SubagentStop` can expose Codex native subagents.
-- `Stop` can provide a final report candidate.
+The live app-server control handle is currently process-local. The
+Dashboard/MCP service can deliver to members it launched in the same service
+process. A second CLI process cannot inject into a foreground
+`team-run start` child merely because it can read the same JSONL store. Until a
+durable Team Supervisor exists, that case must remain visibly queued or fail
+honestly rather than claim delivery.
 
-Plugins package skills, hooks, MCP tools, and install metadata. They are the
-right productization path once the contract is stable. They still must not own
-the canonical mailbox or decide whether a `Message` was delivered.
+## Acceptance
 
-## Dashboard Proof
-
-The Agent Dashboard should prove delivery without reading raw provider logs:
-
-```text
-member card
-  -> runtime health: process/socket/protocol/delivery
-  -> current task and provider thread
-  -> inbox/outbox latest messages
-  -> provider sessions and terminal source
-  -> events timeline
-  -> child provider threads
-  -> warnings for queued, stale, failed, or missing report states
-```
-
-The Dashboard read model must use the same latest-message projection as the
-dispatcher. Otherwise the UI can claim a message is queued after delivery has
-already acknowledged or failed it.
-
-## Target V1.1 Work
-
-The next production-quality step is to harden the provider gateway loop into a
-supervised service:
-
-```text
-Gateway daemon / backend
-  -> watch latest queued messages
-  -> group by target AgentMember
-  -> apply member state and permission policy
-  -> start/probe runtime as needed
-  -> deliver one message at a time per member
-  -> stream notifications into harness store
-  -> reconcile stale turns
-  -> expose safe Dashboard actions
-```
-
-Safe Dashboard actions should call the same API:
-
-- create member;
-- send message; implemented for existing members;
-- retry delivery; implemented for safe pre-provider claims and explicit forced
-  operator action;
-- request review; implemented as a task status transition plus review message;
-- interrupt by explicit policy;
-- close member; implemented for existing members;
-- reconcile stale session; implemented for terminal operator reconciliation.
-
-## Implementation Order
-
-Use this order so code follows the contract instead of backfilling the docs:
-
-1. Store and CLI: atomic latest-message claim/lease before provider side
-   effects. Implemented for the file store and CLI gateway slice.
-2. Runtime guard: reject delivery and runtime restart for closed, closing, and
-   retired members. Implemented for normal `agent send`, `agent deliver`, and
-   runtime start.
-3. Envelope: stable parseable message envelope with sender, recipient, channel,
-   task, and delivery attempt. Implemented for Codex `turn/start` input.
-4. Provider session reconciliation: accepted, running, terminal, stale, failed,
-   and canceled states visible from the store. Implemented for operator
-   reconciliation and safe pre-provider retry; accepted provider turns still
-   need live reconciliation policy.
-5. Dashboard read model: warnings for queued, claimed, running, stale, failed,
-   closed-member delivery, and missing report. Advisory warnings and first safe
-   actions are implemented.
-6. Provider Gateway daemon/backend loop: replace manual delivery as the normal
-   runtime path. Implemented as an in-process CLI/API loop; still needs
-   production supervision.
-7. Managed hooks/plugin packaging: improve live status and report extraction
-   without making hooks the message bus.
-
-## Failure Modes To Test
-
-Every Codex provider acceptance suite should include:
-
-- latest-message projection prevents stale queued redelivery;
-- no delivery when an unresolved provider session exists;
-- message sent to a missing or closed member fails visibly;
-- runtime start failure becomes evidence, not silent queue loss;
-- turn accepted but not completed becomes running or stale;
-- hook/report reconciliation can finish a previously running session;
-- Dashboard and dispatcher agree on message status;
-- native Codex subagent events do not masquerade as harness members.
+1. Host and peer mail validate same-TeamRun identity/correlation.
+2. A busy Member receives ordinary mail once at the next safe round.
+3. Adapter receipt, semantic reply and control acknowledgement remain distinct.
+4. Member → Host delivery is immediately visible.
+5. Closed or incompatible members reject delivery.
+6. `member-run show`, Inbox and Dashboard reconstruct the same mailbox state.
+7. Native Codex transcript, tools, commands, files, reasoning and subagent
+   transcript remain outside Harness storage.

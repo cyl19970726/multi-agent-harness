@@ -49,6 +49,7 @@ fn run_with_fake_kimi(
             "FAKE_CODEX_ENV_MARKER",
             home.base().join("codex-collaboration.env"),
         )
+        .env("FAKE_CODEX_AUTO_COMPLETE", "1")
         .env(
             "FAKE_CLAUDE_ENV_MARKER",
             home.base().join("claude-collaboration.env"),
@@ -385,6 +386,7 @@ fn kimi_member_explicitly_resumes_provider_native_session() {
 }
 
 #[test]
+#[ignore = "historical claude_cli Team path; new Team members require claude_agent_sdk"]
 fn claude_member_uses_native_session_without_provider_activity_mirror() {
     let home = TempHome::new("team-run-claude-native");
     let project_id = init_project(&home, "alpha");
@@ -472,6 +474,7 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
 }
 
 #[test]
+#[ignore = "historical claude_cli Team path; new Team members require claude_agent_sdk"]
 fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stream() {
     let home = TempHome::new("team-run-claude-native-failure");
     let project_id = init_project(&home, "alpha");
@@ -650,11 +653,11 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(codex["model"].as_str(), Some("gpt-5.6"));
     assert_eq!(
         codex["provider_profile"]["execution_mode"].as_str(),
-        Some("codex_exec")
+        Some("codex_app_server")
     );
     assert_eq!(
         codex["native_session"]["native_session_id"].as_str(),
-        Some("thread_fake_codex_team")
+        Some("thread_fake_codex_app_server")
     );
     let kimi = members
         .iter()
@@ -696,7 +699,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(handoffs.len(), 2, "handoffs: {handoffs:?}");
     assert!(handoffs.iter().any(|message| message["body"]
         .as_str()
-        .is_some_and(|body| body.contains("fake codex member"))));
+        .is_some_and(|body| body.contains("executed approved plan"))));
 
     // Neither provider's hidden reasoning may appear in any durable ledger.
     let store_root = home.projects_dir().join(&project_id);

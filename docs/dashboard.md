@@ -76,8 +76,8 @@ flowchart TD
 | Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
 | Mission detail | Read durable context, linked teams, ordered Host-plan Waves, and outcome. | link/create team, create/update/advance Wave, close |
 | Wave timeline | Compare Host plan revisions, carry-over, evidence, and advance outcomes. | update/advance Wave, open linked execution |
-| Agent Team | Operate one standalone or Mission-scoped TeamRun that may span Waves. | start asynchronously, message, ACK/re-deliver, open member, request review |
-| Member detail | Inspect one MemberRun lane and its assignments/actions. | send control/question, review handoff |
+| Agent Team | Operate one standalone or Mission-scoped TeamRun that may span Waves. | start/add, message, inspect inbox/status, interrupt/close/resume, open member, request review |
+| Member detail | Inspect one MemberRun lane, mailbox, native-session locator, assignments and actions. | message, inspect, interrupt/close/resume when the selected mode supports it, review handoff |
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, cite result from Host plan |
 | Host execution | Show direct Host outcome and optional observed delegation. | attach artifact/outcome |
 | Warnings/approvals | Surface unsafe or incomplete state. | approve/reject, retry, clarify, revise Wave |

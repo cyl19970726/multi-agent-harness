@@ -11,7 +11,7 @@ lifecycle and archive rules are defined in
 | --- | --- |
 | Understand the AI Company OS | [Company OS product system map](company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](company-os/README.md) |
-| Change Mission/Wave or Agent Team orchestration | [Host-plan product contract](product/mission-wave-host-plan.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), and [Architecture map](architecture-map.md) |
+| Change Mission/Wave or Agent Team orchestration | [Host-plan product contract](product/mission-wave-host-plan.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), [ADR 0039](decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md), and [Architecture map](architecture-map.md) |
 | Implement or operate the repository | [Getting started](getting-started.md), [Operations](operations.md), [Schemas](schemas.md) |
 | Change frontend visual direction | [Company OS visual inventory](design/company-os-v2/visual-index.md) or [Execution Workbench V3](design/execution-workbench-v3/README.md) |
 | Integrate a provider | [Integration index](integration/README.md) |

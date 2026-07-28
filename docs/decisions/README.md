@@ -18,9 +18,9 @@ consequences, affected modules, and validation path.
 | [0013](0013-pr-merge-is-not-harness-acceptance.md) | active | PR merge is not Harness acceptance |
 | [0014](0014-react-vite-agent-dashboard.md) | scoped | React/Vite frontend platform; earlier product IA is superseded |
 | [0016](0016-tailwind-shadcn-adoption.md) | active | Tailwind v4 + shadcn/ui adoption |
-| [0018](0018-exec-stream-primary-substrate.md) | amended | Headless exec-stream substrate, amended by resident-host support |
+| [0018](0018-exec-stream-primary-substrate.md) | superseded for Agent Team | Historical exec-stream decision; retained for bounded Workflow context |
 | [0020](0020-codex-persistent-service-exploration.md) | active evidence | Codex persistent-service exploration; retain respawn model |
-| [0021](0021-resident-daemon.md) | active | Resident-daemon warm-child host |
+| [0021](0021-resident-daemon.md) | historical | Former resident CLI warm-child host; not the Agent Team lifecycle |
 | [0022](0022-dynamic-workflow-runtime-json-ir.md) | partially superseded | Dynamic Workflow runtime; authoring details refined by 0023 |
 | [0023](0023-starlark-workflow-frontend.md) | partially superseded | Hermetic Starlark authoring and later convergence notes |
 | [0025](0025-agent-team-run-control-plane.md) | partially superseded | Agent Team runtime substrate remains; Wave attempt ownership is superseded by 0034 |
@@ -36,7 +36,8 @@ consequences, affected modules, and validation path.
 | [0035](0035-company-os-sql-read-model.md) | active | SQL is a derived Company OS read/query/index layer, not the current canonical Store |
 | [0036](0036-agent-operated-docs-and-code-declared-pages.md) | active | Docs is an Agent-operated substrate with code-declared custom business pages |
 | [0037](0037-agent-member-autonomy-and-collaboration.md) | active | Members own end-to-end assignments; TeamMessage is the collaboration mailbox; subagents remain member-internal |
-| [0038](0038-provider-native-member-plan-negotiation.md) | active | Assignment remains Member Goal; provider-native planning is debated and approved through one correlated message chain |
+| [0038](0038-provider-native-member-plan-negotiation.md) | superseded | Historical provider-native Plan Gate, replaced by ordinary correlated planning |
+| [0039](0039-ordinary-member-planning-and-durable-mailbox-delivery.md) | active | Planning is ordinary Host/Member conversation; Harness owns durable mailbox and adapters prove delivery |
 
 ## Split Rule
 

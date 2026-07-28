@@ -876,6 +876,7 @@ fn run() -> CliResult<()> {
         "mission" => mission_command(&store, &args[1..])?,
         "wave" => wave_command(&store, &args[1..])?,
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
+        "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &args[1..])?,
@@ -3422,6 +3423,7 @@ fn company_docs_source_sync_command(store: &HarnessStore, args: &[String]) -> Cl
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn company_docs_source_typed_record(
     store: &HarnessStore,
     module_id: &str,
@@ -3548,8 +3550,7 @@ fn markdown_headings(content: &str) -> Vec<serde_json::Value> {
         .filter_map(|line| {
             let trimmed = line.trim_start();
             let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-            if !(1..=6).contains(&level) || !trimmed.chars().nth(level).is_some_and(|ch| ch == ' ')
-            {
+            if !(1..=6).contains(&level) || trimmed.chars().nth(level).is_none_or(|ch| ch != ' ') {
                 return None;
             }
             Some(serde_json::json!({
@@ -7956,11 +7957,83 @@ fn team_member_provider_profile(provider: &str) -> ProviderIntegrationProfile {
     team_member_provider_profile_for_mode(provider, None)
 }
 
+fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()> {
+    if member.provider == "codex" && member.execution_mode.as_deref() == Some("codex_exec") {
+        return Err(CliError::Usage(
+            "codex_exec is workflow-only; Agent Team Codex members use codex_app_server"
+                .to_string(),
+        ));
+    }
+    if member.provider == "claude" && member.execution_mode.as_deref() == Some("claude_cli") {
+        return Err(CliError::Usage(
+            "claude_cli is workflow-only; Agent Team Claude members use claude_agent_sdk"
+                .to_string(),
+        ));
+    }
+    if let Some(mode) = member.execution_mode.as_deref() {
+        let allowed = matches!(
+            (member.provider.as_str(), mode),
+            ("codex", "codex_app_server") | ("kimi", "kimi_acp") | ("claude", "claude_agent_sdk")
+        );
+        if !allowed {
+            return Err(CliError::Usage(format!(
+                "execution mode {mode} is not registered for provider {}",
+                member.provider
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
 ) -> ProviderIntegrationProfile {
-    if provider == "codex" && requested_mode == Some("codex_app_server") {
+    // Agent Team Claude members are persistent Agent SDK sessions. `claude -p`
+    // remains available to bounded Dynamic Workflow adapters and historical
+    // records, but is not a second Team Member mode.
+    if provider == "claude" && matches!(requested_mode, Some("claude_agent_sdk") | None) {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "claude_agent_sdk".to_string(),
+            provider_version: None,
+            adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
+            // Deliberately empty. A Human approved installing Claude Code
+            // 2.1.220, but approving a version is not the same as reviewing the
+            // adapter against it: AGENTS.md requires mode-specific deterministic
+            // checks plus a proportional live canary first. Leaving this empty
+            // is what makes `member providers --fail-on-review` report the mode
+            // as review_required instead of silently compatible.
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: None,
+            compatibility_note: Some(
+                "Persistent member over the Agent SDK streaming-input mode. \
+                 Interrupt, steer and PreToolUse gates exist in the runner and \
+                 pass deterministic tests, but have not been exercised against a \
+                 live provider, so they are not claimed here yet."
+                    .to_string(),
+            ),
+            // Claimed capabilities are limited to what has actually run against
+            // the real provider: multi-round continuation on one native session
+            // and explicit resume. Deterministic interrupt coverage does not
+            // replace the required live canary.
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
+    // Agent Team Codex members are interactive by definition. `codex exec`
+    // remains the bounded substrate for Dynamic Workflow and legacy one-shot
+    // delivery paths; it is not a second Team Member product mode.
+    if provider == "codex" && matches!(requested_mode, Some("codex_app_server") | None) {
         return ProviderIntegrationProfile {
             provider: provider.to_string(),
             execution_mode: "codex_app_server".to_string(),
@@ -8214,6 +8287,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
                 "exec" => "codex_exec".to_string(),
                 "acp" => "kimi_acp".to_string(),
                 "cli" if provider == "claude" => "claude_cli".to_string(),
+                "agent-sdk" | "agent_sdk" if provider == "claude" => "claude_agent_sdk".to_string(),
                 other => other.to_string(),
             }),
         ),
@@ -8486,21 +8560,7 @@ fn create_team_run(
         if let Some(worktree_ref) = member.worktree_ref.as_deref() {
             validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
         }
-        if let Some(mode) = member.execution_mode.as_deref() {
-            let allowed = matches!(
-                (member.provider.as_str(), mode),
-                ("codex", "codex_exec")
-                    | ("codex", "codex_app_server")
-                    | ("kimi", "kimi_acp")
-                    | ("claude", "claude_cli")
-            );
-            if !allowed {
-                return Err(CliError::Usage(format!(
-                    "execution mode {mode} is not registered for provider {}",
-                    member.provider
-                )));
-            }
-        }
+        validate_team_member_execution_mode(member)?;
     }
     let (mission_id, wave_id, wave) = resolve_team_run_mission_wave(store, mission_id, wave_id)?;
     if let Some(team_id) = agent_team_id.as_deref() {
@@ -8667,6 +8727,7 @@ fn add_team_run_member(
     assignment: &str,
     origin_wave_id: Option<String>,
 ) -> CliResult<(AgentTeamRun, MemberRun, TeamMessage)> {
+    validate_team_member_execution_mode(member)?;
     if assignment.trim().is_empty() {
         return Err(CliError::Usage(
             "new member assignment must not be empty".to_string(),
@@ -8988,15 +9049,6 @@ fn send_team_message(
     }
     let (correlation_id, causation_id) =
         resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
-    validate_plan_message_contract(
-        store,
-        team_run_id,
-        from_member_id,
-        &to_member_ids,
-        &kind,
-        &correlation_id,
-        causation_id.as_deref(),
-    )?;
     let message = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
@@ -9063,144 +9115,6 @@ fn send_team_message(
         ),
     )?;
     Ok(message)
-}
-
-/// Keep Member planning deliberately smaller than a general workflow graph.
-///
-/// One Assignment correlation may opt into:
-/// `plan_request -> plan_proposal -> (plan_feedback -> plan_proposal)* ->
-/// plan_approval`. The Host is the only reviewer and the assignment owner is
-/// the only proposer. This makes the execution boundary reconstructable for
-/// every provider without adding a second Goal or Task object.
-#[allow(clippy::too_many_arguments)]
-fn validate_plan_message_contract(
-    store: &HarnessStore,
-    team_run_id: &str,
-    from_member_id: &str,
-    to_member_ids: &[String],
-    kind: &TeamMessageKind,
-    correlation_id: &str,
-    causation_id: Option<&str>,
-) -> CliResult<()> {
-    if !matches!(
-        kind,
-        TeamMessageKind::PlanRequest
-            | TeamMessageKind::PlanProposal
-            | TeamMessageKind::PlanFeedback
-            | TeamMessageKind::PlanApproval
-    ) {
-        return Ok(());
-    }
-    let messages = latest_team_messages_in_append_order(store)?;
-    let assignment = messages
-        .iter()
-        .find(|message| {
-            message.team_run_id == team_run_id
-                && message.kind == TeamMessageKind::Assignment
-                && message.correlation_id == correlation_id
-        })
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "plan message correlation_id `{correlation_id}` does not identify an Assignment in team run {team_run_id}"
-            ))
-        })?;
-    if assignment.to_member_ids.len() != 1 {
-        return Err(CliError::Usage(
-            "plan negotiation requires an Assignment with exactly one member owner".to_string(),
-        ));
-    }
-    let owner = &assignment.to_member_ids[0];
-    let related = messages
-        .iter()
-        .filter(|message| {
-            message.team_run_id == team_run_id && message.correlation_id == correlation_id
-        })
-        .collect::<Vec<_>>();
-    if related
-        .iter()
-        .any(|message| message.kind == TeamMessageKind::PlanApproval)
-    {
-        return Err(CliError::Usage(format!(
-            "assignment correlation `{correlation_id}` already has Host plan approval"
-        )));
-    }
-    let expects = |sender: &str, recipient: &str| {
-        from_member_id == sender && to_member_ids.len() == 1 && to_member_ids[0] == recipient
-    };
-    match kind {
-        TeamMessageKind::PlanRequest => {
-            if !expects("host", owner) {
-                return Err(CliError::Usage(
-                    "plan_request must be sent by host to the single Assignment owner".to_string(),
-                ));
-            }
-            if related
-                .iter()
-                .any(|message| message.kind == TeamMessageKind::PlanRequest)
-            {
-                return Err(CliError::Usage(format!(
-                    "assignment correlation `{correlation_id}` already requested planning"
-                )));
-            }
-            if causation_id != Some(assignment.id.as_str()) {
-                return Err(CliError::Usage(
-                    "plan_request causation_id must identify its Assignment".to_string(),
-                ));
-            }
-        }
-        TeamMessageKind::PlanProposal => {
-            if !expects(owner, "host") {
-                return Err(CliError::Usage(
-                    "plan_proposal must be sent by the Assignment owner to host".to_string(),
-                ));
-            }
-            let expected_cause = related.iter().rev().find(|message| {
-                matches!(
-                    message.kind,
-                    TeamMessageKind::PlanRequest | TeamMessageKind::PlanFeedback
-                )
-            });
-            if expected_cause.is_none()
-                || causation_id != expected_cause.map(|message| message.id.as_str())
-            {
-                return Err(CliError::Usage(
-                    "plan_proposal must answer the latest plan_request or plan_feedback"
-                        .to_string(),
-                ));
-            }
-        }
-        TeamMessageKind::PlanFeedback | TeamMessageKind::PlanApproval => {
-            if !expects("host", owner) {
-                return Err(CliError::Usage(
-                    "plan_feedback and plan_approval must be sent by host to the Assignment owner"
-                        .to_string(),
-                ));
-            }
-            let latest_proposal = related
-                .iter()
-                .rev()
-                .find(|message| message.kind == TeamMessageKind::PlanProposal);
-            if latest_proposal.is_none()
-                || causation_id != latest_proposal.map(|message| message.id.as_str())
-            {
-                return Err(CliError::Usage(
-                    "Host plan decision must answer the latest plan_proposal".to_string(),
-                ));
-            }
-            if matches!(kind, TeamMessageKind::PlanApproval)
-                && related
-                    .last()
-                    .is_some_and(|message| message.kind == TeamMessageKind::PlanFeedback)
-            {
-                return Err(CliError::Usage(
-                    "Host cannot approve a plan after requesting changes until the Member submits a new plan_proposal"
-                        .to_string(),
-                ));
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 /// Latest-wins read model for one TeamRun recipient.
@@ -9543,16 +9457,29 @@ fn recover_interrupted_team_run(
 
 /// Parse a team message kind from its snake_case wire name.
 fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
-    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+    let kind = serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
-            "unknown team message kind `{s}` (assignment|plan_request|plan_proposal|plan_feedback|plan_approval|question|answer|progress|blocker|handoff|review_request|review_result|control|broadcast)"
+            "unknown team message kind `{s}` (assignment|message|handoff|control)"
         ))
-    })
+    })?;
+    if !matches!(
+        kind,
+        TeamMessageKind::Assignment
+            | TeamMessageKind::Message
+            | TeamMessageKind::Handoff
+            | TeamMessageKind::Control
+    ) {
+        return Err(CliError::Usage(format!(
+            "team message kind `{s}` is historical and read-only; use assignment|message|handoff|control"
+        )));
+    }
+    Ok(kind)
 }
 
 fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
     match kind {
         TeamMessageKind::Assignment => "assignment",
+        TeamMessageKind::Message => "message",
         TeamMessageKind::PlanRequest => "plan_request",
         TeamMessageKind::PlanProposal => "plan_proposal",
         TeamMessageKind::PlanFeedback => "plan_feedback",
@@ -9585,7 +9512,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|inbox|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel",
+        "team-run create|list|status|inbox|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -9876,6 +9803,15 @@ fn team_run_command(
             &required(args, "--member-run-id")?,
             &required(args, "--reason")?,
         )?)?,
+        "close-member" => print_json(&close_team_member_value(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &serde_json::json!({
+                "reason": required(args, "--reason")?,
+                "requested_by": value(args, "--requested-by").unwrap_or_else(|| "host".to_string()),
+            }),
+        )?)?,
         "start" => {
             // Foreground orchestration: this process is the WRITER driving
             // member sessions; `harness serve` stays the read/broadcast side.
@@ -9932,6 +9868,144 @@ fn team_run_command(
     Ok(())
 }
 
+/// Read one run-scoped Agent Team member without copying provider-native
+/// transcript/tool history into Harness. The projection joins the durable
+/// coordination facts needed by a Host or operator; `native_session` remains
+/// a locator to the provider-owned execution truth.
+fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "member-run show")?;
+    match args[0].as_str() {
+        "show" => {
+            let detail = member_run_detail_json(store, &required(args, "--id")?)?;
+            if has_flag(args, "--json") {
+                print_json(&detail)?;
+            } else {
+                let member = detail
+                    .get("member_run")
+                    .and_then(|value| serde_json::from_value::<MemberRun>(value.clone()).ok())
+                    .ok_or_else(|| CliError::Usage("invalid member detail projection".into()))?;
+                let inbox_count = detail
+                    .pointer("/mailbox/inbox")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                let outbox_count = detail
+                    .pointer("/mailbox/outbox")
+                    .and_then(|value| value.as_array())
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                println!(
+                    "{}\t{}\t{}/{}\t{}",
+                    member.id,
+                    serde_snake_label(&member.status),
+                    member.provider,
+                    member
+                        .provider_profile
+                        .as_ref()
+                        .map(|profile| profile.execution_mode.as_str())
+                        .unwrap_or("unknown"),
+                    member.name,
+                );
+                println!(
+                    "team_run={}\tinbox={inbox_count}\toutbox={outbox_count}",
+                    member.team_run_id
+                );
+                if let Some(session) = member.native_session.as_ref() {
+                    println!(
+                        "native_session={}\tlocator_kind={}",
+                        session.native_session_id, session.native_locator_kind
+                    );
+                }
+            }
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown member-run command: {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn member_run_detail_json(
+    store: &HarnessStore,
+    member_run_id: &str,
+) -> CliResult<serde_json::Value> {
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    let team_run = latest_team_run(store, &member.team_run_id)?;
+
+    let messages = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| message.team_run_id == member.team_run_id)
+        .collect::<Vec<_>>();
+    let inbox = messages
+        .iter()
+        .filter(|message| message.to_member_ids.iter().any(|id| id == member_run_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let outbox = messages
+        .iter()
+        .filter(|message| message.from_member_id == member_run_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let assignment = inbox
+        .iter()
+        .rev()
+        .find(|message| message.kind == TeamMessageKind::Assignment);
+    let latest_handoff = outbox
+        .iter()
+        .rev()
+        .find(|message| message.kind == TeamMessageKind::Handoff);
+    let actions = visible_member_actions_in_append_order(store)?
+        .into_iter()
+        .filter(|action| {
+            action.team_run_id == member.team_run_id && action.member_run_id == member_run_id
+        })
+        .collect::<Vec<_>>();
+    let pending_interactions = latest_pending_interactions_in_append_order(store)?
+        .into_iter()
+        .filter(|interaction| {
+            interaction.team_run_id == member.team_run_id
+                && interaction.member_run_id == member_run_id
+        })
+        .collect::<Vec<_>>();
+    let actionable_inbox = inbox
+        .iter()
+        .filter(|message| {
+            message.deliveries.iter().any(|delivery| {
+                delivery.member_id == member_run_id
+                    && matches!(
+                        delivery.status,
+                        TeamDeliveryStatus::Queued | TeamDeliveryStatus::Delivered
+                    )
+            })
+        })
+        .count();
+
+    Ok(serde_json::json!({
+        "member_run": member,
+        "team_run": team_run,
+        "mission_id": team_run.mission_id,
+        "agent_team_id": team_run.agent_team_id,
+        "assignment": assignment,
+        "assignment_correlation_id": assignment.map(|message| &message.correlation_id),
+        "workspace": member.workspace_snapshot,
+        "provider_profile": member.provider_profile,
+        "native_session": member.native_session,
+        "mailbox": {
+            "inbox": inbox,
+            "outbox": outbox,
+            "actionable_inbox_count": actionable_inbox,
+        },
+        "pending_interactions": pending_interactions,
+        "actions": actions,
+        "latest_handoff": latest_handoff,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // `harness team-run start` — Agent Team v0 orchestration loop.
 //
@@ -9977,6 +10051,7 @@ struct LiveMemberControl {
     execution_mode: String,
     supports_steer: bool,
     supports_interrupt: bool,
+    supports_close: bool,
     sender: SyncSender<MemberControlCommand>,
 }
 
@@ -9991,6 +10066,18 @@ enum MemberControlCommand {
         requested_by: String,
         reply: SyncSender<CliResult<serde_json::Value>>,
     },
+    Close {
+        reason: String,
+        requested_by: String,
+        reply: SyncSender<CliResult<serde_json::Value>>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum LiveMemberControlRequirement {
+    Steer,
+    Interrupt,
+    Close,
 }
 
 struct LiveMemberControlRegistration {
@@ -10030,6 +10117,7 @@ fn register_live_member_control(
                 supports_steer: profile
                     .is_some_and(|profile| profile.execution_mode == "codex_app_server"),
                 supports_interrupt: profile.is_some_and(|profile| profile.supports_cancel),
+                supports_close: true,
                 sender,
             },
         );
@@ -10045,7 +10133,7 @@ fn dispatch_live_member_control(
     team_run_id: &str,
     member_run_id: &str,
     command: impl FnOnce(SyncSender<CliResult<serde_json::Value>>) -> MemberControlCommand,
-    require_steer: bool,
+    requirement: LiveMemberControlRequirement,
 ) -> CliResult<serde_json::Value> {
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -10063,17 +10151,26 @@ fn dispatch_live_member_control(
             "member {member_run_id} does not belong to team run {team_run_id}"
         )));
     }
-    if require_steer && !control.supports_steer {
-        return Err(CliError::Usage(format!(
-            "{} does not support mid-turn steer; send a queued TeamMessage instead",
-            control.execution_mode
-        )));
-    }
-    if !require_steer && !control.supports_interrupt {
-        return Err(CliError::Usage(format!(
-            "{} does not support live interruption",
-            control.execution_mode
-        )));
+    match requirement {
+        LiveMemberControlRequirement::Steer if !control.supports_steer => {
+            return Err(CliError::Usage(format!(
+                "{} does not support mid-turn steer; send a queued TeamMessage instead",
+                control.execution_mode
+            )));
+        }
+        LiveMemberControlRequirement::Interrupt if !control.supports_interrupt => {
+            return Err(CliError::Usage(format!(
+                "{} does not support live interruption",
+                control.execution_mode
+            )));
+        }
+        LiveMemberControlRequirement::Close if !control.supports_close => {
+            return Err(CliError::Usage(format!(
+                "{} does not support explicit Host close",
+                control.execution_mode
+            )));
+        }
+        _ => {}
     }
     let (reply_tx, reply_rx) = sync_channel(1);
     control.sender.send(command(reply_tx)).map_err(|_| {
@@ -10576,10 +10673,7 @@ fn run_member_orchestration(
             live_sink,
         )
     } else if member.provider.eq_ignore_ascii_case("codex")
-        && matches!(
-            execution_mode,
-            Some("codex_exec") | Some("codex_app_server") | None
-        )
+        && matches!(execution_mode, Some("codex_app_server") | None)
     {
         run_codex_member(
             ledger,
@@ -10591,9 +10685,9 @@ fn run_member_orchestration(
             live_sink,
         )
     } else if member.provider.eq_ignore_ascii_case("claude")
-        && matches!(execution_mode, Some("claude_cli") | None)
+        && matches!(execution_mode, Some("claude_agent_sdk") | None)
     {
-        run_claude_team_member(
+        run_claude_agent_sdk_team_member(
             ledger,
             objective,
             project_id,
@@ -10618,11 +10712,9 @@ fn run_member_orchestration(
     }
 }
 
-/// Drive one Codex Team Member using a fresh `codex exec --json` turn per
-/// round. Unlike the persistent-delivery adapter, this path deliberately never
-/// writes the raw provider event stream: reasoning items are eligible only for
-/// the sanitized volatile live sink, while the final agent message becomes the
-/// durable handoff.
+/// Drive one interactive Codex Team Member through one app-server process and
+/// native thread. Bounded `codex exec` remains a Dynamic Workflow substrate,
+/// not an alternative Agent Team Member mode.
 fn run_codex_member(
     ledger: &TeamRunLedger,
     objective: &str,
@@ -10646,7 +10738,7 @@ fn run_codex_member(
         &member.id,
         "updated",
         &format!(
-            "member {} starting (codex exec, cwd {})",
+            "member {} starting (codex app-server, cwd {})",
             member.name,
             cwd.display()
         ),
@@ -10660,43 +10752,24 @@ fn run_codex_member(
     let envelope =
         member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
     let collaboration_env = envelope.environment();
-    let initial_plan_request = assignment
-        .as_ref()
-        .map(|assignment| queued_plan_request(ledger, assignment, &member.id))
-        .transpose()?
-        .flatten();
-
-    let app_server_mode = member_row
-        .provider_profile
-        .as_ref()
-        .is_some_and(|profile| profile.execution_mode == "codex_app_server");
-    let mut app_server = if app_server_mode {
-        Some(codex_app_server::CodexAppServerClient::spawn(
-            cwd,
-            member.model.as_deref(),
-            !member.owned_paths.is_empty(),
-            member
-                .native_session
-                .as_ref()
-                .map(|session| session.native_session_id.as_str()),
-            &collaboration_env,
-            initial_plan_request.is_some(),
-        )?)
-    } else {
-        None
-    };
-    let mut live_control = None;
-    let mut live_control_registration = None;
-    if let Some(client) = app_server.as_ref() {
-        member_row.native_session = Some(native_session_ref(
-            &member_row,
-            client.thread_id(),
-            "codex_rollout",
-        ));
-        let (receiver, registration) = register_live_member_control(&member_row, 16);
-        live_control = Some(receiver);
-        live_control_registration = Some(registration);
-    }
+    let mut app_server = codex_app_server::CodexAppServerClient::spawn(
+        cwd,
+        member.model.as_deref(),
+        !member.owned_paths.is_empty(),
+        member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        &collaboration_env,
+        false,
+    )?;
+    member_row.native_session = Some(native_session_ref(
+        &member_row,
+        app_server.thread_id(),
+        "codex_rollout",
+    ));
+    let (live_control, registration) = register_live_member_control(&member_row, 16);
+    let mut live_control_registration = Some(registration);
 
     member_row.status = MemberRunStatus::Running;
     member_row.last_event_at = Some(now_string());
@@ -10705,131 +10778,7 @@ fn run_codex_member(
     if let Some(assignment) = &assignment {
         mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
     }
-    if let (Some(assignment), Some(plan_request)) = (&assignment, initial_plan_request) {
-        if !app_server_mode {
-            return Err(CliError::Usage(format!(
-                "member {} received plan_request, but execution mode {} cannot guarantee a plan-only turn",
-                member.name,
-                member_row
-                    .provider_profile
-                    .as_ref()
-                    .map(|profile| profile.execution_mode.as_str())
-                    .unwrap_or("unknown")
-            )));
-        }
-        mark_message_delivered(ledger, &plan_request, &member.id, &member.name)?;
-        let mut planning_input = plan_request;
-        let mut revision = 1usize;
-        // The Assignment is the native Goal, but it must remain paused while
-        // Host and Member debate the plan. Marking it active here lets Codex's
-        // Goal loop autonomously continue into execution-shaped turns before
-        // plan_approval, which violates the product boundary.
-        app_server
-            .as_mut()
-            .expect("app-server required for Codex native plan mode")
-            .set_goal(&assignment_body, "paused")?;
-        loop {
-            let client = app_server
-                .as_mut()
-                .expect("app-server required for Codex native plan mode");
-            member_row.status = MemberRunStatus::Reviewing;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
-            let turn = run_codex_app_server_turn(
-                client,
-                &plan_round_prompt(&assignment_body, &planning_input, revision),
-                member,
-                idle_timeout,
-                live_sink.clone(),
-                ledger,
-                live_control.as_ref().expect("live control registered"),
-            )?;
-            if turn.interrupted {
-                member_row.status = MemberRunStatus::Stopped;
-                member_row.finished_at = Some(now_string());
-                member_row.last_event_at = Some(now_string());
-                ledger.save_member_run(&member_row)?;
-                drop(live_control_registration.take());
-                return Ok(MemberOutcome::new(
-                    member,
-                    MemberRunStatus::Stopped,
-                    "Codex planning turn interrupted".to_string(),
-                ));
-            }
-            let proposal_body =
-                select_member_plan_proposal(&turn.final_text, turn.plan_text.as_deref())
-                    .ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "codex member {} completed native Plan mode without a plan proposal",
-                            member.name
-                        ))
-                    })?;
-            submit_member_plan_proposal(
-                ledger,
-                &member_row,
-                assignment,
-                &planning_input,
-                &proposal_body,
-            )?;
-            member_row.status = MemberRunStatus::Waiting;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
-            match wait_for_host_plan_decision(
-                ledger,
-                &member_row,
-                assignment,
-                live_control.as_ref(),
-            )? {
-                PlanHostDecision::Feedback(feedback) => {
-                    planning_input = feedback;
-                    revision += 1;
-                }
-                PlanHostDecision::Approved(approval) => {
-                    ledger.append_action(
-                        &member.id,
-                        "plan_approved",
-                        MemberActionStatus::Succeeded,
-                        "Host approved Member plan",
-                        &approval.body,
-                    )?;
-                    let native_thread_id = app_server
-                        .as_ref()
-                        .map(|client| client.thread_id().to_string())
-                        .expect("app-server exists");
-                    drop(app_server.take());
-                    app_server = Some(codex_app_server::CodexAppServerClient::spawn(
-                        cwd,
-                        member.model.as_deref(),
-                        !member.owned_paths.is_empty(),
-                        Some(&native_thread_id),
-                        &collaboration_env,
-                        false,
-                    )?);
-                    if let Some(client) = app_server.as_mut() {
-                        client.set_goal(&assignment_body, "active")?;
-                    }
-                    member_row.status = MemberRunStatus::Running;
-                    member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(&member_row)?;
-                    break;
-                }
-                PlanHostDecision::Cancelled => {
-                    member_row.status = MemberRunStatus::Stopped;
-                    member_row.finished_at = Some(now_string());
-                    member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(&member_row)?;
-                    drop(live_control_registration.take());
-                    return Ok(MemberOutcome::new(
-                        member,
-                        MemberRunStatus::Stopped,
-                        "TeamRun cancelled while awaiting plan approval".to_string(),
-                    ));
-                }
-            }
-        }
-    } else if let Some(client) = app_server.as_mut() {
-        client.set_goal(&assignment_body, "active")?;
-    }
+    app_server.set_goal(&assignment_body, "active")?;
 
     let mut round = 0u32;
     let mut next_prompt = Some(contract_prompt(
@@ -10842,27 +10791,15 @@ fn run_codex_member(
     let mut final_summary = String::new();
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
-        let turn = if let Some(client) = app_server.as_mut() {
-            run_codex_app_server_turn(
-                client,
-                &prompt_text,
-                member,
-                idle_timeout,
-                live_sink.clone(),
-                ledger,
-                live_control.as_ref().expect("live control registered"),
-            )?
-        } else {
-            run_codex_team_turn(
-                &prompt_text,
-                cwd,
-                member,
-                idle_timeout,
-                live_sink.clone(),
-                ledger,
-                &collaboration_env,
-            )?
-        };
+        let turn = run_codex_app_server_turn(
+            &mut app_server,
+            &prompt_text,
+            member,
+            idle_timeout,
+            live_sink.clone(),
+            ledger,
+            &live_control,
+        )?;
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
                 .native_session
@@ -10875,12 +10812,16 @@ fn run_codex_member(
             ledger.save_member_run(&member_row)?;
         }
         if turn.interrupted {
-            let interruption_summary = if turn.interrupt_requested_by_harness {
+            let interruption_summary = if turn.close_requested_by_harness {
+                "The Host explicitly closed the Codex member runtime."
+            } else if turn.interrupt_requested_by_harness {
                 "The operator or Lead interrupted the active Codex turn."
             } else {
                 "Codex reported the active turn as interrupted without a Harness control request; inspect the provider-native session for the source."
             };
-            let outcome_summary = if turn.interrupt_requested_by_harness {
+            let outcome_summary = if turn.close_requested_by_harness {
+                "Codex member runtime closed by Host"
+            } else if turn.interrupt_requested_by_harness {
                 "Codex turn interrupted by operator or Lead"
             } else {
                 "Codex turn reported interrupted; source not observed by Harness"
@@ -10891,9 +10832,17 @@ fn run_codex_member(
             ledger.save_member_run(&member_row)?;
             ledger.append_action(
                 &member.id,
-                "interrupted",
+                if turn.close_requested_by_harness {
+                    "closed"
+                } else {
+                    "interrupted"
+                },
                 MemberActionStatus::Cancelled,
-                "provider turn interrupted",
+                if turn.close_requested_by_harness {
+                    "member runtime closed"
+                } else {
+                    "provider turn interrupted"
+                },
                 interruption_summary,
             )?;
             drop(live_control_registration.take());
@@ -10983,9 +10932,7 @@ fn run_codex_member(
         member_row.finished_at = Some(now_string());
         member_row.last_event_at = Some(now_string());
         if member_status == MemberRunStatus::Completed {
-            if let Some(client) = app_server.as_mut() {
-                client.set_goal(&assignment_body, "complete")?;
-            }
+            app_server.set_goal(&assignment_body, "complete")?;
         }
         ledger.save_member_run(&member_row)?;
         ledger.fold_event(
@@ -11039,56 +10986,9 @@ fn run_codex_member(
 struct CodexTeamTurn {
     thread_id: Option<String>,
     final_text: String,
-    /// Provider-native plan state observed during this turn. It stays in
-    /// memory until the Member explicitly submits it as a PlanProposal.
-    plan_text: Option<String>,
     interrupted: bool,
     interrupt_requested_by_harness: bool,
-}
-
-fn render_codex_plan(params: &serde_json::Value) -> Option<String> {
-    let steps = params
-        .get("plan")
-        .or_else(|| params.pointer("/turn/plan"))
-        .or_else(|| params.get("steps"))
-        .and_then(|value| value.as_array())?;
-    if steps.is_empty() {
-        return None;
-    }
-    Some(
-        steps
-            .iter()
-            .enumerate()
-            .map(|(index, step)| {
-                let text = step
-                    .get("step")
-                    .or_else(|| step.get("text"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Untitled step");
-                let status = step
-                    .get("status")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("pending");
-                format!("{}. {} `{}`", index + 1, text, status)
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-}
-
-/// Promote the Member's explicit final Markdown plan when the provider emits
-/// one. Structured plan updates are progress/checklist state and are only a
-/// fallback; preferring them would make Dashboard review lossy even though the
-/// native session contains a complete proposal.
-fn select_member_plan_proposal(final_text: &str, plan_text: Option<&str>) -> Option<String> {
-    let final_text = final_text.trim();
-    if !final_text.is_empty() {
-        return Some(final_text.to_string());
-    }
-    plan_text
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
+    close_requested_by_harness: bool,
 }
 
 fn project_codex_team_event_live(
@@ -11156,187 +11056,6 @@ fn project_codex_team_event_live(
     }
 }
 
-fn codex_team_sandbox() -> &'static str {
-    // Temporary development policy: Agent Team members receive full execution
-    // permission. Owned paths remain a coordination/acceptance boundary, not a
-    // provider sandbox claim.
-    "danger-full-access"
-}
-
-fn enabled_env_switch(value: Option<&str>) -> bool {
-    value
-        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
-}
-
-fn codex_team_ignore_user_config() -> bool {
-    enabled_env_switch(
-        std::env::var("HARNESS_CODEX_IGNORE_USER_CONFIG")
-            .ok()
-            .as_deref(),
-    )
-}
-
-/// Run one Codex turn and consume its event stream in memory. Members without
-/// owned paths still receive the temporary full-access development policy;
-/// ownership remains a durable coordination contract. Raw events and reasoning
-/// are intentionally not returned to any durable writer.
-fn run_codex_team_turn(
-    prompt: &str,
-    cwd: &Path,
-    member: &MemberRun,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
-    ledger: &TeamRunLedger,
-    collaboration_env: &[(String, String)],
-) -> CliResult<CodexTeamTurn> {
-    let mut cmd = Command::new("codex");
-    cmd.arg("exec");
-    // Agent Team members normally inherit the provider's user configuration so
-    // global skills and MCP servers remain discoverable. Operators can opt into
-    // a clean provider process when an unrelated user MCP is unavailable or
-    // inappropriate for the member's execution boundary. Authentication still
-    // comes from CODEX_HOME; only config.toml is ignored by Codex.
-    if codex_team_ignore_user_config() {
-        cmd.arg("--ignore-user-config");
-    }
-    cmd.arg("--cd")
-        .arg(cwd)
-        .arg("--sandbox")
-        .arg(codex_team_sandbox())
-        .arg("--skip-git-repo-check");
-    if let Some(model) = member.model.as_deref() {
-        cmd.arg("-m").arg(model);
-    }
-    if let Some(session) = member.native_session.as_ref() {
-        cmd.arg("resume").arg(&session.native_session_id);
-    }
-    cmd.arg("--json")
-        .arg(prompt)
-        .envs(collaboration_env.iter().cloned())
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|error| {
-        CliError::Usage(format!(
-            "failed to spawn codex team member {}: {error}",
-            member.name
-        ))
-    })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| CliError::Usage("codex stdout not available".to_string()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| CliError::Usage("codex stderr not available".to_string()))?;
-    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
-    let stdout_reader = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if line_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut text = String::new();
-        let _ = reader.read_to_string(&mut text);
-        text
-    });
-
-    let mut events = Vec::new();
-    let mut last_activity = Instant::now();
-    let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
-    let status = loop {
-        match line_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) => {
-                last_activity = Instant::now();
-                if let Some(event) = CodexExecEvent::parse_line(&line) {
-                    project_codex_team_event_live(
-                        ledger,
-                        member,
-                        &event.payload,
-                        live_sink.as_ref(),
-                    );
-                    let reasoning = event
-                        .payload
-                        .get("item")
-                        .filter(|item| {
-                            item.get("type").and_then(|value| value.as_str()) == Some("reasoning")
-                        })
-                        .and_then(|item| item.get("text"))
-                        .and_then(|text| text.as_str())
-                        .and_then(sanitize_live_member_preview);
-                    if last_live_activity.elapsed() >= LIVE_MEMBER_ACTIVITY_THROTTLE {
-                        if let (Some(sink), Some(preview)) = (&live_sink, reasoning) {
-                            last_live_activity = Instant::now();
-                            sink(LiveMemberActivityPreview {
-                                team_run_id: ledger.run_id.clone(),
-                                member_run_id: member.id.clone(),
-                                provider: member.provider.clone(),
-                                preview,
-                            });
-                        }
-                    }
-                    events.push(event);
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                break child.wait()?;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if child.try_wait()?.is_some() {
-                    // The stdout reader may still have the terminal lines in
-                    // flight. Wait for channel disconnect so they are not
-                    // dropped before final-message extraction.
-                    continue;
-                }
-                if last_activity.elapsed() >= idle_timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(CliError::Usage(format!(
-                        "codex team member {} exceeded idle timeout",
-                        member.name
-                    )));
-                }
-            }
-        }
-    };
-    let _ = stdout_reader.join();
-    let stderr_text = stderr_reader.join().unwrap_or_default();
-    let inferred = infer_provider_execution_status(&events, status.success());
-    if inferred != ProviderExecutionStatus::Succeeded {
-        return Err(CliError::Usage(format!(
-            "codex team member {} failed ({inferred:?}): {}",
-            member.name,
-            stderr_text.trim()
-        )));
-    }
-    let final_text = extract_codex_final_message(&events)
-        .or_else(|| extract_codex_reply_text(&events))
-        .unwrap_or_default();
-    Ok(CodexTeamTurn {
-        thread_id: extract_thread_id_from_exec_events(&events),
-        final_text,
-        plan_text: events.iter().rev().find_map(|event| {
-            event
-                .payload
-                .get("item")
-                .filter(|item| item.get("type").and_then(|value| value.as_str()) == Some("plan"))
-                .and_then(|item| item.get("text"))
-                .and_then(|text| text.as_str())
-                .map(str::to_string)
-        }),
-        interrupted: false,
-        interrupt_requested_by_harness: false,
-    })
-}
-
 /// Drive one turn on the persistent Codex app-server session. Unlike
 /// `codex exec`, this transport can inject user input into the active turn and
 /// interrupt it without killing an unrelated host process.
@@ -11356,10 +11075,10 @@ fn run_codex_app_server_turn(
     // require every later scoped frame (especially turn/completed) to match.
     let mut observed_turn_id: Option<String> = None;
     let mut final_text = String::new();
-    let mut plan_text = None;
     let mut last_activity = Instant::now();
     let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
     let mut interrupt_requested = false;
+    let mut close_requested = false;
     loop {
         while let Ok(command) = controls.try_recv() {
             match command {
@@ -11407,6 +11126,30 @@ fn run_codex_app_server_turn(
                     });
                     let _ = reply.send(result);
                 }
+                MemberControlCommand::Close {
+                    reason,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = client.interrupt(&turn_id).and_then(|()| {
+                        interrupt_requested = true;
+                        close_requested = true;
+                        ledger.append_action(
+                            &member.id,
+                            "close_requested",
+                            MemberActionStatus::Progress,
+                            "Codex member close requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "status": "close_requested",
+                            "provider_ack": "turn_interrupt_accepted",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
             }
         }
 
@@ -11439,14 +11182,7 @@ fn run_codex_app_server_turn(
                     }
                 }
                 match method {
-                    Some("turn/plan/updated") => {
-                        plan_text = render_codex_plan(params);
-                    }
-                    Some("item/plan/delta") => {
-                        if let Some(delta) = params.get("delta").and_then(|value| value.as_str()) {
-                            plan_text.get_or_insert_with(String::new).push_str(delta);
-                        }
-                    }
+                    Some("turn/plan/updated") | Some("item/plan/delta") => {}
                     Some("item/agentMessage/delta") => {
                         if let Some(delta) = params.get("delta").and_then(|value| value.as_str()) {
                             final_text.push_str(delta);
@@ -11470,19 +11206,6 @@ fn run_codex_app_server_turn(
                         }
                     }
                     Some("item/started") | Some("item/completed") => {
-                        if method == Some("item/completed") {
-                            if let Some(text) = params
-                                .get("item")
-                                .filter(|item| {
-                                    item.get("type").and_then(|value| value.as_str())
-                                        == Some("plan")
-                                })
-                                .and_then(|item| item.get("text"))
-                                .and_then(|value| value.as_str())
-                            {
-                                plan_text = Some(text.to_string());
-                            }
-                        }
                         let event_type = if method == Some("item/started") {
                             "item.started"
                         } else {
@@ -11529,9 +11252,9 @@ fn run_codex_app_server_turn(
                         return Ok(CodexTeamTurn {
                             thread_id: Some(client.thread_id().to_string()),
                             final_text,
-                            plan_text,
                             interrupted,
                             interrupt_requested_by_harness: interrupt_requested,
+                            close_requested_by_harness: close_requested,
                         });
                     }
                     _ if frame.get("id").is_some() && method.is_some() => {
@@ -11561,6 +11284,7 @@ fn run_codex_app_server_turn(
 /// The provider-owned `~/.claude/projects/**/<session>.jsonl` remains the
 /// execution history; Harness stores only the session locator, assignment,
 /// handoff, and explicit round outcome.
+#[allow(dead_code)] // historical reader/adapter helper; new Team creation rejects claude_cli
 fn run_claude_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
@@ -11589,17 +11313,11 @@ fn run_claude_team_member(
             cwd.display()
         ),
     )?;
-    member_row.status = MemberRunStatus::Running;
-    ledger.save_member_run(&member_row)?;
-
     let assignment = latest_queued_assignment(ledger, &member.id)?;
     let assignment_body = assignment
         .as_ref()
         .map(|message| message.body.clone())
         .unwrap_or_else(|| objective.to_string());
-    if let Some(assignment) = &assignment {
-        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
-    }
     let envelope =
         member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
     let collaboration_env = envelope.environment();
@@ -11624,6 +11342,14 @@ fn run_claude_team_member(
             ledger,
             &collaboration_env,
         )?;
+        if round == 1 {
+            if let Some(assignment) = &assignment {
+                // `claude_cli` has no live delivery receipt. A successfully
+                // completed first provider turn is the earliest honest proof
+                // that the one-shot process accepted its Assignment.
+                mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+            }
+        }
         member_row.native_session = Some(native_session_ref(
             &member_row,
             &turn.session_id,
@@ -11737,6 +11463,519 @@ fn run_claude_team_member(
     Ok(MemberOutcome::new(member, final_status, final_summary))
 }
 
+/// Test-only compatibility timeout. Production has no implicit idle close:
+/// Agent Team members remain addressable until the Host explicitly closes
+/// them. Integration tests may set this variable to bound a foreground run.
+fn claude_agent_sdk_idle_grace() -> Option<Duration> {
+    std::env::var("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
+
+fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
+    if let Ok(explicit) = std::env::var("HARNESS_CLAUDE_MEMBER_RUNNER") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(CliError::Usage(format!(
+            "HARNESS_CLAUDE_MEMBER_RUNNER points at {}, which is not a file",
+            path.display()
+        )));
+    }
+    const RELATIVE: &str = "apps/claude-member-runner/bin/claude-member-runner.mjs";
+    for base in cwd.ancestors() {
+        let candidate = base.join(RELATIVE);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // Fail explicitly rather than silently degrading to the `-p` path: a member
+    // that quietly loses its control channel is exactly the failure this mode
+    // exists to remove. Since `claude_agent_sdk` is the only Claude Agent Team
+    // mode, this message tells a first-time runner how to repair the host.
+    Err(CliError::Usage(format!(
+        "claude_agent_sdk runner not found. Looked for `{RELATIVE}` in {} and \
+         every parent, and HARNESS_CLAUDE_MEMBER_RUNNER is unset.\n\
+         Fix one of:\n  \
+         - run from a checkout that contains the runner, or point \
+         HARNESS_CLAUDE_MEMBER_RUNNER at it\n  \
+         - install its dependency once: pnpm add @anthropic-ai/claude-agent-sdk",
+        cwd.display()
+    )))
+}
+
+/// Drive one Agent-SDK-backed Claude member.
+///
+/// Harness owns coordination; the runner owns exactly one provider-native
+/// session. Coordination records stay provider-neutral while lifecycle control
+/// is backed by the SDK transport.
+fn run_claude_agent_sdk_team_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    project_id: Option<&str>,
+    member: &MemberRun,
+    cwd: &Path,
+    idle_timeout: Duration,
+    _live_sink: Option<LiveMemberActivitySink>,
+) -> CliResult<MemberOutcome> {
+    use std::io::Write as _;
+
+    let runner = claude_agent_sdk_runner_path(cwd)?;
+
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (claude agent sdk, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+    member_row.status = MemberRunStatus::Running;
+    ledger.save_member_run(&member_row)?;
+
+    let assignment = latest_queued_assignment(ledger, &member.id)?;
+    let assignment_body = assignment
+        .as_ref()
+        .map(|message| message.body.clone())
+        .unwrap_or_else(|| objective.to_string());
+    let envelope =
+        member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
+
+    let mut child = Command::new("node")
+        .arg(&runner)
+        .current_dir(cwd)
+        .envs(envelope.environment().iter().cloned())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "failed to spawn claude_agent_sdk runner for {}: {error}. \
+                 The runner needs `node` on PATH.",
+                member.name
+            ))
+        })?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| CliError::Usage("runner stdin unavailable".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Usage("runner stdout unavailable".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Usage("runner stderr unavailable".into()))?;
+
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let stdout_reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+
+    let mut send = |command: serde_json::Value| -> CliResult<()> {
+        stdin
+            .write_all(format!("{command}\n").as_bytes())
+            .and_then(|_| stdin.flush())
+            .map_err(|error| CliError::Usage(format!("runner stdin write failed: {error}")))
+    };
+
+    send(serde_json::json!({
+        "command": "start",
+        "payload": {
+            "teamRunId": ledger.run_id,
+            "memberRunId": member.id,
+            "memberName": member.name,
+            "roleLabel": member.role,
+            "cwd": cwd.to_string_lossy(),
+            "ownedPaths": member.owned_paths,
+            "model": member.model,
+            "permissionMode": claude_team_permission_mode(),
+            "resumeSessionId": member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.clone()),
+        }
+    }))?;
+    send(serde_json::json!({
+        "command": "deliver",
+        "payload": {
+            "id": assignment.as_ref().map(|m| m.id.clone()).unwrap_or_default(),
+            "kind": "assignment",
+            "from_member_id": "host",
+            "correlation_id": assignment.as_ref().map(|m| m.correlation_id.clone()),
+            "body": contract_prompt(objective, &member_row, &assignment_body, &envelope),
+        }
+    }))?;
+
+    // Publish the live handle only after the runner transport exists. Close is
+    // an explicit Host operation; normal mailbox idleness never tears it down.
+    let (live_control, _live_control_registration) = register_live_member_control(&member_row, 16);
+    member_row.status = MemberRunStatus::Running;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!("member {} running (claude agent sdk)", member.name),
+    )?;
+    let mut round = 0u32;
+    let mut turn_text = String::new();
+    let mut final_status = MemberRunStatus::Failed;
+    let mut final_summary = String::new();
+    let mut closing = false;
+    let mut closed_by_host = false;
+    let mut idle_since: Option<Instant> = None;
+    let mut inflight_messages = HashMap::<String, TeamMessage>::new();
+    let mut delivered_message_ids = HashSet::<String>::new();
+    if let Some(assignment) = &assignment {
+        inflight_messages.insert(assignment.id.clone(), assignment.clone());
+    }
+
+    loop {
+        while let Ok(command) = live_control.try_recv() {
+            match command {
+                MemberControlCommand::Interrupt {
+                    reason,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = send(serde_json::json!({
+                        "command": "interrupt",
+                        "payload": {}
+                    }))
+                    .and_then(|()| {
+                        ledger.append_action(
+                            &member.id,
+                            "interrupt_requested",
+                            MemberActionStatus::Progress,
+                            "Claude turn interruption requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "status": "interrupt_requested",
+                            "provider_ack": "agent_sdk_interrupt_dispatched",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
+                MemberControlCommand::Close {
+                    reason,
+                    requested_by,
+                    reply,
+                } => {
+                    let result = send(serde_json::json!({
+                        "command": "close",
+                        "payload": { "reason": reason }
+                    }))
+                    .and_then(|()| {
+                        ledger.append_action(
+                            &member.id,
+                            "close_requested",
+                            MemberActionStatus::Progress,
+                            "Claude member close requested",
+                            &format!("{requested_by}: explicit Host close"),
+                        )?;
+                        closing = true;
+                        closed_by_host = true;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "status": "close_requested",
+                            "provider_ack": "agent_sdk_close_dispatched",
+                        }))
+                    });
+                    let _ = reply.send(result);
+                }
+                MemberControlCommand::Steer { reply, .. } => {
+                    let _ = reply.send(Err(CliError::Usage(
+                        "claude_agent_sdk does not expose content steer; send a TeamMessage"
+                            .to_string(),
+                    )));
+                }
+            }
+        }
+
+        let waited = match line_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(line) => Some(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        if let Some(line) = waited {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let name = event.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let data = event
+                .get("data")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+
+            match name {
+                "session_bound" => {
+                    if let Some(session_id) = data.get("sessionId").and_then(|v| v.as_str()) {
+                        member_row.native_session = Some(native_session_ref(
+                            &member_row,
+                            session_id,
+                            "claude_project_session",
+                        ));
+                        ledger.save_member_run(&member_row)?;
+                    }
+                }
+                "assistant_message" => {
+                    if let Some(blocks) = data.get("content").and_then(|v| v.as_array()) {
+                        for block in blocks {
+                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                turn_text.push_str(text);
+                            }
+                        }
+                    }
+                }
+                "delivered" => {
+                    if let Some(message_id) = data.get("id").and_then(|v| v.as_str()) {
+                        if let Some(message) = inflight_messages.remove(message_id) {
+                            mark_message_delivered(ledger, &message, &member.id, &member.name)?;
+                            delivered_message_ids.insert(message_id.to_string());
+                        }
+                    }
+                }
+                "turn_complete" => {
+                    let turn_evidence_refs: Vec<String> = data
+                        .get("evidenceRefs")
+                        .and_then(|value| value.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect();
+                    round += 1;
+                    let (status, summary) = record_member_round(
+                        ledger,
+                        &mut member_row,
+                        assignment.as_ref(),
+                        &turn_text,
+                        &turn_evidence_refs,
+                        round,
+                    )?;
+                    final_status = status;
+                    final_summary = summary;
+                    turn_text.clear();
+                    idle_since = Some(Instant::now());
+                }
+                "interrupted" => {
+                    ledger.append_action(
+                        &member.id,
+                        "interrupted",
+                        MemberActionStatus::Succeeded,
+                        "Claude turn interrupted",
+                        "The Agent SDK acknowledged interrupt and will resume the same native session.",
+                    )?;
+                }
+                "member_closed" => {
+                    ledger.append_action(
+                        &member.id,
+                        "closed",
+                        MemberActionStatus::Succeeded,
+                        "Claude member runtime closed",
+                        data.get("reason")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("Agent SDK runner acknowledged Host close"),
+                    )?;
+                    break;
+                }
+                "runner_error" => {
+                    return Err(CliError::Usage(format!(
+                        "claude_agent_sdk runner error for {}: {}",
+                        member.name, data
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        if closing {
+            continue;
+        }
+
+        // Poll the durable Harness mailbox independently of provider turn
+        // completion. The Agent SDK accepts streaming input while a turn is
+        // active, so Host and peer messages must not wait for `turn_complete`.
+        // A message remains queued until the runner emits its delivery receipt;
+        // `inflight_messages` prevents duplicate injection during that window;
+        // `delivered_message_ids` also protects this live adapter generation
+        // from a stale latest-wins read immediately after the receipt append.
+        let queued = ledger.queued_messages_for(&member.id)?;
+        let mut delivered_any = false;
+        for message in queued {
+            if inflight_messages.contains_key(&message.id)
+                || delivered_message_ids.contains(&message.id)
+            {
+                continue;
+            }
+            send(serde_json::json!({
+                "command": "deliver",
+                "payload": {
+                    "id": message.id,
+                    "kind": team_message_kind_label(&message.kind),
+                    "from_member_id": message.from_member_id,
+                    "correlation_id": message.correlation_id,
+                    "body": message.body,
+                }
+            }))?;
+            inflight_messages.insert(message.id.clone(), message);
+            delivered_any = true;
+        }
+        if delivered_any {
+            member_row.status = MemberRunStatus::Running;
+            member_row.finished_at = None;
+            ledger.save_member_run(&member_row)?;
+            idle_since = None;
+        } else if let (Some(since), Some(grace)) = (idle_since, claude_agent_sdk_idle_grace()) {
+            if inflight_messages.is_empty() && since.elapsed() >= grace {
+                send(serde_json::json!({
+                    "command": "close",
+                    "payload": { "reason": "test_idle_timeout" }
+                }))?;
+                closing = true;
+            }
+        }
+    }
+
+    drop(stdin);
+    let _ = child.wait();
+    let _ = stdout_reader.join();
+    let stderr_text = stderr_reader.join().unwrap_or_default();
+    if round == 0 {
+        if closed_by_host {
+            member_row.status = MemberRunStatus::Stopped;
+            member_row.finished_at = Some(now_string());
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            return Ok(MemberOutcome::new(
+                member,
+                MemberRunStatus::Stopped,
+                "Claude member closed by Host before its first turn completed".to_string(),
+            ));
+        }
+        return Err(CliError::Usage(format!(
+            "claude_agent_sdk member {} produced no turn. stderr: {}",
+            member.name,
+            stderr_text.trim()
+        )));
+    }
+    let _ = idle_timeout;
+
+    Ok(MemberOutcome::new(member, final_status, final_summary))
+}
+
+/// Ledger writes for one completed member round, shared by both Claude modes so
+/// they cannot drift apart: handoff to Host, action row, member status.
+fn record_member_round(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    assignment: Option<&TeamMessage>,
+    final_text: &str,
+    evidence_refs: &[String],
+    round: u32,
+) -> CliResult<(MemberRunStatus, String)> {
+    let handoff = TeamMessage {
+        id: generated_id("tmsg"),
+        team_run_id: ledger.run_id.clone(),
+        origin_wave_id: assignment.and_then(|message| message.origin_wave_id.clone()),
+        from_member_id: member_row.id.clone(),
+        to_member_ids: vec!["host".to_string()],
+        kind: TeamMessageKind::Handoff,
+        body: final_text.to_string(),
+        correlation_id: assignment
+            .map(|message| message.correlation_id.clone())
+            .unwrap_or_else(|| generated_id("corr")),
+        causation_id: assignment.map(|message| message.id.clone()),
+        evidence_refs: evidence_refs.to_vec(),
+        deliveries: vec![TeamMessageDelivery {
+            member_id: "host".to_string(),
+            policy: TeamDeliveryPolicy::ManualAck,
+            status: TeamDeliveryStatus::Delivered,
+            attempt: 1,
+            updated_at: now_string(),
+        }],
+        created_at: now_string(),
+    };
+    ledger.save_message(&handoff)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "message",
+        &handoff.id,
+        "created",
+        &format!("handoff from {} to host (round {round})", member_row.name),
+    )?;
+
+    let (action_type, action_status, member_status) = match parse_round_result(final_text) {
+        MemberRoundResult::Done => (
+            "completed",
+            MemberActionStatus::Succeeded,
+            MemberRunStatus::Completed,
+        ),
+        MemberRoundResult::Blocked => (
+            "blocked",
+            MemberActionStatus::Failed,
+            MemberRunStatus::Blocked,
+        ),
+        MemberRoundResult::Failed => ("error", MemberActionStatus::Failed, MemberRunStatus::Failed),
+    };
+    let result_section =
+        extract_report_section(final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+    let action = ledger.append_action(
+        &member_row.id,
+        action_type,
+        action_status,
+        &format!("round {round} {action_type}"),
+        &result_section,
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "action",
+        &action.id,
+        "created",
+        &format!("{} round {round}: {action_type}", member_row.name),
+    )?;
+    member_row.status = member_status;
+    member_row.finished_at = Some(now_string());
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(member_row)?;
+
+    let summary = extract_report_section(final_text, "SUMMARY")
+        .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+    Ok((member_status, summary))
+}
+
+#[allow(dead_code)] // retained for historical claude_cli record diagnostics
 struct ClaudeTeamTurn {
     session_id: String,
     final_text: String,
@@ -11746,6 +11985,7 @@ fn claude_team_permission_mode() -> &'static str {
     "bypassPermissions"
 }
 
+#[allow(dead_code)] // bounded Claude execution belongs to Workflow, not Team
 fn run_claude_team_turn(
     prompt: &str,
     cwd: &Path,
@@ -11883,6 +12123,7 @@ fn run_claude_team_turn(
     })
 }
 
+#[allow(dead_code)] // historical claude_cli projection helper
 fn project_claude_team_event_live(
     ledger: &TeamRunLedger,
     member: &MemberRun,
@@ -11950,12 +12191,6 @@ fn run_kimi_member(
     let envelope =
         member_collaboration_envelope(ledger, project_id, &member_row, assignment.as_ref())?;
     let collaboration_env = envelope.environment();
-    let initial_plan_request = assignment
-        .as_ref()
-        .map(|assignment| queued_plan_request(ledger, assignment, &member.id))
-        .transpose()?
-        .flatten();
-
     let mut client = kimi_acp::KimiAcpClient::spawn(
         cwd,
         member.model.as_deref(),
@@ -11998,116 +12233,6 @@ fn run_kimi_member(
     if let Some(assignment) = &assignment {
         mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
     }
-    if let (Some(assignment), Some(plan_request)) = (&assignment, initial_plan_request) {
-        client.set_mode("plan")?;
-        mark_message_delivered(ledger, &plan_request, &member.id, &member.name)?;
-        let mut planning_input = plan_request;
-        let mut revision = 1usize;
-        loop {
-            member_row.status = MemberRunStatus::Reviewing;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
-            let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
-            let outcome = client.prompt(
-                &plan_round_prompt(&assignment_body, &planning_input, revision),
-                idle_timeout,
-                |update| mapper.handle(update),
-                |request| handle_kimi_provider_request(ledger, &member_row, request),
-                || {
-                    let mut cancel = false;
-                    while let Ok(command) = live_control.try_recv() {
-                        match command {
-                            MemberControlCommand::Interrupt {
-                                reason,
-                                requested_by,
-                                reply,
-                            } => {
-                                cancel = true;
-                                let _ = reply.send(Ok(serde_json::json!({
-                                    "member_run_id": member.id,
-                                    "status": "cancel_requested",
-                                    "phase": "planning",
-                                    "reason": reason,
-                                    "requested_by": requested_by,
-                                })));
-                            }
-                            MemberControlCommand::Steer { reply, .. } => {
-                                let _ = reply.send(Err(CliError::Usage(
-                                    "Kimi ACP planning does not support mid-turn steer; use plan_feedback after proposal"
-                                        .to_string(),
-                                )));
-                            }
-                        }
-                    }
-                    Ok(cancel)
-                },
-            )?;
-            if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
-                member_row.status = MemberRunStatus::Stopped;
-                member_row.finished_at = Some(now_string());
-                member_row.last_event_at = Some(now_string());
-                ledger.save_member_run(&member_row)?;
-                client.shutdown();
-                return Ok(MemberOutcome::new(
-                    member,
-                    MemberRunStatus::Stopped,
-                    "Kimi planning prompt cancelled".to_string(),
-                ));
-            }
-            let proposal_body = select_member_plan_proposal(mapper.text(), mapper.plan_text())
-                .ok_or_else(|| {
-                    CliError::Usage(format!(
-                        "kimi member {} completed native Plan mode without a plan proposal",
-                        member.name
-                    ))
-                })?;
-            member_row = mapper.into_member();
-            submit_member_plan_proposal(
-                ledger,
-                &member_row,
-                assignment,
-                &planning_input,
-                &proposal_body,
-            )?;
-            member_row.status = MemberRunStatus::Waiting;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
-            match wait_for_host_plan_decision(ledger, &member_row, assignment, Some(&live_control))?
-            {
-                PlanHostDecision::Feedback(feedback) => {
-                    planning_input = feedback;
-                    revision += 1;
-                }
-                PlanHostDecision::Approved(approval) => {
-                    ledger.append_action(
-                        &member.id,
-                        "plan_approved",
-                        MemberActionStatus::Succeeded,
-                        "Host approved Member plan",
-                        &approval.body,
-                    )?;
-                    client.set_mode("default")?;
-                    member_row.status = MemberRunStatus::Running;
-                    member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(&member_row)?;
-                    break;
-                }
-                PlanHostDecision::Cancelled => {
-                    member_row.status = MemberRunStatus::Stopped;
-                    member_row.finished_at = Some(now_string());
-                    member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(&member_row)?;
-                    client.shutdown();
-                    return Ok(MemberOutcome::new(
-                        member,
-                        MemberRunStatus::Stopped,
-                        "TeamRun cancelled while awaiting plan approval".to_string(),
-                    ));
-                }
-            }
-        }
-    }
-
     let mut round = 0u32;
     let mut next_prompt = Some(contract_prompt(
         objective,
@@ -12117,6 +12242,7 @@ fn run_kimi_member(
     ));
     let mut final_status = MemberRunStatus::Failed;
     let mut final_summary = String::new();
+    let mut close_requested = false;
     while let Some(prompt_text) = next_prompt.take() {
         round += 1;
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
@@ -12152,6 +12278,26 @@ fn run_kimi_member(
                                 "kimi_acp does not support mid-turn steer".to_string(),
                             )));
                         }
+                        MemberControlCommand::Close {
+                            reason,
+                            requested_by,
+                            reply,
+                        } => {
+                            ledger.append_action(
+                                &member.id,
+                                "close_requested",
+                                MemberActionStatus::Progress,
+                                "Kimi member close requested",
+                                &format!("{requested_by}: {reason}"),
+                            )?;
+                            close_requested = true;
+                            cancel = true;
+                            let _ = reply.send(Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "status": "close_requested",
+                                "provider_ack": "session_cancel_requested",
+                            })));
+                        }
                     }
                 }
                 Ok(cancel)
@@ -12166,16 +12312,32 @@ fn run_kimi_member(
             ledger.save_member_run(&member_row)?;
             ledger.append_action(
                 &member.id,
-                "interrupted",
+                if close_requested {
+                    "closed"
+                } else {
+                    "interrupted"
+                },
                 MemberActionStatus::Cancelled,
-                "Kimi prompt cancelled",
-                "The active ACP prompt acknowledged session/cancel.",
+                if close_requested {
+                    "Kimi member runtime closed"
+                } else {
+                    "Kimi prompt cancelled"
+                },
+                if close_requested {
+                    "The Host requested close and ACP acknowledged session/cancel."
+                } else {
+                    "The active ACP prompt acknowledged session/cancel."
+                },
             )?;
             client.shutdown();
             return Ok(MemberOutcome::new(
                 member,
                 MemberRunStatus::Stopped,
-                "Kimi prompt cancelled by operator or Lead".to_string(),
+                if close_requested {
+                    "Kimi member runtime closed by Host".to_string()
+                } else {
+                    "Kimi prompt cancelled by operator or Lead".to_string()
+                },
             ));
         }
         let result = parse_round_result(&final_text);
@@ -12344,127 +12506,6 @@ fn latest_queued_assignment(
                 delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
             })
     }))
-}
-
-fn queued_plan_request(
-    ledger: &TeamRunLedger,
-    assignment: &TeamMessage,
-    member_id: &str,
-) -> CliResult<Option<TeamMessage>> {
-    Ok(ledger.team_messages()?.into_iter().rfind(|message| {
-        message.kind == TeamMessageKind::PlanRequest
-            && message.correlation_id == assignment.correlation_id
-            && message.deliveries.iter().any(|delivery| {
-                delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
-            })
-    }))
-}
-
-fn plan_round_prompt(
-    assignment_body: &str,
-    request_or_feedback: &TeamMessage,
-    revision: usize,
-) -> String {
-    format!(
-        "PLAN-ONLY ROUND (revision {revision}). Do not implement or modify files.\n\
-         The durable Assignment remains your Goal:\n{assignment_body}\n\n\
-         Host planning request / feedback:\n{}\n\n\
-         Use the provider's native Plan mode. Inspect enough read-only context to propose a concrete plan.\n\
-         Return a concise Markdown plan covering approach, owned paths, checks, risks, coordination needs, and the explicit execution boundary.\n\
-         This proposal will be submitted to Host for debate and approval; execution must not begin before plan_approval.",
-        request_or_feedback.body
-    )
-}
-
-fn submit_member_plan_proposal(
-    ledger: &TeamRunLedger,
-    member: &MemberRun,
-    assignment: &TeamMessage,
-    caused_by: &TeamMessage,
-    body: &str,
-) -> CliResult<TeamMessage> {
-    send_team_message(
-        &ledger.store,
-        &ledger.run_id,
-        &member.id,
-        vec!["host".to_string()],
-        TeamMessageKind::PlanProposal,
-        body,
-        Some(assignment.correlation_id.clone()),
-        Some(caused_by.id.clone()),
-        assignment.origin_wave_id.clone(),
-    )
-}
-
-enum PlanHostDecision {
-    Feedback(TeamMessage),
-    Approved(TeamMessage),
-    Cancelled,
-}
-
-/// Wait for an explicit Host decision without inventing provider completion.
-/// The MemberRun remains Waiting and its native session stays alive. The
-/// TeamRun cancellation row is the durable escape hatch.
-fn wait_for_host_plan_decision(
-    ledger: &TeamRunLedger,
-    member: &MemberRun,
-    assignment: &TeamMessage,
-    controls: Option<&ControlReceiver<MemberControlCommand>>,
-) -> CliResult<PlanHostDecision> {
-    loop {
-        if let Some(controls) = controls {
-            while let Ok(command) = controls.try_recv() {
-                match command {
-                    MemberControlCommand::Interrupt {
-                        reason,
-                        requested_by,
-                        reply,
-                    } => {
-                        ledger.append_action(
-                            &member.id,
-                            "interrupted",
-                            MemberActionStatus::Cancelled,
-                            "plan approval wait interrupted",
-                            &format!("{requested_by}: {reason}"),
-                        )?;
-                        let _ = reply.send(Ok(serde_json::json!({
-                            "member_run_id": member.id,
-                            "status": "stopped",
-                            "phase": "plan_review",
-                        })));
-                        return Ok(PlanHostDecision::Cancelled);
-                    }
-                    MemberControlCommand::Steer { reply, .. } => {
-                        let _ = reply.send(Err(CliError::Usage(
-                            "Member is waiting for Host plan feedback or approval; use plan_feedback instead of live steer"
-                                .to_string(),
-                        )));
-                    }
-                }
-            }
-        }
-        if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Cancelled {
-            return Ok(PlanHostDecision::Cancelled);
-        }
-        if let Some(message) = ledger.team_messages()?.into_iter().find(|message| {
-            message.correlation_id == assignment.correlation_id
-                && matches!(
-                    message.kind,
-                    TeamMessageKind::PlanFeedback | TeamMessageKind::PlanApproval
-                )
-                && message.deliveries.iter().any(|delivery| {
-                    delivery.member_id == member.id && delivery.status == TeamDeliveryStatus::Queued
-                })
-        }) {
-            mark_message_delivered(ledger, &message, &member.id, &member.name)?;
-            return Ok(if message.kind == TeamMessageKind::PlanApproval {
-                PlanHostDecision::Approved(message)
-            } else {
-                PlanHostDecision::Feedback(message)
-            });
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// Flip every queued delivery of `message` addressed to `member_id` to
@@ -13113,9 +13154,6 @@ struct MemberUpdateMapper<'a> {
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
-    /// Latest provider-native plan update for this prompt. Only an explicit
-    /// PlanProposal derived from it may become durable coordination state.
-    plan_text: Option<String>,
     /// toolCallId → title retained only in memory so a completion projection
     /// stays readable. Provider tool activity is never written to Harness.
     open_tools: std::collections::HashMap<String, String>,
@@ -13133,7 +13171,6 @@ impl<'a> MemberUpdateMapper<'a> {
             live_sink,
             last_live_activity_at: Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE,
             text: String::new(),
-            plan_text: None,
             open_tools: std::collections::HashMap::new(),
         }
     }
@@ -13187,7 +13224,6 @@ impl<'a> MemberUpdateMapper<'a> {
             return;
         }
         if kind == "plan" {
-            self.plan_text = render_kimi_plan(update);
             return;
         }
         if kind.contains("tool") {
@@ -13230,51 +13266,9 @@ impl<'a> MemberUpdateMapper<'a> {
         &self.text
     }
 
-    fn plan_text(&self) -> Option<&str> {
-        self.plan_text.as_deref()
-    }
-
     fn into_member(self) -> MemberRun {
         self.member
     }
-}
-
-fn render_kimi_plan(update: &serde_json::Value) -> Option<String> {
-    if let Some(text) = update
-        .get("content")
-        .and_then(|content| content.get("text"))
-        .or_else(|| update.get("text"))
-        .and_then(|value| value.as_str())
-    {
-        return (!text.trim().is_empty()).then(|| text.to_string());
-    }
-    let entries = update
-        .get("entries")
-        .or_else(|| update.get("plan"))
-        .and_then(|value| value.as_array())?;
-    if entries.is_empty() {
-        return None;
-    }
-    Some(
-        entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let text = entry
-                    .get("content")
-                    .or_else(|| entry.get("step"))
-                    .or_else(|| entry.get("text"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Untitled step");
-                let status = entry
-                    .get("status")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("pending");
-                format!("{}. {} `{}`", index + 1, text, status)
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
 }
 
 /// The round outcome parsed from the report's `## RESULT` section.
@@ -13454,16 +13448,16 @@ fn contract_prompt(
          - Evidence: every claim in your report must be backed by something another agent can re-run (commands, tests, file diffs).\n\
          - Permission boundary: the provider currently has full local execution permission, but owned paths and this Assignment remain the product/acceptance boundary. Do NOT deploy, push, merge, or delete anything; do not modify files outside owned paths. Sensitive or ambiguous external actions must be escalated to Host/Policy/Human.\n\
          - You may use provider-native subagents freely inside your own plan. They are your implementation detail: do not create an implicit MemberRun, and keep responsibility, permissions, and evidence under this MemberRun.\n\
-         - You own this Assignment across multiple turns until Host accepts a review_result. Ask questions and coordinate early rather than silently guessing.\n\
-         - If Inbox contains plan_request, stay in the provider's Plan mode and submit plan_proposal. Address plan_feedback in the same native session. Do not implement until Host sends plan_approval.\n\
+         - You own this Assignment across multiple turns until Host explicitly accepts your handoff. Ask questions and coordinate early rather than silently guessing.\n\
+         - If Host asks you to plan first, answer with a concise Markdown plan in the same Assignment correlation and wait for an ordinary revise-or-execute message. Harness has no Plan Gate.\n\
          \n\
          COORDINATION CLI (run from this Workspace)\n\
          - Read actionable inbox: harness team-run inbox --id {team_run_id} --member-run-id {member_run_id} --json\n\
          - Read all received coordination messages (latest stored state): harness team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
-         - Ask Host: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind question --body \"<question>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Message a peer: harness team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind progress --body \"<coordination>\" --correlation-id {correlation_id} --json\n\
+         - Ask Host: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
+         - Message a peer: harness team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
          - Submit handoff: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Submit requested plan/revision: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind plan_proposal --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <plan-request-or-feedback-message-id> --json\n\
+         - Submit a requested plan/revision: harness team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
          \n\
          Report format (your final message MUST follow this):\n\
          ## RESULT\n\
@@ -14742,6 +14736,9 @@ fn handle_http_action(
         if let [team_run_id, "members", member_run_id, "interrupt"] = parts.as_slice() {
             return interrupt_team_member_value(store, team_run_id, member_run_id, body);
         }
+        if let [team_run_id, "members", member_run_id, "close"] = parts.as_slice() {
+            return close_team_member_value(store, team_run_id, member_run_id, body);
+        }
         if let [team_run_id, "members", member_run_id, "rename"] = parts.as_slice() {
             return Ok(serde_json::to_value(rename_team_run_member(
                 store,
@@ -14864,7 +14861,7 @@ fn steer_team_member_value(
             requested_by: requested_by.clone(),
             reply,
         },
-        true,
+        LiveMemberControlRequirement::Steer,
     )?;
     let mut message = send_team_message(
         store,
@@ -14896,10 +14893,29 @@ fn interrupt_team_member_value(
         optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
     let reason = optional_json_string(body, "reason")?
         .unwrap_or_else(|| "operator requested interruption".to_string());
-    // Unblock any reverse provider request before waiting for the live adapter
-    // acknowledgement. Otherwise the provider thread and HTTP caller would
-    // deadlock: the adapter is paused in PendingInteraction while the caller
-    // waits for it to consume the interrupt command.
+    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    dispatch_live_member_control(
+        team_run_id,
+        member_run_id,
+        |reply| MemberControlCommand::Interrupt {
+            reason,
+            requested_by,
+            reply,
+        },
+        LiveMemberControlRequirement::Interrupt,
+    )
+}
+
+fn cancel_pending_member_interactions(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    requested_by: &str,
+    reason: &str,
+) -> CliResult<()> {
+    // Unblock reverse provider requests before waiting for a live adapter
+    // acknowledgement. Otherwise the provider thread and HTTP caller can
+    // deadlock while the adapter is paused in PendingInteraction.
     for interaction in latest_pending_interactions_in_append_order(store)?
         .into_iter()
         .filter(|interaction| {
@@ -14911,8 +14927,8 @@ fn interrupt_team_member_value(
         let mut cancelled = interaction;
         cancelled.status = PendingInteractionStatus::Cancelled;
         cancelled.resolved_at = Some(now_string());
-        cancelled.resolved_by = Some(requested_by.clone());
-        cancelled.response_text = Some(reason.clone());
+        cancelled.resolved_by = Some(requested_by.to_string());
+        cancelled.response_text = Some(reason.to_string());
         store.append_pending_interaction(&cancelled)?;
         append_team_run_event(
             store,
@@ -14923,19 +14939,79 @@ fn interrupt_team_member_value(
             "pending_interaction",
             &cancelled.id,
             "resolved",
-            "pending provider interaction cancelled by member interruption",
+            "pending provider interaction cancelled by member lifecycle control",
         )?;
     }
-    dispatch_live_member_control(
-        team_run_id,
-        member_run_id,
-        |reply| MemberControlCommand::Interrupt {
-            reason,
-            requested_by,
-            reply,
-        },
-        false,
-    )
+    Ok(())
+}
+
+fn close_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let requested_by =
+        optional_json_string(body, "requested_by")?.unwrap_or_else(|| "host".to_string());
+    let reason = optional_json_string(body, "reason")?
+        .unwrap_or_else(|| "Host closed member runtime".to_string());
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+
+    let has_live_control = LIVE_MEMBER_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .contains_key(member_run_id);
+    if has_live_control {
+        return dispatch_live_member_control(
+            team_run_id,
+            member_run_id,
+            |reply| MemberControlCommand::Close {
+                reason,
+                requested_by,
+                reply,
+            },
+            LiveMemberControlRequirement::Close,
+        );
+    }
+
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if matches!(
+        member.status,
+        MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+    ) {
+        return Ok(serde_json::json!({
+            "member_run_id": member.id,
+            "status": serde_snake_label(&member.status),
+            "runtime": "not_live",
+            "idempotent": true,
+        }));
+    }
+    if matches!(
+        member.status,
+        MemberRunStatus::Starting | MemberRunStatus::Running
+    ) {
+        return Err(CliError::Usage(format!(
+            "member {member_run_id} is {} but its provider session is not owned by this server process; send close through the Host process that started the TeamRun",
+            serde_snake_label(&member.status)
+        )));
+    }
+    let member = deactivate_team_run_member(store, team_run_id, member_run_id, &reason)?;
+    Ok(serde_json::json!({
+        "member_run_id": member.id,
+        "status": "stopped",
+        "runtime": "not_started",
+        "idempotent": false,
+    }))
 }
 
 pub(crate) fn resolve_pending_interaction_value(
@@ -24123,7 +24199,8 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|inbox|add-member|rename-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|inbox|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
+  member-run show --id <member-run-id> [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
   company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
@@ -25543,23 +25620,24 @@ new file mode 100644
     #[test]
     fn run_ndjson_child_does_not_kill_a_slow_but_streaming_worker() {
         // The point of the IDLE timeout: a worker that keeps emitting events runs to
-        // completion even though its TOTAL runtime (~800ms) far exceeds the idle
-        // limit (300ms) — because it never goes silent that long. A fixed total-
+        // completion even though its TOTAL runtime (~1.5s) exceeds the idle
+        // limit (1s) — because it never goes silent that long. A fixed total-
         // wall-clock timeout would have wrongly killed it.
         let root = std::env::temp_dir().join(format!("mah-slow-{}", generated_id("t")));
         let session_dir = root.join("runtimes/test-workers").join("s");
         fs::create_dir_all(&session_dir).expect("mkdir");
         let mut cmd = Command::new("sh");
-        // 8 events, ~100ms apart → ~800ms total, never silent for 300ms.
+        // 15 events, ~100ms apart → ~1.5s total, never silent for 1s. The
+        // generous idle bound keeps this timing test stable under parallel CI.
         cmd.arg("-c")
-            .arg("for i in 1 2 3 4 5 6 7 8; do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
+            .arg("for i in $(seq 1 15); do printf '{\"type\":\"item\"}\\n'; sleep 0.1; done");
 
         let run = run_ndjson_child(
             cmd,
             &session_dir,
             "s",
             "out.ndjson",
-            300,
+            1_000,
             None,
             None,
             "ephemeral worker",
@@ -25571,7 +25649,7 @@ new file mode 100644
             "a continuously-streaming worker must NOT be killed by the idle timeout"
         );
         assert!(run.process_success, "it should exit cleanly on its own");
-        assert_eq!(run.events.len(), 8, "all streamed events captured");
+        assert_eq!(run.events.len(), 15, "all streamed events captured");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -28098,6 +28176,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_team_message_writes_use_four_durable_shapes() {
+        assert!(matches!(
+            parse_team_message_kind("assignment"),
+            Ok(TeamMessageKind::Assignment)
+        ));
+        assert!(matches!(
+            parse_team_message_kind("message"),
+            Ok(TeamMessageKind::Message)
+        ));
+        assert!(matches!(
+            parse_team_message_kind("handoff"),
+            Ok(TeamMessageKind::Handoff)
+        ));
+        assert!(matches!(
+            parse_team_message_kind("control"),
+            Ok(TeamMessageKind::Control)
+        ));
+
+        for historical in [
+            "question",
+            "answer",
+            "progress",
+            "blocker",
+            "review_request",
+            "review_result",
+            "plan_request",
+            "plan_proposal",
+            "plan_feedback",
+            "plan_approval",
+            "broadcast",
+        ] {
+            let error = parse_team_message_kind(historical)
+                .expect_err("historical message kinds must be read-only");
+            assert!(
+                matches!(error, CliError::Usage(ref message) if message.contains("historical and read-only")),
+                "unexpected error for {historical}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn provider_version_drift_requires_adapter_review() {
         let mut current = team_member_provider_profile("codex");
         apply_provider_version(&mut current, Some("0.145.0-alpha.18".to_string()));
@@ -29161,7 +29280,7 @@ mod tests {
                     name: "BuilderA".into(),
                     role: "module_a".into(),
                     provider: "codex".into(),
-                    execution_mode: Some("codex_exec".into()),
+                    execution_mode: Some("codex_app_server".into()),
                     model: None,
                     worktree_ref: None,
                     owned_paths: vec!["crates/a".into()],
@@ -29171,7 +29290,7 @@ mod tests {
                     name: "BuilderB".into(),
                     role: "module_b".into(),
                     provider: "codex".into(),
-                    execution_mode: Some("codex_exec".into()),
+                    execution_mode: Some("codex_app_server".into()),
                     model: None,
                     worktree_ref: None,
                     owned_paths: vec!["crates/b".into()],
@@ -29180,6 +29299,60 @@ mod tests {
             ],
         )
         .expect("create team run")
+    }
+
+    #[test]
+    fn member_run_detail_joins_assignment_mailbox_runtime_and_handoff() {
+        let (store, root) = temp_store("member-run-detail");
+        let created = create_two_member_team_run(&store);
+        let first = &created.member_runs[0];
+        let second = &created.member_runs[1];
+        let assignment = &created.assignment_messages[0];
+
+        send_team_message(
+            &store,
+            &created.team_run.id,
+            &second.id,
+            vec![first.id.clone()],
+            TeamMessageKind::Progress,
+            "Peer API is ready",
+            Some(assignment.correlation_id.clone()),
+            None,
+            None,
+        )
+        .expect("peer message");
+        send_team_message(
+            &store,
+            &created.team_run.id,
+            &first.id,
+            vec!["host".into()],
+            TeamMessageKind::Handoff,
+            "Module A complete",
+            Some(assignment.correlation_id.clone()),
+            Some(assignment.id.clone()),
+            None,
+        )
+        .expect("handoff");
+
+        let detail = member_run_detail_json(&store, &first.id).expect("member detail");
+        assert_eq!(detail["member_run"]["id"], first.id);
+        assert_eq!(detail["team_run"]["id"], created.team_run.id);
+        assert_eq!(detail["assignment"]["id"], assignment.id);
+        assert_eq!(
+            detail["assignment_correlation_id"],
+            assignment.correlation_id
+        );
+        assert_eq!(
+            detail["mailbox"]["inbox"].as_array().map(Vec::len),
+            Some(2),
+            "assignment plus peer progress"
+        );
+        assert_eq!(
+            detail["mailbox"]["outbox"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(detail["latest_handoff"]["body"], "Module A complete");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -29252,8 +29425,8 @@ mod tests {
     }
 
     #[test]
-    fn member_plan_negotiation_enforces_owner_host_revision_and_approval_order() {
-        let (store, root) = temp_store("member-plan-negotiation");
+    fn member_planning_is_ordinary_correlated_conversation() {
+        let (store, root) = temp_store("member-plan-conversation");
         let created = create_two_member_team_run(&store);
         let member = &created.member_runs[0];
         let assignment = &created.assignment_messages[0];
@@ -29263,8 +29436,8 @@ mod tests {
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::PlanRequest,
-            "Plan before implementation",
+            TeamMessageKind::Message,
+            "Return a Markdown plan before implementation. Do not execute yet.",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
@@ -29275,7 +29448,7 @@ mod tests {
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::PlanProposal,
+            TeamMessageKind::Message,
             "1. Inspect\n2. Implement\n3. Verify",
             Some(assignment.correlation_id.clone()),
             Some(request.id.clone()),
@@ -29287,7 +29460,7 @@ mod tests {
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::PlanFeedback,
+            TeamMessageKind::Message,
             "Add rollback and integration checks",
             Some(assignment.correlation_id.clone()),
             Some(proposal_one.id.clone()),
@@ -29295,26 +29468,12 @@ mod tests {
         )
         .expect("Host challenges proposal");
 
-        let stale_approval = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::PlanApproval,
-            "Approve stale proposal",
-            Some(assignment.correlation_id.clone()),
-            Some(proposal_one.id),
-            None,
-        )
-        .expect_err("Host cannot approve before requested revision");
-        assert!(stale_approval.to_string().contains("cannot approve"));
-
         let proposal_two = send_team_message(
             &store,
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::PlanProposal,
+            TeamMessageKind::Message,
             "1. Inspect\n2. Implement\n3. Integrate\n4. Roll back if checks fail",
             Some(assignment.correlation_id.clone()),
             Some(feedback.id),
@@ -29326,84 +29485,99 @@ mod tests {
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::PlanApproval,
-            "Approved for execution",
+            TeamMessageKind::Message,
+            "Plan reviewed. Execute revision 2.",
             Some(assignment.correlation_id.clone()),
             Some(proposal_two.id),
             None,
         )
-        .expect("Host approves latest proposal");
-
-        let after_approval = send_team_message(
-            &store,
-            &created.team_run.id,
-            &member.id,
-            vec!["host".into()],
-            TeamMessageKind::PlanProposal,
-            "Unexpected extra revision",
-            Some(assignment.correlation_id.clone()),
-            Some(request.id),
-            None,
-        )
-        .expect_err("negotiation closes after approval");
-        assert!(after_approval
-            .to_string()
-            .contains("already has Host plan approval"));
+        .expect("Host instructs execution");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn provider_plan_updates_render_without_persisting_native_stream_shape() {
-        let codex = render_codex_plan(&serde_json::json!({
-            "threadId": "thread-1",
-            "turnId": "turn-1",
-            "plan": [
-                {"step": "Inspect contract", "status": "completed"},
-                {"step": "Implement adapter", "status": "inProgress"}
-            ]
-        }))
-        .expect("Codex plan");
-        assert!(codex.contains("Inspect contract `completed`"));
-        assert!(codex.contains("Implement adapter `inProgress`"));
-
-        let kimi = render_kimi_plan(&serde_json::json!({
-            "sessionUpdate": "plan",
-            "entries": [
-                {"content": "Inspect contract", "status": "completed"},
-                {"content": "Implement adapter", "status": "in_progress"}
-            ]
-        }))
-        .expect("Kimi plan");
-        assert!(kimi.contains("Inspect contract `completed`"));
-        assert!(kimi.contains("Implement adapter `in_progress`"));
-
-        assert_eq!(
-            select_member_plan_proposal(
-                "## Plan\n\nDetailed explicit proposal",
-                Some("1. Short checklist `completed`")
-            )
-            .as_deref(),
-            Some("## Plan\n\nDetailed explicit proposal")
-        );
-        assert_eq!(
-            select_member_plan_proposal("", Some("1. Structured fallback `pending`")).as_deref(),
-            Some("1. Structured fallback `pending`")
-        );
-    }
-
-    #[test]
-    fn provider_profiles_distinguish_native_emulated_and_unsupported_planning() {
+    fn provider_profiles_make_codex_app_server_the_team_default() {
         let codex_app = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
         assert_eq!(codex_app.plan_mode, ProviderFeatureMode::Native);
         assert_eq!(codex_app.goal_mode, ProviderFeatureMode::Native);
+        assert_eq!(
+            team_member_provider_profile("codex").execution_mode,
+            "codex_app_server"
+        );
 
         let kimi = team_member_provider_profile_for_mode("kimi", Some("kimi_acp"));
         assert_eq!(kimi.plan_mode, ProviderFeatureMode::Native);
         assert_eq!(kimi.goal_mode, ProviderFeatureMode::Emulated);
 
+        // Historical records remain projectable even though new TeamRuns reject
+        // codex_exec; Workflow continues to own that one-shot substrate.
         let codex_exec = team_member_provider_profile_for_mode("codex", Some("codex_exec"));
         assert_eq!(codex_exec.plan_mode, ProviderFeatureMode::Unsupported);
         assert_eq!(codex_exec.goal_mode, ProviderFeatureMode::Unsupported);
+    }
+
+    #[test]
+    fn new_agent_team_rejects_codex_exec_as_workflow_only() {
+        let (store, root) = temp_store("team-reject-codex-exec");
+        let result = create_team_run(
+            &store,
+            None,
+            None,
+            "Do interactive team work",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                name: "BatchMember".into(),
+                role: "worker".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_exec".into()),
+                model: None,
+                worktree_ref: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+            }],
+        );
+        let error = match result {
+            Ok(_) => panic!("Agent Team must reject one-shot Codex exec"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, CliError::Usage(ref message) if message.contains("workflow-only")),
+            "unexpected error: {error:?}"
+        );
+
+        let created = create_two_member_team_run(&store);
+        let add_result = add_team_run_member(
+            &store,
+            None,
+            &created.team_run.id,
+            &TeamMemberSpec {
+                name: "LateBatchMember".into(),
+                role: "worker".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_exec".into()),
+                model: None,
+                worktree_ref: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+            },
+            "Join the running collaboration",
+            None,
+        );
+        let add_error = match add_result {
+            Ok(_) => panic!("Agent Team add-member must reject one-shot Codex exec"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(add_error, CliError::Usage(ref message) if message.contains("workflow-only")),
+            "unexpected add-member error: {add_error:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -29747,23 +29921,6 @@ mod sse_tests {
             }
             Err(_) => panic!("Did not receive event in time"),
         }
-    }
-
-    #[test]
-    fn codex_team_sandbox_uses_temporary_full_access_policy() {
-        assert_eq!(codex_team_sandbox(), "danger-full-access");
-        assert_eq!(claude_team_permission_mode(), "bypassPermissions");
-    }
-
-    #[test]
-    fn codex_team_user_config_isolation_switch_is_explicit() {
-        for enabled in ["1", "true", "yes", "on", " true "] {
-            assert!(enabled_env_switch(Some(enabled)));
-        }
-        for disabled in ["", "0", "false", "off", "unexpected"] {
-            assert!(!enabled_env_switch(Some(disabled)));
-        }
-        assert!(!enabled_env_switch(None));
     }
 
     #[test]
