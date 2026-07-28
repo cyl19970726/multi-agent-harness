@@ -52,16 +52,19 @@ skill when there is a conflict.
 Produce a concise bootstrap plan or implementation report with:
 
 1. `DocumentSpace` and top-level document/module map.
-2. Business modules and their owned facts.
-3. WorkTypes, Milestones, first WorkItems, assignment/routing policy, and
+2. Page information architecture: for every core page, the question it answers,
+   required sections, standard Views, related-record panels, and navigation
+   links to sibling pages.
+3. Business modules and their owned facts.
+4. WorkTypes, Milestones, first WorkItems, assignment/routing policy, and
    lifecycle views.
-4. Organization model: Lead Agent, governance Agents, business Agents, humans,
+5. Organization model: Lead Agent, governance Agents, business Agents, humans,
    external collaborators, services, roles, and permission boundaries.
-5. Finance model: budgets, commitments, payments, invoices, refunds, money
+6. Finance model: budgets, commitments, payments, invoices, refunds, money
    metrics, and approval gates.
-6. External software product sources and sync rules, when applicable.
-7. Custom pages to build, with fallback views.
-8. Acceptance checks and explicit gaps marked as `implemented`, `partial`,
+7. External software product sources and sync rules, when applicable.
+8. Custom pages to build, with fallback views.
+9. Acceptance checks and explicit gaps marked as `implemented`, `partial`,
    `planned`, or `design-only`.
 
 ## Bootstrap workflow
@@ -103,6 +106,24 @@ Typical top-level structure for a commercial launch:
 
 Adjust names to the business, but keep each module's source-of-truth boundary
 clear.
+
+Before writing blocks, define a page contract for each important document:
+
+| Page kind | Must answer | Typical presentation |
+| --- | --- | --- |
+| Project Home | What is this business, what modules exist, what is live, what is blocked, and where should a human or Agent go next? | hero thesis, operating loop, module cards, launch-state snapshot, top WorkItems, Finance/Approval watchlist, software-source status, right-side document tree. |
+| Business Model | What is sold, who pays, who receives value, why partners join, how money flows, and how the model replicates? | revenue table, customer/merchant value blocks, partner capability matrix, cost/finance boundary, replication canvas, KPI table. |
+| Product / Offer | What SKUs/rights exist and how are they sold or fulfilled? | SKU table, pricing and entitlement rules, channel/settlement rules, links to design assets and inventory. |
+| Experience / Route | What experience does the user complete and what unlocks at each threshold? | route/spot table, 8/12 reward rules, AR asset readiness, validation/evidence links. |
+| Merchant Network | Which merchants exist, what capabilities each has, and what status/action is next? | merchant capability matrix, contact/onboarding board, map/list view, related WorkItems. |
+| Procurement / Inventory | What must be bought, where it is, what it costs, and what can be redeemed? | purchase orders, shipment/inventory table, redemption allocation, Finance Commitment links. |
+| Growth / Outreach | What content and creator motions are running and what results came back? | campaign calendar, post/creator pipeline, metrics table, result-return links. |
+| Launch Readiness | Can this project go live safely? | cross-module gates, blockers, owner, evidence, required approvals. |
+
+Do not satisfy this step with generic prose. A usable Docs setup must let a
+human understand the business from the UI and let an Agent operate it through
+CLI/API without scraping pages. If a page needs data from another system, model
+that data as a relation or View rather than copying the fact into text.
 
 ### 3. Turn work into WorkItems
 
@@ -200,23 +221,23 @@ Every custom page needs:
 - no direct ungoverned mutation;
 - visual contract and actual screenshot when implemented.
 
-### 8. Seed as acceptance, not as final product entry
+### 8. Use scripts only as acceptance fixtures
 
-A seed script may prove that the current CLI/API can create the expected
-records. It is not the final user-facing product entry and should not be the
-only operating path.
+A seed or materialization script may prove that the current CLI/API can create
+the expected records in an isolated fixture Store. It must not become the
+normal way a real commercial project is authored. For a real registered
+project, prefer:
 
-For the Wanchengwanling example, current seed scripts include:
+1. inspect current Store with `docs query`, `traverse`, `health`, Work, Org, and
+   Finance reads;
+2. write the approved page contract through governed CLI/API commands;
+3. create or update typed records, relations, views, WorkItems, assignments,
+   and Finance records through their owning module commands; and
+4. verify Store-live UI and CLI projections.
 
-```bash
-node scripts/seed-company-os-wanchengwanling-docs-v0.mjs
-node scripts/seed-company-os-wanchengwanling-v0.mjs
-node scripts/seed-company-os-wanchengwanling-four-system-v1.mjs
-node scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs
-```
-
-Use them as fixture/acceptance references, then move repeated operations into
-stable CLI/API commands and module-specific scenario skills.
+Do not leave project-specific seed scripts as active product entrypoints. If a
+script exists, treat it as acceptance evidence or fixture generation only and
+move recurring operations into CLI/API commands or a scenario-specific skill.
 
 To write a real registered project Store rather than an isolated temporary
 acceptance Store:

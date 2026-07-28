@@ -90,19 +90,43 @@ typed-record, view, and relation writes require a matching
    the first read command for one Document or module operating context, then use
    `harness company docs health` for broader structural audit. Prefer native
    Store projection reads over fixture or mock data.
-2. Identify the owning object and actor. A write must name the source Document,
+2. For any business-critical page, define the page contract before mutation:
+   primary question, intended audience, required sections, source
+   TypedRecords, relation panels, standard Views, sibling navigation, Work /
+   Org / Finance boundaries, and whether a custom page is justified. Do not
+   append generic prose until this shape is explicit.
+3. Identify the owning object and actor. A write must name the source Document,
    target module/record when applicable, and the accountable Human or Agent.
-3. Choose the command. Use standard Docs commands before proposing custom code.
-4. Prepare idempotent, durable content. Do not include private reasoning,
+4. Choose the command. Use standard Docs commands before proposing custom code.
+5. Prepare idempotent, durable content. Do not include private reasoning,
    secrets, raw transcripts, or policy claims that the records cannot prove.
-5. Run the command through the governed CLI/API path. Do not append ledgers
+6. Run the command through the governed CLI/API path. Do not append ledgers
    directly.
-6. Verify the result. Confirm the expected native row exists and unrelated
+7. Verify the result. Confirm the expected native row exists and unrelated
    ledgers did not change.
-7. Use UI only for Human review and supplemental visible evidence. A UI-only
+8. Use UI only for Human review and supplemental visible evidence. A UI-only
    change is not sufficient proof of a Docs capability.
-8. Report evidence and remaining gaps. Distinguish `verified`, `partial`,
+9. Report evidence and remaining gaps. Distinguish `verified`, `partial`,
    `planned`, and `design-only`.
+
+## Business page quality gate
+
+A page is not acceptable merely because it has text blocks. Before and after
+editing a real commercial project page, check:
+
+- Does the page answer one clear operating question?
+- Does it show where the reader goes next through the document tree or related
+  records?
+- Are stable facts modeled as `TypedRecord`s and `Relation`s rather than copied
+  only into prose?
+- Are WorkItems, Assignments, Approvals, Finance records, and Organization
+  actors referenced through their owning systems instead of implied by text?
+- Are module boundaries explicit so an Agent knows which CLI/skill to use next?
+- If the page is a core surface, is there a standard View fallback and a custom
+  page candidate only when the standard composition is not enough?
+
+If the answer is no, stop and produce the page contract or module design before
+writing more blocks.
 
 ## Query before mutation
 

@@ -34,6 +34,17 @@ These are procedural capabilities, not part of the Company OS data model and
 not an authority for product, organization, security, finance, or legal
 decisions.
 
+For real commercial projects, the bootstrap skill must produce more than a
+folder tree or a sequence of CLI writes. It must first define the operating
+page architecture: each core page's primary question, required content blocks,
+owned typed records, standard Views, related Work/Org/Finance panels, sibling
+navigation, and custom-page candidacy. A page such as a commercial Project
+Home or Business Model page is not accepted when it only contains generic prose;
+it must make the business legible to humans and machine-operable through
+CLI/API for Agents. Seed or materialization scripts may remain acceptance
+fixtures, but they are not the normal authoring path for a registered project
+Store.
+
 Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
 Agent interface for reading, editing, governing, and verifying document truth.
 The UI is primarily for Humans to inspect, review, approve, and supervise what
