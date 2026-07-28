@@ -61,6 +61,8 @@ Current completed slice:
 | `document-wcw-business-model` | 11 records: page contract, revenue, value, merchant, incentive, cost, finance-boundary, replication, metric records | 3 | no findings from `docs query` |
 | `document-wcw-bracelet-product` | 11 records: page contract, bracelet SKUs, entitlement rules, sales channels, consignment, design/inventory dependency | 4 | no findings from `docs query` |
 | `document-wcw-route-ar-experience` | 19 records: page contract, site, spot catalog, 12 spot records, 8/12 rules, AR readiness, field validation | 4 | no findings from `docs query` |
+| `document-wcw-merchant-network` | 9 records: page contract, merchant capabilities, merchant role segments, listing rule, onboarding and contact model | 4 | no findings from `docs query` |
+| `document-wcw-rewards-procurement-inventory` | 10 records: page contract, reward/prize pool, procurement items, inventory, logistics, redemption evidence, Finance boundary | 4 | no findings from `docs query` |
 
 Important record ids:
 
@@ -85,6 +87,20 @@ Important record ids:
 - `record-wcw-spot-01-koucheng` through `record-wcw-spot-12-mise`
 - `record-wcw-route-ar-asset-readiness-model`
 - `record-wcw-route-field-validation-model`
+- `record-wcw-page-contract-merchant-network`
+- `record-wcw-merchant-capabilities-mvp`
+- `record-wcw-merchant-segment-consignment`
+- `record-wcw-merchant-segment-reward-redemption`
+- `record-wcw-merchant-segment-prize-supplier`
+- `record-wcw-merchant-segment-bracelet-benefit`
+- `record-wcw-merchant-onboarding-model`
+- `record-wcw-page-contract-rewards-procurement-inventory`
+- `record-wcw-reward-ar-magnet`
+- `record-wcw-prize-pool-mvp-lottery`
+- `record-wcw-procurement-polaroid-two`
+- `record-wcw-procurement-ar-magnet`
+- `record-wcw-procurement-food-coupons`
+- `record-wcw-finance-boundary-rewards`
 
 Frontend Store-live evidence:
 
@@ -104,6 +120,12 @@ target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
 
 target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
   company docs query --document document-wcw-route-ar-experience --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-merchant-network --json
+
+target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+  company docs query --document document-wcw-rewards-procurement-inventory --json
 
 target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
   company docs traverse --document document-wcw-root --depth 2 --json

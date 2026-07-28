@@ -231,11 +231,13 @@ target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
 Frontend evidence is recorded in
 [`docs/design/company-os-v4/wanchengwanling-dogfood-docs-v1`](../../design/company-os-v4/wanchengwanling-dogfood-docs-v1/README.md).
 
-The resulting health findings for these two pages are empty. The next dogfood
-slice should continue with `04 Merchant Network` and
-`05 Rewards, Procurement & Inventory`, because those pages connect the product
-and route model to real merchant onboarding, reward procurement, inventory,
-logistics, and Finance effects.
+The follow-up dogfood pass also completed the Store-backed foundation for
+`04 Merchant Network` and `05 Rewards, Procurement & Inventory`: merchant role
+segments, merchant onboarding/contact models, reward and prize-pool records,
+procurement items, inventory/logistics models, redemption evidence, and the
+Finance boundary are now native Docs records with empty health findings.
+Frontend evidence is recorded in the same artifact directory. The next slice
+should move to `06 Content Growth` and `07 Creator Outreach`.
 
 ## Repo PRD mapping
 
