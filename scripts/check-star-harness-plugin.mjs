@@ -33,6 +33,11 @@ if (
 if (codex.version !== claude.version || codex.version !== kimi.version) {
   errors.push("Codex, Claude, and Kimi manifest versions must match");
 }
+if (Object.hasOwn(claude, "hooks")) {
+  errors.push(
+    "Claude manifest must not redeclare default hooks/hooks.json; Claude auto-discovers it",
+  );
+}
 if (mcp.mcpServers?.harness?.command !== "harness") {
   errors.push(".mcp.json must register the Harness MCP server");
 }
