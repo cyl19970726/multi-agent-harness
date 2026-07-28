@@ -723,8 +723,9 @@ fn mcp_stdio_agent_team_tools() {
     );
 
     // 11. MCP start is asynchronous: it immediately returns the reserved
-    // running projection and exact URL, then the provider completes in the
-    // background while the same Host session remains responsive.
+    // running projection and exact URL, then the provider completes one turn
+    // in the background while the same Host session remains responsive. Turn
+    // completion returns the Member to idle; it does not complete the TeamRun.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -773,7 +774,7 @@ fn mcp_stdio_agent_team_tools() {
                 .as_str()
         )
     );
-    let mut terminal = None;
+    let mut idle = None;
     for _ in 0..100 {
         let response = mcp.request(
             "tools/call",
@@ -783,13 +784,21 @@ fn mcp_stdio_agent_team_tools() {
             }),
         );
         let status = call_payload(&response);
-        if status["team_run"]["status"].as_str() == Some("completed") {
-            terminal = Some(status);
+        let member_is_idle = status["members"].as_array().is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member["member_run"]["status"].as_str() == Some("idle"))
+        });
+        if status["team_run"]["status"].as_str() == Some("running") && member_is_idle {
+            idle = Some(status);
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(terminal.is_some(), "MCP-started TeamRun did not complete");
+    assert!(
+        idle.is_some(),
+        "MCP-started Member did not return to idle while TeamRun stayed running"
+    );
 
     // Mission closeout is a separate Host decision after all Waves are
     // accepted; a host Wave needs no invented executor run.

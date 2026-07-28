@@ -127,7 +127,11 @@ impl ServeHandle {
         cmd.current_dir(cwd)
             .envs(home.envs())
             .env_remove("HARNESS_ROOT")
-            .env_remove("HARNESS_PROJECT");
+            .env_remove("HARNESS_PROJECT")
+            // Production supervisors never retire an idle Member implicitly.
+            // Integration processes need a bounded escape after they have
+            // asserted the idle state so test teardown can join cleanly.
+            .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "250");
         for (key, value) in extra_env {
             cmd.env(key, value);
         }

@@ -193,6 +193,21 @@ impl KimiAcpClient {
         self.provider_version.as_deref()
     }
 
+    pub(crate) fn ensure_transport_alive(&mut self) -> CliResult<()> {
+        let reader_ended = self
+            .reader
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished);
+        let child_ended = self
+            .child
+            .try_wait()
+            .map_err(|error| CliError::Usage(format!("failed to inspect kimi acp: {error}")))?;
+        if reader_ended || child_ended.is_some() {
+            return Err(self.session_ended_error("idle supervisor"));
+        }
+        Ok(())
+    }
+
     /// `initialize` + `session/new`, each with a 10s response timeout.
     fn handshake(&mut self, cwd: &Path, resume_session_id: Option<&str>) -> CliResult<()> {
         let initialize = self.request(

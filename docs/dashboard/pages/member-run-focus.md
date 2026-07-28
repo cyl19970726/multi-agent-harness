@@ -37,7 +37,9 @@ Required data:
   provider options and Lead/Policy/Human routing;
 - `NativeSessionRef`, native session availability/resume capability,
   runtime summary, provider/model, worktree, owned paths, permissions,
-  budget/availability signals; and
+  budget/availability signals;
+- selected execution driver, ephemeral native continuation state/condition,
+  completion policy, and top-level Workspace lease health; and
 - ephemeral `NativeActivityProjection` read from the provider session, plus a
   sanitized `member_activity` preview only when live data exists.
 
@@ -129,7 +131,8 @@ than page-specific cards. Its default order is:
 4. **OutputsEvidence** — artifacts, checks, report, and contribution to the
    Host's current judgment. It must label absent evidence honestly.
 5. **RuntimeSummary** — provider/model/native-session binding, availability,
-   resume compatibility, worktree, and actionable failure state. It is
+   resume compatibility, selected execution driver, continuation state,
+   worktree lease, permission posture, and actionable failure state. It is
    operational context, not the primary page.
 6. **DelegationSummary** — observed provider-native or orchestrated child work,
    with attribution and control limits made explicit.
@@ -141,6 +144,21 @@ derived projection, not a Goal record: Assignment body and completion standard,
 owned paths, member state, latest progress/blocker, and latest applicable
 Steer. Missing inputs are shown as missing rather than inferred from provider
 chat.
+
+The label must not imply that Harness owns a Goal lifecycle. Show these as
+separate rows:
+
+```text
+Assignment       durable · corr-...
+Execution        host-driven | provider-driven
+Continuation     inactive | active | waiting | satisfied | unknown
+Acceptance       pending | accepted | changes requested
+```
+
+When native continuation is active, disclose its bounded condition, observed
+cycle/reason, timestamp, and confidence without copying reasoning. If two
+top-level drivers or turns claim the same MemberRun/worktree, show a blocking
+`Execution lease conflict`; never normalize it as ordinary parallel activity.
 
 Modules are collapsible. First release uses system ordering; pinning or free
 reordering is not a requirement.

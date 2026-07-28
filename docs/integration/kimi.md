@@ -22,97 +22,45 @@ Host TeamMessage(message): "Return a Markdown plan first; do not execute"
   -> Host TeamMessage(message): revise or execute
 ```
 
-Kimi does not expose a separate Harness-compatible durable Goal object; the
-Assignment is projected into its prompt, so the profile reports
-`goal_mode=emulated`. Raw ACP plan/thought/tool streams remain provider-native.
-Only ordinary Host/Member coordination is persisted. A provider-owned pause
-that actually blocks the session is still a `PendingInteraction`; ACP
-`completed` is not semantic Host acceptance. See
+Kimi does not currently have a reviewed native continuation controller in this
+adapter. It therefore uses the provider-neutral `host_driven` path: Harness
+delivers one eligible mailbox envelope at a time and Kimi keeps its native
+session as execution truth. This is not an “emulated Goal”; no Harness Goal
+object exists. Raw ACP plan/thought/tool streams remain provider-native. Only
+ordinary Host/Member coordination is persisted. A provider-owned pause that
+actually blocks the session is still a `PendingInteraction`; ACP `completed`
+is not semantic Host acceptance. See
 [ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
+The cross-provider contract is
+[Member Continuation Model](../member-continuation-model.md).
 
-## 核心结论
+## Mode Boundary
 
-V1 主方案是：
+| Product surface | Mode | Status |
+| --- | --- | --- |
+| Agent Team Member | `kimi_acp` | persistent bidirectional Team mode |
+| Dynamic Workflow / bounded execution | `kimi_exec` | one-shot `kimi -p` mode |
+| Historical Team record | `kimi_exec` | readable, never startable |
 
-```text
-AgentMember(provider=kimi)
-  -> AgentRuntime(kimi CLI, request-response shape, one spawned per delivery)
-  -> provider session
-  -> Message delivery through kimi CLI with injected harness context
-  -> Kimi native session (execution truth and resume)
-  -> in-memory flat-stream projection + Harness coordination store
-  -> Agent Dashboard joined view
-```
+Harness never silently falls back from ACP to one-shot print mode. The older
+`ProviderCapabilities::kimi_exec()` preset describes bounded Workflow
+execution and must not be used to infer Team capability.
 
-也就是说：
-
-- `kimi` CLI 是按需 provider 执行形式（非持久 app-server）；
-- Kimi 已作为第三个 provider 进入 `provider_registry()`，顺序为 Codex、Claude、Kimi
-  (`crates/harness-cli/src/main.rs:14905-14915`)；
-- 每次消息投递会通过 harness 的消息上下文生成 Kimi prompt；
-- Kimi 的真实 headless CLI surface 是 `kimi -p <prompt> --output-format stream-json`
-  加可选 `--model` 和 `-S/--session`，已按 v0.18 行为写入代码注释
-  (`crates/harness-cli/src/main.rs:14432-14437`,
-  `crates/harness-cli/src/main.rs:14562-14567`)；
-- `kimi -p` 不能携带 permission flags；`--plan`、`--auto`、`--yolo` 都会被拒绝，
-  所以 delivery 路径不传权限 flag (`crates/harness-cli/src/main.rs:14607-14612`)；
-- Kimi stream-json 是 flat NDJSON，不是 Claude-shaped：
-  `{"role":"assistant","content":...}` 加
-  `{"role":"meta","type":"session.resume_hint",...}`
-  (`crates/harness-cli/src/main.rs:14349-14357`)；
-- schema、cost、resume 等能力在 core capability preset 中按 degraded/unknown 处理，
-  不是正向支持声明（`ProviderCapabilities::kimi_exec` in
-  `crates/harness-core/src/lib.rs`）。
-
-## 为什么 Kimi CLI 是主方案
-
-Kimi Code 官方 CLI 提供 `kimi` 命令行工具。相比直接走 Moonshot HTTP API：
-
-- **local-process shape**：`kimi -p` 与 Claude/Codex 的按需 CLI delivery 模型一致，
-  Harness 复用 ProviderAdapter、delivery、NativeSessionRef 与临时流归约基础设施；
-- **registry-routed provider**：Kimi 通过 `ProviderAdapter` trait 实现接入，provider
-  lookup 走 `provider_adapter(name)`，不是新增散落 match arms
-  (`ProviderAdapter` trait `crates/harness-cli/src/main.rs:13397`;
-  `provider_registry()` + `provider_adapter()` `crates/harness-cli/src/main.rs:14906-14916`)；
-- **real CLI surface is small**：headless 模式只依赖 `-p`、`--output-format stream-json`、
-  可选 `--model`、可选 `--session`，避免伪造 Claude-only flags；
-- **honest degradation**：Kimi v0.18 的 `-p` stream 不返回 Claude `result`、`usage`、
-  `model` frame，因此 schema/cost/model usage 走 harness fallback，而不是声称原生支持。
-
-## Provider Runtime 模型
-
-V1 使用 on-demand-spawned `kimi` CLI per AgentMember delivery，在一个 runtime 标识下持续
-记录 sessions。
-
-runtime 字段最小集合：
+The Agent Team runtime is:
 
 ```text
-AgentRuntime
-  id
-  agent_member_id
-  provider = kimi
-  status = Running (或 Suspended/Closed)
-  pid = None (kimi 按需启动，无持久进程 pid)
-  control_endpoint = "kimi-runtime://{dir}" (指向运行时目录)
-  command = "kimi"
-  args = [] (每次 delivery 动态注入参数)
-  started_at / ended_at
-  last_event_at
+MemberRun + correlated Assignment
+  -> Kimi ACP process over stdio
+  -> initialize
+  -> session/new or session/load
+  -> session/prompt for one eligible mailbox envelope
+  -> session/cancel only for current-turn interruption
+  -> explicit Host Close ends the Member runtime
 ```
 
-`start_kimi_runtime` 创建 runtime 目录，探测 `resolve_kimi_bin()` 得到的二进制是否存在，
-并记录 `pid: None`、`command: "kimi"`、`control_endpoint: kimi-runtime://...`
-(`crates/harness-cli/src/main.rs:14520-14559`)。
-
-健康检查分三层：
-
-```text
-endpoint: runtime directory exists + kimi binary probe
-session: NativeSessionRef is available and compatible
-delivery: latest message delivery has proof of receipt from Kimi
-```
-
-Process 层不适用（Kimi 按需启动，无持久进程）。
+Health is reported separately for process, ACP protocol, native session, and
+mailbox delivery. Provider-native activity stays in the Kimi session; Harness
+retains only the native binding and explicit coordination facts.
 
 ## Install and login
 
@@ -319,9 +267,10 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
 - The TeamRun adapter retains a cooperative live control handle while
   `session/prompt` is active. Dashboard/MCP member interruption sends
   `session/cancel`, waits for the prompt's terminal `stopReason=cancelled`, and
-  only then records the MemberRun as `stopped`; the profile reports
+  only then returns the MemberRun to `idle`; the profile reports
   `supports_cancel=true`. Kimi ACP still does not support same-turn steer, so
-  normal chat is queued for the next provider round.
+  normal chat is queued for the next provider round. Only explicit Member Close
+  records `stopped`.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.
 - Kimi-native Agent/AgentSwarm/background-task and hook events are not yet

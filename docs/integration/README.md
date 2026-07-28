@@ -14,6 +14,8 @@ Team mode: Codex app-server, Kimi ACP, or Claude Agent SDK streaming. Bounded
 exec/CLI modes remain Dynamic Workflow and historical-read substrates; they
 are not Team fallbacks. See
 [ADR 0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
+The selected mode's continuous-execution contract is defined by the
+[Member Continuation Model](../member-continuation-model.md).
 
 ## Vision Link
 
@@ -47,6 +49,9 @@ Provider docs answer how a concrete provider implements:
 - each concrete execution mode (`exec`, ACP, app-server, SDK), never only the
   provider brand;
 - runtime creation and close;
+- default execution driver and native continuation capabilities;
+- continuation inspection, replace/clear, cycle boundaries, and permission
+  continuity;
 - message delivery;
 - delivery claim/lease and duplicate-prevention semantics;
 - event ingestion and reduction;
@@ -87,6 +92,10 @@ Provider
   selected_execution_mode:
   native_vs_adapter_capabilities:
   runtime_model:
+  default_execution_driver:
+  native_continuation_capabilities:
+  continuation_inspection_and_controls:
+  continuation_permission_scope:
   message_delivery:
   claim_and_retry_model:
   event_sources:
@@ -154,6 +163,11 @@ README until they need their own file.
 10. A provider adapter must document native-store discovery, availability,
     privacy/retention, resume, missing-session behavior, and version drift in
     addition to its tool list and reverse-RPC methods.
+11. One MemberRun/native session/writable Workspace has one top-level execution
+    driver. An adapter must never start a Harness cycle while a provider-native
+    continuation loop owns that same work.
+12. Provider-native continuation is optional. Absence of Goal mode degrades to
+    `host_driven`; it does not make the provider an invalid Agent Team member.
 
 The Host reads and resolves pending interactions with the
 `team_run_resolve_interaction` MCP tool (or the equivalent CLI/API route),

@@ -1232,26 +1232,33 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
     );
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    let snapshot = loop {
+    loop {
         let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
         assert_eq!(status, 200);
-        let completed = snapshot["team_runs"]
+        let idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|run| {
-                run["id"].as_str() == Some(run_id.as_str())
-                    && run["status"].as_str() == Some("completed")
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
             });
-        if completed {
-            break snapshot;
+        if idle {
+            break;
         }
         assert!(
             Instant::now() < deadline,
-            "team run did not complete: {snapshot}"
+            "member did not return to persistent idle: {snapshot}"
         );
         std::thread::sleep(Duration::from_millis(25));
-    };
+    }
+    let (status, completed) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/transition?project={project_id}"),
+        &serde_json::json!({"status": "completed"}),
+    );
+    assert_eq!(status, 200, "body: {completed}");
+    let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
+    assert_eq!(status, 200);
     assert!(
         snapshot["member_actions"]
             .as_array()

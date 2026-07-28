@@ -174,10 +174,24 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
         body.contains("src/member.ts"),
         "runner evidence refs must survive into the durable handoff.\ninbox: {body}"
     );
+    let status = run_harness(
+        &home,
+        &root,
+        &["team-run", "status", "--id", &run_id, "--json"],
+    );
+    let status_body = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status_body.contains("\"status\": \"idle\""),
+        "turn completion must leave the persistent Member idle: {status_body}"
+    );
+    assert!(
+        status_body.contains("\"status\": \"running\""),
+        "handoff must not decide TeamRun completion: {status_body}"
+    );
 }
 
 #[test]
-fn agent_sdk_member_binds_one_native_session_and_closes_only_on_host_close() {
+fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     let home = TempHome::new("agent-sdk-session-bind");
     init_project(&home, "proj");
     let root = home.base().join("proj");
@@ -200,6 +214,10 @@ fn agent_sdk_member_binds_one_native_session_and_closes_only_on_host_close() {
     assert!(
         body.contains("claude_agent_sdk"),
         "member profile should record the agent-sdk execution mode.\n{body}"
+    );
+    assert!(
+        body.contains("\"status\": \"idle\""),
+        "provider turn completion must not terminalize the MemberRun.\n{body}"
     );
 }
 

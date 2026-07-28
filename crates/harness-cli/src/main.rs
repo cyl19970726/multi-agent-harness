@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -9323,14 +9323,15 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 }
 
 /// Transition a team-run attempt. Only these moves are legal:
-/// `reviewing → completed` (the attempt-level integration check passes) and
+/// `running|reviewing → completed` (the Host records the attempt outcome) and
 /// `planning|waiting|reviewing → cancelled`. Cancelling a reviewing
 /// attempt is the explicit rejection path that permits a later retry without
 /// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
 /// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
-/// A running attempt cannot be status-cancelled until provider execution has a
-/// real cooperative interruption path; accepting that transition would leave
-/// background work running behind a false terminal state.
+/// Completing a running TeamRun deliberately does not close any MemberRun:
+/// reusable member runtimes may carry work into a later Wave. A running attempt
+/// still cannot be status-cancelled until provider execution has a real
+/// cooperative interruption path.
 /// Completing an attempt only makes it eligible for the separate Wave gate; it
 /// does not accept the Wave.
 /// Appends the new AgentTeamRun row (latest-wins) and folds a TeamRunEvent so
@@ -9345,14 +9346,15 @@ pub(crate) fn transition_team_run(
     let previous_status = current.status;
     let allowed = matches!(
         (previous_status, target),
-        (TeamRunStatus::Reviewing, TeamRunStatus::Completed)
+        (TeamRunStatus::Running, TeamRunStatus::Completed)
+            | (TeamRunStatus::Reviewing, TeamRunStatus::Completed)
             | (TeamRunStatus::Planning, TeamRunStatus::Cancelled)
             | (TeamRunStatus::Waiting, TeamRunStatus::Cancelled)
             | (TeamRunStatus::Reviewing, TeamRunStatus::Cancelled)
     );
     if !allowed {
         return Err(CliError::Usage(format!(
-            "invalid team-run transition: {} → {} (allowed: reviewing → completed, planning|waiting|reviewing → cancelled; running cancellation requires provider interruption)",
+            "invalid team-run transition: {} → {} (allowed: running|reviewing → completed, planning|waiting|reviewing → cancelled; running cancellation requires provider interruption)",
             serde_snake_label(&previous_status),
             serde_snake_label(&target),
         )));
@@ -9378,7 +9380,10 @@ pub(crate) fn transition_team_run(
     let (operation, summary) = match target {
         TeamRunStatus::Completed => (
             "completed",
-            "team-run attempt completed: reviewing → completed".to_string(),
+            format!(
+                "team-run attempt completed: {} → completed; member runtimes remain Host-owned",
+                serde_snake_label(&previous_status)
+            ),
         ),
         _ => (
             "updated",
@@ -10147,6 +10152,15 @@ const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
 /// message ping-pong from looping the orchestrator forever.
 const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
 
+/// Test-only escape hatch for foreground integration tests. Production
+/// supervisors have no implicit idle retirement.
+fn member_supervisor_test_idle_grace() -> Option<Duration> {
+    std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
+
 /// Live member thinking is an ephemeral operator hint, never a ledger row.
 /// Each preview expires in the browser shortly after publication and is not
 /// available to reconnecting clients.
@@ -10161,6 +10175,16 @@ static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> =
 /// registry is only the live transport into the currently running provider
 /// turn and is deliberately not reconstructed after process restart.
 static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
+static LIVE_MEMBER_CLOSE_REQUESTS: OnceLock<Mutex<HashMap<String, PendingMemberClose>>> =
+    OnceLock::new();
+static LIVE_TEAM_SUPERVISORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct PendingMemberClose {
+    team_run_id: String,
+    requested_by: String,
+    reason: String,
+}
 
 #[derive(Clone)]
 struct LiveMemberControl {
@@ -10190,6 +10214,12 @@ enum MemberControlCommand {
     },
 }
 
+enum IdleMemberWake {
+    Messages(Vec<TeamMessage>),
+    Closed,
+    TestRetired,
+}
+
 #[derive(Clone, Copy)]
 enum LiveMemberControlRequirement {
     Steer,
@@ -10199,6 +10229,35 @@ enum LiveMemberControlRequirement {
 
 struct LiveMemberControlRegistration {
     member_run_id: String,
+}
+
+struct TeamSupervisorRegistration {
+    team_run_id: String,
+}
+
+impl Drop for TeamSupervisorRegistration {
+    fn drop(&mut self) {
+        LIVE_TEAM_SUPERVISORS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.team_run_id);
+    }
+}
+
+fn reserve_team_supervisor(team_run_id: &str) -> CliResult<TeamSupervisorRegistration> {
+    let mut supervisors = LIVE_TEAM_SUPERVISORS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !supervisors.insert(team_run_id.to_string()) {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} already has a live supervisor in this Host process"
+        )));
+    }
+    Ok(TeamSupervisorRegistration {
+        team_run_id: team_run_id.to_string(),
+    })
 }
 
 impl Drop for LiveMemberControlRegistration {
@@ -10309,48 +10368,6 @@ struct LiveMemberActivityPreview {
 }
 
 type LiveMemberActivitySink = Arc<dyn Fn(LiveMemberActivityPreview) + Send + Sync>;
-
-/// Minimal counting semaphore (std has none) bounding how many member threads
-/// run an ACP session at once.
-struct Semaphore {
-    permits: Mutex<usize>,
-    condvar: Condvar,
-}
-
-impl Semaphore {
-    fn new(permits: usize) -> Self {
-        Self {
-            permits: Mutex::new(permits.max(1)),
-            condvar: Condvar::new(),
-        }
-    }
-
-    fn acquire(&self) -> SemaphorePermit<'_> {
-        let mut guard = self.permits.lock().unwrap_or_else(|e| e.into_inner());
-        while *guard == 0 {
-            guard = self.condvar.wait(guard).unwrap_or_else(|e| e.into_inner());
-        }
-        *guard -= 1;
-        SemaphorePermit { semaphore: self }
-    }
-
-    fn release(&self) {
-        let mut guard = self.permits.lock().unwrap_or_else(|e| e.into_inner());
-        *guard += 1;
-        drop(guard);
-        self.condvar.notify_one();
-    }
-}
-
-struct SemaphorePermit<'a> {
-    semaphore: &'a Semaphore,
-}
-
-impl Drop for SemaphorePermit<'_> {
-    fn drop(&mut self) {
-        self.semaphore.release();
-    }
-}
 
 /// The orchestrator's serialized view of one run's ledger. Read paths are
 /// unlocked (append-only JSONL); every "compute next seq + append" pair holds
@@ -10491,6 +10508,134 @@ impl TeamRunLedger {
     }
 }
 
+fn pending_member_close(member_run_id: &str) -> Option<PendingMemberClose> {
+    LIVE_MEMBER_CLOSE_REQUESTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(member_run_id)
+        .cloned()
+}
+
+fn clear_pending_member_close(member_run_id: &str) {
+    LIVE_MEMBER_CLOSE_REQUESTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(member_run_id);
+}
+
+fn stop_member_for_latched_close(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    close: &PendingMemberClose,
+) -> CliResult<()> {
+    if close.team_run_id != ledger.run_id {
+        return Err(CliError::Usage(format!(
+            "latched close for member {} belongs to team run {}, not {}",
+            member_row.id, close.team_run_id, ledger.run_id
+        )));
+    }
+    member_row.status = MemberRunStatus::Stopped;
+    member_row.finished_at = Some(now_string());
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(member_row)?;
+    ledger.append_action(
+        &member_row.id,
+        "closed",
+        MemberActionStatus::Succeeded,
+        "member runtime closed by supervisor",
+        &format!("{}: {}", close.requested_by, close.reason),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "member_run",
+        &member_row.id,
+        "updated",
+        &format!("member {} closed by Host supervisor", member_row.name),
+    )?;
+    clear_pending_member_close(&member_row.id);
+    Ok(())
+}
+
+fn wait_for_idle_member_wake(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    controls: &ControlReceiver<MemberControlCommand>,
+    mut ensure_transport_alive: impl FnMut() -> CliResult<()>,
+) -> CliResult<IdleMemberWake> {
+    let idle_since = Instant::now();
+    loop {
+        while let Ok(command) = controls.try_recv() {
+            match command {
+                MemberControlCommand::Close {
+                    reason,
+                    requested_by,
+                    reply,
+                } => {
+                    ledger.append_action(
+                        &member_row.id,
+                        "closed",
+                        MemberActionStatus::Succeeded,
+                        "member runtime closed while idle",
+                        &format!("{requested_by}: {reason}"),
+                    )?;
+                    member_row.status = MemberRunStatus::Stopped;
+                    member_row.finished_at = Some(now_string());
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    ledger.fold_event(
+                        TeamRunEventSourceKind::Member,
+                        Some(member_row.id.clone()),
+                        "member_run",
+                        &member_row.id,
+                        "updated",
+                        &format!("member {} closed by Host while idle", member_row.name),
+                    )?;
+                    clear_pending_member_close(&member_row.id);
+                    let _ = reply.send(Ok(serde_json::json!({
+                        "member_run_id": member_row.id,
+                        "status": "closed",
+                        "provider_ack": "idle_transport_shutdown",
+                    })));
+                    return Ok(IdleMemberWake::Closed);
+                }
+                MemberControlCommand::Interrupt { reply, .. } => {
+                    let _ = reply.send(Ok(serde_json::json!({
+                        "member_run_id": member_row.id,
+                        "status": "idle",
+                        "provider_ack": "no_active_turn",
+                    })));
+                }
+                MemberControlCommand::Steer { reply, .. } => {
+                    let _ = reply.send(Err(CliError::Usage(
+                        "member is idle; send a queued TeamMessage to start a new turn".to_string(),
+                    )));
+                }
+            }
+        }
+        if let Some(close) = pending_member_close(&member_row.id) {
+            stop_member_for_latched_close(ledger, member_row, &close)?;
+            return Ok(IdleMemberWake::Closed);
+        }
+
+        let queued = ledger.queued_messages_for(&member_row.id)?;
+        if !queued.is_empty() {
+            member_row.status = MemberRunStatus::Running;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(member_row)?;
+            return Ok(IdleMemberWake::Messages(queued));
+        }
+        if member_supervisor_test_idle_grace().is_some_and(|grace| idle_since.elapsed() >= grace) {
+            return Ok(IdleMemberWake::TestRetired);
+        }
+        ensure_transport_alive()?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Terminal outcome of one member's orchestration, for the run summary.
 struct MemberOutcome {
     name: String,
@@ -10518,37 +10663,45 @@ pub(crate) struct PreparedTeamRunStart {
     running: AgentTeamRun,
     members: Vec<MemberRun>,
     ledger: Arc<TeamRunLedger>,
+    supervisor_registration: TeamSupervisorRegistration,
 }
 
-/// Reserve a planning attempt synchronously before any provider thread starts.
-/// Both CLI and HTTP use this CAS, so two start requests cannot both be
-/// accepted while orchestration boots in the background.
+/// Reserve one process-scoped supervisor before any provider thread starts.
+/// A planning TeamRun transitions to running; an existing non-terminal or
+/// completed run reattaches its unclosed MemberRuns to their native sessions.
+/// The process-local reservation prevents duplicate supervisors in one Host.
 pub(crate) fn prepare_team_run_start(
     store: &HarnessStore,
     run_id: &str,
     max_concurrency: usize,
 ) -> CliResult<PreparedTeamRunStart> {
     let run = latest_team_run(store, run_id)?;
-    if run.status != TeamRunStatus::Planning {
+    if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
         return Err(CliError::Usage(format!(
-            "team run {run_id} is {} — only a planning attempt can be started; create a new attempt to retry",
+            "team run {run_id} is {} and cannot attach a member supervisor",
             serde_snake_label(&run.status)
         )));
     }
+    let supervisor_registration = reserve_team_supervisor(run_id)?;
     let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
         .into_iter()
-        .filter(|member| member.team_run_id == run_id)
+        .filter(|member| member.team_run_id == run_id && member.status != MemberRunStatus::Stopped)
         .collect();
     let ledger = Arc::new(TeamRunLedger::new(store, run_id));
-    let mut running = run.clone();
-    running.status = TeamRunStatus::Running;
-    running.updated_at = now_string();
-    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
-        &run,
-        &running,
-        WaveStatus::Running,
-        &now_string(),
-    ))?;
+    let running = if run.status == TeamRunStatus::Planning {
+        let mut running = run.clone();
+        running.status = TeamRunStatus::Running;
+        running.updated_at = now_string();
+        store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+            &run,
+            &running,
+            WaveStatus::Running,
+            &now_string(),
+        ))?;
+        running
+    } else {
+        run.clone()
+    };
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
@@ -10556,8 +10709,13 @@ pub(crate) fn prepare_team_run_start(
         run_id,
         "updated",
         &format!(
-            "team run started ({} member(s), max-concurrency {max_concurrency})",
-            members.len()
+            "member supervisor {} ({} unclosed member(s), max-concurrency {max_concurrency})",
+            if run.status == TeamRunStatus::Planning {
+                "started"
+            } else {
+                "reattached"
+            },
+            members.len(),
         ),
     )?;
     Ok(PreparedTeamRunStart {
@@ -10566,11 +10724,13 @@ pub(crate) fn prepare_team_run_start(
         running,
         members,
         ledger,
+        supervisor_registration,
     })
 }
 
-/// `harness team-run start`: reserve the run, drive every member to a terminal
-/// state, then fold the run's own terminal status + a human summary.
+/// `harness team-run start`: reserve the run and supervise its persistent
+/// members. A member turn or handoff never terminalizes either the MemberRun or
+/// the TeamRun; those lifecycles remain under explicit Host control.
 pub(crate) fn team_run_start(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -10591,7 +10751,7 @@ pub(crate) fn team_run_start(
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     project_context: Option<ProjectContext>,
-    max_concurrency: usize,
+    _max_concurrency: usize,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
 ) -> CliResult<()> {
@@ -10601,18 +10761,17 @@ pub(crate) fn drive_prepared_team_run(
         running,
         members,
         ledger,
+        supervisor_registration: _supervisor_registration,
     } = prepared;
     let project_id = project_context.as_ref().map(|context| context.id.clone());
-    let semaphore = Arc::new(Semaphore::new(max_concurrency));
-    let mut queued = members;
     let mut seen_member_ids = HashSet::new();
+    let mut pending_members = members;
+    let mut handles = HashMap::new();
     let mut outcomes = Vec::new();
     loop {
-        let mut handles = Vec::new();
-        for mut member in queued.drain(..) {
+        for mut member in pending_members.drain(..) {
             seen_member_ids.insert(member.id.clone());
             let member_ledger = Arc::clone(&ledger);
-            let member_semaphore = Arc::clone(&semaphore);
             let member_objective = objective.clone();
             let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
             member.workspace_snapshot = Some(snapshot_member_workspace(&cwd));
@@ -10629,7 +10788,6 @@ pub(crate) fn drive_prepared_team_run(
             let member_live_sink = live_sink.clone();
             let member_project_id = project_id.clone();
             let handle = std::thread::spawn(move || {
-                let _permit = member_semaphore.acquire();
                 run_member_orchestration(
                     &member_ledger,
                     &member_objective,
@@ -10640,10 +10798,18 @@ pub(crate) fn drive_prepared_team_run(
                     member_live_sink,
                 )
             });
-            handles.push((member, handle));
+            handles.insert(member.id.clone(), (member, handle));
         }
 
-        for (member, handle) in handles {
+        let finished_member_ids = handles
+            .iter()
+            .filter(|(_, (_, handle))| handle.is_finished())
+            .map(|(member_id, _)| member_id.clone())
+            .collect::<Vec<_>>();
+        for member_id in finished_member_ids {
+            let Some((member, handle)) = handles.remove(&member_id) else {
+                continue;
+            };
             match handle.join() {
                 Ok(outcome) => outcomes.push(outcome),
                 Err(_) => {
@@ -10657,98 +10823,49 @@ pub(crate) fn drive_prepared_team_run(
             }
         }
 
-        let current = latest_team_run(&ledger.store, &run_id)?;
-        queued = latest_member_runs_in_append_order(&ledger.store)?
+        pending_members = latest_member_runs_in_append_order(&ledger.store)?
             .into_iter()
             .filter(|member| member.team_run_id == run_id && !seen_member_ids.contains(&member.id))
             .collect();
-        if !queued.is_empty() {
+        if !pending_members.is_empty() {
             ledger.fold_event(
                 TeamRunEventSourceKind::Host,
                 None,
                 "team_run",
                 &run_id,
                 "updated",
-                &format!("{} member(s) joined while the run was active", queued.len()),
+                &format!(
+                    "{} member(s) joined while the supervisor was active",
+                    pending_members.len()
+                ),
             )?;
             continue;
         }
 
-        // Terminalize against the latest run row. If an add-member CAS lands
-        // between this read and our write, retry and execute the new member
-        // rather than losing it or ending the run early.
-        let any_unfinished = outcomes
-            .iter()
-            .any(|outcome| outcome.status != MemberRunStatus::Completed);
-        let final_status = if any_unfinished {
-            TeamRunStatus::Reviewing
-        } else {
-            TeamRunStatus::Completed
-        };
-        let mut finished = current.clone();
-        finished.status = final_status;
-        finished.updated_at = now_string();
-        if final_status == TeamRunStatus::Completed {
-            finished.completed_at = Some(now_string());
+        // A TeamRun decision never closes a Member. Keep supervising live
+        // handles after Wave/TeamRun/Mission progress; exit only once every
+        // runtime has ended explicitly (or a test-only idle bound retires it).
+        if handles.is_empty() {
+            break;
         }
-        match ledger.store.compare_and_append_team_run_with_wave_status(
-            &current,
-            &finished,
-            WaveStatus::Waiting,
-            &now_string(),
-        ) {
-            Ok(()) => break,
-            Err(StoreError::Conflict(_)) => {
-                queued = latest_member_runs_in_append_order(&ledger.store)?
-                    .into_iter()
-                    .filter(|member| {
-                        member.team_run_id == run_id && !seen_member_ids.contains(&member.id)
-                    })
-                    .collect();
-                if queued.is_empty() {
-                    return Err(CliError::Usage(format!(
-                        "team run {run_id} changed concurrently; inspect status before retrying"
-                    )));
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 
-    // Terminal run status. The spec's reviewing condition ("member
-    // blocked/failed AND a waiting_for_approval-class signal exists") is
-    // satisfied by construction: every non-completed member journaled a
-    // blocked/error MemberAction, which IS the review signal.
-    let any_unfinished = outcomes
-        .iter()
-        .any(|outcome| outcome.status != MemberRunStatus::Completed);
-    let final_status = if any_unfinished {
-        TeamRunStatus::Reviewing
-    } else {
-        TeamRunStatus::Completed
-    };
-    let completed_count = outcomes
-        .iter()
-        .filter(|outcome| outcome.status == MemberRunStatus::Completed)
-        .count();
+    let current = latest_team_run(&ledger.store, &run_id)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
         None,
         "team_run",
         &run_id,
-        if final_status == TeamRunStatus::Completed {
-            "completed"
-        } else {
-            "updated"
-        },
+        "updated",
         &format!(
-            "team run {} ({completed_count}/{} members completed)",
-            serde_snake_label(&final_status),
+            "member supervisor stopped with team run still {} ({} runtime outcome(s))",
+            serde_snake_label(&current.status),
             outcomes.len()
         ),
     )?;
 
-    println!("team run {run_id}\t{}", serde_snake_label(&final_status));
+    println!("team run {run_id}\t{}", serde_snake_label(&current.status));
     for outcome in &outcomes {
         println!(
             "  {} ({}/{})\t{}",
@@ -10764,8 +10881,11 @@ pub(crate) fn drive_prepared_team_run(
     Ok(())
 }
 
-/// One member thread: dispatch on provider, converting every failure into
-/// journaled member-failure state (never a crashed orchestrator).
+/// One persistent member supervisor. Provider transports and turns are
+/// disposable generations beneath the durable MemberRun/native-session
+/// binding. A transport that disappears after binding is journaled as
+/// disconnected and resumed; it does not silently turn the Member into a
+/// terminal failure.
 fn run_member_orchestration(
     ledger: &TeamRunLedger,
     objective: &str,
@@ -10775,56 +10895,96 @@ fn run_member_orchestration(
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
 ) -> MemberOutcome {
-    let execution_mode = member
-        .provider_profile
-        .as_ref()
-        .map(|profile| profile.execution_mode.as_str());
-    let result = if member.provider.eq_ignore_ascii_case("kimi") {
-        run_kimi_member(
-            ledger,
-            objective,
-            project_id,
-            &member,
-            cwd,
-            idle_timeout,
-            live_sink,
-        )
-    } else if member.provider.eq_ignore_ascii_case("codex")
-        && matches!(execution_mode, Some("codex_app_server") | None)
-    {
-        run_codex_member(
-            ledger,
-            objective,
-            project_id,
-            &member,
-            cwd,
-            idle_timeout,
-            live_sink,
-        )
-    } else if member.provider.eq_ignore_ascii_case("claude")
-        && matches!(execution_mode, Some("claude_agent_sdk") | None)
-    {
-        run_claude_agent_sdk_team_member(
-            ledger,
-            objective,
-            project_id,
-            &member,
-            cwd,
-            idle_timeout,
-            live_sink,
-        )
-    } else {
-        Err(CliError::Usage(format!(
-            "team member adapter not implemented for provider {}",
-            member.provider
-        )))
-    };
-    match result {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            let reason = error.to_string();
-            journal_member_failure(ledger, &member, &reason);
-            MemberOutcome::new(&member, MemberRunStatus::Failed, reason)
+    let mut generation = 0u64;
+    loop {
+        let mut current = ledger
+            .latest_member_run(&member.id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| member.clone());
+        if let Some(close) = pending_member_close(&current.id) {
+            if let Err(error) = stop_member_for_latched_close(ledger, &mut current, &close) {
+                return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string());
+            }
+            return MemberOutcome::new(
+                &current,
+                MemberRunStatus::Stopped,
+                "member runtime closed by Host".to_string(),
+            );
+        }
+        if current.status == MemberRunStatus::Stopped {
+            return MemberOutcome::new(
+                &current,
+                MemberRunStatus::Stopped,
+                "member runtime closed".to_string(),
+            );
+        }
+        generation += 1;
+        let execution_mode = current
+            .provider_profile
+            .as_ref()
+            .map(|profile| profile.execution_mode.as_str());
+        let result = if current.provider.eq_ignore_ascii_case("kimi") {
+            run_kimi_member(
+                ledger,
+                objective,
+                project_id,
+                &current,
+                cwd,
+                idle_timeout,
+                live_sink.clone(),
+            )
+        } else if current.provider.eq_ignore_ascii_case("codex")
+            && matches!(execution_mode, Some("codex_app_server") | None)
+        {
+            run_codex_member(
+                ledger,
+                objective,
+                project_id,
+                &current,
+                cwd,
+                idle_timeout,
+                live_sink.clone(),
+            )
+        } else if current.provider.eq_ignore_ascii_case("claude")
+            && matches!(execution_mode, Some("claude_agent_sdk") | None)
+        {
+            run_claude_agent_sdk_team_member(
+                ledger,
+                objective,
+                project_id,
+                &current,
+                cwd,
+                idle_timeout,
+                live_sink.clone(),
+            )
+        } else {
+            Err(CliError::Usage(format!(
+                "team member adapter not implemented for provider {}",
+                current.provider
+            )))
+        };
+        match result {
+            Ok(outcome) => {
+                if outcome.status == MemberRunStatus::Stopped {
+                    clear_pending_member_close(&current.id);
+                }
+                return outcome;
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                let latest = ledger
+                    .latest_member_run(&current.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(current);
+                if latest.native_session.is_none() {
+                    journal_member_failure(ledger, &latest, &reason);
+                    return MemberOutcome::new(&latest, MemberRunStatus::Failed, reason);
+                }
+                journal_member_disconnected(ledger, &latest, generation, &reason);
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
     }
 }
@@ -10877,6 +11037,7 @@ fn run_codex_member(
             .native_session
             .as_ref()
             .map(|session| session.native_session_id.as_str()),
+        &member.name,
         &collaboration_env,
         false,
     )?;
@@ -10888,35 +11049,71 @@ fn run_codex_member(
     let (live_control, registration) = register_live_member_control(&member_row, 16);
     let mut live_control_registration = Some(registration);
 
-    member_row.status = MemberRunStatus::Running;
+    member_row.status = if assignment.is_some() {
+        MemberRunStatus::Running
+    } else {
+        MemberRunStatus::Idle
+    };
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
 
-    if let Some(assignment) = &assignment {
-        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
-    }
-    app_server.set_goal(&assignment_body, "active")?;
-
     let mut round = 0u32;
-    let mut next_prompt = Some(contract_prompt(
-        objective,
-        &member_row,
-        &assignment_body,
-        &envelope,
-    ));
-    let mut final_status = MemberRunStatus::Failed;
+    let mut prompt_text;
+    let mut accepted_messages = assignment.iter().cloned().collect::<Vec<_>>();
     let mut final_summary = String::new();
-    while let Some(prompt_text) = next_prompt.take() {
+    if assignment.is_some() {
+        app_server.set_goal(&assignment_body, "active")?;
+        prompt_text = contract_prompt(objective, &member_row, &assignment_body, &envelope);
+    } else {
+        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            app_server.ensure_transport_alive()
+        })? {
+            IdleMemberWake::Messages(messages) => {
+                prompt_text = String::from(
+                    "FOLLOW-UP MESSAGES for your existing Agent Team assignment. Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n",
+                );
+                for message in &messages {
+                    prompt_text.push_str(&format!(
+                        "--- {} ({}) ---\n{}\n\n",
+                        message.from_member_id,
+                        team_message_kind_label(&message.kind),
+                        message.body
+                    ));
+                }
+                accepted_messages = messages;
+                app_server.set_goal(&assignment_body, "active")?;
+            }
+            IdleMemberWake::Closed => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Codex member runtime closed by Host".to_string(),
+                ));
+            }
+            IdleMemberWake::TestRetired => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Idle,
+                    "Codex member test runtime retired while idle".to_string(),
+                ));
+            }
+        }
+    }
+    loop {
         round += 1;
         let turn = run_codex_app_server_turn(
             &mut app_server,
             &prompt_text,
-            member,
-            idle_timeout,
-            live_sink.clone(),
-            ledger,
-            &live_control,
+            CodexTeamTurnContext {
+                member: &member_row,
+                idle_timeout,
+                live_sink: live_sink.clone(),
+                ledger,
+                controls: &live_control,
+                accepted_messages: &accepted_messages,
+            },
         )?;
+        accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
                 .native_session
@@ -10936,15 +11133,12 @@ fn run_codex_member(
             } else {
                 "Codex reported the active turn as interrupted without a Harness control request; inspect the provider-native session for the source."
             };
-            let outcome_summary = if turn.close_requested_by_harness {
-                "Codex member runtime closed by Host"
-            } else if turn.interrupt_requested_by_harness {
-                "Codex turn interrupted by operator or Lead"
+            member_row.status = if turn.close_requested_by_harness {
+                MemberRunStatus::Stopped
             } else {
-                "Codex turn reported interrupted; source not observed by Harness"
+                MemberRunStatus::Idle
             };
-            member_row.status = MemberRunStatus::Stopped;
-            member_row.finished_at = Some(now_string());
+            member_row.finished_at = turn.close_requested_by_harness.then(now_string);
             member_row.last_event_at = Some(now_string());
             ledger.save_member_run(&member_row)?;
             ledger.append_action(
@@ -10962,142 +11156,135 @@ fn run_codex_member(
                 },
                 interruption_summary,
             )?;
-            drop(live_control_registration.take());
-            return Ok(MemberOutcome::new(
-                member,
-                MemberRunStatus::Stopped,
-                outcome_summary.to_string(),
-            ));
-        }
-        let final_text = turn.final_text;
-        if final_text.trim().is_empty() {
-            return Err(CliError::Usage(format!(
-                "codex member {} completed without an agent message",
-                member.name
-            )));
-        }
-        let handoff = TeamMessage {
-            id: generated_id("tmsg"),
-            team_run_id: ledger.run_id.clone(),
-            origin_wave_id: assignment
-                .as_ref()
-                .and_then(|message| message.origin_wave_id.clone()),
-            from_member_id: member.id.clone(),
-            to_member_ids: vec!["host".to_string()],
-            kind: TeamMessageKind::Handoff,
-            body: final_text.clone(),
-            correlation_id: assignment
-                .as_ref()
-                .map(|message| message.correlation_id.clone())
-                .unwrap_or_else(|| generated_id("corr")),
-            causation_id: assignment.as_ref().map(|message| message.id.clone()),
-            evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
-                member_id: "host".to_string(),
-                policy: TeamDeliveryPolicy::ManualAck,
-                status: TeamDeliveryStatus::Delivered,
-                attempt: 1,
-                updated_at: now_string(),
-            }],
-            created_at: now_string(),
-        };
-        ledger.save_message(&handoff)?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "message",
-            &handoff.id,
-            "created",
-            &format!("handoff from {} to host (round {round})", member.name),
-        )?;
-
-        let result = parse_round_result(&final_text);
-        let (action_type, action_status, member_status) = match result {
-            MemberRoundResult::Done => (
-                "completed",
-                MemberActionStatus::Succeeded,
-                MemberRunStatus::Completed,
-            ),
-            MemberRoundResult::Blocked => (
-                "blocked",
-                MemberActionStatus::Failed,
-                MemberRunStatus::Blocked,
-            ),
-            MemberRoundResult::Failed => {
-                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            if turn.close_requested_by_harness {
+                drop(live_control_registration.take());
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Codex member runtime closed by Host".to_string(),
+                ));
             }
-        };
-        let result_section =
-            extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
-        let action = ledger.append_action(
-            &member.id,
-            action_type,
-            action_status,
-            &format!("round {round} {action_type}"),
-            &result_section,
-        )?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "action",
-            &action.id,
-            "created",
-            &format!("{} round {round}: {action_type}", member.name),
-        )?;
+        } else {
+            let final_text = turn.final_text;
+            if final_text.trim().is_empty() {
+                return Err(CliError::Usage(format!(
+                    "codex member {} completed without an agent message",
+                    member.name
+                )));
+            }
+            let handoff = TeamMessage {
+                id: generated_id("tmsg"),
+                team_run_id: ledger.run_id.clone(),
+                origin_wave_id: assignment
+                    .as_ref()
+                    .and_then(|message| message.origin_wave_id.clone()),
+                from_member_id: member.id.clone(),
+                to_member_ids: vec!["host".to_string()],
+                kind: TeamMessageKind::Handoff,
+                body: final_text.clone(),
+                correlation_id: assignment
+                    .as_ref()
+                    .map(|message| message.correlation_id.clone())
+                    .unwrap_or_else(|| generated_id("corr")),
+                causation_id: assignment.as_ref().map(|message| message.id.clone()),
+                evidence_refs: Vec::new(),
+                deliveries: vec![TeamMessageDelivery {
+                    member_id: "host".to_string(),
+                    policy: TeamDeliveryPolicy::ManualAck,
+                    status: TeamDeliveryStatus::Delivered,
+                    attempt: 1,
+                    updated_at: now_string(),
+                }],
+                created_at: now_string(),
+            };
+            ledger.save_message(&handoff)?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "message",
+                &handoff.id,
+                "created",
+                &format!("handoff from {} to host (round {round})", member.name),
+            )?;
 
-        member_row.status = member_status;
-        member_row.finished_at = Some(now_string());
-        member_row.last_event_at = Some(now_string());
-        if member_status == MemberRunStatus::Completed {
-            app_server.set_goal(&assignment_body, "complete")?;
-        }
-        ledger.save_member_run(&member_row)?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "member_run",
-            &member.id,
-            if member_status == MemberRunStatus::Completed {
-                "completed"
-            } else {
-                "updated"
-            },
-            &format!(
-                "member {} {} (round {round})",
-                member.name,
-                serde_snake_label(&member_status)
-            ),
-        )?;
-        final_status = member_status;
-        final_summary = extract_report_section(&final_text, "SUMMARY")
-            .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+            let result = parse_round_result(&final_text);
+            let (action_type, action_status) = match result {
+                MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
+                MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
+                MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
+            };
+            let result_section =
+                extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+            let action = ledger.append_action(
+                &member.id,
+                action_type,
+                action_status,
+                &format!("round {round} {action_type}"),
+                &result_section,
+            )?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "action",
+                &action.id,
+                "created",
+                &format!("{} round {round}: {action_type}", member.name),
+            )?;
 
-        if round >= TEAM_RUN_START_MAX_ROUNDS {
-            break;
+            member_row.status = MemberRunStatus::Idle;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            if result == MemberRoundResult::Done {
+                app_server.set_goal(&assignment_body, "complete")?;
+            }
+            ledger.save_member_run(&member_row)?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "member_run",
+                &member.id,
+                "updated",
+                &format!("member {} idle after round {round}", member.name),
+            )?;
+            final_summary = extract_report_section(&final_text, "SUMMARY")
+                .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
         }
-        let queued = ledger.queued_messages_for(&member.id)?;
-        if queued.is_empty() {
-            break;
+
+        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            app_server.ensure_transport_alive()
+        })? {
+            IdleMemberWake::Messages(messages) => {
+                prompt_text = format!(
+                    "FOLLOW-UP MESSAGES arrived while you were busy or idle (after round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
+                );
+                for message in &messages {
+                    prompt_text.push_str(&format!(
+                        "--- {} ({}) ---\n{}\n\n",
+                        message.from_member_id,
+                        team_message_kind_label(&message.kind),
+                        message.body
+                    ));
+                }
+                accepted_messages = messages;
+                app_server.set_goal(&assignment_body, "active")?;
+            }
+            IdleMemberWake::Closed => {
+                drop(live_control_registration.take());
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Codex member runtime closed by Host".to_string(),
+                ));
+            }
+            IdleMemberWake::TestRetired => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Idle,
+                    final_summary,
+                ));
+            }
         }
-        let mut follow_up = format!(
-            "FOLLOW-UP MESSAGES arrived while you worked (round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
-        );
-        for message in &queued {
-            follow_up.push_str(&format!(
-                "--- {} ({}) ---\n{}\n\n",
-                message.from_member_id,
-                team_message_kind_label(&message.kind),
-                message.body
-            ));
-            mark_message_delivered(ledger, message, &member.id, &member.name)?;
-        }
-        member_row.status = MemberRunStatus::Running;
-        member_row.finished_at = None;
-        member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(&member_row)?;
-        next_prompt = Some(follow_up);
     }
-    Ok(MemberOutcome::new(member, final_status, final_summary))
 }
 
 struct CodexTeamTurn {
@@ -11106,6 +11293,15 @@ struct CodexTeamTurn {
     interrupted: bool,
     interrupt_requested_by_harness: bool,
     close_requested_by_harness: bool,
+}
+
+struct CodexTeamTurnContext<'a> {
+    member: &'a MemberRun,
+    idle_timeout: Duration,
+    live_sink: Option<LiveMemberActivitySink>,
+    ledger: &'a TeamRunLedger,
+    controls: &'a ControlReceiver<MemberControlCommand>,
+    accepted_messages: &'a [TeamMessage],
 }
 
 fn project_codex_team_event_live(
@@ -11179,13 +11375,20 @@ fn project_codex_team_event_live(
 fn run_codex_app_server_turn(
     client: &mut codex_app_server::CodexAppServerClient,
     prompt: &str,
-    member: &MemberRun,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
-    ledger: &TeamRunLedger,
-    controls: &ControlReceiver<MemberControlCommand>,
+    context: CodexTeamTurnContext<'_>,
 ) -> CliResult<CodexTeamTurn> {
+    let CodexTeamTurnContext {
+        member,
+        idle_timeout,
+        live_sink,
+        ledger,
+        controls,
+        accepted_messages,
+    } = context;
     let mut turn_id = client.start_turn(prompt)?;
+    for message in accepted_messages {
+        mark_message_delivered(ledger, message, &member.id, &member.name)?;
+    }
     // The start response is the preferred active id. Codex 0.146 can,
     // however, surface Goal/Plan work under a follow-up provider turn id.
     // Bind to the first scoped non-terminal activity for this request, then
@@ -11584,10 +11787,12 @@ fn run_claude_team_member(
 /// Agent Team members remain addressable until the Host explicitly closes
 /// them. Integration tests may set this variable to bound a foreground run.
 fn claude_agent_sdk_idle_grace() -> Option<Duration> {
-    std::env::var("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .map(Duration::from_millis)
+    member_supervisor_test_idle_grace().or_else(|| {
+        std::env::var("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .map(Duration::from_millis)
+    })
 }
 
 fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
@@ -11736,21 +11941,27 @@ fn run_claude_agent_sdk_team_member(
                 .map(|session| session.native_session_id.clone()),
         }
     }))?;
-    send(serde_json::json!({
-        "command": "deliver",
-        "payload": {
-            "id": assignment.as_ref().map(|m| m.id.clone()).unwrap_or_default(),
-            "kind": "assignment",
-            "from_member_id": "host",
-            "correlation_id": assignment.as_ref().map(|m| m.correlation_id.clone()),
-            "body": contract_prompt(objective, &member_row, &assignment_body, &envelope),
-        }
-    }))?;
+    if let Some(assignment) = &assignment {
+        send(serde_json::json!({
+            "command": "deliver",
+            "payload": {
+                "id": assignment.id,
+                "kind": "assignment",
+                "from_member_id": "host",
+                "correlation_id": assignment.correlation_id,
+                "body": contract_prompt(objective, &member_row, &assignment_body, &envelope),
+            }
+        }))?;
+    }
 
     // Publish the live handle only after the runner transport exists. Close is
     // an explicit Host operation; normal mailbox idleness never tears it down.
     let (live_control, _live_control_registration) = register_live_member_control(&member_row, 16);
-    member_row.status = MemberRunStatus::Running;
+    member_row.status = if assignment.is_some() {
+        MemberRunStatus::Running
+    } else {
+        MemberRunStatus::Idle
+    };
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
     ledger.fold_event(
@@ -11763,11 +11974,13 @@ fn run_claude_agent_sdk_team_member(
     )?;
     let mut round = 0u32;
     let mut turn_text = String::new();
-    let mut final_status = MemberRunStatus::Failed;
+    let mut final_status = MemberRunStatus::Idle;
     let mut final_summary = String::new();
     let mut closing = false;
     let mut closed_by_host = false;
-    let mut idle_since: Option<Instant> = None;
+    let mut closed_cleanly = false;
+    let mut transport_disconnected = false;
+    let mut idle_since = assignment.is_none().then(Instant::now);
     let mut inflight_messages = HashMap::<String, TeamMessage>::new();
     let mut delivered_message_ids = HashSet::<String>::new();
     if let Some(assignment) = &assignment {
@@ -11782,6 +11995,14 @@ fn run_claude_agent_sdk_team_member(
                     requested_by,
                     reply,
                 } => {
+                    if idle_since.is_some() && inflight_messages.is_empty() {
+                        let _ = reply.send(Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "status": "idle",
+                            "provider_ack": "no_active_turn",
+                        })));
+                        continue;
+                    }
                     let result = send(serde_json::json!({
                         "command": "interrupt",
                         "payload": {}
@@ -11841,7 +12062,10 @@ fn run_claude_agent_sdk_team_member(
         let waited = match line_rx.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => Some(line),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                transport_disconnected = true;
+                break;
+            }
         };
 
         if let Some(line) = waited {
@@ -11923,6 +12147,7 @@ fn run_claude_agent_sdk_team_member(
                             .and_then(|value| value.as_str())
                             .unwrap_or("Agent SDK runner acknowledged Host close"),
                     )?;
+                    closed_cleanly = true;
                     break;
                 }
                 "runner_error" => {
@@ -12005,9 +12230,27 @@ fn run_claude_agent_sdk_team_member(
             stderr_text.trim()
         )));
     }
+    if closed_by_host && closed_cleanly {
+        member_row.status = MemberRunStatus::Stopped;
+        member_row.finished_at = Some(now_string());
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(&member_row)?;
+        return Ok(MemberOutcome::new(
+            &member_row,
+            MemberRunStatus::Stopped,
+            "Claude member runtime closed by Host".to_string(),
+        ));
+    }
+    if transport_disconnected || !closed_cleanly {
+        return Err(CliError::Usage(format!(
+            "claude_agent_sdk transport ended without member_closed for {}. stderr: {}",
+            member.name,
+            stderr_text.trim()
+        )));
+    }
     let _ = idle_timeout;
 
-    Ok(MemberOutcome::new(member, final_status, final_summary))
+    Ok(MemberOutcome::new(&member_row, final_status, final_summary))
 }
 
 /// Ledger writes for one completed member round, shared by both Claude modes so
@@ -12052,18 +12295,10 @@ fn record_member_round(
         &format!("handoff from {} to host (round {round})", member_row.name),
     )?;
 
-    let (action_type, action_status, member_status) = match parse_round_result(final_text) {
-        MemberRoundResult::Done => (
-            "completed",
-            MemberActionStatus::Succeeded,
-            MemberRunStatus::Completed,
-        ),
-        MemberRoundResult::Blocked => (
-            "blocked",
-            MemberActionStatus::Failed,
-            MemberRunStatus::Blocked,
-        ),
-        MemberRoundResult::Failed => ("error", MemberActionStatus::Failed, MemberRunStatus::Failed),
+    let (action_type, action_status) = match parse_round_result(final_text) {
+        MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
+        MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
+        MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
     };
     let result_section =
         extract_report_section(final_text, "RESULT").unwrap_or_else(|| "done".to_string());
@@ -12082,14 +12317,14 @@ fn record_member_round(
         "created",
         &format!("{} round {round}: {action_type}", member_row.name),
     )?;
-    member_row.status = member_status;
-    member_row.finished_at = Some(now_string());
+    member_row.status = MemberRunStatus::Idle;
+    member_row.finished_at = None;
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(member_row)?;
 
     let summary = extract_report_section(final_text, "SUMMARY")
         .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
-    Ok((member_status, summary))
+    Ok((MemberRunStatus::Idle, summary))
 }
 
 #[allow(dead_code)] // retained for historical claude_cli record diagnostics
@@ -12271,9 +12506,8 @@ fn project_claude_team_event_live(
     }
 }
 
-/// Drive one kimi member: spawn its ACP session, deliver the assignment as a
-/// contract prompt, journal streamed updates, then loop follow-up rounds for
-/// messages queued while it worked (capped at [`TEAM_RUN_START_MAX_ROUNDS`]).
+/// Drive one persistent Kimi member. The ACP transport remains alive across
+/// idle periods; ordinary queued mail starts later turns on the same session.
 fn run_kimi_member(
     ledger: &TeamRunLedger,
     objective: &str,
@@ -12317,7 +12551,11 @@ fn run_kimi_member(
             .map(|session| session.native_session_id.as_str()),
         &collaboration_env,
     )?;
-    member_row.status = MemberRunStatus::Running;
+    member_row.status = if assignment.is_some() {
+        MemberRunStatus::Running
+    } else {
+        MemberRunStatus::Idle
+    };
     if let Some(profile) = member_row.provider_profile.as_mut() {
         apply_provider_version(profile, client.provider_version().map(str::to_string));
     }
@@ -12345,23 +12583,51 @@ fn run_kimi_member(
                 .unwrap_or("?")
         ),
     )?;
-    // The assignment is the newest Assignment-kind message with a still-queued
-    // delivery to this member; absent one, the run objective is the contract.
-    if let Some(assignment) = &assignment {
-        mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
-    }
     let mut round = 0u32;
-    let mut next_prompt = Some(contract_prompt(
-        objective,
-        &member_row,
-        &assignment_body,
-        &envelope,
-    ));
-    let mut final_status = MemberRunStatus::Failed;
+    let mut prompt_text;
+    let mut accepted_messages = assignment.iter().cloned().collect::<Vec<_>>();
     let mut final_summary = String::new();
-    let mut close_requested = false;
-    while let Some(prompt_text) = next_prompt.take() {
+    if assignment.is_some() {
+        prompt_text = contract_prompt(objective, &member_row, &assignment_body, &envelope);
+    } else {
+        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            client.ensure_transport_alive()
+        })? {
+            IdleMemberWake::Messages(messages) => {
+                prompt_text = String::from(
+                    "FOLLOW-UP MESSAGES for your existing Agent Team assignment. Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n",
+                );
+                for message in &messages {
+                    prompt_text.push_str(&format!(
+                        "--- {} ({}) ---\n{}\n\n",
+                        message.from_member_id,
+                        team_message_kind_label(&message.kind),
+                        message.body
+                    ));
+                }
+                accepted_messages = messages;
+            }
+            IdleMemberWake::Closed => {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Kimi member runtime closed by Host".to_string(),
+                ));
+            }
+            IdleMemberWake::TestRetired => {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Idle,
+                    "Kimi member test runtime retired while idle".to_string(),
+                ));
+            }
+        }
+    }
+    loop {
         round += 1;
+        let mut close_requested = false;
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let outcome = client.prompt(
             &prompt_text,
@@ -12420,11 +12686,19 @@ fn run_kimi_member(
                 Ok(cancel)
             },
         )?;
+        for message in &accepted_messages {
+            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        }
+        accepted_messages.clear();
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
         if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
-            member_row.status = MemberRunStatus::Stopped;
-            member_row.finished_at = Some(now_string());
+            member_row.status = if close_requested {
+                MemberRunStatus::Stopped
+            } else {
+                MemberRunStatus::Idle
+            };
+            member_row.finished_at = close_requested.then(now_string);
             member_row.last_event_at = Some(now_string());
             ledger.save_member_run(&member_row)?;
             ledger.append_action(
@@ -12446,140 +12720,130 @@ fn run_kimi_member(
                     "The active ACP prompt acknowledged session/cancel."
                 },
             )?;
-            client.shutdown();
-            return Ok(MemberOutcome::new(
-                member,
-                MemberRunStatus::Stopped,
-                if close_requested {
-                    "Kimi member runtime closed by Host".to_string()
-                } else {
-                    "Kimi prompt cancelled by operator or Lead".to_string()
-                },
-            ));
-        }
-        let result = parse_round_result(&final_text);
-
-        // Handoff to the host: the full final report, manual-ack delivery.
-        let handoff = TeamMessage {
-            id: generated_id("tmsg"),
-            team_run_id: ledger.run_id.clone(),
-            origin_wave_id: assignment
-                .as_ref()
-                .and_then(|message| message.origin_wave_id.clone()),
-            from_member_id: member.id.clone(),
-            to_member_ids: vec!["host".to_string()],
-            kind: TeamMessageKind::Handoff,
-            body: final_text.clone(),
-            correlation_id: assignment
-                .as_ref()
-                .map(|message| message.correlation_id.clone())
-                .unwrap_or_else(|| generated_id("corr")),
-            causation_id: assignment.as_ref().map(|message| message.id.clone()),
-            evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
-                member_id: "host".to_string(),
-                policy: TeamDeliveryPolicy::ManualAck,
-                status: TeamDeliveryStatus::Delivered,
-                attempt: 1,
-                updated_at: now_string(),
-            }],
-            created_at: now_string(),
-        };
-        ledger.save_message(&handoff)?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "message",
-            &handoff.id,
-            "created",
-            &format!("handoff from {} to host (round {round})", member.name),
-        )?;
-
-        let (action_type, action_status, member_status) = match result {
-            MemberRoundResult::Done => (
-                "completed",
-                MemberActionStatus::Succeeded,
-                MemberRunStatus::Completed,
-            ),
-            MemberRoundResult::Blocked => (
-                "blocked",
-                MemberActionStatus::Failed,
-                MemberRunStatus::Blocked,
-            ),
-            MemberRoundResult::Failed => {
-                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
+            if close_requested {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Kimi member runtime closed by Host".to_string(),
+                ));
             }
-        };
-        let result_section =
-            extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
-        let action = ledger.append_action(
-            &member.id,
-            action_type,
-            action_status,
-            &format!("round {round} {action_type}"),
-            &result_section,
-        )?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "action",
-            &action.id,
-            "created",
-            &format!("{} round {round}: {action_type}", member.name),
-        )?;
+        } else {
+            let result = parse_round_result(&final_text);
 
-        member_row.status = member_status;
-        member_row.finished_at = Some(now_string());
-        member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(&member_row)?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "member_run",
-            &member.id,
-            if member_status == MemberRunStatus::Completed {
-                "completed"
-            } else {
-                "updated"
-            },
-            &format!(
-                "member {} {} (round {round}, stop {})",
-                member.name,
-                serde_snake_label(&member_status),
-                outcome.stop_reason
-            ),
-        )?;
-        final_status = member_status;
-        final_summary = extract_report_section(&final_text, "SUMMARY")
-            .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+            // Handoff to the host: the full final report, manual-ack delivery.
+            let handoff = TeamMessage {
+                id: generated_id("tmsg"),
+                team_run_id: ledger.run_id.clone(),
+                origin_wave_id: assignment
+                    .as_ref()
+                    .and_then(|message| message.origin_wave_id.clone()),
+                from_member_id: member.id.clone(),
+                to_member_ids: vec!["host".to_string()],
+                kind: TeamMessageKind::Handoff,
+                body: final_text.clone(),
+                correlation_id: assignment
+                    .as_ref()
+                    .map(|message| message.correlation_id.clone())
+                    .unwrap_or_else(|| generated_id("corr")),
+                causation_id: assignment.as_ref().map(|message| message.id.clone()),
+                evidence_refs: Vec::new(),
+                deliveries: vec![TeamMessageDelivery {
+                    member_id: "host".to_string(),
+                    policy: TeamDeliveryPolicy::ManualAck,
+                    status: TeamDeliveryStatus::Delivered,
+                    attempt: 1,
+                    updated_at: now_string(),
+                }],
+                created_at: now_string(),
+            };
+            ledger.save_message(&handoff)?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "message",
+                &handoff.id,
+                "created",
+                &format!("handoff from {} to host (round {round})", member.name),
+            )?;
 
-        // Follow-up rounds: deliver whatever queued up while the member worked.
-        if round >= TEAM_RUN_START_MAX_ROUNDS {
-            break;
+            let (action_type, action_status) = match result {
+                MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
+                MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
+                MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
+            };
+            let result_section =
+                extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
+            let action = ledger.append_action(
+                &member.id,
+                action_type,
+                action_status,
+                &format!("round {round} {action_type}"),
+                &result_section,
+            )?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "action",
+                &action.id,
+                "created",
+                &format!("{} round {round}: {action_type}", member.name),
+            )?;
+
+            member_row.status = MemberRunStatus::Idle;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "member_run",
+                &member.id,
+                "updated",
+                &format!(
+                    "member {} idle after round {round} (stop {})",
+                    member.name, outcome.stop_reason
+                ),
+            )?;
+            final_summary = extract_report_section(&final_text, "SUMMARY")
+                .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
         }
-        let queued = ledger.queued_messages_for(&member.id)?;
-        if queued.is_empty() {
-            break;
+
+        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            client.ensure_transport_alive()
+        })? {
+            IdleMemberWake::Messages(messages) => {
+                prompt_text = format!(
+                    "FOLLOW-UP MESSAGES arrived while you were busy or idle (after round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
+                );
+                for message in &messages {
+                    prompt_text.push_str(&format!(
+                        "--- {} ({}) ---\n{}\n\n",
+                        message.from_member_id,
+                        team_message_kind_label(&message.kind),
+                        message.body
+                    ));
+                }
+                accepted_messages = messages;
+            }
+            IdleMemberWake::Closed => {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Kimi member runtime closed by Host".to_string(),
+                ));
+            }
+            IdleMemberWake::TestRetired => {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Idle,
+                    final_summary,
+                ));
+            }
         }
-        let mut follow_up = format!(
-            "FOLLOW-UP MESSAGES arrived while you worked (round {round}). Address them, then report again in the SAME format (## RESULT / ## SUMMARY / ...).\n\n"
-        );
-        for message in &queued {
-            follow_up.push_str(&format!(
-                "--- {} ({}) ---\n{}\n\n",
-                message.from_member_id,
-                team_message_kind_label(&message.kind),
-                message.body
-            ));
-            mark_message_delivered(ledger, message, &member.id, &member.name)?;
-        }
-        member_row.status = MemberRunStatus::Running;
-        member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(&member_row)?;
-        next_prompt = Some(follow_up);
     }
-    client.shutdown();
-    Ok(MemberOutcome::new(member, final_status, final_summary))
 }
 
 /// Journal a member failure on any error path (best-effort: we are already on
@@ -12608,6 +12872,44 @@ fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &s
         &member.id,
         "updated",
         &format!("member {} failed: {reason}", member.name),
+    );
+}
+
+fn journal_member_disconnected(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    generation: u64,
+    reason: &str,
+) {
+    let mut disconnected = ledger
+        .latest_member_run(&member.id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| member.clone());
+    if disconnected.status == MemberRunStatus::Stopped {
+        return;
+    }
+    disconnected.status = MemberRunStatus::Waiting;
+    disconnected.finished_at = None;
+    disconnected.last_event_at = Some(now_string());
+    let _ = ledger.save_member_run(&disconnected);
+    let _ = ledger.append_action(
+        &member.id,
+        "disconnected",
+        MemberActionStatus::Progress,
+        "provider transport disconnected; supervisor will resume",
+        &format!("runtime generation {generation}: {reason}"),
+    );
+    let _ = ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} disconnected in runtime generation {generation}; native session retained",
+            member.name
+        ),
     );
 }
 
@@ -14622,6 +14924,7 @@ fn handle_http_connection(
                     broadcast_live_member_activity(&activity_manager, &activity_project, activity);
                 });
                 let accepted_run_id = prepared.run_id.clone();
+                let accepted_status = serde_snake_label(&prepared.running.status);
                 std::thread::spawn(move || {
                     if let Err(error) = drive_prepared_team_run(
                         prepared,
@@ -14638,7 +14941,7 @@ fn handle_http_connection(
                     "202 Accepted",
                     &serde_json::json!({
                         "ok": true,
-                        "result": {"id": accepted_run_id, "status": "running"},
+                        "result": {"id": accepted_run_id, "status": accepted_status},
                         "snapshot": dashboard_snapshot(store)?,
                     }),
                 )?;
@@ -15098,6 +15401,18 @@ fn close_team_member_value(
         )));
     }
     cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    LIVE_MEMBER_CLOSE_REQUESTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            member_run_id.to_string(),
+            PendingMemberClose {
+                team_run_id: team_run_id.to_string(),
+                requested_by: requested_by.clone(),
+                reason: reason.clone(),
+            },
+        );
 
     let has_live_control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -15105,7 +15420,7 @@ fn close_team_member_value(
         .unwrap_or_else(|error| error.into_inner())
         .contains_key(member_run_id);
     if has_live_control {
-        return dispatch_live_member_control(
+        return match dispatch_live_member_control(
             team_run_id,
             member_run_id,
             |reply| MemberControlCommand::Close {
@@ -15114,7 +15429,14 @@ fn close_team_member_value(
                 reply,
             },
             LiveMemberControlRequirement::Close,
-        );
+        ) {
+            Ok(result) => Ok(result),
+            Err(_) => Ok(serde_json::json!({
+                "member_run_id": member_run_id,
+                "status": "close_requested",
+                "provider_ack": "supervisor_close_latched",
+            })),
+        };
     }
 
     let member = latest_member_runs_in_append_order(store)?
@@ -15125,6 +15447,7 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
     ) {
+        clear_pending_member_close(member_run_id);
         return Ok(serde_json::json!({
             "member_run_id": member.id,
             "status": serde_snake_label(&member.status),
@@ -15136,12 +15459,14 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Starting | MemberRunStatus::Running
     ) {
+        clear_pending_member_close(member_run_id);
         return Err(CliError::Usage(format!(
             "member {member_run_id} is {} but its provider session is not owned by this server process; send close through the Host process that started the TeamRun",
             serde_snake_label(&member.status)
         )));
     }
     let member = deactivate_team_run_member(store, team_run_id, member_run_id, &reason)?;
+    clear_pending_member_close(member_run_id);
     Ok(serde_json::json!({
         "member_run_id": member.id,
         "status": "stopped",

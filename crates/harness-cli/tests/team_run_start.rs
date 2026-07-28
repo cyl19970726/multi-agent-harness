@@ -41,6 +41,7 @@ fn run_with_fake_kimi(
         .envs(home.envs())
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", fake_result)
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .env(
             "FAKE_KIMI_ENV_MARKER",
             home.base().join("kimi-collaboration.env"),
@@ -48,6 +49,10 @@ fn run_with_fake_kimi(
         .env(
             "FAKE_CODEX_ENV_MARKER",
             home.base().join("codex-collaboration.env"),
+        )
+        .env(
+            "FAKE_CODEX_NAME_MARKER",
+            home.base().join("codex-thread-name.jsonl"),
         )
         .env("FAKE_CODEX_AUTO_COMPLETE", "1")
         .env(
@@ -150,7 +155,7 @@ fn create_two_member_run(
 }
 
 #[test]
-fn team_run_start_completes_kimi_members() {
+fn team_run_start_leaves_kimi_members_idle_until_host_close() {
     let home = TempHome::new("team-run-start-done");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -176,7 +181,7 @@ fn team_run_start_completes_kimi_members() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains(&format!("team run {run_id}\tcompleted")),
+        stdout.contains(&format!("team run {run_id}\trunning")),
         "summary line: {stdout}"
     );
 
@@ -200,13 +205,13 @@ fn team_run_start_completes_kimi_members() {
         "provider execution root must never be the centralized store root"
     );
 
-    // Member runs: terminal completed, ACP session id written back, finished.
+    // A provider turn completed, but the persistent MemberRuns remain idle.
     let members = store_rows(&home, &project_id, "member_runs.jsonl");
     assert_eq!(members.len(), 2, "members: {members:?}");
     for member in &members {
         assert_eq!(
             member["status"].as_str(),
-            Some("completed"),
+            Some("idle"),
             "member: {member:?}"
         );
         let session = member["native_session"]["native_session_id"]
@@ -217,8 +222,8 @@ fn team_run_start_completes_kimi_members() {
             "shim session id: {session}"
         );
         assert!(
-            member["finished_at"].is_string(),
-            "finished_at set: {member:?}"
+            member["finished_at"].is_null(),
+            "idle runtime has no terminal finished_at: {member:?}"
         );
         assert!(
             member["last_event_at"].is_string(),
@@ -322,11 +327,11 @@ fn team_run_start_completes_kimi_members() {
         "all events belong to the run"
     );
 
-    // Run: terminal completed with completed_at.
+    // A handoff is not a TeamRun completion decision.
     let runs = store_rows(&home, &project_id, "team_runs.jsonl");
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0]["status"].as_str(), Some("completed"));
-    assert!(runs[0]["completed_at"].is_string(), "run: {:?}", runs[0]);
+    assert_eq!(runs[0]["status"].as_str(), Some("running"));
+    assert!(runs[0]["completed_at"].is_null(), "run: {:?}", runs[0]);
 }
 
 #[test]
@@ -645,7 +650,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(members.len(), 2, "members: {members:?}");
     assert!(members
         .iter()
-        .all(|member| member["status"].as_str() == Some("completed")));
+        .all(|member| member["status"].as_str() == Some("idle")));
     let codex = members
         .iter()
         .find(|member| member["provider"].as_str() == Some("codex"))
@@ -658,6 +663,16 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(
         codex["native_session"]["native_session_id"].as_str(),
         Some("thread_fake_codex_app_server")
+    );
+    let native_name = std::fs::read_to_string(home.base().join("codex-thread-name.jsonl"))
+        .expect("Codex thread/name/set marker");
+    assert!(
+        native_name.contains("\"threadId\":\"thread_fake_codex_app_server\""),
+        "thread/name/set targets the bound native thread: {native_name}"
+    );
+    assert!(
+        native_name.contains("\"name\":\"Agent Team · codex-worker\""),
+        "thread/name/set carries the Member identity: {native_name}"
     );
     let kimi = members
         .iter()
@@ -779,6 +794,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", "done")
         .env("FAKE_KIMI_ASK", "1")
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
@@ -922,6 +938,7 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", "done")
         .env("FAKE_KIMI_ASK", "approval")
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
@@ -971,7 +988,7 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
 }
 
 #[test]
-fn team_run_start_blocked_member_sends_run_to_reviewing() {
+fn blocked_handoff_leaves_member_idle_and_supervisor_can_reattach() {
     let home = TempHome::new("team-run-start-blocked");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -998,10 +1015,8 @@ fn team_run_start_blocked_member_sends_run_to_reviewing() {
 
     let members = store_rows(&home, &project_id, "member_runs.jsonl");
     assert!(
-        members
-            .iter()
-            .all(|m| m["status"].as_str() == Some("blocked")),
-        "members blocked: {members:?}"
+        members.iter().all(|m| m["status"].as_str() == Some("idle")),
+        "members stay idle after reporting blocked: {members:?}"
     );
 
     // A blocked member journals a blocked action (the review signal).
@@ -1016,11 +1031,11 @@ fn team_run_start_blocked_member_sends_run_to_reviewing() {
     let runs = store_rows(&home, &project_id, "team_runs.jsonl");
     assert_eq!(
         runs[0]["status"].as_str(),
-        Some("reviewing"),
-        "run reviewing: {runs:?}"
+        Some("running"),
+        "handoffs do not decide TeamRun status: {runs:?}"
     );
 
-    let retry = run_with_fake_kimi(
+    let reattach = run_with_fake_kimi(
         &home,
         &fake_bin,
         "completed",
@@ -1033,15 +1048,13 @@ fn team_run_start_blocked_member_sends_run_to_reviewing() {
             &run_id,
         ],
     );
-    assert!(!retry.status.success(), "reviewing attempt restarted");
     assert!(
-        String::from_utf8_lossy(&retry.stderr).contains("create a new attempt to retry"),
-        "stderr: {}",
-        String::from_utf8_lossy(&retry.stderr)
+        reattach.status.success(),
+        "service recovery should reattach the unclosed MemberRun: {reattach:?}"
     );
     assert_eq!(
         store_rows(&home, &project_id, "team_runs.jsonl")[0]["status"].as_str(),
-        Some("reviewing")
+        Some("running")
     );
 
     // Seqs stay continuous on the blocked path too.

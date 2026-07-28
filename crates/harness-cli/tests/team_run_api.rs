@@ -1431,6 +1431,225 @@ fn post_team_run_message_and_start_async() {
 }
 
 #[test]
+fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion() {
+    let home = TempHome::new("team-run-persistent-codex-supervisor");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-persistent-codex"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let name_marker = home.base().join("codex-thread-names.jsonl");
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_AUTO_COMPLETE", "1"),
+            ("FAKE_CODEX_EXIT_AFTER_FIRST_TURN", "1"),
+            // This test intentionally sends follow-up mail after observing
+            // idle. Keep the test-only supervisor bound well above slow CI
+            // HTTP/snapshot latency; explicit Close still ends both members.
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+            (
+                "FAKE_CODEX_NAME_MARKER",
+                name_marker.to_str().expect("name marker"),
+            ),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise persistent supervisor semantics",
+            "members": [
+                {"name": "Builder", "role": "implementer", "provider": "codex"},
+                {"name": "Reviewer", "role": "reviewer", "provider": "codex"}
+            ]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let builder_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reviewer_id = created["result"]["member_runs"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment_id = created["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment_correlation = created["result"]["assignment_messages"][0]["correlation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut recovered_idle = false;
+    for _ in 0..200 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let builder = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(builder_id.as_str()));
+        let disconnected = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(builder_id.as_str())
+                    && action["action_type"].as_str() == Some("disconnected")
+            });
+        recovered_idle = builder.is_some_and(|member| {
+            member["status"].as_str() == Some("idle")
+                && member["native_session"]["native_session_id"].as_str()
+                    == Some("thread_fake_codex_app_server")
+        }) && disconnected;
+        if recovered_idle {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        recovered_idle,
+        "transport loss was not exposed and resumed on the same native session"
+    );
+
+    // A TeamRun decision is independent of persistent Member runtime lifetime.
+    let (status, completed) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/transition"),
+        &serde_json::json!({"status": "completed"}),
+    );
+    assert_eq!(status, 200, "body: {completed}");
+    assert_eq!(completed["result"]["status"].as_str(), Some("completed"));
+
+    let (status, host_mail) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [builder_id],
+            "kind": "message",
+            "body": "HOST FOLLOW-UP after TeamRun completion",
+            "correlation_id": assignment_correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {host_mail}");
+    let host_message_id = host_mail["result"]["id"].as_str().unwrap().to_string();
+    let (status, peer_mail) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": reviewer_id,
+            "to_member_ids": [builder_id],
+            "kind": "message",
+            "body": "PEER FOLLOW-UP after TeamRun completion",
+            "correlation_id": assignment_correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {peer_mail}");
+    let peer_message_id = peer_mail["result"]["id"].as_str().unwrap().to_string();
+
+    let mut delivered_once = false;
+    for _ in 0..200 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let messages = snapshot["team_messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let delivered = |message_id: &str| {
+            messages
+                .iter()
+                .find(|message| message["id"].as_str() == Some(message_id))
+                .is_some_and(|message| {
+                    message["deliveries"][0]["status"].as_str() == Some("delivered")
+                        && message["deliveries"][0]["attempt"].as_u64() == Some(1)
+                })
+        };
+        let builder_handoffs = messages
+            .iter()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(builder_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        delivered_once =
+            delivered(&host_message_id) && delivered(&peer_message_id) && builder_handoffs == 2;
+        if delivered_once {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        delivered_once,
+        "Host and peer mail did not wake exactly one follow-up turn"
+    );
+
+    let native_names = std::fs::read_to_string(&name_marker).expect("thread/name/set requests");
+    assert!(
+        native_names.contains("\"name\":\"Agent Team · Builder\"")
+            && native_names.contains("\"name\":\"Agent Team · Reviewer\""),
+        "native Codex threads were not named from Member identity: {native_names}"
+    );
+
+    for member_id in [&builder_id, &reviewer_id] {
+        let (status, closed) = serve.post_json(
+            &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+            &serde_json::json!({"requested_by": "host", "reason": "dogfood lane accepted"}),
+        );
+        assert_eq!(status, 200, "body: {closed}");
+    }
+    let mut all_stopped = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        all_stopped = [&builder_id, &reviewer_id].iter().all(|member_id| {
+            snapshot["member_runs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|member| {
+                    member["id"].as_str() == Some(member_id.as_str())
+                        && member["status"].as_str() == Some("stopped")
+                })
+        });
+        if all_stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        all_stopped,
+        "explicit Host close did not stop both runtimes"
+    );
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert!(
+        snapshot["team_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|run| {
+                run["id"].as_str() == Some(run_id.as_str())
+                    && run["status"].as_str() == Some("completed")
+            }),
+        "Member close must not rewrite the TeamRun decision"
+    );
+}
+
+#[test]
 fn codex_app_server_member_can_be_steered_in_place() {
     let home = TempHome::new("team-run-codex-app-server");
     let _project_id = init_project(&home, "alpha");
@@ -1502,23 +1721,23 @@ fn codex_app_server_member_can_be_steered_in_place() {
         Some("inject")
     );
 
-    let mut completed = false;
+    let mut idle = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        completed = snapshot["member_runs"]
+        idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("completed")
+                    && member["status"].as_str() == Some("idle")
             });
-        if completed {
+        if idle {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(completed, "steered member did not complete");
+    assert!(idle, "steered member did not return to persistent idle");
 }
 
 #[test]
@@ -1579,25 +1798,76 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
         result["result"]["status"].as_str(),
         Some("interrupt_requested")
     );
-    let mut stopped = false;
+    let mut idle = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        stopped = snapshot["member_runs"]
+        idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("stopped")
+                    && member["status"].as_str() == Some("idle")
             });
-        if stopped {
+        if idle {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(idle, "Codex interrupt did not stop only the active turn");
+    let (status, follow_up) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "body": "continue after interrupt"
+        }),
+    );
+    assert_eq!(status, 200, "body: {follow_up}");
+    let mut resumed = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        resumed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some("thread_fake_codex_app_server")
+            });
+        if resumed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(resumed, "queued mail did not wake the interrupted Member");
+    let (status, steered) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
+        &serde_json::json!({"content": "finish resumed turn", "requested_by": "host"}),
+    );
+    assert_eq!(status, 200, "body: {steered}");
+    let mut idle_after_resume = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        idle_after_resume = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+            });
+        if idle_after_resume {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        stopped,
-        "Codex member was marked terminal before/without provider interruption acknowledgement"
+        idle_after_resume,
+        "interrupted Member did not finish a later turn on the same session"
     );
 }
 
@@ -1725,13 +1995,13 @@ fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
     let mut interruption_summary = String::new();
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let stopped = snapshot["member_runs"]
+        let idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("stopped")
+                    && member["status"].as_str() == Some("idle")
             });
         interruption_summary = snapshot["member_actions"]
             .as_array()
@@ -1741,7 +2011,7 @@ fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
             .filter_map(|action| action["summary"].as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        if stopped && interruption_summary.contains("without a Harness control request") {
+        if idle && interruption_summary.contains("without a Harness control request") {
             final_snapshot = snapshot;
             break;
         }
@@ -1750,7 +2020,7 @@ fn codex_provider_reported_interruption_is_not_attributed_to_harness() {
     assert_ne!(
         final_snapshot,
         serde_json::Value::Null,
-        "provider-reported interruption did not become terminal with its attribution"
+        "provider-reported interruption did not return the member to idle with honest attribution"
     );
     assert!(
         interruption_summary.contains("without a Harness control request"),
@@ -1824,23 +2094,138 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
         interrupted["result"]["status"].as_str(),
         Some("cancel_requested")
     );
-    let mut stopped = false;
+    let mut idle = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        stopped = snapshot["member_runs"]
+        idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("stopped")
+                    && member["status"].as_str() == Some("idle")
             });
-        if stopped {
+        if idle {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(stopped, "Kimi ACP member did not acknowledge cancellation");
+    assert!(
+        idle,
+        "Kimi ACP interrupt stopped the Member instead of only its turn"
+    );
+}
+
+#[test]
+fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
+    let home = TempHome::new("team-run-kimi-late-mail");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise persistent Kimi mailbox",
+            "members": [{"name": "kimi-idle", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+    let mut first_session = None;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        first_session = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+            })
+            .and_then(|member| {
+                member["native_session"]["native_session_id"]
+                    .as_str()
+                    .map(str::to_string)
+            });
+        if first_session.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let first_session = first_session.expect("Kimi idle native session");
+    let (status, sent) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "body": "late Kimi follow-up"
+        }),
+    );
+    assert_eq!(status, 200, "body: {sent}");
+    let message_id = sent["result"]["id"].as_str().unwrap().to_string();
+
+    let mut second_round = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let handoffs = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        let delivered = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["id"].as_str() == Some(message_id.as_str()))
+            .is_some_and(|message| {
+                message["deliveries"][0]["status"].as_str() == Some("delivered")
+                    && message["deliveries"][0]["attempt"].as_u64() == Some(1)
+            });
+        let same_session = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some(first_session.as_str())
+            });
+        second_round = handoffs == 2 && delivered && same_session;
+        if second_round {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        second_round,
+        "late Kimi mail was not delivered exactly once on the same session"
+    );
 }
 
 #[test]
@@ -1904,23 +2289,26 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     );
     assert_eq!(status, 200, "body: {resolved}");
     assert_eq!(resolved["result"]["status"].as_str(), Some("answered"));
-    let mut completed = false;
+    let mut idle = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        completed = snapshot["member_runs"]
+        idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("completed")
+                    && member["status"].as_str() == Some("idle")
             });
-        if completed {
+        if idle {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(completed, "Codex did not resume after Lead answer");
+    assert!(
+        idle,
+        "Codex did not resume after Lead answer and return idle"
+    );
 }
 
 #[test]
@@ -1983,16 +2371,16 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         &serde_json::json!({"reason": "cancel while waiting", "requested_by": "operator"}),
     );
     assert_eq!(status, 200, "body: {interrupted}");
-    let mut stopped_with_cancelled_interaction = false;
+    let mut idle_with_cancelled_interaction = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let stopped = snapshot["member_runs"]
+        let idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("stopped")
+                    && member["status"].as_str() == Some("idle")
             });
         let cancelled = snapshot["pending_interactions"]
             .as_array()
@@ -2002,15 +2390,15 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
                 interaction["member_run_id"].as_str() == Some(member_id.as_str())
                     && interaction["status"].as_str() == Some("cancelled")
             });
-        stopped_with_cancelled_interaction = stopped && cancelled;
-        if stopped_with_cancelled_interaction {
+        idle_with_cancelled_interaction = idle && cancelled;
+        if idle_with_cancelled_interaction {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        stopped_with_cancelled_interaction,
-        "interrupt did not close both waiting interaction and prompt"
+        idle_with_cancelled_interaction,
+        "interrupt did not cancel the waiting interaction and return the Member to idle"
     );
 }
 
