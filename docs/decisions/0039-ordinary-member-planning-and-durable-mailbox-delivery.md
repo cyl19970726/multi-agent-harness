@@ -132,6 +132,26 @@ future durable claim/lease may strengthen crash recovery; until implemented,
 the Dashboard and CLI must expose the gap rather than claim exactly-once
 provider consumption.
 
+### Member lifetime is independent of a turn or TeamRun status
+
+A Host-created Member remains addressable until the Host explicitly closes it.
+Provider turn completion and a Member Handoff return the MemberRun to `idle`;
+they do not end the native runtime. Host or peer mail queued while it is idle
+wakes the same MemberRun and provider-native session exactly once.
+
+Interrupt stops only the current provider turn. After the provider acknowledges
+that interrupt, the Member returns to `idle` and may receive later mail. Close
+is the only ordinary operation that records the Member as `stopped`.
+Completing or advancing a Wave, TeamRun, or Mission never implies Close.
+
+The Harness process that starts a TeamRun supervises every unclosed Member.
+Unexpected provider transport loss records an explicit `disconnected` action,
+keeps the native-session binding, and resumes that session rather than
+replaying the Assignment. Re-running TeamRun start after a Host process restart
+reattaches unclosed Members to their recorded native sessions. Live interrupt,
+steer, and close handles remain process-local, so those controls must reach the
+currently supervising Host process.
+
 ### Member detail is a coordination projection
 
 `harness member-run show --id <member-run-id> --json` is the canonical
@@ -169,3 +189,8 @@ Those remain readable from the provider-native session through its locator.
    returning only a native-session locator for provider execution history.
 6. Deterministic tests cover busy delivery, retry/no-duplicate behavior,
    Member-to-Host visibility, peer delivery, handoff evidence, and CLI detail.
+7. Turn completion, Handoff, Interrupt, Wave advance, TeamRun completion, and
+   Mission completion leave an unclosed Member available on the same native
+   session.
+8. Unexpected transport loss is visible and recoverable without duplicate
+   Assignment delivery; explicit Close is the only normal terminal operation.

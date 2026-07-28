@@ -11,11 +11,15 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use crate::{kill_worker_tree, CliError, CliResult};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVELOPMENT_SANDBOX: &str = "danger-full-access";
 const DEVELOPMENT_APPROVAL_POLICY: &str = "never";
 
@@ -42,6 +46,13 @@ fn thread_open_params(
     }
 }
 
+fn thread_name_params(thread_id: &str, member_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "name": format!("Agent Team · {}", member_name.trim())
+    })
+}
+
 pub(crate) struct CodexAppServerClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
@@ -61,6 +72,7 @@ impl CodexAppServerClient {
         model: Option<&str>,
         _workspace_write: bool,
         resume_thread_id: Option<&str>,
+        member_name: &str,
         collaboration_env: &[(String, String)],
         plan_mode: bool,
     ) -> CliResult<Self> {
@@ -74,6 +86,8 @@ impl CodexAppServerClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command.spawn().map_err(|error| {
             CliError::Usage(format!("failed to spawn codex app-server: {error}"))
         })?;
@@ -116,6 +130,13 @@ impl CodexAppServerClient {
                     break;
                 }
             }
+            // Drop response senders so an RPC waiting beneath a lost
+            // transport observes disconnection immediately instead of
+            // misreporting a handshake timeout.
+            pending_reader
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
         });
         let stderr_tail = Arc::new(Mutex::new(String::new()));
         let stderr_writer = Arc::clone(&stderr_tail);
@@ -180,11 +201,33 @@ impl CodexAppServerClient {
                 ))
             })?
             .to_string();
+        client.request_blocking(
+            "thread/name/set",
+            thread_name_params(&client.thread_id, member_name),
+            HANDSHAKE_TIMEOUT,
+        )?;
         Ok(client)
     }
 
     pub(crate) fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    pub(crate) fn ensure_transport_alive(&mut self) -> CliResult<()> {
+        let reader_ended = self
+            .reader
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished);
+        let child_ended = self.child.try_wait().map_err(|error| {
+            CliError::Usage(format!("failed to inspect codex app-server: {error}"))
+        })?;
+        if reader_ended || child_ended.is_some() {
+            return Err(CliError::Usage(format!(
+                "codex app-server transport disconnected{}",
+                self.stderr_suffix()
+            )));
+        }
+        Ok(())
     }
 
     /// Bind the durable Harness Assignment objective to Codex's native thread
@@ -287,13 +330,17 @@ impl CodexAppServerClient {
             .unwrap_or_else(|error| error.into_inner())
             .insert(id, tx);
         self.write(&serde_json::json!({"id": id, "method": method, "params": params}))?;
-        let frame = rx.recv_timeout(timeout).map_err(|_| {
+        let frame = rx.recv_timeout(timeout).map_err(|error| {
             self.pending
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
+                .unwrap_or_else(|lock_error| lock_error.into_inner())
                 .remove(&id);
+            let failure = match error {
+                RecvTimeoutError::Timeout => "timed out",
+                RecvTimeoutError::Disconnected => "transport disconnected",
+            };
             CliError::Usage(format!(
-                "codex app-server {method} timed out{}",
+                "codex app-server {method} {failure}{}",
                 self.stderr_suffix()
             ))
         })?;
@@ -341,7 +388,13 @@ impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
         kill_worker_tree(&mut self.child);
         if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+            let deadline = Instant::now() + READER_SHUTDOWN_TIMEOUT;
+            while !reader.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if reader.is_finished() {
+                let _ = reader.join();
+            }
         }
     }
 }
@@ -372,5 +425,16 @@ mod tests {
         assert_eq!(params["approvalPolicy"], "never");
         assert_eq!(params["threadId"], "thread-123");
         assert!(params.get("ephemeral").is_none());
+    }
+
+    #[test]
+    fn native_thread_name_uses_the_member_identity() {
+        assert_eq!(
+            thread_name_params("thread-123", "RuntimeFixer"),
+            serde_json::json!({
+                "threadId": "thread-123",
+                "name": "Agent Team · RuntimeFixer"
+            })
+        );
     }
 }

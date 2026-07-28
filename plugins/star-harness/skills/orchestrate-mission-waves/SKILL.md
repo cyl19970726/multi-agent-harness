@@ -170,9 +170,13 @@ harness team-run close-member --id <run> --member-run-id <member> \
 
 Use `team_run_interrupt_member` only to interrupt the current provider turn;
 use `team_run_close_member` to end the Member runtime. A resumed Member is
-created or added with an explicit provider-owned native session id. Live
-controls must go through the same Host server process that started the run;
-the current process-local supervisor is not reconstructed after restart.
+created or added with an explicit provider-owned native session id. Turn
+completion and Handoff return an unclosed Member to `idle`; later Host or peer
+mail wakes that same MemberRun/session. Wave, TeamRun, and Mission completion
+never imply Close. Live controls must go through the Host process currently
+supervising the run. After a Host restart, start the TeamRun again to reattach
+unclosed Members to their recorded native sessions; already delivered
+Assignments are not replayed.
 
 ## Write Useful Context
 

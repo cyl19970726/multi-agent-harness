@@ -27,6 +27,7 @@ MemberRun + correlated Assignment
   -> codex app-server --listen stdio://
   -> initialize
   -> thread/start or explicit thread/resume
+  -> thread/name/set "Agent Team · <member name>"
   -> turn/start for queued ordinary mail
   -> turn/steer only for a real same-turn Steer
   -> turn/interrupt only for current-turn interruption
@@ -44,11 +45,15 @@ Close are different:
 - **Resume** uses the recorded native thread id with the provider's real
   `thread/resume` operation. Harness never reconstructs a session by replaying
   its coordination records.
+- **Disconnect** records a recoverable lifecycle action and resumes the same
+  native thread under the TeamRun supervisor. It does not replay an already
+  delivered Assignment.
 
 Live controls are currently process-local. The Dashboard/MCP service can
 control app-server children it started in that same Harness process. A
 foreground `team-run start` child cannot yet be controlled by a second CLI
-process; a future Team Supervisor is required for cross-client durable control.
+process. Re-running start after a Host restart reattaches every unclosed Member
+to its recorded thread, but live controls must target that new supervisor.
 
 ## Mailbox Delivery
 
@@ -68,6 +73,10 @@ Ordinary Host/peer messages queued while a turn is busy wait for the next
 eligible round. They do not interrupt the current turn. `delivered` means the
 adapter accepted the envelope for that MemberRun and native session; semantic
 understanding requires an explicit reply or Handoff.
+
+When a turn or Handoff completes, the Member returns to `idle` and the adapter
+keeps polling. Later mail starts one new turn on the same thread. Wave,
+TeamRun, and Mission completion do not stop that loop; only explicit Close does.
 
 The complete message-selection and delivery contract is in
 [Codex Message Delivery](codex-message-delivery.md).

@@ -319,9 +319,10 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
 - The TeamRun adapter retains a cooperative live control handle while
   `session/prompt` is active. Dashboard/MCP member interruption sends
   `session/cancel`, waits for the prompt's terminal `stopReason=cancelled`, and
-  only then records the MemberRun as `stopped`; the profile reports
+  only then returns the MemberRun to `idle`; the profile reports
   `supports_cancel=true`. Kimi ACP still does not support same-turn steer, so
-  normal chat is queued for the next provider round.
+  normal chat is queued for the next provider round. Only explicit Member Close
+  records `stopped`.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.
 - Kimi-native Agent/AgentSwarm/background-task and hook events are not yet

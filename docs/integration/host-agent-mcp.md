@@ -149,9 +149,12 @@ queued
 ```
 
 Messages created while a Member is running are delivered at the next provider
-round boundary. A completed or idle Member is not automatically resumed by a
-new message; the Host must explicitly create the follow-up run and bind the
-same provider-native session.
+round boundary. An unclosed idle Member is automatically woken by new mail on
+the same MemberRun and provider-native session. Provider turn completion,
+Handoff, Wave advance, TeamRun completion, and Mission completion do not end
+that lifetime. After a Host process restart, starting the TeamRun reattaches
+unclosed Members to their recorded native sessions; it does not replay already
+delivered Assignments.
 
 Host-bound mail is scoped by the TeamRun's exact `host_surface +
 host_thread_id`. The Codex Plugin reads only that native task's aggregate

@@ -229,6 +229,12 @@ if [ "$1" = "app-server" ]; then
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
         printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol","turns":[]}}}\n' "$id" "$thread_id"
         ;;
+      *'"method":"thread/name/set"'*)
+        if [ -n "${FAKE_CODEX_NAME_MARKER:-}" ]; then
+          printf '%s\n' "$line" >> "$FAKE_CODEX_NAME_MARKER"
+        fi
+        printf '{"id":%s,"result":{}}\n' "$id"
+        ;;
       *'"method":"thread/goal/set"'*)
         if [ -n "${FAKE_CODEX_PLAN_MARKER:-}" ]; then
           printf 'goal_set %s\n' "$line" >> "$FAKE_CODEX_PLAN_MARKER"
@@ -260,6 +266,9 @@ if [ "$1" = "app-server" ]; then
         if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ]; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
+          if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
+            exit 0
+          fi
         elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
         elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then

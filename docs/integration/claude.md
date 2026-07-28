@@ -102,7 +102,9 @@ Live controls are currently process-local. A close/interrupt request must go
 through the same `harness serve` or MCP Host process that started the TeamRun.
 After that process exits, Harness can still reconstruct coordination and resume
 the native session, but it does not pretend to own an orphaned provider
-process. A durable supervisor remains a later architectural step.
+process. Starting the TeamRun in a new Host process reattaches every unclosed
+Member to its recorded native session; subsequent live controls must reach that
+new supervisor.
 
 ## Messages and interactions
 
