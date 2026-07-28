@@ -152,11 +152,30 @@ Today, messages created while a Member is running are delivered at the next
 provider round boundary. A completed or idle Member is not automatically
 resumed by a new message; the Host must explicitly create the follow-up run and
 bind the same provider-native session. Host-bound handoffs require a manual
-ACK. The Host is not automatically woken or injected merely because a durable
-message exists, so the plugin/MCP client must poll the Host inbox/status at safe
-turn boundaries. The complete recipient inbox, wake, response, and resolution
-contract remains tracked by issue
+ACK. The Host is not asynchronously interrupted merely because a durable
+message exists. The unified Plugin injects a bounded unresolved-message summary
+at supported SessionStart and UserPromptSubmit boundaries; the Host must still
+read the canonical Inbox, ACK receipt, and issue a causation-linked semantic
+reply or verdict. Environments without those hooks must poll the Host
+inbox/status at the same safe turn boundaries. The complete recipient wake,
+response, and resolution contract remains tracked by issue
 [#230](https://github.com/cyl19970726/multi-agent-harness/issues/230).
+
+This boundary is intentionally provider-neutral:
+
+```text
+Member native session
+  -> explicit TeamMessage(to=host)
+  -> Harness Host Inbox (delivered + manual_ack)
+  -> bounded Plugin "Needs you" orientation at a safe Host boundary
+  -> Host reads Inbox and ACKs transport
+  -> Host sends a causation-linked answer/review/acceptance
+```
+
+Codex and Claude do not own separate mailbox Skills. Both use the canonical
+`orchestrate-mission-waves` Host contract and
+`collaborate-as-agent-team-member` Member contract; app-server versus Agent SDK
+differences remain Adapter capabilities, not different team semantics.
 
 An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
 and not “the Host accepts the work.” A reviewer must receive the actual

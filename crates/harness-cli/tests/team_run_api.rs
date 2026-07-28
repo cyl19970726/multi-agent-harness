@@ -1,5 +1,5 @@
 //! Integration coverage for the Agent Team v0 surface (team-run task):
-//!   - `harness team-run create|list|status|send|events` CLI smoke against an
+//!   - `harness team-run create|list|status|inbox|ack|send|events` CLI smoke against an
 //!     isolated HOME (temp store, real binary),
 //!   - `POST /v1/team-runs` creates the run + member runs + assignment
 //!     messages + folded events, and the response snapshot carries the six new
@@ -348,6 +348,90 @@ fn team_run_cli_create_list_status_send_events() {
     let tail = tail.as_array().expect("tail array");
     assert_eq!(tail.len(), 1, "tail: {tail:?}");
     assert_eq!(tail[0]["seq"].as_u64(), Some(6));
+
+    // Member-to-Host mail is actionable immediately; CLI ACK is the complete
+    // control-plane path and removes it from the default Inbox without erasing
+    // the latest historical projection.
+    let host_message = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            member_ids[1],
+            "--to",
+            "host",
+            "--kind",
+            "handoff",
+            "--body",
+            "RESULT: ready for Host review",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        host_message["deliveries"][0]["status"].as_str(),
+        Some("delivered")
+    );
+    let host_inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            "host",
+            "--json",
+        ],
+    );
+    assert_eq!(host_inbox.as_array().map(Vec::len), Some(1));
+    let ack = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "ack",
+            "--id",
+            &run_id,
+            "--message-id",
+            host_message["id"].as_str().expect("Host message id"),
+            "--member-id",
+            "host",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        ack["deliveries"][0]["status"].as_str(),
+        Some("acknowledged")
+    );
+    let actionable_after_ack = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            "host",
+            "--json",
+        ],
+    );
+    assert_eq!(actionable_after_ack.as_array().map(Vec::len), Some(0));
+    let history_after_ack = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            "host",
+            "--all",
+            "--json",
+        ],
+    );
+    assert_eq!(history_after_ack.as_array().map(Vec::len), Some(1));
 
     // create --json: the full created bundle (run + member runs + assignments).
     let created = team_run_json(

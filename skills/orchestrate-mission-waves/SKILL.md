@@ -103,6 +103,36 @@ internal test subagent is not independent review.
 11. Close the Mission with an explicit outcome. Leave linked teams and their
     independent lifecycle untouched.
 
+At every safe Host turn boundary—session start, after the user sends a new
+prompt, before re-planning, and before accepting a handoff—read the Lead Inbox.
+Member mail is durable immediately, but it does not asynchronously interrupt
+the Host's current reasoning:
+
+```bash
+harness team-run inbox --id <team-run-id> \
+  --member-run-id host --json
+```
+
+For each actionable message:
+
+1. inspect its sender, kind, Assignment correlation, causation, and body;
+2. acknowledge receipt explicitly;
+3. send a causation-linked reply when a semantic response is needed; and
+4. keep acceptance separate from receipt.
+
+```bash
+harness team-run ack --id <team-run-id> \
+  --message-id <message-id> --member-id host
+harness team-run send --id <team-run-id> --from host --to <member-run-id> \
+  --kind message --body "<answer, revision, or acceptance decision>" \
+  --correlation-id <assignment-correlation> --causation-id <message-id>
+```
+
+The Star Harness Plugin injects a bounded `Needs you` summary at supported
+SessionStart and user-prompt boundaries. Treat it as orientation, not as the
+mailbox truth: always use the Inbox command before acting. No hook may silently
+ACK, answer, accept, or wake the Host in the middle of a turn.
+
 The Host owns Member lifecycle explicitly:
 
 ```bash
@@ -208,6 +238,10 @@ harness team-run inbox --id <team-run-id> \
   --member-run-id <member-run-id> --all --json
 harness member-run show --id <member-run-id> --json
 ```
+
+`member-run show` explains one Member's assignment, mailbox, latest action,
+native-session binding, handoff, and runtime facts. It does not mirror the
+provider transcript.
 
 ## Use Messages Deliberately
 

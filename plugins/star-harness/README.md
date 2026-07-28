@@ -6,7 +6,8 @@ It installs experience adapters only:
 - generated mirrors of the canonical Host and Member skills;
 - optional Harness MCP registration over the same application services as CLI;
 - Mission/Team shortcuts and historical Kimi command aliases;
-- fail-open lifecycle telemetry and SessionStart active-run orientation; and
+- fail-open lifecycle telemetry plus bounded SessionStart/UserPromptSubmit
+  active-run and Host Inbox orientation; and
 - Dashboard deep-link guidance.
 
 Product architecture, messages, Mission/Wave state, TeamRun lifecycle, and

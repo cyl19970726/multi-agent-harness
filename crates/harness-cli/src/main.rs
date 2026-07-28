@@ -9512,7 +9512,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|inbox|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
+        "team-run create|list|status|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -9744,6 +9744,22 @@ fn team_run_command(
                         message.body.lines().next().unwrap_or_default()
                     );
                 }
+            }
+        }
+        "ack" => {
+            let team_run_id = required(args, "--id")?;
+            let message_id = required(args, "--message-id")?;
+            let member_id = value(args, "--member-id").unwrap_or_else(|| "host".to_string());
+            let message = acknowledge_team_message_value(
+                store,
+                &team_run_id,
+                &message_id,
+                &serde_json::json!({"member_id": member_id}),
+            )?;
+            if json {
+                print_json(&message)?;
+            } else {
+                println!("{message_id}\tacknowledged\tmember={member_id}");
             }
         }
         "send" => {
@@ -24199,7 +24215,7 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|inbox|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
   member-run show --id <member-run-id> [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
