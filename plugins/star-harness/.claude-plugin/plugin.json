@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "star-harness",
+  "version": "0.4.0",
+  "description": "Thin Mission/Wave and autonomous Agent Team integration for Claude Code.",
+  "author": {
+    "name": "Multi-Agent Harness",
+    "email": "noreply@example.com"
+  },
+  "homepage": "https://github.com/cyl19970726/multi-agent-harness",
+  "repository": "https://github.com/cyl19970726/multi-agent-harness",
+  "license": "MIT",
+  "keywords": [
+    "agent-team",
+    "mission",
+    "wave",
+    "mcp",
+    "claude-code"
+  ],
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

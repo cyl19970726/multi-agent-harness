@@ -1,6 +1,6 @@
 {
   "name": "star-harness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Thin Mission/Wave and autonomous Agent Team integration for Codex.",
   "author": {
     "name": "Multi-Agent Harness",

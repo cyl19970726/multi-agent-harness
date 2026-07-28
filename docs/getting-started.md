@@ -43,14 +43,27 @@ npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent cod
 npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent claude
 ```
 
-**C. Claude Code plugin (auto-updates).**
+**C. Unified Mission/Wave + Agent Team plugin for Codex and Claude Code.**
+
+```bash
+codex plugin marketplace add cyl19970726/multi-agent-harness
+codex plugin add star-harness@multi-agent-harness
+
+claude plugin marketplace add cyl19970726/multi-agent-harness --scope user
+claude plugin install star-harness@multi-agent-harness --scope user
+```
+
+Start a new task/session, then verify that `star-harness` is enabled and that
+the `orchestrate-mission-waves` and `collaborate-as-agent-team-member` skills
+are visible. The bundled MCP entry runs `harness mcp`, so the `harness` binary
+must be on `PATH`.
+
+The separate `star-workflow` plugin remains available for Dynamic Workflow:
 
 ```text
 /plugin marketplace add cyl19970726/multi-agent-harness
 /plugin install star-workflow
 ```
-
-Verify it landed: the agent should now see `star-workflow` in its skill list.
 
 ## 2. Build + start the harness service
 

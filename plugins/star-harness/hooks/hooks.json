@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Loading active Star Harness context"
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness lifecycle event"
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness permission boundary"
           }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness tool lifecycle"
           }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness tool lifecycle"
           }
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness subagent attribution"
           }
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness subagent attribution"
           }
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${PLUGIN_ROOT}/scripts/star-harness-hook.sh",
+            "command": "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/star-harness-hook.sh",
             "timeout": 10,
             "statusMessage": "Recording Harness session stop"
           }

@@ -1,6 +1,7 @@
 # Star Harness Plugin
 
-This is the unified, provider-neutral distribution package for Codex and Kimi.
+This is the unified, provider-neutral distribution package for Codex, Claude
+Code, and Kimi.
 It installs experience adapters only:
 
 - generated mirrors of the canonical Host and Member skills;
@@ -23,9 +24,22 @@ node scripts/sync-star-harness-plugin-skills.mjs
 node scripts/sync-star-harness-plugin-skills.mjs --check
 ```
 
-This repository package does not change a user's plugin installation,
-Marketplace, MCP configuration, or provider version. Installation and provider
-upgrades are separate, explicitly confirmed operations.
+The repository marketplace publishes this directory as `star-harness`. Install
+it after building and placing `harness` on `PATH`:
+
+```bash
+# Codex CLI / Codex Desktop
+codex plugin marketplace add cyl19970726/multi-agent-harness
+codex plugin add star-harness@multi-agent-harness
+
+# Claude Code
+claude plugin marketplace add cyl19970726/multi-agent-harness --scope user
+claude plugin install star-harness@multi-agent-harness --scope user
+```
+
+Start a new Codex task or Claude Code session after installation. Plugin
+installation does not upgrade Codex, Claude Code, Kimi, or another Provider.
+Provider upgrades remain separate, explicitly confirmed operations.
 
 Kimi namespaces plugin commands with the plugin id. After installing this
 unified package, the commands are:

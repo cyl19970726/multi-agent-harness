@@ -18,17 +18,36 @@ function readJson(path) {
 }
 
 const codex = readJson(join(pluginRoot, ".codex-plugin", "plugin.json"));
+const claude = readJson(join(pluginRoot, ".claude-plugin", "plugin.json"));
 const kimi = readJson(join(pluginRoot, "kimi.plugin.json"));
 const mcp = readJson(join(pluginRoot, ".mcp.json"));
+const marketplace = readJson(join(repoRoot, ".claude-plugin", "marketplace.json"));
 
-if (codex.name !== "star-harness" || kimi.name !== "star-harness") {
-  errors.push("Codex and Kimi manifests must both name star-harness");
+if (
+  codex.name !== "star-harness" ||
+  claude.name !== "star-harness" ||
+  kimi.name !== "star-harness"
+) {
+  errors.push("Codex, Claude, and Kimi manifests must all name star-harness");
 }
-if (codex.version !== kimi.version) {
-  errors.push("Codex and Kimi manifest versions must match");
+if (codex.version !== claude.version || codex.version !== kimi.version) {
+  errors.push("Codex, Claude, and Kimi manifest versions must match");
 }
 if (mcp.mcpServers?.harness?.command !== "harness") {
   errors.push(".mcp.json must register the Harness MCP server");
+}
+const marketplacePlugin = marketplace.plugins?.find(
+  (plugin) => plugin.name === "star-harness",
+);
+if (!marketplacePlugin) {
+  errors.push("repository marketplace must publish star-harness");
+} else {
+  if (marketplacePlugin.source !== "./plugins/star-harness") {
+    errors.push("star-harness marketplace source must be ./plugins/star-harness");
+  }
+  if (marketplacePlugin.version !== codex.version) {
+    errors.push("star-harness marketplace and manifest versions must match");
+  }
 }
 for (const path of [
   join(pluginRoot, "hooks", "hooks.json"),

@@ -1,5 +1,5 @@
 ---
-description: Link or reuse an Agent Team, create a Mission-scoped TeamRun, assign correlated lanes, and start it. Usage: /star-harness:team-start [objective]
+description: "Link or reuse an Agent Team, create a Mission-scoped TeamRun, assign correlated lanes, and start it. Usage: /star-harness:team-start [objective]"
 ---
 
 Follow `[[orchestrate-mission-waves]]`. Show the proposed roster, roles,
