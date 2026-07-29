@@ -175,14 +175,23 @@ Default Inbox returns actionable current mail. `--all` returns complete durable
 coordination lineage. Provider-native execution history is represented by a
 locator and on-demand projection, not copied into these results.
 
-## Process Boundary
+## Supervisor Boundary
 
-The live app-server control handle is currently process-local. The
-Dashboard/MCP service can deliver to members it launched in the same service
-process. A second CLI process cannot inject into a foreground
-`team-run start` child merely because it can read the same JSONL store. Until a
-durable Team Supervisor exists, that case must remain visibly queued or fail
-honestly rather than claim delivery.
+The live app-server control handle is process-local, while the
+`TeamSupervisorLease` is durable cross-process authority. Its service locator
+lets a second Dashboard, MCP, CLI, or Harness service route control to the
+owner, but only the current generation may claim a queued message or drive the
+handle. The owner fences the lease again immediately before the Provider
+operation. After a crash, an expired lease may be replaced; a delivery left
+`claimed` remains uncertain until an operator reconciles a provider receipt or
+explicitly requeues it.
+
+Before an idle Codex Member claims new mail, the Supervisor verifies the
+app-server transport is still alive. A dead transport is resumed on the same
+thread first, so known pre-turn disconnects do not create avoidable uncertain
+claims. Close is latched before live dispatch and therefore remains accepted
+even if the process-local control receiver disappears during that reattach
+boundary.
 
 Host delivery follows the same ownership rule. Codex `Stop` is a real
 same-task safe boundary and may continue once with actionable Host mail.

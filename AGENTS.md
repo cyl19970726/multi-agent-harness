@@ -101,8 +101,14 @@ New Agent Team members use only their persistent bidirectional mode:
 reads; they are not Team fallbacks. The Host explicitly creates, messages,
 inspects, interrupts, closes, and resumes members. Interrupt stops one current
 turn; Close ends the member runtime; Wave or TeamRun completion never implies
-Close. Live control handles are currently process-local to the Harness service
-that started them, pending a durable Team Supervisor.
+Close. Physical live control handles remain process-local to the Harness
+service that started them. A durable Team Supervisor lease is the cross-process
+control authority and contains a loopback service locator. Dashboard, CLI, and
+MCP clients route controls to that owner; the owner revalidates supervisor id,
+generation, status, and expiry immediately before driving its handle. After a
+crash, a new Supervisor generation reattaches the recorded native sessions;
+uncertain claimed deliveries require explicit reconciliation, never blind
+replay.
 
 Harness has no Plan Mode or Plan Gate. When the Host wants a plan first, it asks
 through an ordinary correlated Markdown message; the Member replies, the Host

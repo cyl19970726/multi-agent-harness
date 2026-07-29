@@ -56,6 +56,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
+| `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
@@ -80,10 +81,16 @@ remain readable but are read-only on new public writes. Members may send
 ordinary messages to the Host or direct peer
 messages to active members in the same TeamRun. Member-to-Host messages
 are delivered when appended because the control plane already received them.
-Messages addressed to a member remain queued until the adapter accepts them
-for the selected MemberRun and native session. The adapter must poll or
+Messages addressed to a member remain queued until the current Supervisor
+claims them and the adapter returns a provider-native acceptance receipt for
+the selected MemberRun and native session. The adapter must poll or
 subscribe independently of provider turn completion; busy modes that cannot
 inject safely keep mail visibly queued for the next turn.
+
+New writes carry typed actor provenance. An unbound MCP connection may author
+only as the Host, an Operator, or a Service; it cannot select `member_run` or
+`agent_member` by id. Member-originated messages come from that Member's bound
+Provider runtime.
 
 The member Inbox is a latest-row projection over messages addressed to that
 MemberRun. Its default view contains actionable queued/delivered coordination;
@@ -93,8 +100,9 @@ does not read or copy provider-native chat.
 `PendingInteraction` is reserved for a provider turn actually paused on a
 question or approval. It is not a replacement for ordinary peer or Host chat,
 including planning discussion. Steer, interrupt, and resume must reflect the real selected execution
-mode: unsupported live steer degrades to a clearly labeled queued next-round
-message, never a fake current-turn ACK.
+mode: unsupported live Steer fails. The caller may separately choose an
+ordinary queued next-round Message; Harness never silently converts it or emits
+a fake current-turn ACK.
 
 ## Provider Interfaces
 

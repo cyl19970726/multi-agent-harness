@@ -121,16 +121,15 @@ must poll or subscribe independently of provider turn completion. A busy member
 may queue normal coordination, but a turn boundary cannot be the only occasion
 on which the adapter checks for mail.
 
-`delivered` means the live adapter accepted the envelope for the selected
-MemberRun and native session. It does not mean the model understood or acted on
-the message. Semantic acknowledgement is an explicit reply, handoff, review, or
-control acknowledgement.
+`delivered` means the live adapter recorded a provider-native receipt for the
+selected MemberRun and native session. It does not mean the model understood or
+acted on the message. Semantic acknowledgement is an explicit reply, handoff,
+review, or control acknowledgement.
 
-If an adapter crashes before its delivery receipt, the message remains queued.
-Adapters must prevent duplicate injection while a receipt is in flight. A
-future durable claim/lease may strengthen crash recovery; until implemented,
-the Dashboard and CLI must expose the gap rather than claim exactly-once
-provider consumption.
+The current Supervisor generation atomically claims a delivery before provider
+side effects. A crash between claim and receipt leaves explicit uncertainty;
+recovery must reconcile a native receipt or explicitly return the claim to
+`queued`, never blindly replay it.
 
 ### Member lifetime is independent of a turn or TeamRun status
 
@@ -148,9 +147,11 @@ The Harness process that starts a TeamRun supervises every unclosed Member.
 Unexpected provider transport loss records an explicit `disconnected` action,
 keeps the native-session binding, and resumes that session rather than
 replaying the Assignment. Re-running TeamRun start after a Host process restart
-reattaches unclosed Members to their recorded native sessions. Live interrupt,
-steer, and close handles remain process-local, so those controls must reach the
-currently supervising Host process.
+reattaches unclosed Members to their recorded native sessions. Physical
+interrupt, steer, and close handles remain process-local. The active lease
+publishes the owning service's loopback locator, so other Harness clients route
+controls to that exact generation; the owner fences again before the Provider
+operation.
 
 ### Member detail is a coordination projection
 
@@ -160,7 +161,8 @@ single-member operator read. It joins:
 - MemberRun identity, status, provider profile, Workspace and worktree facts;
 - TeamRun, Mission, AgentTeam and current Assignment correlation;
 - Inbox, Outbox, delivery states and PendingInteractions;
-- actions, latest handoff, evidence refs and native-session locator.
+- actions, latest handoff, evidence refs and native-session locator;
+- current Team Supervisor lease and stable Agent Inbox route records.
 
 It does not copy provider chat, tool, command, reasoning, or subagent history.
 Those remain readable from the provider-native session through its locator.

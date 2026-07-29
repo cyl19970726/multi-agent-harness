@@ -41,6 +41,14 @@ if (Object.hasOwn(claude, "hooks")) {
 if (mcp.mcpServers?.harness?.command !== "harness") {
   errors.push(".mcp.json must register the Harness MCP server");
 }
+const kimiHookEvents = new Set(
+  Array.isArray(kimi.hooks) ? kimi.hooks.map((hook) => hook.event) : [],
+);
+for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) {
+  if (!kimiHookEvents.has(event)) {
+    errors.push(`Kimi manifest must register the ${event} hook`);
+  }
+}
 const marketplacePlugin = marketplace.plugins?.find(
   (plugin) => plugin.name === "star-harness",
 );

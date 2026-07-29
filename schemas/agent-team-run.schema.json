@@ -82,6 +82,24 @@
       ],
       "minLength": 1
     },
+    "host_actor": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["host", "member_run", "agent_member", "operator", "service"]
+        },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "host_control_mode": {
+      "type": "string",
+      "enum": ["managed", "external"]
+    },
     "objective": {
       "type": "string",
       "minLength": 1

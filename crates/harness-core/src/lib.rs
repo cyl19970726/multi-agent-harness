@@ -826,6 +826,20 @@ pub struct Message {
     pub sender_kind: SenderKind,
 }
 
+/// Durable bridge from a stable Agent identity Inbox message into one concrete
+/// Agent Team MemberRun. The source Message is retained as identity-level
+/// truth; the routed TeamMessage owns runtime delivery and correlation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMessageRoute {
+    pub id: String,
+    pub agent_message_id: String,
+    pub agent_member_id: String,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub team_message_id: String,
+    pub routed_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     pub id: String,
@@ -1179,6 +1193,18 @@ impl Validate for Message {
         require_non_empty(&self.from_agent_id, "Message.from_agent_id")?;
         require_non_empty(&self.content, "Message.content")?;
         require_non_empty(&self.created_at, "Message.created_at")
+    }
+}
+
+impl Validate for AgentMessageRoute {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "AgentMessageRoute.id")?;
+        require_non_empty(&self.agent_message_id, "AgentMessageRoute.agent_message_id")?;
+        require_non_empty(&self.agent_member_id, "AgentMessageRoute.agent_member_id")?;
+        require_non_empty(&self.team_run_id, "AgentMessageRoute.team_run_id")?;
+        require_non_empty(&self.member_run_id, "AgentMessageRoute.member_run_id")?;
+        require_non_empty(&self.team_message_id, "AgentMessageRoute.team_message_id")?;
+        require_non_empty(&self.routed_at, "AgentMessageRoute.routed_at")
     }
 }
 
@@ -1662,6 +1688,14 @@ pub struct AgentTeamRun {
     pub host_surface: String,
     #[serde(default)]
     pub host_thread_id: Option<String>,
+    /// Typed Lead identity for new writes. Historical rows infer the reserved
+    /// Host actor from `host_surface` and `host_thread_id`.
+    #[serde(default)]
+    pub host_actor: Option<TeamActorRef>,
+    /// Whether Harness owns a persistent Host connection or observes an
+    /// external provider task through safe-boundary hooks.
+    #[serde(default)]
+    pub host_control_mode: HostControlMode,
     pub objective: String,
     /// Concrete root selected for this attempt's execution. This is distinct
     /// from both the registered project root and the centralized store root.
@@ -1677,6 +1711,38 @@ pub struct AgentTeamRun {
     pub updated_at: String,
     #[serde(default)]
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostControlMode {
+    Managed,
+    #[default]
+    External,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamSupervisorLeaseStatus {
+    Active,
+    Released,
+}
+
+/// Durable ownership record for the one process/service allowed to control a
+/// TeamRun's provider-native sessions. Latest row wins by `team_run_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamSupervisorLease {
+    pub team_run_id: String,
+    pub supervisor_id: String,
+    pub generation: u64,
+    pub owner_process_id: u32,
+    pub owner_locator: String,
+    pub status: TeamSupervisorLeaseStatus,
+    pub acquired_unix_ms: u64,
+    pub heartbeat_unix_ms: u64,
+    pub expires_unix_ms: u64,
+    #[serde(default)]
+    pub released_unix_ms: Option<u64>,
 }
 
 /// Non-secret workspace facts observed when a member runtime starts.
@@ -1716,6 +1782,10 @@ pub enum MemberRunStatus {
     Queued,
     Running,
     Waiting,
+    /// The durable MemberRun and native-session binding still exist, but the
+    /// Supervisor currently has no healthy provider transport. This is
+    /// recoverable and intentionally distinct from `Failed` or `Stopped`.
+    Disconnected,
     Reviewing,
     Blocked,
     Completed,
@@ -1811,7 +1881,18 @@ impl Validate for AgentTeamRun {
         if let Some(binding) = &self.project_binding_id {
             require_non_empty(binding, "AgentTeamRun.project_binding_id")?;
         }
+        if let Some(actor) = &self.host_actor {
+            require_non_empty(&actor.id, "AgentTeamRun.host_actor.id")?;
+        }
         Ok(())
+    }
+}
+
+impl Validate for TeamSupervisorLease {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.team_run_id, "TeamSupervisorLease.team_run_id")?;
+        require_non_empty(&self.supervisor_id, "TeamSupervisorLease.supervisor_id")?;
+        require_non_empty(&self.owner_locator, "TeamSupervisorLease.owner_locator")
     }
 }
 
@@ -2054,6 +2135,43 @@ pub enum TeamMessageKind {
     Broadcast,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamActorKind {
+    Host,
+    MemberRun,
+    AgentMember,
+    Operator,
+    Service,
+}
+
+/// Authorship provenance for a coordination message. `authn_source` names the
+/// trusted local connection or gateway that selected the actor; it never
+/// contains a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamActorRef {
+    pub kind: TeamActorKind,
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub authn_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRecipientKind {
+    Host,
+    MemberRun,
+    AgentMember,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamRecipientRef {
+    pub kind: TeamRecipientKind,
+    pub id: String,
+}
+
 /// How a [`TeamMessage`] should be delivered to one recipient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2069,6 +2187,7 @@ pub enum TeamDeliveryPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum TeamDeliveryStatus {
     Queued,
+    Claimed,
     Delivered,
     Acknowledged,
     Failed,
@@ -2082,6 +2201,21 @@ pub struct TeamMessageDelivery {
     pub policy: TeamDeliveryPolicy,
     pub status: TeamDeliveryStatus,
     pub attempt: u32,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claimed_by_supervisor_id: Option<String>,
+    #[serde(default)]
+    pub claimed_generation: Option<u64>,
+    #[serde(default)]
+    pub claimed_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub claim_expires_unix_ms: Option<u64>,
+    /// Provider-native turn/request id returned after the selected protocol
+    /// accepted this content. Absence on a claimed delivery is intentionally
+    /// treated as uncertain after a Supervisor crash.
+    #[serde(default)]
+    pub provider_receipt_id: Option<String>,
     pub updated_at: String,
 }
 
@@ -2097,7 +2231,15 @@ pub struct TeamMessage {
     /// lifecycle.
     #[serde(default)]
     pub origin_wave_id: Option<String>,
+    /// Typed provenance for new writes. Historical rows infer it from
+    /// `from_member_id`.
+    #[serde(default)]
+    pub sender: Option<TeamActorRef>,
     pub from_member_id: String,
+    /// Typed recipients for new writes. `to_member_ids` remains the historical
+    /// TeamRun projection.
+    #[serde(default)]
+    pub recipients: Vec<TeamRecipientRef>,
     #[serde(default)]
     pub to_member_ids: Vec<String>,
     pub kind: TeamMessageKind,
@@ -2211,6 +2353,8 @@ pub struct DelegationRun {
 pub enum TeamRunEventSourceKind {
     Host,
     Member,
+    Operator,
+    Service,
     Delegation,
 }
 

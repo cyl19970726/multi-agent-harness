@@ -1576,15 +1576,12 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
                         && message["deliveries"][0]["attempt"].as_u64() == Some(1)
                 })
         };
-        let builder_handoffs = messages
-            .iter()
-            .filter(|message| {
-                message["from_member_id"].as_str() == Some(builder_id.as_str())
-                    && message["kind"].as_str() == Some("handoff")
-            })
-            .count();
-        delivered_once =
-            delivered(&host_message_id) && delivered(&peer_message_id) && builder_handoffs == 2;
+        let peer_handoff = messages.iter().any(|message| {
+            message["from_member_id"].as_str() == Some(builder_id.as_str())
+                && message["kind"].as_str() == Some("handoff")
+                && message["causation_id"].as_str() == Some(peer_message_id.as_str())
+        });
+        delivered_once = delivered(&host_message_id) && delivered(&peer_message_id) && peer_handoff;
         if delivered_once {
             break;
         }
@@ -1592,7 +1589,7 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     }
     assert!(
         delivered_once,
-        "Host and peer mail did not wake exactly one follow-up turn"
+        "Host and peer mail were not each delivered exactly once and reflected by the follow-up handoff"
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     let builder_handoffs = snapshot["team_messages"]
@@ -1604,10 +1601,10 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
                 && message["kind"].as_str() == Some("handoff")
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        builder_handoffs.len(),
-        2,
-        "one provider round must produce one authoritative handoff"
+    assert!(
+        (2..=3).contains(&builder_handoffs.len()),
+        "sequential Host and peer writes may be accepted in one batch or two consecutive rounds, but each round must produce one authoritative handoff: {}",
+        builder_handoffs.len()
     );
     assert!(
         builder_handoffs.iter().any(|message| {
@@ -1725,7 +1722,12 @@ fn codex_app_server_member_can_be_steered_in_place() {
     }
     assert!(live, "app-server member never became live");
 
-    let (status, steered) = serve.post_json(
+    // Control the provider through a second Harness service process. The
+    // durable lease routes this request to the Supervisor process that owns
+    // the physical app-server connection; no process-local registry shortcut
+    // is available to this client.
+    let control_client = ServeHandle::spawn(&home, home.base(), &[]);
+    let (status, steered) = control_client.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
         &serde_json::json!({"content": "finish with the requested report", "requested_by": "operator"}),
     );

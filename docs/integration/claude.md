@@ -42,7 +42,8 @@ per MemberRun and exchanges NDJSON control frames over stdio.
 ```text
 Harness Host process
   ├─ durable Mission / Wave / TeamMessage / MemberRun
-  ├─ process-local live-control registry
+  ├─ durable Team Supervisor lease + delivery claims
+  ├─ process-local SDK control handles owned by that generation
   └─ Claude member runner
        ├─ Agent SDK query with AsyncIterable mailbox
        ├─ provider-native session
@@ -98,13 +99,14 @@ then resumes the same session for subsequent mailbox input. It does not mean
 member. `HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` exists only to give
 deterministic foreground integration tests a bound.
 
-Live controls are currently process-local. A close/interrupt request must go
-through the same `harness serve` or MCP Host process that started the TeamRun.
-After that process exits, Harness can still reconstruct coordination and resume
-the native session, but it does not pretend to own an orphaned provider
-process. Starting the TeamRun in a new Host process reattaches every unclosed
-Member to its recorded native session; subsequent live controls must reach that
-new supervisor.
+Physical SDK handles remain process-local. A close/interrupt request must route
+through the lease's loopback locator to the Harness service holding the current
+durable Supervisor generation. That service fences the lease again immediately
+before the SDK operation. After it exits or loses its lease, Harness retains
+coordination and the native-session locator but does not pretend to own an
+orphaned process. Starting the TeamRun after lease expiry or release acquires a
+higher generation, reattaches every unclosed Member to its recorded native
+session, and owns all subsequent claims and live controls.
 
 ## Messages and interactions
 

@@ -93,10 +93,12 @@ destroy that member. The Host may message, inspect, interrupt one current turn,
 resume from the native session, or Close the member runtime. TeamRun or Wave
 completion never substitutes for Close.
 
-Current live-control handles are process-local. A Dashboard/MCP server can
-control members it started in that same service process. A foreground
-`team-run start` cannot yet be controlled by a second CLI process; a future
-Team Supervisor may make those handles durable across clients. Status-only
+Physical live-control handles are process-local, while the durable Team
+Supervisor lease is cross-process authority. Dashboard/MCP controls must route
+through the lease's loopback locator to the service holding the current
+generation. That owner fences the operation immediately before using its
+physical handle; another process cannot attach or claim messages from the same
+TeamRun. Status-only
 cancellation deliberately refuses `running -> cancelled`, because changing a
 row cannot stop provider work. If the foreground Host disappears *after the
 operator has independently confirmed that every provider process stopped*, the

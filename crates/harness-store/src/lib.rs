@@ -6,10 +6,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun,
-    Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageTerminalSource, Mission, MissionStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderExecutionStatus, Review, TeamMessage, TeamRunEvent, TeamRunStatus,
+    AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
+    DelegationRun, Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
+    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryStatus,
+    TeamMessage, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
     Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest,
     WorkflowPatch, WorkflowRun, WorkflowStep,
 };
@@ -52,6 +53,12 @@ pub enum MessageDeliveryClaimResult {
     Claimed(Box<Message>),
     NotQueued,
     BlockedByDelivery(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TeamMessageDeliveryClaimResult {
+    Claimed(Box<TeamMessage>),
+    NotQueued,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +328,104 @@ impl HarnessStore {
 
     pub fn append_message(&self, value: &Message) -> StoreResult<()> {
         self.append_jsonl("messages.jsonl", value)
+    }
+
+    /// Atomically promote one stable Agent Inbox message into a concrete
+    /// MemberRun mailbox. The source Message remains durable identity-level
+    /// truth; its latest status records that the router accepted it.
+    pub fn route_agent_message_to_team(
+        &self,
+        route: &AgentMessageRoute,
+        team_message: &TeamMessage,
+    ) -> StoreResult<AgentMessageRoute> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+
+        if let Some(existing) = latest_by_id(
+            self.read_jsonl::<AgentMessageRoute>("agent_message_routes.jsonl")?,
+            |route| route.agent_message_id.clone(),
+        )
+        .remove(&route.agent_message_id)
+        {
+            return Ok(existing);
+        }
+        let mut source = latest_by_id(self.read_jsonl::<Message>("messages.jsonl")?, |message| {
+            message.id.clone()
+        })
+        .remove(&route.agent_message_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "Agent Inbox message not found: {}",
+                route.agent_message_id
+            ))
+        })?;
+        if source.to_agent_id.as_deref() != Some(route.agent_member_id.as_str()) {
+            return Err(StoreError::Conflict(format!(
+                "message {} is not addressed to Agent {}",
+                source.id, route.agent_member_id
+            )));
+        }
+        if source.delivery_status != MessageDeliveryStatus::Queued {
+            return Err(StoreError::Conflict(format!(
+                "message {} is not queued for routing",
+                source.id
+            )));
+        }
+        let member = latest_by_id(
+            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        )
+        .remove(&route.member_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("MemberRun not found: {}", route.member_run_id))
+        })?;
+        if member.team_run_id != route.team_run_id
+            || member.agent_member_id.as_deref() != Some(route.agent_member_id.as_str())
+        {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} is not the Agent {} runtime in TeamRun {}",
+                route.member_run_id, route.agent_member_id, route.team_run_id
+            )));
+        }
+        if team_message.id != route.team_message_id
+            || team_message.team_run_id != route.team_run_id
+            || !team_message
+                .to_member_ids
+                .iter()
+                .any(|id| id == &route.member_run_id)
+        {
+            return Err(StoreError::Conflict(
+                "Agent Inbox route and TeamMessage target do not match".to_string(),
+            ));
+        }
+        let team_messages = latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        );
+        if team_messages.contains_key(&team_message.id) {
+            return Err(StoreError::Conflict(format!(
+                "team message already exists: {}",
+                team_message.id
+            )));
+        }
+        if team_message.kind == harness_core::TeamMessageKind::Assignment
+            && team_messages.values().any(|message| {
+                message.team_run_id == team_message.team_run_id
+                    && message.kind == harness_core::TeamMessageKind::Assignment
+                    && message.correlation_id == team_message.correlation_id
+            })
+        {
+            return Err(StoreError::Conflict(format!(
+                "correlation_id `{}` already identifies an assignment in team run {}",
+                team_message.correlation_id, team_message.team_run_id
+            )));
+        }
+
+        source.delivery_status = MessageDeliveryStatus::Acknowledged;
+        self.append_jsonl_unlocked("team_messages.jsonl", team_message)?;
+        self.append_jsonl_unlocked("messages.jsonl", &source)?;
+        self.append_jsonl_unlocked("agent_message_routes.jsonl", route)?;
+        Ok(route.clone())
     }
 
     pub fn append_evidence(&self, value: &Evidence) -> StoreResult<()> {
@@ -639,6 +744,411 @@ impl HarnessStore {
         self.append_jsonl_unlocked("team_messages.jsonl", value)
     }
 
+    /// Acquire the one durable Supervisor lease for a TeamRun. An active,
+    /// unexpired lease held by another Supervisor rejects the attach before any
+    /// provider side effect. Reacquisition after expiry increments generation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire_team_supervisor_lease(
+        &self,
+        team_run_id: &str,
+        supervisor_id: &str,
+        owner_process_id: u32,
+        owner_locator: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<TeamSupervisorLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let run_exists = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        })
+        .contains_key(team_run_id);
+        if !run_exists {
+            return Err(StoreError::Conflict(format!(
+                "team run not found: {team_run_id}"
+            )));
+        }
+        let current = latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id);
+        if let Some(current) = current.as_ref() {
+            if current.status == TeamSupervisorLeaseStatus::Active
+                && current.expires_unix_ms > now_unix_ms
+                && current.supervisor_id != supervisor_id
+            {
+                return Err(StoreError::Conflict(format!(
+                    "team run {team_run_id} is supervised by {} generation {} until unix-ms:{}",
+                    current.supervisor_id, current.generation, current.expires_unix_ms
+                )));
+            }
+            if current.status == TeamSupervisorLeaseStatus::Active
+                && current.expires_unix_ms > now_unix_ms
+                && current.supervisor_id == supervisor_id
+            {
+                return Ok(current.clone());
+            }
+        }
+        let generation = current
+            .as_ref()
+            .map(|lease| lease.generation.saturating_add(1))
+            .unwrap_or(1);
+        let lease = TeamSupervisorLease {
+            team_run_id: team_run_id.to_string(),
+            supervisor_id: supervisor_id.to_string(),
+            generation,
+            owner_process_id,
+            owner_locator: owner_locator.to_string(),
+            status: TeamSupervisorLeaseStatus::Active,
+            acquired_unix_ms: now_unix_ms,
+            heartbeat_unix_ms: now_unix_ms,
+            expires_unix_ms: now_unix_ms.saturating_add(ttl_ms.max(1)),
+            released_unix_ms: None,
+        };
+        self.append_jsonl_unlocked("team_supervisor_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    pub fn renew_team_supervisor_lease(
+        &self,
+        team_run_id: &str,
+        supervisor_id: &str,
+        generation: u64,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<TeamSupervisorLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut lease = latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "team run {team_run_id} has no Supervisor lease to renew"
+            ))
+        })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "Supervisor lease for team run {team_run_id} is no longer owned by {supervisor_id} generation {generation}"
+            )));
+        }
+        lease.heartbeat_unix_ms = now_unix_ms;
+        lease.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
+        self.append_jsonl_unlocked("team_supervisor_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    pub fn release_team_supervisor_lease(
+        &self,
+        team_run_id: &str,
+        supervisor_id: &str,
+        generation: u64,
+        now_unix_ms: u64,
+    ) -> StoreResult<TeamSupervisorLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut lease = latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "team run {team_run_id} has no Supervisor lease to release"
+            ))
+        })?;
+        if lease.supervisor_id != supervisor_id || lease.generation != generation {
+            return Err(StoreError::Conflict(format!(
+                "Supervisor lease for team run {team_run_id} belongs to {} generation {}, not {supervisor_id} generation {generation}",
+                lease.supervisor_id, lease.generation
+            )));
+        }
+        if lease.status == TeamSupervisorLeaseStatus::Released {
+            return Ok(lease);
+        }
+        lease.status = TeamSupervisorLeaseStatus::Released;
+        lease.heartbeat_unix_ms = now_unix_ms;
+        lease.expires_unix_ms = now_unix_ms;
+        lease.released_unix_ms = Some(now_unix_ms);
+        self.append_jsonl_unlocked("team_supervisor_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    /// Claim one queued TeamMessage delivery under the same durable lock used
+    /// for the Supervisor lease. A claim must be completed with a real provider
+    /// receipt or explicitly reconciled; it is never auto-requeued on expiry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_team_message_delivery(
+        &self,
+        team_run_id: &str,
+        message_id: &str,
+        member_run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        claim_id: &str,
+        now_unix_ms: u64,
+        claim_ttl_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<TeamMessageDeliveryClaimResult> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let lease = latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "team run {team_run_id} has no active Supervisor lease"
+            ))
+        })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "team run {team_run_id} Supervisor lease is not owned by {supervisor_id} generation {supervisor_generation}"
+            )));
+        }
+        let mut message = match latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        )
+        .remove(message_id)
+        {
+            Some(message) if message.team_run_id == team_run_id => message,
+            _ => return Ok(TeamMessageDeliveryClaimResult::NotQueued),
+        };
+        let Some(delivery) = message
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_run_id)
+        else {
+            return Ok(TeamMessageDeliveryClaimResult::NotQueued);
+        };
+        if delivery.status != TeamDeliveryStatus::Queued {
+            return Ok(TeamMessageDeliveryClaimResult::NotQueued);
+        }
+        delivery.status = TeamDeliveryStatus::Claimed;
+        delivery.attempt = delivery.attempt.saturating_add(1);
+        delivery.claim_id = Some(claim_id.to_string());
+        delivery.claimed_by_supervisor_id = Some(supervisor_id.to_string());
+        delivery.claimed_generation = Some(supervisor_generation);
+        delivery.claimed_unix_ms = Some(now_unix_ms);
+        delivery.claim_expires_unix_ms = Some(now_unix_ms.saturating_add(claim_ttl_ms.max(1)));
+        delivery.provider_receipt_id = None;
+        delivery.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
+        Ok(TeamMessageDeliveryClaimResult::Claimed(Box::new(message)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_team_message_delivery_claim(
+        &self,
+        team_run_id: &str,
+        message_id: &str,
+        member_run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        claim_id: &str,
+        provider_receipt_id: &str,
+        now_unix_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<TeamMessage> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let lease = latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "team run {team_run_id} has no active Supervisor lease"
+            ))
+        })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "team run {team_run_id} Supervisor lease is not owned by {supervisor_id} generation {supervisor_generation}"
+            )));
+        }
+        let mut message = latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        )
+        .remove(message_id)
+        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
+        if message.team_run_id != team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "message {message_id} belongs to {}, not {team_run_id}",
+                message.team_run_id
+            )));
+        }
+        let delivery = message
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "message {message_id} has no delivery for {member_run_id}"
+                ))
+            })?;
+        if delivery.status == TeamDeliveryStatus::Delivered
+            && delivery.claim_id.as_deref() == Some(claim_id)
+        {
+            return Ok(message);
+        }
+        if delivery.status != TeamDeliveryStatus::Claimed
+            || delivery.claim_id.as_deref() != Some(claim_id)
+            || delivery.claimed_by_supervisor_id.as_deref() != Some(supervisor_id)
+            || delivery.claimed_generation != Some(supervisor_generation)
+        {
+            return Err(StoreError::Conflict(format!(
+                "delivery claim {claim_id} no longer owns message {message_id} for {member_run_id}"
+            )));
+        }
+        delivery.status = TeamDeliveryStatus::Delivered;
+        delivery.provider_receipt_id = Some(provider_receipt_id.to_string());
+        delivery.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
+        Ok(message)
+    }
+
+    /// Atomically acknowledge one already-delivered TeamMessage recipient.
+    ///
+    /// ACK does not require a live Supervisor because the Host or operator may
+    /// read and acknowledge mail while the provider runtime is idle or down.
+    /// It does require a real delivered receipt and never advances a queued or
+    /// uncertain claim.
+    pub fn acknowledge_team_message_delivery(
+        &self,
+        team_run_id: &str,
+        message_id: &str,
+        member_run_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<TeamMessage> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut message = latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        )
+        .remove(message_id)
+        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
+        if message.team_run_id != team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "message {message_id} belongs to {}, not {team_run_id}",
+                message.team_run_id
+            )));
+        }
+        let delivery = message
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "message {message_id} has no delivery for {member_run_id}"
+                ))
+            })?;
+        match delivery.status {
+            TeamDeliveryStatus::Acknowledged => return Ok(message),
+            TeamDeliveryStatus::Delivered => {}
+            TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed => {
+                return Err(StoreError::Conflict(format!(
+                    "message {message_id} has not been delivered to {member_run_id}"
+                )));
+            }
+            TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => {
+                return Err(StoreError::Conflict(format!(
+                    "message {message_id} delivery to {member_run_id} cannot be acknowledged from {:?}",
+                    delivery.status
+                )));
+            }
+        }
+        delivery.status = TeamDeliveryStatus::Acknowledged;
+        delivery.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
+        Ok(message)
+    }
+
+    /// Resolve a claimed delivery after a crash. `provider_accepted=true`
+    /// records a reviewed native receipt; false explicitly returns it to the
+    /// queue. No automatic timeout path calls this method.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_team_message_delivery_claim(
+        &self,
+        team_run_id: &str,
+        message_id: &str,
+        member_run_id: &str,
+        claim_id: &str,
+        provider_accepted: bool,
+        provider_receipt_id: Option<&str>,
+        updated_at: &str,
+    ) -> StoreResult<TeamMessage> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut message = latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        )
+        .remove(message_id)
+        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
+        if message.team_run_id != team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "message {message_id} belongs to {}, not {team_run_id}",
+                message.team_run_id
+            )));
+        }
+        let delivery = message
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "message {message_id} has no delivery for {member_run_id}"
+                ))
+            })?;
+        if delivery.status != TeamDeliveryStatus::Claimed
+            || delivery.claim_id.as_deref() != Some(claim_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "message {message_id} does not have active claim {claim_id} for {member_run_id}"
+            )));
+        }
+        if provider_accepted {
+            let receipt = provider_receipt_id.ok_or_else(|| {
+                StoreError::Conflict(
+                    "provider-accepted reconciliation requires a native receipt id".to_string(),
+                )
+            })?;
+            delivery.status = TeamDeliveryStatus::Delivered;
+            delivery.provider_receipt_id = Some(receipt.to_string());
+        } else {
+            delivery.status = TeamDeliveryStatus::Queued;
+            delivery.claim_id = None;
+            delivery.claimed_by_supervisor_id = None;
+            delivery.claimed_generation = None;
+            delivery.claimed_unix_ms = None;
+            delivery.claim_expires_unix_ms = None;
+            delivery.provider_receipt_id = None;
+        }
+        delivery.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
+        Ok(message)
+    }
+
     pub fn append_member_action(&self, value: &MemberAction) -> StoreResult<()> {
         self.append_jsonl("member_actions.jsonl", value)
     }
@@ -884,6 +1394,10 @@ impl HarnessStore {
         self.read_jsonl("messages.jsonl")
     }
 
+    pub fn agent_message_routes(&self) -> StoreResult<Vec<AgentMessageRoute>> {
+        self.read_jsonl("agent_message_routes.jsonl")
+    }
+
     pub fn evidence(&self) -> StoreResult<Vec<Evidence>> {
         self.read_jsonl("evidence.jsonl")
     }
@@ -934,6 +1448,20 @@ impl HarnessStore {
 
     pub fn team_messages(&self) -> StoreResult<Vec<TeamMessage>> {
         self.read_jsonl("team_messages.jsonl")
+    }
+
+    pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {
+        self.read_jsonl("team_supervisor_leases.jsonl")
+    }
+
+    pub fn latest_team_supervisor_lease(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Option<TeamSupervisorLease>> {
+        Ok(latest_by_id(self.team_supervisor_leases()?, |lease| {
+            lease.team_run_id.clone()
+        })
+        .remove(team_run_id))
     }
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
@@ -1280,6 +1808,8 @@ mod tests {
                         project_binding_id: Some("project-concurrent".into()),
                         host_surface: "test".into(),
                         host_thread_id: None,
+                        host_actor: None,
+                        host_control_mode: Default::default(),
                         objective: "attempt".into(),
                         execution_root: Some("/projects/concurrent".into()),
                         status: TeamRunStatus::Planning,
@@ -1594,6 +2124,8 @@ mod tests {
             project_binding_id: Some("project-example".into()),
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
+            host_actor: None,
+            host_control_mode: Default::default(),
             objective: "Ship the feature".into(),
             execution_root: Some("/projects/example/worktrees/feature".into()),
             status: TeamRunStatus::Running,
@@ -1698,7 +2230,9 @@ mod tests {
             id: "tm-1".into(),
             team_run_id: "tr-1".into(),
             origin_wave_id: Some("wave-2".into()),
+            sender: None,
             from_member_id: "host".into(),
+            recipients: Vec::new(),
             to_member_ids: vec!["mr-1".into()],
             kind: TeamMessageKind::Assignment,
             body: "Take task-1".into(),
@@ -1710,6 +2244,12 @@ mod tests {
                 policy: TeamDeliveryPolicy::Inject,
                 status: TeamDeliveryStatus::Delivered,
                 attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("test-receipt".into()),
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -1734,6 +2274,178 @@ mod tests {
         assert!(sparse.causation_id.is_none());
         assert!(sparse.evidence_refs.is_empty());
         assert!(sparse.deliveries.is_empty());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn durable_supervisor_lease_and_message_claim_are_cross_process_safe() {
+        let root = team_test_root("supervisor-claim");
+        let store = Arc::new(HarnessStore::new(&root));
+        let run = AgentTeamRun {
+            id: "tr-claim".into(),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            project_binding_id: None,
+            host_surface: "codex-app".into(),
+            host_thread_id: Some("thread-claim".into()),
+            host_actor: None,
+            host_control_mode: Default::default(),
+            objective: "claim exactly once".into(),
+            execution_root: None,
+            status: TeamRunStatus::Running,
+            member_run_ids: vec!["mr-claim".into()],
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        store.append_team_run(&run).expect("append run");
+
+        let first = store
+            .acquire_team_supervisor_lease(&run.id, "supervisor-a", 101, "test:a", 100, 1_000)
+            .expect("first Supervisor");
+        assert_eq!(first.generation, 1);
+        let conflict = store
+            .acquire_team_supervisor_lease(&run.id, "supervisor-b", 202, "test:b", 101, 1_000)
+            .expect_err("second active Supervisor must be rejected");
+        assert!(conflict.to_string().contains("supervisor-a"));
+        let second = store
+            .acquire_team_supervisor_lease(&run.id, "supervisor-b", 202, "test:b", 1_101, 1_000)
+            .expect("expired lease may be replaced");
+        assert_eq!(second.generation, 2);
+
+        let message = TeamMessage {
+            id: "tm-claim".into(),
+            team_run_id: run.id.clone(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["mr-claim".into()],
+            kind: TeamMessageKind::Assignment,
+            body: "only once".into(),
+            correlation_id: "corr-claim".into(),
+            causation_id: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "mr-claim".into(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        store
+            .append_team_message_checked(&message)
+            .expect("append queued message");
+        let early_ack = store
+            .acknowledge_team_message_delivery(&run.id, &message.id, "mr-claim", "unix-ms:2")
+            .expect_err("queued delivery cannot be acknowledged");
+        assert!(early_ack.to_string().contains("has not been delivered"));
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = ["claim-a", "claim-b"].map(|claim_id| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            let run_id = run.id.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store
+                    .claim_team_message_delivery(
+                        &run_id,
+                        "tm-claim",
+                        "mr-claim",
+                        "supervisor-b",
+                        2,
+                        claim_id,
+                        1_102,
+                        1_000,
+                        "unix-ms:3",
+                    )
+                    .expect("claim call")
+            })
+        });
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claim thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, TeamMessageDeliveryClaimResult::Claimed(_)))
+                .count(),
+            1
+        );
+        let claimed = results
+            .into_iter()
+            .find_map(|result| match result {
+                TeamMessageDeliveryClaimResult::Claimed(message) => Some(*message),
+                TeamMessageDeliveryClaimResult::NotQueued => None,
+            })
+            .expect("one claim");
+        let claim_id = claimed.deliveries[0].claim_id.clone().expect("claim id");
+        let stale_completion = store
+            .complete_team_message_delivery_claim(
+                &run.id,
+                &message.id,
+                "mr-claim",
+                "supervisor-a",
+                1,
+                &claim_id,
+                "native-turn-stale",
+                1_103,
+                "unix-ms:4",
+            )
+            .expect_err("a stale Supervisor generation cannot complete another lease's claim");
+        assert!(stale_completion
+            .to_string()
+            .contains("Supervisor lease is not owned"));
+        let delivered = store
+            .complete_team_message_delivery_claim(
+                &run.id,
+                &message.id,
+                "mr-claim",
+                "supervisor-b",
+                2,
+                &claim_id,
+                "native-turn-1",
+                1_103,
+                "unix-ms:4",
+            )
+            .expect("complete claim");
+        assert_eq!(
+            delivered.deliveries[0].status,
+            TeamDeliveryStatus::Delivered
+        );
+        assert_eq!(
+            delivered.deliveries[0].provider_receipt_id.as_deref(),
+            Some("native-turn-1")
+        );
+        let acknowledged = store
+            .acknowledge_team_message_delivery(&run.id, &message.id, "mr-claim", "unix-ms:5")
+            .expect("acknowledge delivered message");
+        assert_eq!(
+            acknowledged.deliveries[0].status,
+            TeamDeliveryStatus::Acknowledged
+        );
+        let acknowledged_again = store
+            .acknowledge_team_message_delivery(&run.id, &message.id, "mr-claim", "unix-ms:6")
+            .expect("ACK is idempotent");
+        assert_eq!(
+            acknowledged_again.deliveries[0].status,
+            TeamDeliveryStatus::Acknowledged
+        );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }

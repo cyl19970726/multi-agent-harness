@@ -163,7 +163,7 @@ function MemberFact({ label, value, live = false, transient = false, mono = fals
 function memberRunTone(status?: string | null): StatusTone {
   if (status === "completed") return "good";
   if (status === "blocked" || status === "failed" || status === "stopped") return "bad";
-  if (status === "waiting" || status === "reviewing") return "warn";
+  if (status === "waiting" || status === "reviewing" || status === "disconnected") return "warn";
   if (status === "running") return "running";
   if (status === "queued" || status === "starting") return "info";
   return "idle";

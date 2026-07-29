@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/team-supervisor-lease.schema.json",
+  "title": "TeamSupervisorLease",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "team_run_id",
+    "supervisor_id",
+    "generation",
+    "owner_process_id",
+    "owner_locator",
+    "status",
+    "acquired_unix_ms",
+    "heartbeat_unix_ms",
+    "expires_unix_ms"
+  ],
+  "properties": {
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "supervisor_id": { "type": "string", "minLength": 1 },
+    "generation": { "type": "integer", "minimum": 1 },
+    "owner_process_id": { "type": "integer", "minimum": 1 },
+    "owner_locator": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["active", "released"] },
+    "acquired_unix_ms": { "type": "integer", "minimum": 0 },
+    "heartbeat_unix_ms": { "type": "integer", "minimum": 0 },
+    "expires_unix_ms": { "type": "integer", "minimum": 0 },
+    "released_unix_ms": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}

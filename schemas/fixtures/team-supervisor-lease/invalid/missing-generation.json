@@ -1,0 +1,10 @@
+{
+  "team_run_id": "team-run-1",
+  "supervisor_id": "supervisor-1",
+  "owner_process_id": 4242,
+  "owner_locator": "pid:4242",
+  "status": "active",
+  "acquired_unix_ms": 1000,
+  "heartbeat_unix_ms": 1200,
+  "expires_unix_ms": 6200
+}

@@ -41,6 +41,7 @@ consequences, affected modules, and validation path.
 | [0040](0040-native-host-inbox-delivery.md) | active | Host mail is scoped to an exact native task; Codex busy delivery uses a one-shot Stop continuation and unowned idle tasks remain safe-boundary pull |
 | [0041](0041-provider-neutral-member-continuation.md) | active | Agent Team continuation separates the durable Assignment from a provider-native execution driver, completion policy, and one top-level workspace lease |
 | [0042](0042-company-store-execution-space-project-binding.md) | active | Company Store, Execution Space, and Project Binding are distinct identities |
+| [0044](0044-durable-team-supervision-and-typed-mail.md) | active | One durable Supervisor lease owns Provider control; typed mail and atomic delivery claims make multi-client coordination safe |
 
 ## Split Rule
 

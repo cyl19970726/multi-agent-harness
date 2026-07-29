@@ -442,6 +442,11 @@ export function sendTeamMessage(
   teamRunId: string,
   params: {
     fromMemberId: string;
+    /** Authenticated actor class. Dashboard-authored messages are Operator,
+     * never the Host or a MemberRun. */
+    senderKind?: "host" | "member_run" | "agent_member" | "operator" | "service";
+    senderId?: string;
+    senderName?: string;
     toMemberIds: string[];
     kind: string;
     body: string;
@@ -457,10 +462,15 @@ export function sendTeamMessage(
 ): ActionDescriptor {
   const body: Record<string, unknown> = {
     from_member_id: params.fromMemberId,
+    sender_kind: params.senderKind ?? (params.fromMemberId === "host" ? "host" : "member_run"),
+    sender_id: params.senderId ?? params.fromMemberId,
     to_member_ids: params.toMemberIds,
     kind: params.kind,
     body: params.body,
   };
+  if (params.senderName) {
+    body.sender_name = params.senderName;
+  }
   if (params.correlationId) {
     body.correlation_id = params.correlationId;
   }

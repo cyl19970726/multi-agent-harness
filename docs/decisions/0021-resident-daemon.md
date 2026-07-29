@@ -5,8 +5,10 @@
 Historical for the former resident CLI pool. Its mirrored-session/NDJSON
 storage claims are superseded by ADR 0032, and it is not the Agent Team
 lifecycle model. New Claude Team members use the Agent SDK streaming runner;
-new Codex Team members use app-server. Their current live control is
-process-local pending a future Team Supervisor.
+new Codex Team members use app-server. Their live Provider handles remain
+process-local, while durable single-owner authority is now provided by the
+`TeamSupervisorLease` defined in ADR 0044. This historical daemon remains
+Workflow infrastructure and is not that Supervisor.
 
 (0020 is the latest prior ADR; 0021 is the next free number.)
 

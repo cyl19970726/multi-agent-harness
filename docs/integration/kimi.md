@@ -82,7 +82,12 @@ Binary resolution order is implemented by `resolve_kimi_bin()`:
 
 Source: `crates/harness-cli/src/main.rs:14317-14345`.
 
-## Message Delivery
+## Bounded AgentRuntime / Workflow Delivery (Not Agent Team)
+
+This compatibility section describes the one-shot `kimi_exec` path used by
+bounded workflows and the older standalone AgentRuntime API. It is not the
+Agent Team delivery algorithm. New Team Members always use the persistent ACP
+contract below; do not copy `kimi -p` behavior into Team lifecycle code.
 
 每次投递消息时，harness 构造一个包含：
 
@@ -269,8 +274,13 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
   `session/cancel`, waits for the prompt's terminal `stopReason=cancelled`, and
   only then returns the MemberRun to `idle`; the profile reports
   `supports_cancel=true`. Kimi ACP still does not support same-turn steer, so
-  normal chat is queued for the next provider round. Only explicit Member Close
+  ordinary Message is queued for the next provider round. An attempted Steer
+  fails rather than being silently converted. Only explicit Member Close
   records `stopped`.
+- The current durable Team Supervisor generation atomically claims one queued
+  delivery before `session/prompt`; `delivered` is recorded only after ACP
+  returns its native request/session receipt. An uncertain post-crash claim
+  requires explicit reconciliation and is never blindly replayed.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.
 - Kimi-native Agent/AgentSwarm/background-task and hook events are not yet

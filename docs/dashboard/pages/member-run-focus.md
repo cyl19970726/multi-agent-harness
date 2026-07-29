@@ -170,8 +170,9 @@ reordering is not a requirement.
 - **Steer** is a separate explicit action. Only that selection may inject into
   a currently active provider turn; ordinary Clarify/Review messages stay in
   the coordination queue. If the selected execution mode cannot steer the
-  active turn, Steer degrades visibly to queued control guidance for the next
-  provider round.
+  active turn, Steer is disabled with the reason. The operator may deliberately
+  choose an ordinary queued Message, but the UI never converts one into the
+  other.
 - Select an existing Assignment correlation when replying. A new message chain
   is visually distinct and never silently loses lineage.
 - Open the assignment anchor and other correlated messages.

@@ -128,18 +128,40 @@ for a causation-linked Host reply or explicit acceptance when your work depends
 on a Host decision. If the matter blocks safe progress, say `BLOCKER:` in the
 message and stop only the affected work.
 
+Author Member mail only from this bound Provider runtime and its supplied
+MemberRun identity. Do not use an unbound MCP connection to claim another
+MemberRun or durable Agent identity; that public surface accepts only
+Host/operator/service authorship.
+
 Provider-pausing questions or approvals appear as `PendingInteraction`; the
 Host/Policy/Human resolves those through the control plane. A tool status of
 `completed` is not the answer.
+
+If your `MemberRun` explicitly links an `agent_member_id`, external callers may
+also write to that stable Agent identity Inbox. The Team Supervisor routes each
+source Message exactly once into one concrete MemberRun. Treat the routed
+TeamMessage like any other Inbox item; do not search or duplicate-deliver the
+identity ledger yourself.
 
 ## Handle Controls Honestly
 
 - A live Steer changes the current turn only when the selected provider mode
   supports and acknowledges it.
-- Otherwise treat the input as a queued next-round message.
+- An unsupported Steer fails. The Host or Operator may separately choose an
+  ordinary queued Message for your next round; do not treat that as a live
+  injection.
 - Interrupt and resume require real terminal acknowledgements.
 - Resume the bound provider-native session; never reconstruct one from Harness
   messages.
+- Dashboard, CLI, MCP, or another Harness service routes live control through
+  the current Supervisor lease locator. The owning service rechecks its
+  generation before touching the process-local Provider handle.
+
+Message delivery is also explicit: `queued` means available to the Supervisor,
+`claimed` means one Supervisor generation owns an in-flight attempt,
+`delivered` requires a provider-native receipt, and `acknowledged` means your
+working context accepted it. After a crash, never replay `claimed` mail without
+explicit reconciliation.
 
 After a Steer, restate the changed constraint in progress or handoff when it
 affects acceptance.
