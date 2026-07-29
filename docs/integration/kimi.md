@@ -61,7 +61,7 @@ MemberRun + correlated Assignment
   -> initialize
   -> session/new or session/load
   -> session/prompt for one eligible mailbox envelope
-  -> session/cancel only for current-turn interruption
+  -> session/cancel only when the detected version's reviewed capability supports it
   -> explicit Host Close ends the Member runtime
 ```
 
@@ -257,9 +257,7 @@ For Agent Team (ADR
 [0025](../decisions/0025-agent-team-run-control-plane.md)) the kimi member drive surface is the
 ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode:
 
-```text
-initialize -> session/new -> session/prompt (streaming notifications) -> session/cancel
-```
+`initialize -> session/new -> session/prompt`; `session/cancel` requires a reviewed capability for the detected version.
 
 - The ACP `sessionId` is stored through the mode-aware
   `MemberRun.native_session` and reused for follow-up rounds. The locator,
@@ -276,11 +274,14 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
 - `AskUserQuestion` routes to Lead. Tool approvals route to policy by default;
   Plan Review routes to Lead. Company-level legal, financial, permission, and
   organization effects remain subject to their native Human Approval contract.
-- The TeamRun adapter retains a cooperative live control handle while
-  `session/prompt` is active. Dashboard/MCP member interruption sends
-  `session/cancel`, waits for the prompt's terminal `stopReason=cancelled`, and
-  only then returns the MemberRun to `idle`; the profile reports
-  `supports_cancel=true`. Kimi ACP still does not support same-turn steer, so
+- Cancellation is execution-mode **and reviewed-version specific**. The
+  historical reviewed Kimi ACP 0.27.0 path used `session/cancel`, waited for
+  terminal `stopReason=cancelled`, and only then returned the MemberRun to
+  `idle`. Live Kimi 0.29.1 returned `-32601 Method not found` for `session/cancel`,
+  so its profile reports `supports_cancel=false`.
+  Interrupt must reject before changing a PendingInteraction, writing
+  `interrupt_requested`, or returning a false `cancel_requested` acknowledgement.
+  Kimi ACP still does not support same-turn steer, so
   ordinary Message is queued for the next provider round. An attempted Steer
   fails rather than being silently converted. Only explicit Member Close
   records `stopped`.
