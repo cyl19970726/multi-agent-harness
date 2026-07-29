@@ -542,12 +542,10 @@ pub struct MessageDelivery {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-project identity (goal-multi-project, Stage 0 — pure layer, no I/O).
+// Project Binding identity (pure layer, no I/O).
 //
-// A project's STORE (Harness-owned JSONL ledgers and runtime metadata) is centralized under
-// `~/.harness/projects/<id>/`, but its PROJECT ROOT (the git repo / dir where a
-// worker runs and reads CLAUDE.md / AGENTS.md / memory) stays where it is. These
-// two roots are deliberately distinct — see `ProjectContext`.
+// Native Project Binding identity is independent from Execution Space storage.
+// `ProjectContext` remains a compatibility adapter for project-derived stores.
 // ---------------------------------------------------------------------------
 
 /// Reserved project id for the GLOBAL project, rooted at `$HOME` itself. Its
@@ -562,11 +560,9 @@ pub enum ProjectKind {
     Global,
 }
 
-/// A resolved project. `project_root` is where workers run (and CLAUDE.md /
-/// AGENTS.md / memory resolve); `store_root` is the centralized
-/// `~/.harness/projects/<id>/` where the JSONL ledgers live. Keeping them separate
-/// is the core of multi-project: the store centralizes while worktrees + agent cwd
-/// stay tied to the project's own directory/git.
+/// Transitional resolved-project adapter. `project_root` has native Project
+/// Binding semantics. `store_root` is only the legacy project-derived
+/// compatibility-store locator; native coordination belongs to Execution Space.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectContext {
     pub id: String,
@@ -574,6 +570,53 @@ pub struct ProjectContext {
     pub store_root: std::path::PathBuf,
     pub kind: ProjectKind,
     pub is_git_repo: bool,
+}
+
+/// A provider workspace/configuration boundary.
+///
+/// Unlike the transitional [`ProjectContext`], a Project Binding never owns an
+/// execution store. It says where a provider may run and which repository,
+/// instruction, Skill-discovery, permission, and worktree boundary applies.
+/// Mission/Wave/Agent Team/Workflow records belong to an independent Execution
+/// Space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectBinding {
+    pub id: String,
+    pub project_root: std::path::PathBuf,
+    pub kind: ProjectKind,
+    pub is_git_repo: bool,
+    #[serde(default)]
+    pub repository_url: Option<String>,
+    #[serde(default)]
+    pub default_branch: Option<String>,
+    #[serde(default)]
+    pub git_common_dir: Option<std::path::PathBuf>,
+    /// Canonical directory above which project instruction discovery must not
+    /// be inferred by Harness. Providers still apply their native discovery
+    /// rules inside the selected cwd; Harness does not copy instruction text.
+    pub instruction_boundary: std::path::PathBuf,
+    /// Canonical directory that defines project-local Skill discovery. The
+    /// actual effective Skill list remains provider-native and version-specific.
+    pub skill_discovery_boundary: std::path::PathBuf,
+    /// `same_git_common_dir` for Git bindings and `within_project_root` for
+    /// ordinary directory bindings.
+    pub worktree_policy: String,
+    /// Named policy snapshot used when validating workspace overrides.
+    pub permission_policy: String,
+}
+
+/// A provider-neutral coordination namespace. The CLI registry supplies the
+/// physical store root; this native identity is intentionally independent from
+/// Company Store and Project Binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionSpace {
+    pub id: String,
+    pub name: String,
+    pub store_root: std::path::PathBuf,
+    #[serde(default)]
+    pub default_project_binding_id: Option<String>,
+    #[serde(default)]
+    pub company_id: Option<String>,
 }
 
 /// FNV-1a 64-bit — a small, stable, dependency-free hash used to content-address
@@ -1337,6 +1380,11 @@ pub enum WorkflowArtifactManifestStatus {
 pub struct WorkflowRun {
     pub id: String,
     pub workflow_name: String,
+    /// Project Binding that owns provider cwd, repository instructions, Skills,
+    /// Git/worktree policy, and delivery paths for this run. The surrounding
+    /// Execution Space owns this row but never substitutes for a workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_binding_id: Option<String>,
     pub status: WorkflowRunStatus,
     #[serde(default)]
     pub step_ids: Vec<String>,
@@ -1510,6 +1558,9 @@ impl Validate for WorkflowRun {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "WorkflowRun.id")?;
         require_non_empty(&self.workflow_name, "WorkflowRun.workflow_name")?;
+        if let Some(binding) = &self.project_binding_id {
+            require_non_empty(binding, "WorkflowRun.project_binding_id")?;
+        }
         require_non_empty(&self.created_at, "WorkflowRun.created_at")
     }
 }
@@ -1604,6 +1655,10 @@ pub struct AgentTeamRun {
     pub mission_id: Option<String>,
     #[serde(default)]
     pub wave_id: Option<String>,
+    /// Optional execution-resource binding selected for this run. This relation
+    /// does not transfer Mission/Team ownership to the project.
+    #[serde(default)]
+    pub project_binding_id: Option<String>,
     pub host_surface: String,
     #[serde(default)]
     pub host_thread_id: Option<String>,
@@ -1633,6 +1688,13 @@ pub struct AgentTeamRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberWorkspaceSnapshot {
     pub cwd: String,
+    /// Stable Project Binding used to validate this cwd, when one was selected.
+    #[serde(default)]
+    pub project_binding_id: Option<String>,
+    /// Why this exact cwd won: `member_worktree`, `team_execution_root`,
+    /// `project_binding_root`, or `explicit_unbound`.
+    #[serde(default)]
+    pub resolution_source: Option<String>,
     #[serde(default)]
     pub git_head: Option<String>,
     #[serde(default)]
@@ -1746,6 +1808,9 @@ impl Validate for AgentTeamRun {
         if let Some(execution_root) = &self.execution_root {
             require_non_empty(execution_root, "AgentTeamRun.execution_root")?;
         }
+        if let Some(binding) = &self.project_binding_id {
+            require_non_empty(binding, "AgentTeamRun.project_binding_id")?;
+        }
         Ok(())
     }
 }
@@ -1753,6 +1818,12 @@ impl Validate for AgentTeamRun {
 impl Validate for MemberWorkspaceSnapshot {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.cwd, "MemberWorkspaceSnapshot.cwd")?;
+        if let Some(binding) = &self.project_binding_id {
+            require_non_empty(binding, "MemberWorkspaceSnapshot.project_binding_id")?;
+        }
+        if let Some(source) = &self.resolution_source {
+            require_non_empty(source, "MemberWorkspaceSnapshot.resolution_source")?;
+        }
         if let Some(git_head) = &self.git_head {
             require_non_empty(git_head, "MemberWorkspaceSnapshot.git_head")?;
         }
@@ -2894,6 +2965,8 @@ mod tests {
     fn workspace_observability_fields_round_trip_without_contents() {
         let snapshot = MemberWorkspaceSnapshot {
             cwd: "/projects/harness/worktrees/member-1".into(),
+            project_binding_id: Some("harness".into()),
+            resolution_source: Some("member_worktree".into()),
             git_head: Some("0123456789abcdef".into()),
             git_branch: Some("feature/member-1".into()),
             instruction_roots: vec!["/projects/harness".into()],
@@ -2918,6 +2991,8 @@ mod tests {
     fn workspace_observability_validation_rejects_empty_locators() {
         let snapshot = MemberWorkspaceSnapshot {
             cwd: " ".into(),
+            project_binding_id: None,
+            resolution_source: None,
             git_head: None,
             git_branch: None,
             instruction_roots: Vec::new(),
@@ -2932,6 +3007,8 @@ mod tests {
 
         let snapshot = MemberWorkspaceSnapshot {
             cwd: "/projects/harness".into(),
+            project_binding_id: None,
+            resolution_source: None,
             git_head: None,
             git_branch: None,
             instruction_roots: vec![String::new()],

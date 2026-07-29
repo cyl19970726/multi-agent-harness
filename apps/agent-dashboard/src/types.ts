@@ -1,17 +1,36 @@
 export type DeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
 /**
- * One project in the multi-project control plane (goal-multi-project P6). The
- * backend `GET /v1/projects` enumerates the registry + on-disk stores + the
- * reserved `_global` project; each entry mirrors the Rust `ProjectContext` plus
- * an `is_current` marker. `kind` is `"global"` only for the reserved `~/` store.
+ * A Project Binding: provider cwd, repository instructions, Skills,
+ * Git/worktree and permission boundary. `compatibility_store_root` is only a
+ * legacy locator and never means this binding owns coordination truth.
  */
 export interface Project {
   id: string;
   project_root: string;
-  store_root: string;
+  compatibility_store_root?: string;
   kind: "repo" | "global";
   is_git_repo: boolean;
   is_current: boolean;
+  repository_url?: string | null;
+  default_branch?: string | null;
+  git_common_dir?: string | null;
+  instruction_boundary?: string;
+  skill_discovery_boundary?: string;
+  worktree_policy?: string | null;
+  permission_policy?: string | null;
+  identity_boundary?: "project_binding" | string;
+  owns_execution_store?: boolean;
+}
+
+/** Provider-neutral Mission/Wave/Team/Workflow coordination namespace. */
+export interface ExecutionSpace {
+  id: string;
+  name?: string;
+  store_root: string;
+  default_project_binding_id?: string | null;
+  company_id?: string | null;
+  is_current: boolean;
+  identity_boundary?: "execution_space" | string;
 }
 
 /**

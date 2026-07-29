@@ -1,221 +1,284 @@
-# Multi-Project Harness
+# Execution Spaces and Project Bindings
 
 ```text
-status: implemented compatibility path for repository-scoped execution and
-project-derived stores
-target_boundary: ADR 0042 separates Company Store, Execution Space, and Project Binding
+status: implemented
+canonical_boundary: ADR 0042
 ```
 
-One operator (and one `serve` / dashboard) can manage **many** Workspaces — each
-with its own Mission/Wave coordination and execution records — plus a reserved
-**GLOBAL** Workspace rooted at `~/`. This is the operator-facing reference for
-the layout, Workspace commands, GLOBAL policy, migration, and live acceptance.
-The architectural rationale for Agent Team execution paths is durable in
-[ADR 0033](decisions/0033-agent-team-workspace-contract.md), not in a retired
-Goal ledger.
-
-This page documents the current `ProjectContext` implementation. It remains the
-compatibility path for repo-local execution, worktree validation, provider cwd
-selection, and current project-scoped stores. It is not the final ownership
-boundary for Company OS truth. ADR 0040 defines the target split:
+Star Harness separates coordination truth from the directory in which an
+Agent executes:
 
 ```text
-Company Store       Execution Space       Project Binding
-     \                    |                    /
-      \------ explicit, optional relations ---/
+Execution Space                    Project Binding
+Mission / Wave                     provider cwd
+Agent Team / TeamRun / MemberRun   AGENTS.md / CLAUDE.md / config
+TeamMessage / PendingInteraction   project-local Skills
+WorkflowRun / WorkflowStep         Git / worktree / permission boundary
 ```
 
-Until that migration lands, current commands still route through the selected
-project store. New product architecture should not infer that a Git repository
-owns company documents, WorkItems, Organization authority, or Finance state.
+A Company Store is a third, independent identity for Docs, Organization, Work,
+Finance, and governance. Execution does not require a Company.
 
-## Workspace contract: four distinct paths
+## Core invariants
 
-Project selection and Agent Team execution use four deliberately distinct
-values (ADR 0033):
+1. `--space` selects coordination storage.
+2. `--project` selects provider execution context.
+3. Selecting a Project Binding never moves or switches Mission/Wave, Agent
+   Team, or Workflow rows.
+4. Selecting an Execution Space never changes Company truth.
+5. Provider cwd is never a Company Store or Execution Space directory.
+6. Provider-native sessions remain the sole transcript/tool/turn truth and are
+   referenced rather than copied.
 
-- **`store_root`** = `~/.harness/projects/<id>/` — the centralized, repo-independent
-  JSONL coordination ledgers and locks. Sibling `harness` processes (a
-  `serve` and a `run-script` from different cwds) converge here via the registry's
-  `current_project_id`, preserving the issue #89 single-store invariant.
-- **`project_root`** = the git repo (or `~/` for GLOBAL) — where `CLAUDE.md`,
-  `AGENTS.md`, and project configuration live. It is the registered Workspace
-  identity, not necessarily every member's cwd.
-- **`AgentTeamRun.execution_root`** = the run-level provider cwd, defaulting to
-  `project_root`. An explicit override must be `project_root` or a Git worktree
-  sharing its Git common directory.
-- **`MemberRun.worktree_ref`** = an optional member-specific override with the
-  same validation. Provider spawn precedence is `worktree_ref` >
-  `execution_root` > `project_root`; `store_root` is never a provider cwd.
+## Physical layout
 
-These are bundled into a `ProjectContext { id, project_root, store_root, kind,
-is_git_repo }` (in `harness-core`) that is threaded through every spawn site
-instead of reading the harness process `env::current_dir()`.
-
-Under ADR 0040, `ProjectContext.project_root` evolves into Project Binding
-behavior, and execution ledgers move toward an Execution Space. The current
-`store_root` is a compatibility store root, not proof that the selected repo is
-the long-term Company Store owner.
-
-### Worktrees share repository identity, not path containment
-
-Harness-created Dynamic Workflow worktrees remain under `project_root` by
-convention:
-
-```
-<project_root>/.harness/worktrees/<run_id>-<slug>-<unique>
-```
-
-Git itself also permits linked worktrees elsewhere. Agent Team overrides may
-therefore point to external Codex worktrees; Harness validates the candidate is
-the worktree top level and shares the selected project's canonical Git common
-directory. A simple `starts_with(project_root)` check is incorrect.
-
-### Layout
-
-```
+```text
 ~/.harness/
-  projects/
-    _global/                  # reserved id for ~ (HOME); usually NOT a git repo
-      missions.jsonl waves.jsonl members.jsonl messages.jsonl ...
-      runtimes/  metadata.json
-    ai-luodi-jyx3d/           # under $HOME → slug = relpath with '/'→'-'
-    proj-<sha256[:16]>/       # outside $HOME → content-addressed
-    registry.json             # {current_project_id, projects:[...]}
-  ACTIVE_PROJECT              # single-line current id (also in the registry)
+├── execution-spaces/
+│   ├── registry.json
+│   └── <space-id>/
+│       ├── metadata.json
+│       ├── missions.jsonl
+│       ├── waves.jsonl
+│       ├── teams.jsonl
+│       ├── team_runs.jsonl
+│       ├── member_runs.jsonl
+│       ├── team_messages.jsonl
+│       ├── workflow_runs.jsonl
+│       └── workflow_steps.jsonl
+├── projects/
+│   ├── registry.json
+│   └── <binding-id>/
+│       └── metadata.json          # compatibility locator, not new truth owner
+├── companies/
+│   ├── registry.json
+│   └── <company-id>/company_os_*.jsonl
+├── ACTIVE_SPACE
+├── ACTIVE_PROJECT
+└── ACTIVE_COMPANY
 ```
 
-## Project identity
+Logical separation is mandatory even if a deployment later co-locates some
+physical files.
 
-The id is derived from the **canonicalized absolute path** (`realpath`, so
-symlinks / `~` vs `/Users/...` normalize to one id):
+## Execution Space
 
-- `path == $HOME` → `_global` (reserved, hardcoded).
-- under `$HOME` → relpath slug, `/`→`-` (e.g. `~/ai-luodi/jyx3d` → `ai-luodi-jyx3d`).
-- outside `$HOME` → `proj-<sha256(canonical_path)[:16]>` (stable, content-addressed).
-
-## Project resolution precedence
-
-A store root is resolved by this precedence (highest first):
-
-1. `--store <path>` / `HARNESS_ROOT` — back-compat overrides (deprecation-warned).
-2. `--project <id|path>` — explicit selection.
-3. `HARNESS_PROJECT` env — explicit selection.
-4. registry `current_project_id` / `ACTIVE_PROJECT` — the active project.
-5. cwd walk-up to the nearest `.harness/`, mapped to its central id
-   (legacy, deprecation-warned).
-6. `_global`.
-
-### Member collaboration environment
-
-Provider processes receive two deliberately different project values:
-
-- `HARNESS_PROJECT_ID` is the stable Workspace identity used in records and UI;
-- `HARNESS_PROJECT` is an executable project selector, normally the canonical
-  `project_root`, which another Harness process can resolve even when the
-  member cwd is an unregistered external worktree.
-
-They also receive `HARNESS_BIN`, the exact Host executable. Member instructions
-and generated examples invoke `"$HARNESS_BIN"` rather than whichever stale
-`harness` happens to be first on `PATH`. The provider subprocess inherits this
-non-secret collaboration environment along with the normal provider
-environment. Harness never serializes the full environment or credentials.
-
-When `serve` starts from an unregistered external worktree, its in-memory
-default `ProjectContext` retains that worktree's `project_root` and central
-`store_root`; it must not reconstruct the project root from the store path.
-
-`--store-source` prints which store was chosen and why (the dual-read decision is
-always logged, never silent):
+An Execution Space is a provider-neutral coordination namespace:
 
 ```bash
-harness --store-source goal list
-# store-source: central store ...; root=/Users/me/.harness/projects/<id>
+harness space init \
+  --id company-dev \
+  --name "Company Development" \
+  --project-binding multi-agent-harness
+
+harness space list
+harness space current
+harness space show company-dev
+harness space switch company-dev
 ```
 
-## Project commands
+The optional default Project Binding is a convenience for provider execution;
+it does not transfer ownership. A command can override it:
 
 ```bash
-harness init                          # register + activate the project rooted at cwd
-harness --project <path> init         # register + activate a project by path
-harness project add [<path>] [--switch]  # register a project (default cwd) WITHOUT switching unless --switch
-harness project list                  # enumerate registered projects + _global
-harness project current               # print the currently-active project context
-harness project show [<id|path>]      # metadata for the (selected) project; no arg = current
-harness project switch <id|path>      # flip ACTIVE_PROJECT + registry current
-harness project migrate               # centralize a repo-local .harness (see below)
-harness project remove <id> [--force] # drop a registration (_global is protected)
+harness --space company-dev --project another-repo mission list
+harness --space company-dev --project another-repo team-run create ...
 ```
 
-The dashboard exposes the same surface over HTTP: `GET /v1/projects`,
-`GET /v1/projects/current`, `POST /v1/projects/switch`, and a `?project=<id>`
-parameter on `/v1/snapshot` and `/v1/events`. A header picker re-points the
-scoped read model + SSE stream on switch and persists the choice to
-`?project=<id>` + `localStorage`.
+The Mission remains in `company-dev`; only the new TeamRun's execution binding
+is `another-repo`.
 
-The dashboard also exposes a separate Company Store selector over
-`GET /v1/companies`, `GET /v1/companies/current`,
-`POST /v1/companies/switch`, and `?company=<id>` on Company OS reads/writes.
-`/v1/snapshot?project=<id>&company=<id>` is intentionally blended: execution
-keys still come from the selected Project Store, while the `company_os` subtree
-comes from the selected Company Store. Future execution UI should add an
-Execution Space selector and treat Project as a runtime binding/filter.
+## Project Binding
 
-## Migration path (repo-local `.harness` → central store)
+A Project Binding describes an execution resource:
 
-Existing repos have a repo-local `.harness/` store. `harness project migrate`
-(run from the repo) **copies** (never moves) active JSONL ledgers plus
-`prompts/` and `runtimes/` into `~/.harness/projects/<id>/`, writes `metadata.json` with
-`migrated_from`, and drops a `.harness/MIGRATED_TO_CENTRAL` marker in the old
-store (tooling then reads the central store and ignores the marked local one).
-The retired provider-session mirror ledger/directory is intentionally omitted.
+- stable id and canonical `project_root`;
+- repository URL, default branch, and Git common directory when available;
+- project instruction and Skill discovery boundary;
+- worktree policy and permission policy.
 
-- **No data loss**: it is a copy; `records_after == records_before`, and the old
-  store is left intact (only marked).
-- **Non-destructive to the active project**: migrate does *not* switch — use
-  `harness project switch <id>` to activate the central store.
-- **Idempotent**: re-running is a no-op once the marker exists.
-
-During the grace period resolution tries the central store first and falls back
-to an *unmarked* local `.harness` only if no central store exists, always logging
-the choice (`--store-source`).
-
-## GLOBAL `_global` (`~/`) project — non-git limitations
-
-`_global` is rooted at `~/` and is normally **not a git repo**. Because a writable
-/ `isolation="worktree"` node needs a git worktree that cannot exist there:
-
-- Read-only (`isolation="none"`) workflow nodes and read-only deliveries run
-  everywhere, including `_global`.
-- A `writable` / `isolation="worktree"` node against `_global` (or any non-git
-  project) is **rejected before any provider spawn** with an actionable message
-  naming the project and offering the read-only fix (run read-only and fetch the
-  output with `harness workflow get-output <run_id> --step <label>`, or use a
-  git-backed project).
-- **Diff evidence is unavailable** for `_global` (no worktree to diff) — accepted.
-
-## Provider activity
-
-Provider activity is read from each provider's native session and is not a
-per-project Harness ledger. Restarting `serve` therefore cannot truncate or
-silently rewrite provider history; only ephemeral UI projections reconnect.
-
-## Live acceptance
-
-The deterministic multi-project section of the verification script creates two
-projects + `_global` under an isolated `HOME` (never the developer's real
-`~/.harness`), runs **one** `serve`, and asserts per-project store routing +
-isolation, a workflow leaf rooted in project A, a persistent member delivery in
-project B, the GLOBAL policy, and migration — all with fake provider shims (no
-codex/claude, no network):
+Commands:
 
 ```bash
-scripts/verify-fixes.sh          # deterministic tier (includes the multi-project demo)
-pnpm acceptance:multi-project    # same, via package.json
-
-pnpm test:multi-project          # just the multi-project deterministic Rust suite
+harness project add [<path>] [--switch]
+harness project list
+harness project current
+harness project show [<id|path>]
+harness project switch <id|path>
+harness project remove <id> [--force]
 ```
 
-The fake provider shims live in `scripts/multi-project-demo/`. The real
-live-codex multi-project demo (writing into a real project tree) is run by the
-operator separately with `scripts/verify-fixes.sh --real`.
+`harness project switch` changes the default Project Binding only. It does not
+switch the active Execution Space or Company Store.
+
+### Provider cwd precedence
+
+```text
+MemberRun.worktree_ref
+  > AgentTeamRun.execution_root
+  > ProjectBinding.project_root
+```
+
+An override must be the Project Binding root or a Git worktree with the same
+canonical Git common directory. External Codex worktrees are therefore valid;
+an unrelated directory is rejected.
+
+`AgentTeamRun.project_binding_id` and `WorkflowRun.project_binding_id` pin the
+binding used at creation. Later UI or CLI selection changes do not retarget a
+running or resumed execution. If the pinned binding is unavailable, Harness
+fails explicitly rather than falling back to the coordination store or current
+cwd.
+
+### Instructions and Skills
+
+Changing cwd can change which instructions, Skills, plugins, and MCP
+configuration a provider discovers. Harness therefore treats Project Binding
+as an execution and permission boundary.
+
+Harness records only non-secret facts:
+
+- effective cwd;
+- Project Binding id and resolution source;
+- Git head/branch;
+- directories in which instruction or Skill markers were discovered.
+
+Project-local discovery stops at the selected Git worktree root or Project
+Binding root. Global provider locations such as `~/.agents/skills` or
+`~/.codex/skills` are reported separately. Harness does not persist Skill
+contents, provider transcript, tool stream, credentials, or private thinking.
+
+Provider processes receive:
+
+```text
+HARNESS_SPACE
+HARNESS_PROJECT_ID
+HARNESS_PROJECT
+HARNESS_TEAM_RUN_ID
+HARNESS_MEMBER_RUN_ID
+HARNESS_ASSIGNMENT_MESSAGE_ID
+HARNESS_ASSIGNMENT_CORRELATION_ID
+HARNESS_BIN
+```
+
+`HARNESS_PROJECT_ID` is the stable binding id. `HARNESS_PROJECT` is an
+executable selector, normally the canonical project root.
+
+## Selection precedence
+
+Coordination store:
+
+1. raw `--store`, workflow-child store, or `HARNESS_ROOT` compatibility
+   override;
+2. `--space`;
+3. `HARNESS_SPACE`;
+4. active `ACTIVE_SPACE`;
+5. project-derived compatibility store only when no Execution Space exists;
+6. legacy repo-local `.harness`, then the active/global compatibility project.
+
+Project Binding is resolved independently:
+
+1. `--project`;
+2. `HARNESS_PROJECT`;
+3. selected Execution Space's `default_project_binding_id`;
+4. active `ACTIVE_PROJECT`.
+
+The reserved `_global` binding points at `~/`. Read-only work is allowed there.
+Writable or worktree-isolated work is rejected because it is normally not a
+Git repository and cannot produce diff evidence.
+
+## Low-friction initialization
+
+```bash
+cd <repository>
+harness init
+```
+
+`init` registers the repository as a Project Binding. If no active Execution
+Space exists and doing so would not shadow existing execution rows, it also
+creates a repo-derived Execution Space with that binding as its default.
+
+`init` never creates a Company Store and never silently migrates an old
+project-derived Store.
+
+## Explicit migration
+
+Legacy project-derived execution rows can be copied into a native Execution
+Space:
+
+```bash
+harness space migrate-from-project \
+  --from-project <binding-id-or-path> \
+  --id <space-id> \
+  --name <display-name>
+```
+
+The migration:
+
+- copies only active execution/coordination ledgers plus checks, compiled
+  workflow data, and workflow patches;
+- excludes `company_os_*`, provider session directories, and runtime process
+  payloads;
+- byte-verifies every copied ledger and whitelisted execution-evidence file;
+- leaves the source intact;
+- writes `execution_space_migration.json` with counts, exclusions, the prior
+  active space, and a rollback command;
+- never dual-writes.
+
+Company records use the separate guarded `harness company
+migrate-from-project` path.
+
+## Dashboard and HTTP
+
+One `harness serve` exposes independent selectors:
+
+```text
+GET  /v1/spaces
+GET  /v1/spaces/current
+POST /v1/spaces/switch
+
+GET  /v1/projects
+GET  /v1/projects/current
+POST /v1/projects/switch
+```
+
+`?space=<id>` selects coordination snapshot/SSE data.
+`?project=<id>` selects provider execution/source context.
+`?company=<id>` selects Company OS truth.
+
+The Dashboard TopBar shows separate **Execution Space**, **Project Binding**,
+and **Company Store** controls. Member and Workflow native-activity reads carry
+both space and project selectors so switching spaces cannot display another
+space's execution object.
+
+## Compatibility boundary
+
+`ProjectContext { id, project_root, store_root, kind, is_git_repo }` remains an
+internal adapter for legacy project-derived stores and existing spawn code.
+Public Project projections label its old store path
+`compatibility_store_root` and `owns_execution_store: false`.
+
+Old repo-local or project-derived stores remain readable until an explicit,
+verified migration and later governed retirement. They are not silently
+rewritten or deleted.
+
+Until a Company Store is selected, `harness company ...` alone may read and
+write the selected Project Binding's legacy `company_os_*` compatibility
+ledgers. It never falls through into the active Execution Space. Selecting a
+Company Store removes that fallback.
+
+## Verification
+
+The deterministic suite uses isolated HOME directories and fake providers:
+
+```bash
+pnpm test:multi-project
+cargo test -p harness-cli --test execution_space_cli
+cargo test -p harness-cli --test team_run_start
+cargo test -p harness-cli --test workflow_cwd
+pnpm check:dashboard
+```
+
+It proves selector independence, store isolation, pinned provider cwd,
+worktree policy, provider collaboration environment, migration exclusions,
+SSE routing, and Dashboard type/build integrity. A real-provider claim still
+requires a provider-native live run.

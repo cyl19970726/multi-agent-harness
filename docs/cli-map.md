@@ -21,7 +21,7 @@ dedicated CLI.
 
 | Area | Commands | Status | Notes |
 | --- | --- | --- | --- |
-| Store/project routing | `init`, `project add/list/current/switch/remove/show/migrate` | Implemented | Multi-project routing is centralized. Prefer `--project` / project registry over legacy store overrides. |
+| Execution Space / Project Binding routing | `init`, `space init/list/current/switch/show/migrate-from-project`, `project add/list/current/switch/remove/show/migrate` | Implemented | `--space` selects Mission/Wave/Agent Team/Workflow storage; `--project` independently selects provider cwd, instructions/Skills, Git/worktree and permission boundaries. Raw store overrides and project-derived execution stores are compatibility paths only. |
 | Company Store routing | `company init/list/current/switch/show/migrate-from-project`, global `--company <id>` for `company ...`, `HARNESS_COMPANY` | Implemented | ADR 0042 Phase 2 first slice. `harness company ...` uses the selected Company Store when explicit/current Company exists; execution commands still use Project routing. |
 | Mission | `mission create/list/show/update-context/create-team/link-team/unlink-team/close` | Implemented | Current durable intent surface. |
 | Wave | `wave create/list/show/history/update/advance/gate` | Implemented | Lightweight host plan/judgment record. |
@@ -41,7 +41,7 @@ dedicated CLI.
 ### Company Store
 
 `harness company init/list/current/switch/show` manages the explicit Company
-Store identity introduced by ADR 0040.
+Store identity introduced by ADR 0042.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |

@@ -111,22 +111,38 @@ MemberRun.worktree_ref
 
 `store_root` must never become provider cwd.
 
-## Current compatibility boundary
+## Implemented boundary
 
-`ProjectContext { id, project_root, store_root, kind, is_git_repo }` remains the
-implemented compatibility path for repository execution and project-derived
-stores. Existing `harness init`, `harness project ...`, `harness mission ...`,
-and `harness team-run ...` commands keep their current behavior until later
-phases add Execution Space and Project Binding registries.
+All three selectors now exist independently:
 
-As of the first ADR 0040 implementation slice, `harness company
-init/list/current/show/switch/migrate-from-project`, `--company <id>`, and
-`HARNESS_COMPANY` create, select, and populate explicit Company Stores for
-`harness company ...` commands. If no Company is selected, the old
-project-derived Company OS compatibility path still works.
+- `harness company ...`, `--company`, and `HARNESS_COMPANY` select Company
+  Store truth;
+- `harness space ...`, `--space`, and `HARNESS_SPACE` select Mission/Wave,
+  Agent Team, and Workflow coordination truth;
+- `harness project ...`, `--project`, and `HARNESS_PROJECT` select the Project
+  Binding used for provider cwd, repository instructions, Skills,
+  Git/worktree, and permission boundaries.
 
-This ADR changes the target architecture and documentation authority. It does
-not silently migrate stores, dual-write ledgers, or reinterpret existing rows.
+`ProjectContext { id, project_root, store_root, kind, is_git_repo }` remains an
+internal compatibility adapter while Project Binding metadata is extracted
+from it. Its `store_root` is labelled `compatibility_store_root` in public
+projections and does not own new execution rows when an Execution Space is
+selected.
+
+`harness init` is the low-friction compatibility entry: it registers the
+current repository as a Project Binding and, when no prior execution history
+would be shadowed, creates a repo-derived Execution Space. It never creates a
+Company Store.
+
+Existing project-derived stores are not silently reinterpreted, dual-written,
+or deleted. `harness space migrate-from-project` performs an explicit,
+copy-only, byte-verified migration of active execution ledgers and whitelisted
+execution-evidence files, and leaves the source intact with a rollback command
+in the migration manifest.
+
+When no Company Store is selected, `harness company ...` retains a narrow
+compatibility fallback to the selected Project Binding's old `company_os_*`
+ledgers. It never writes Company truth into an Execution Space.
 
 ## Target storage layout
 
@@ -147,7 +163,7 @@ Logical separation is mandatory. Physical co-location is not.
 │   ├── <execution-space-id>/
 │   │   ├── missions.jsonl
 │   │   ├── waves.jsonl
-│   │   ├── agent_teams.jsonl
+│   │   ├── teams.jsonl
 │   │   ├── team_runs.jsonl
 │   │   ├── member_runs.jsonl
 │   │   └── team_messages.jsonl
@@ -155,8 +171,8 @@ Logical separation is mandatory. Physical co-location is not.
 │
 └── projects/
     ├── registry.json
-    ├── multi-agent-harness.json
-    └── wanchengwanling.json
+    ├── multi-agent-harness/metadata.json
+    └── wanchengwanling/metadata.json
 ```
 
 ## CLI direction
@@ -219,23 +235,22 @@ Relations do not transfer truth ownership:
 - Git repositories own source code, software PRDs, commits, PRs, CI, releases,
   and delivery evidence.
 
-## Migration phases
+## Migration status
 
-1. **Freeze boundaries.** Add this ADR and update system maps so Company Store,
-   Execution Space, and Project Binding are distinct target identities. Preserve
-   current behavior.
-2. **Company Store v1.** Add Company registry, init/switch/list/show commands,
-   and Store routing for Docs/Work/Org/Finance. The CLI/store-routing slice and
-   guarded `company_os_*.jsonl` migration from project-derived stores are
-   implemented; serve API selectors and the Dashboard Company Store picker are
-   implemented; broader execution-space migration remains pending.
-3. **Project Binding.** Extract repo/path/worktree metadata from Store
-   ownership while preserving cwd/worktree validation.
-4. **Execution Space.** Add Execution Space registry and route new
-   Mission/Wave/Agent Team/Workflow writes through it.
-5. **Migration and UI.** Export and verify existing project-scoped Company OS
-   rows, migrate selected records into a Company Store, add Company and
-   Execution Space selectors, and preserve provider-native history.
+1. **Freeze boundaries — implemented.** Canonical docs and native identities
+   distinguish Company Store, Execution Space, and Project Binding.
+2. **Company Store v1 — implemented slice.** Registry, CLI/API routing,
+   Dashboard selector, and guarded Company-row migration exist.
+3. **Project Binding — implemented slice.** Git/source metadata and discovery,
+   worktree, and permission boundaries are projected independently from Store
+   ownership. `ProjectContext` remains internal compatibility infrastructure.
+4. **Execution Space — implemented slice.** Registry, active marker,
+   CLI/API/Dashboard selectors, and Mission/Wave/Agent Team/Workflow routing
+   exist. `AgentTeamRun` and `WorkflowRun` pin `project_binding_id`.
+5. **Migration and broader cleanup — in progress.** Explicit execution
+   migration is copy-only and verified; provider-native sessions are never
+   copied. Old project-derived compatibility stores remain readable until
+   governed retirement is separately approved.
 
 Do not silently dual-write. Migration must be explicit, latest-wins safe, and
 reconstructable.
@@ -258,10 +273,9 @@ reconstructable.
 
 ## Consequences
 
-- The current `ProjectContext` is reclassified as compatibility infrastructure,
-  not the long-term owner of Company OS truth.
-- `--project` remains valid for current commands until migrated, but docs must
-  describe it as compatibility when discussing Company OS Store ownership.
+- `ProjectContext` is compatibility infrastructure, not an ownership object.
+- `--project` remains first-class as an execution-resource selector; only its
+  former Store-selection meaning is compatibility behavior.
 - Wanchengwanling and AgentOS should eventually live as operating areas in one
   Agent Company Workspace, with their GitHub repositories mapped as external
   source and delivery systems.

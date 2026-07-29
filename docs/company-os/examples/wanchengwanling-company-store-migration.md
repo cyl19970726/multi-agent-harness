@@ -142,6 +142,7 @@ The dashboard/API now understand Company Store selection:
 - `GET /v1/snapshot?company=agent-company`
 
 `/v1/snapshot` remains a blended read: execution keys come from the selected
-Project Store, while `company_os` comes from the selected Company Store. The
-next slice should use the migrated `agent-company` store as the default dogfood
-truth source for Wanchengwanling and AgentOS operating areas.
+Execution Space, provider execution context comes from the selected Project
+Binding, and `company_os` comes from the selected Company Store. The migrated
+`agent-company` store can be selected as the dogfood truth source for
+Wanchengwanling and AgentOS operating areas.

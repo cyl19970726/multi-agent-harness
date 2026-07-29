@@ -15,13 +15,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use harness_core::{
     build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
     AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
-    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, LaunchMcp, LaunchPermission,
-    LaunchSpec, MemberAction, MemberActionStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability,
-    NativeSessionRef, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
-    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
-    ProviderCapabilities, ProviderCompatibilityStatus, ProviderEventFidelity,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionSpace, LaunchMcp,
+    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberExecutionDriver,
+    MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission, MissionStatus,
+    NativeSessionAvailability, NativeSessionRef, PendingInteraction, PendingInteractionKind,
+    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderCapabilities, ProviderCompatibilityStatus, ProviderEventFidelity,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
     ProviderInteractionMode, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
     TeamMessageDelivery, TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
@@ -35,6 +35,7 @@ use thiserror::Error;
 mod codex_app_server;
 mod company_os_api;
 mod company_store;
+mod execution_space;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
@@ -109,6 +110,12 @@ enum StoreSource {
     /// Active Company Store marker / registry current. Only applies to
     /// `harness company ...` commands.
     CompanyCurrent,
+    /// `--space <id>` explicit Execution Space selector.
+    SpaceFlag,
+    /// `HARNESS_SPACE` Execution Space selector.
+    SpaceEnv,
+    /// Active Execution Space marker / registry current.
+    SpaceCurrent,
     /// `--project <id|path>` explicit selector.
     ProjectFlag,
     /// `HARNESS_PROJECT` env selector.
@@ -121,30 +128,32 @@ enum StoreSource {
     GlobalDefault,
 }
 
-/// The resolved store root plus a record of *how* it was chosen and whether a
-/// `ProjectContext` backs it (None for the raw `--store`/`HARNESS_ROOT`/walk-up
-/// overrides, which point at an arbitrary path with no project identity).
+/// The resolved coordination store plus its independent execution bindings.
+///
+/// `execution_space_context` owns Mission/Wave/Agent Team/Workflow rows.
+/// `context` is the selected Project Binding compatibility adapter and owns
+/// provider cwd, repository instructions, Skills, Git/worktree and permission
+/// boundaries. Neither identity implies the other.
 pub(crate) struct ResolvedStore {
     root: PathBuf,
     source: StoreSource,
     pub(crate) context: Option<harness_core::ProjectContext>,
     pub(crate) company_context: Option<company_store::CompanyContext>,
+    pub(crate) execution_space_context: Option<ExecutionSpace>,
 }
 
-/// Resolve the harness store root, preserving today's behavior while routing
-/// through project identity when a project is explicitly selected/active.
+/// Resolve the Harness coordination store and Project Binding.
 ///
-/// Precedence (goal-multi-project P1):
-/// 1. `--store <path>`            — deprecated override (stripped from `args`).
-/// 2. `HARNESS_ROOT` env          — deprecated override.
-/// 3. `--project <id|path>`       — explicit project selector (stripped).
-/// 4. `HARNESS_PROJECT` env       — project selector.
-/// 5. registry `current_project_id` / `ACTIVE_PROJECT` — the convergence point
-///    that replaces "shared cwd" for the #89 invariant (`serve` + `run-script`
-///    resolve the SAME central store regardless of cwd).
-/// 6. legacy cwd walk-up to the nearest existing `.harness/` — deprecation-warned
-///    fallback so existing repos keep working for a release or two (#89 item 3).
-/// 7. `_global` — the reserved `$HOME` project, auto-created on first use.
+/// Store precedence:
+/// 1. `--store` / workflow-child store / `HARNESS_ROOT` compatibility override.
+/// 2. Company Store selector for `harness company ...`.
+/// 3. `--space` / `HARNESS_SPACE` / active Execution Space.
+/// 4. project-derived compatibility store only when no Execution Space exists.
+/// 5. legacy repo-local `.harness`, then active/global compatibility project.
+///
+/// Project Binding precedence is independent:
+/// `--project` / `HARNESS_PROJECT`, then the selected space's default binding,
+/// then the active Project Binding. Selecting it never switches the store.
 ///
 /// `init` is special-cased so it never adopts an ancestor's `.harness` via the
 /// walk-up; its routing lives in [`init_routed`].
@@ -154,19 +163,17 @@ pub(crate) struct ResolvedStore {
 /// used (walk-up → otherwise the GLOBAL store), so existing serve + run-script
 /// flows keep converging on one store.
 fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<ResolvedStore> {
-    // 1. --store override (deprecated, but still wins for tests/back-compat).
+    // Raw store overrides remain the highest-precedence compatibility path.
     if let Some(path) = take_flag_value(args, "--store") {
-        warn_deprecated_override("--store", "harness project switch");
+        warn_deprecated_override("--store", "harness space switch");
         return Ok(ResolvedStore {
             root: PathBuf::from(path),
             source: StoreSource::StoreFlag,
             context: None,
             company_context: None,
+            execution_space_context: None,
         });
     }
-    // Internal workflow-child guard. This intentionally wins over `--project` /
-    // `HARNESS_PROJECT`, so a worker in a writable leaf cannot accidentally write
-    // the parent project's central store just by running `harness ...`.
     if let Ok(root) = env::var(HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV) {
         if !root.is_empty() {
             return Ok(ResolvedStore {
@@ -174,18 +181,19 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::WorkflowChildEnv,
                 context: None,
                 company_context: None,
+                execution_space_context: None,
             });
         }
     }
-    // 2. HARNESS_ROOT env override (deprecated).
     if let Ok(root) = env::var("HARNESS_ROOT") {
         if !root.is_empty() {
-            warn_deprecated_override("HARNESS_ROOT", "harness project switch");
+            warn_deprecated_override("HARNESS_ROOT", "harness space switch");
             return Ok(ResolvedStore {
                 root: PathBuf::from(root),
                 source: StoreSource::HarnessRootEnv,
                 context: None,
                 company_context: None,
+                execution_space_context: None,
             });
         }
     }
@@ -199,6 +207,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::CwdWalkUp,
                 context: None,
                 company_context: None,
+                execution_space_context: None,
             });
         }
     };
@@ -220,6 +229,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: selector_source,
                 context: None,
                 company_context: Some(ctx),
+                execution_space_context: None,
             });
         }
         if let Some(id) =
@@ -233,12 +243,13 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::CompanyCurrent,
                 context: None,
                 company_context: Some(ctx),
+                execution_space_context: None,
             });
         }
     }
 
-    // 3/4. Explicit project selector by id or path: `--project` then
-    // `HARNESS_PROJECT`. The source records which signal won.
+    // Project selection is now independent from execution-store selection. It
+    // picks the provider workspace/config/permission binding only.
     let (project_selector, selector_source) = match take_flag_value(args, "--project") {
         Some(v) => (Some(v), StoreSource::ProjectFlag),
         None => match env::var("HARNESS_PROJECT").ok().filter(|s| !s.is_empty()) {
@@ -246,15 +257,93 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             None => (None, StoreSource::ProjectFlag),
         },
     };
-    if let Some(selector) = project_selector {
-        if let Some(ctx) = resolve_project_selector(&harness_home, &selector) {
-            return Ok(ResolvedStore {
-                root: ctx.store_root.clone(),
-                source: selector_source,
-                context: Some(ctx),
-                company_context: None,
-            });
-        }
+    let explicit_project_context = match project_selector.as_deref() {
+        Some(selector) => Some(
+            resolve_project_selector(&harness_home, selector)
+                .ok_or_else(|| CliError::Usage(format!("unknown project binding: {selector}")))?,
+        ),
+        None => None,
+    };
+
+    // Company OS compatibility rows must never fall through into an Execution
+    // Space. Until a native Company Store is selected, retain the historical
+    // project-derived Company OS store as a narrow compatibility boundary.
+    if command == Some("company") {
+        let (context, source) = match explicit_project_context {
+            Some(context) => (context, selector_source),
+            None => match project::active_project_id(&harness_home).map_err(project_err)? {
+                Some(id) => (
+                    project::context_for_id(&harness_home, &id)
+                        .map_err(project_err)?
+                        .ok_or_else(|| {
+                            CliError::Usage(format!("active project binding is unknown: {id}"))
+                        })?,
+                    StoreSource::RegistryCurrent,
+                ),
+                None => (
+                    project::global_context(&harness_home).map_err(project_err)?,
+                    StoreSource::GlobalDefault,
+                ),
+            },
+        };
+        return Ok(ResolvedStore {
+            root: context.store_root.clone(),
+            source,
+            context: Some(context),
+            company_context: None,
+            execution_space_context: None,
+        });
+    }
+
+    // Execution Space owns Mission/Wave/Agent Team/Workflow coordination.
+    // Selecting a Project Binding never changes this store.
+    let (space_selector, space_source) = match take_flag_value(args, "--space") {
+        Some(value) => (Some(value), StoreSource::SpaceFlag),
+        None => match env::var("HARNESS_SPACE")
+            .ok()
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => (Some(value), StoreSource::SpaceEnv),
+            None => (
+                execution_space::active_space_id(&harness_home).map_err(execution_space_err)?,
+                StoreSource::SpaceCurrent,
+            ),
+        },
+    };
+    if let Some(space_id) = space_selector {
+        let space = execution_space::context_for_id(&harness_home, &space_id)
+            .map_err(execution_space_err)?
+            .ok_or_else(|| CliError::Usage(format!("unknown execution space: {space_id}")))?;
+        let project_context = match explicit_project_context {
+            Some(context) => Some(context),
+            None => match space.default_project_binding_id.as_deref() {
+                Some(binding_id) => {
+                    project::context_for_id(&harness_home, binding_id).map_err(project_err)?
+                }
+                None => project::active_project_id(&harness_home)
+                    .map_err(project_err)?
+                    .and_then(|id| project::context_for_id(&harness_home, &id).ok().flatten()),
+            },
+        };
+        return Ok(ResolvedStore {
+            root: space.store_root.clone(),
+            source: space_source,
+            context: project_context,
+            company_context: None,
+            execution_space_context: Some(space),
+        });
+    }
+
+    // No Execution Space was selected yet: preserve the old project-derived
+    // compatibility store without silently migrating or dual-writing history.
+    if let Some(context) = explicit_project_context {
+        return Ok(ResolvedStore {
+            root: context.store_root.clone(),
+            source: selector_source,
+            context: Some(context),
+            company_context: None,
+            execution_space_context: None,
+        });
     }
 
     // 5. Legacy cwd walk-up to the nearest existing `.harness/` (back-compat).
@@ -303,6 +392,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             source: StoreSource::RegistryCurrent,
                             context,
                             company_context: None,
+                            execution_space_context: None,
                         });
                     }
                     Ok(Some(_)) => {
@@ -332,6 +422,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             source: StoreSource::CwdWalkUp,
                             context: None,
                             company_context: None,
+                            execution_space_context: None,
                         });
                     }
                 }
@@ -349,6 +440,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 source: StoreSource::RegistryCurrent,
                 context: Some(ctx),
                 company_context: None,
+                execution_space_context: None,
             });
         }
     }
@@ -360,6 +452,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             source: StoreSource::GlobalDefault,
             context: Some(ctx),
             company_context: None,
+            execution_space_context: None,
         });
     }
 
@@ -369,6 +462,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         source: StoreSource::CwdWalkUp,
         context: None,
         company_context: None,
+        execution_space_context: None,
     })
 }
 
@@ -463,7 +557,7 @@ fn command_name_for_resolution(args: &[String]) -> Option<String> {
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
-            "--store" | "--project" | "--company" => {
+            "--store" | "--project" | "--company" | "--space" => {
                 index += 2;
             }
             "--store-source" => {
@@ -522,12 +616,46 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
         .map_err(project_err)?;
     let registered = HarnessStore::new(ctx.store_root.clone());
     registered.init()?;
-    println!(
-        "initialized project {} store {} (root {})",
-        ctx.id,
-        ctx.store_root.display(),
-        ctx.project_root.display()
-    );
+    let existing_execution_rows = EXECUTION_LEDGER_NAMES
+        .iter()
+        .map(|ledger| count_non_empty_lines(&ctx.store_root.join(ledger)).unwrap_or(0))
+        .sum::<u64>();
+    if execution_space::active_space_id(&harness_home)
+        .map_err(execution_space_err)?
+        .is_none()
+        && existing_execution_rows == 0
+    {
+        let space = execution_space::register_and_activate(
+            &harness_home,
+            &ctx.id,
+            &format!("{} execution", ctx.id),
+            Some(ctx.id.clone()),
+            None,
+            &now_string(),
+        )
+        .map_err(execution_space_err)?;
+        HarnessStore::new(space.store_root.clone()).init()?;
+        println!(
+            "initialized project binding {} (root {}) and execution space {} ({})",
+            ctx.id,
+            ctx.project_root.display(),
+            space.id,
+            space.store_root.display()
+        );
+    } else {
+        println!(
+            "initialized project binding {} (root {}); compatibility store {} retained",
+            ctx.id,
+            ctx.project_root.display(),
+            ctx.store_root.display()
+        );
+        if existing_execution_rows > 0 {
+            eprintln!(
+                "note: existing project-scoped execution rows were not moved; run `harness space migrate-from-project --from-project {} --id <space-id>` explicitly",
+                ctx.id
+            );
+        }
+    }
     Ok(())
 }
 
@@ -557,14 +685,284 @@ fn company_store_err(e: company_store::CompanyStoreError) -> CliError {
     }
 }
 
-/// `harness project <subcommand>` — inspect and manage the centralized project
-/// registry that backs multi-project store routing (goal-multi-project P1/P7).
+fn execution_space_err(error: execution_space::ExecutionSpaceError) -> CliError {
+    match error {
+        execution_space::ExecutionSpaceError::Io(error) => CliError::Io(error),
+        execution_space::ExecutionSpaceError::Json(error) => CliError::Json(error),
+        execution_space::ExecutionSpaceError::InvalidId(id) => CliError::Usage(format!(
+            "invalid execution space id `{id}`; use letters, digits, '.', '_' or '-'"
+        )),
+        execution_space::ExecutionSpaceError::NoHome => {
+            CliError::Usage("could not determine harness home".to_string())
+        }
+    }
+}
+
+fn execution_space_json(space: &ExecutionSpace, current: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": space.id,
+        "name": space.name,
+        "store_root": space.store_root.display().to_string(),
+        "default_project_binding_id": space.default_project_binding_id,
+        "company_id": space.company_id,
+        "is_current": space.id == current,
+        "identity_boundary": "execution_space",
+        "owns": ["mission", "wave", "agent_team", "team_run", "member_run", "team_message", "workflow"],
+    })
+}
+
+fn execution_space_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(
+        args,
+        "space init|list|current|switch|show|migrate-from-project",
+    )?;
+    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
+    match args[0].as_str() {
+        "init" => {
+            let id = required(args, "--id")?;
+            let name = value(args, "--name").unwrap_or_else(|| id.clone());
+            let default_project_binding_id = value(args, "--project-binding");
+            if let Some(binding) = default_project_binding_id.as_deref() {
+                if project::binding_for_id(&harness_home, binding)
+                    .map_err(project_err)?
+                    .is_none()
+                {
+                    return Err(CliError::Usage(format!(
+                        "unknown project binding: {binding}"
+                    )));
+                }
+            }
+            let company_id = value(args, "--company");
+            if let Some(company) = company_id.as_deref() {
+                if company_store::context_for_id(&harness_home, company)
+                    .map_err(company_store_err)?
+                    .is_none()
+                {
+                    return Err(CliError::Usage(format!("unknown company: {company}")));
+                }
+            }
+            let context = execution_space::register_and_activate(
+                &harness_home,
+                &id,
+                &name,
+                default_project_binding_id,
+                company_id,
+                &now_string(),
+            )
+            .map_err(execution_space_err)?;
+            HarnessStore::new(context.store_root.clone()).init()?;
+            print_json(&execution_space_json(&context, &context.id))
+        }
+        "list" => {
+            let current = execution_space::active_space_id(&harness_home)
+                .map_err(execution_space_err)?
+                .unwrap_or_default();
+            let spaces =
+                execution_space::list_spaces(&harness_home).map_err(execution_space_err)?;
+            print_json(
+                &spaces
+                    .iter()
+                    .map(|space| execution_space_json(space, &current))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        "current" => {
+            let current =
+                execution_space::active_space_id(&harness_home).map_err(execution_space_err)?;
+            match current {
+                Some(id) => match execution_space::context_for_id(&harness_home, &id)
+                    .map_err(execution_space_err)?
+                {
+                    Some(space) => print_json(&execution_space_json(&space, &id)),
+                    None => print_json(&serde_json::json!({"id": id, "is_current": true})),
+                },
+                None => print_json(
+                    &serde_json::json!({"id": serde_json::Value::Null, "is_current": false}),
+                ),
+            }
+        }
+        "switch" => {
+            let id = args
+                .iter()
+                .skip(1)
+                .find(|value| !value.starts_with("--"))
+                .ok_or_else(|| CliError::Usage("usage: harness space switch <id>".into()))?;
+            let space = execution_space::switch_current_space(&harness_home, id, &now_string())
+                .map_err(execution_space_err)?;
+            print_json(&execution_space_json(&space, &space.id))
+        }
+        "show" => {
+            let selector = args
+                .iter()
+                .skip(1)
+                .find(|value| !value.starts_with("--"))
+                .cloned()
+                .or(execution_space::active_space_id(&harness_home).map_err(execution_space_err)?)
+                .ok_or_else(|| CliError::Usage("no active execution space".into()))?;
+            let current = execution_space::active_space_id(&harness_home)
+                .map_err(execution_space_err)?
+                .unwrap_or_default();
+            let space = execution_space::context_for_id(&harness_home, &selector)
+                .map_err(execution_space_err)?
+                .ok_or_else(|| CliError::Usage(format!("unknown execution space: {selector}")))?;
+            print_json(&execution_space_json(&space, &current))
+        }
+        "migrate-from-project" => execution_space_migrate_from_project(&harness_home, &args[1..]),
+        other => Err(CliError::Usage(format!("unknown space command: {other}"))),
+    }
+}
+
+const EXECUTION_LEDGER_NAMES: &[&str] = &[
+    "missions.jsonl",
+    "waves.jsonl",
+    "members.jsonl",
+    "teams.jsonl",
+    "agent_runtimes.jsonl",
+    "agent_events.jsonl",
+    "proposals.jsonl",
+    "messages.jsonl",
+    "evidence.jsonl",
+    "decisions.jsonl",
+    "reviews.jsonl",
+    "gaps.jsonl",
+    "provider_child_threads.jsonl",
+    "team_runs.jsonl",
+    "member_runs.jsonl",
+    "team_messages.jsonl",
+    "member_actions.jsonl",
+    "pending_interactions.jsonl",
+    "delegation_runs.jsonl",
+    "team_run_events.jsonl",
+    "workflow_runs.jsonl",
+    "workflow_steps.jsonl",
+    "workflow_patches.jsonl",
+    "workflow_artifact_manifests.jsonl",
+];
+
+fn execution_space_migrate_from_project(harness_home: &Path, args: &[String]) -> CliResult<()> {
+    let project_selector = required(args, "--from-project")?;
+    let id = required(args, "--id")?;
+    execution_space::validate_space_id(&id).map_err(execution_space_err)?;
+    let name = value(args, "--name").unwrap_or_else(|| id.clone());
+    let force = has_flag(args, "--force");
+    let project_context = resolve_project_selector(harness_home, &project_selector)
+        .ok_or_else(|| CliError::Usage(format!("unknown project binding: {project_selector}")))?;
+    let previous_active_space_id =
+        execution_space::active_space_id(harness_home).map_err(execution_space_err)?;
+    let target = execution_space::space_store_root(harness_home, &id);
+    std::fs::create_dir_all(&target)?;
+
+    let mut copied_files = 0u64;
+    let mut copied_records = 0u64;
+    for ledger in EXECUTION_LEDGER_NAMES {
+        let source = project_context.store_root.join(ledger);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = target.join(ledger);
+        let source_bytes = std::fs::read(&source)?;
+        if destination.exists() {
+            let target_bytes = std::fs::read(&destination)?;
+            if source_bytes == target_bytes {
+                copied_records += count_non_empty_lines(&source)?;
+                continue;
+            }
+            if !force {
+                return Err(CliError::Usage(format!(
+                    "target execution ledger already differs: {} (pass --force to replace execution ledgers only)",
+                    destination.display()
+                )));
+            }
+        }
+        std::fs::write(&destination, &source_bytes)?;
+        copied_files += 1;
+        copied_records += count_non_empty_lines(&source)?;
+    }
+    for directory in ["checks", "compiled", "workflow-patches"] {
+        let source = project_context.store_root.join(directory);
+        if source.is_dir() {
+            let destination = target.join(directory);
+            let source_files = directory_file_index(&source)?;
+            if destination.exists() {
+                if directory_trees_equal(&source, &destination)? {
+                    continue;
+                }
+                if !force {
+                    return Err(CliError::Usage(format!(
+                        "target execution evidence directory already differs: {} (pass --force to replace this whitelisted target directory only)",
+                        destination.display()
+                    )));
+                }
+                std::fs::remove_dir_all(&destination)?;
+            }
+            copy_dir_recursive(&source, &destination)?;
+            copied_files += source_files.len() as u64;
+        }
+    }
+
+    let context = execution_space::register_and_activate(
+        harness_home,
+        &id,
+        &name,
+        Some(project_context.id.clone()),
+        None,
+        &now_string(),
+    )
+    .map_err(execution_space_err)?;
+    HarnessStore::new(context.store_root.clone()).init()?;
+
+    let mut verified_records = 0u64;
+    for ledger in EXECUTION_LEDGER_NAMES {
+        let source = project_context.store_root.join(ledger);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = context.store_root.join(ledger);
+        if std::fs::read(&source)? != std::fs::read(&destination)? {
+            return Err(CliError::Usage(format!(
+                "execution migration verification failed for {ledger}"
+            )));
+        }
+        verified_records += count_non_empty_lines(&source)?;
+    }
+    for directory in ["checks", "compiled", "workflow-patches"] {
+        let source = project_context.store_root.join(directory);
+        if source.is_dir() && !directory_trees_equal(&source, &context.store_root.join(directory))?
+        {
+            return Err(CliError::Usage(format!(
+                "execution migration verification failed for {directory}/"
+            )));
+        }
+    }
+    let manifest = serde_json::json!({
+        "kind": "project_execution_store_to_execution_space",
+        "source_project_binding_id": project_context.id,
+        "source_store_root": project_context.store_root.display().to_string(),
+        "target_space_id": context.id,
+        "target_store_root": context.store_root.display().to_string(),
+        "copied_files": copied_files,
+        "copied_records": copied_records,
+        "verified_records": verified_records,
+        "excluded_prefixes": ["company_os_", "provider-sessions", "runtimes"],
+        "source_retained": true,
+        "previous_active_space_id": previous_active_space_id,
+        "rollback": previous_active_space_id.as_ref().map(|previous| format!("harness space switch {previous}")),
+        "created_at": now_string(),
+    });
+    std::fs::write(
+        context.store_root.join("execution_space_migration.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    print_json(&serde_json::json!({
+        "space": execution_space_json(&context, &context.id),
+        "migration": manifest,
+    }))
+}
+
+/// `harness project <subcommand>` — inspect and manage Project Bindings.
 ///
-/// Subcommands share the same `project` resolver/registry code used by `serve` and
-/// `resolve_store`, so a `switch` here is the SAME convergence point a live `serve`
-/// reads (#89 invariant). All subcommands operate on `~/.harness` (honoring the
-/// `HARNESS_HOME` test hook); they never touch a raw `--store`/`HARNESS_ROOT`
-/// store, which has no project identity to manage.
+/// A switch changes the default provider cwd/config/Skill boundary only.
+/// Native coordination routing remains owned by `harness space`.
 fn project_command(args: &[String]) -> CliResult<()> {
     require_subcommand(args, "project add|list|current|switch|remove|show|migrate")?;
     let harness_home = project::harness_home().map_err(project_err)?;
@@ -919,6 +1317,45 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> CliResult<()> {
     Ok(())
 }
 
+/// Return a stable relative-file index without following symlinks.
+fn directory_file_index(root: &Path) -> CliResult<Vec<PathBuf>> {
+    fn visit(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> CliResult<()> {
+        let current = root.join(relative);
+        for entry in std::fs::read_dir(current)?.flatten() {
+            let file_type = entry.file_type()?;
+            let next = relative.join(entry.file_name());
+            if file_type.is_dir() {
+                visit(root, &next, out)?;
+            } else if file_type.is_file() {
+                out.push(next);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(root, Path::new(""), &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn directory_trees_equal(left: &Path, right: &Path) -> CliResult<bool> {
+    if !right.is_dir() {
+        return Ok(false);
+    }
+    let left_files = directory_file_index(left)?;
+    let right_files = directory_file_index(right)?;
+    if left_files != right_files {
+        return Ok(false);
+    }
+    for relative in left_files {
+        if std::fs::read(left.join(&relative))? != std::fs::read(right.join(&relative))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn run() -> CliResult<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     // Optional debug flag: print which store was chosen and why (P7 "no silent
@@ -965,7 +1402,8 @@ fn run() -> CliResult<()> {
             init_routed(&store, &resolved)?;
         }
         "project" => project_command(&args[1..])?,
-        "agent" => agent_command(&store, &args[1..])?,
+        "space" => execution_space_command(&args[1..])?,
+        "agent" => agent_command(&store, resolved.context.as_ref(), &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
         "mission" => mission_command(&store, &args[1..])?,
         "wave" => wave_command(&store, &args[1..])?,
@@ -973,8 +1411,8 @@ fn run() -> CliResult<()> {
         "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
-        "dashboard" => dashboard_command(&store, &args[1..])?,
-        "workflow" => workflow_command(&store, &args[1..])?,
+        "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
+        "workflow" => workflow_command(&store, resolved.context.as_ref(), &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         "mcp" => mcp::run(&store, &resolved)?,
@@ -7625,7 +8063,11 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn agent_command(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    args: &[String],
+) -> CliResult<()> {
     require_subcommand(
         args,
         "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-delivery|gateway|close",
@@ -7759,7 +8201,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             )?;
             print_json(&message)?;
         }
-        "deliver" => deliver_agent_messages(store, args)?,
+        "deliver" => deliver_agent_messages(store, project_context, args)?,
         "retry-delivery" => {
             let result = retry_delivery_value(
                 store,
@@ -7786,7 +8228,7 @@ fn agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             )?;
             print_json(&result)?;
         }
-        "gateway" => run_provider_gateway(store, args)?,
+        "gateway" => run_provider_gateway(store, project_context, args)?,
         "close" => {
             let id = required(args, "--id")?;
             print_json(&close_agent_member_value(store, &id)?)?;
@@ -9384,6 +9826,7 @@ fn create_team_run(
         previous_run_id,
         mission_id,
         wave_id,
+        project_binding_id: project_context.map(|context| context.id.clone()),
         host_surface: host_surface.to_string(),
         host_thread_id,
         objective: objective.to_string(),
@@ -11545,6 +11988,7 @@ struct MemberOutcome {
 }
 
 struct MemberRuntimeContext {
+    execution_space_id: Option<String>,
     project_id: Option<String>,
     project_selector: Option<String>,
     cwd: PathBuf,
@@ -11649,6 +12093,7 @@ pub(crate) fn team_run_start(
     let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
     drive_prepared_team_run(
         prepared,
+        resolved.execution_space_context.clone(),
         resolved.context.clone(),
         max_concurrency,
         idle_timeout,
@@ -11658,6 +12103,7 @@ pub(crate) fn team_run_start(
 
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
+    execution_space: Option<ExecutionSpace>,
     project_context: Option<ProjectContext>,
     max_concurrency: usize,
     idle_timeout: Duration,
@@ -11671,6 +12117,28 @@ pub(crate) fn drive_prepared_team_run(
         ledger,
         supervisor_registration: _supervisor_registration,
     } = prepared;
+    let project_context = match running.project_binding_id.as_deref() {
+        Some(binding_id) => {
+            let pinned = project::harness_home()
+                .ok()
+                .and_then(|home| project::context_for_id(&home, binding_id).ok().flatten());
+            match pinned {
+                Some(context) => Some(context),
+                None => match project_context {
+                    Some(context) if context.id == binding_id => Some(context),
+                    _ => {
+                        return Err(CliError::Usage(format!(
+                            "team run {} is pinned to unavailable Project Binding {}; \
+                             restore or register that binding before starting members",
+                            running.id, binding_id
+                        )))
+                    }
+                },
+            }
+        }
+        None => project_context,
+    };
+    let execution_space_id = execution_space.as_ref().map(|space| space.id.clone());
     let project_id = project_context.as_ref().map(|context| context.id.clone());
     let project_selector = project_context
         .as_ref()
@@ -11686,7 +12154,30 @@ pub(crate) fn drive_prepared_team_run(
             let member_ledger = Arc::clone(&ledger);
             let member_objective = objective.clone();
             let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
-            member.workspace_snapshot = Some(snapshot_member_workspace(&cwd));
+            member.workspace_snapshot = Some(snapshot_member_workspace(
+                &cwd,
+                project_context.as_ref().map(|context| context.id.as_str()),
+                project_context
+                    .as_ref()
+                    .map(|context| context.project_root.as_path()),
+                if member
+                    .worktree_ref
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                {
+                    "member_worktree"
+                } else if running
+                    .execution_root
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                {
+                    "team_execution_root"
+                } else if project_context.is_some() {
+                    "project_binding_root"
+                } else {
+                    "explicit_unbound"
+                },
+            ));
             member_ledger.save_member_run(&member)?;
             member_ledger.fold_event(
                 TeamRunEventSourceKind::Host,
@@ -11700,6 +12191,7 @@ pub(crate) fn drive_prepared_team_run(
             let member_live_sink = live_sink.clone();
             let member_project_id = project_id.clone();
             let member_project_selector = project_selector.clone();
+            let member_execution_space_id = execution_space_id.clone();
             let member_turn_leases = Arc::clone(&turn_leases);
             let handle = std::thread::spawn(move || {
                 run_member_orchestration(
@@ -11707,6 +12199,7 @@ pub(crate) fn drive_prepared_team_run(
                     &member_objective,
                     handle_member,
                     MemberRuntimeContext {
+                        execution_space_id: member_execution_space_id,
                         project_id: member_project_id,
                         project_selector: member_project_selector,
                         cwd,
@@ -11923,6 +12416,7 @@ fn run_codex_member(
         .unwrap_or_else(|| objective.to_string());
     let envelope = member_collaboration_envelope(
         ledger,
+        context.execution_space_id.as_deref(),
         project_id,
         project_selector,
         &member_row,
@@ -12519,6 +13013,7 @@ fn run_claude_team_member(
         .unwrap_or_else(|| objective.to_string());
     let envelope = member_collaboration_envelope(
         ledger,
+        None,
         project_id,
         Some(cwd.to_string_lossy().as_ref()),
         &member_row,
@@ -12759,6 +13254,7 @@ fn run_claude_agent_sdk_team_member(
         .unwrap_or_else(|| objective.to_string());
     let envelope = member_collaboration_envelope(
         ledger,
+        context.execution_space_id.as_deref(),
         project_id,
         project_selector,
         &member_row,
@@ -13574,6 +14070,7 @@ fn run_kimi_member(
         .unwrap_or_else(|| objective.to_string());
     let envelope = member_collaboration_envelope(
         ledger,
+        context.execution_space_id.as_deref(),
         project_id,
         project_selector,
         &member_row,
@@ -14073,8 +14570,21 @@ fn git_value(cwd: &Path, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn snapshot_member_workspace(cwd: &Path) -> MemberWorkspaceSnapshot {
+fn snapshot_member_workspace(
+    cwd: &Path,
+    project_binding_id: Option<&str>,
+    project_root: Option<&Path>,
+    resolution_source: &str,
+) -> MemberWorkspaceSnapshot {
     let cwd = project::canonicalize_best_effort(cwd);
+    let git_root = git_value(&cwd, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .map(|path| project::canonicalize_best_effort(&path));
+    let project_root = project_root.map(project::canonicalize_best_effort);
+    let discovery_boundary = git_root
+        .filter(|root| cwd.starts_with(root))
+        .or_else(|| project_root.filter(|root| cwd.starts_with(root)))
+        .unwrap_or_else(|| cwd.clone());
     let mut instruction_roots = BTreeSet::new();
     let mut skill_roots = BTreeSet::new();
     for ancestor in cwd.ancestors() {
@@ -14094,6 +14604,9 @@ fn snapshot_member_workspace(cwd: &Path) -> MemberWorkspaceSnapshot {
                 );
             }
         }
+        if ancestor == discovery_boundary {
+            break;
+        }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         for relative in [".agents/skills", ".codex/skills"] {
@@ -14109,6 +14622,8 @@ fn snapshot_member_workspace(cwd: &Path) -> MemberWorkspaceSnapshot {
     }
     MemberWorkspaceSnapshot {
         cwd: cwd.display().to_string(),
+        project_binding_id: project_binding_id.map(ToString::to_string),
+        resolution_source: Some(resolution_source.to_string()),
         git_head: git_value(&cwd, &["rev-parse", "HEAD"]),
         git_branch: git_value(&cwd, &["symbolic-ref", "--short", "HEAD"]),
         instruction_roots: instruction_roots.into_iter().collect(),
@@ -14769,6 +15284,7 @@ fn extract_report_section(text: &str, name: &str) -> Option<String> {
 /// The delivery-contract prompt every member's first round runs on.
 struct MemberCollaborationEnvelope {
     harness_bin: Option<String>,
+    execution_space_id: Option<String>,
     project_id: Option<String>,
     project_selector: Option<String>,
     mission_id: Option<String>,
@@ -14791,6 +15307,7 @@ impl MemberCollaborationEnvelope {
         ];
         for (key, value) in [
             ("HARNESS_BIN", self.harness_bin.as_deref()),
+            ("HARNESS_SPACE", self.execution_space_id.as_deref()),
             (
                 "HARNESS_PROJECT",
                 self.project_selector
@@ -14819,6 +15336,7 @@ impl MemberCollaborationEnvelope {
 
 fn member_collaboration_envelope(
     ledger: &TeamRunLedger,
+    execution_space_id: Option<&str>,
     project_id: Option<&str>,
     project_selector: Option<&str>,
     member: &MemberRun,
@@ -14833,6 +15351,7 @@ fn member_collaboration_envelope(
         harness_bin: std::env::current_exe()
             .ok()
             .map(|path| path.to_string_lossy().into_owned()),
+        execution_space_id: execution_space_id.map(str::to_string),
         project_id: project_id.map(str::to_string),
         project_selector: project_selector.map(str::to_string),
         mission_id: run.mission_id,
@@ -14996,10 +15515,37 @@ fn parse_unix_ms(value: &str) -> Option<u128> {
     value.strip_prefix("unix-ms:")?.parse().ok()
 }
 
-fn dashboard_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn dashboard_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
     require_subcommand(args, "dashboard snapshot")?;
     match args[0].as_str() {
-        "snapshot" => print_json(&dashboard_snapshot(store)?)?,
+        "snapshot" => {
+            let company_store = if let Ok(home) = company_store::harness_home() {
+                match company_store::active_company_id(&home).map_err(company_store_err)? {
+                    Some(id) => {
+                        let context = company_store::context_for_id(&home, &id)
+                            .map_err(company_store_err)?
+                            .ok_or_else(|| {
+                                CliError::Usage(format!("active company is unknown: {id}"))
+                            })?;
+                        Some(HarnessStore::new(context.store_root))
+                    }
+                    None => resolved
+                        .context
+                        .as_ref()
+                        .map(|context| HarnessStore::new(context.store_root.clone())),
+                }
+            } else {
+                None
+            };
+            print_json(&dashboard_snapshot_with_company(
+                store,
+                company_store.as_ref(),
+            )?)?
+        }
         other => {
             return Err(CliError::Usage(format!(
                 "unknown dashboard command: {other}"
@@ -15208,13 +15754,11 @@ fn handle_sse_stream(
     Ok(())
 }
 
-/// The project routing context for a live `serve` (goal-multi-project P6).
+/// Independent Execution Space and Project Binding routing for one live serve.
 ///
-/// `serve` is single-store *by default* (back-compat: a raw `--store`/`HARNESS_ROOT`
-/// override has no project identity, so `harness_home` is `None` and only the
-/// `default_*` project exists). When a `ProjectContext` backs the store, the server
-/// can enumerate the registry and route `?project=<id>` to a per-project store while
-/// the active/`_global` project remains the default for old clients.
+/// Native mode routes `?space` to coordination storage and `?project` to
+/// provider execution context. Raw-store and project-derived compatibility
+/// modes retain the historical single-store behavior.
 #[derive(Clone)]
 struct ServeProjects {
     /// `~/.harness` — `None` only when serve was started with a raw
@@ -15225,6 +15769,8 @@ struct ServeProjects {
     default_id: String,
     /// The store resolved at startup — the default project's store.
     default_store: HarnessStore,
+    /// Native execution-space identity when serve was started through one.
+    default_space: Option<ExecutionSpace>,
     /// Preserve the exact startup context even when it came from an
     /// unregistered Git worktree path. Reconstructing it from the synthetic id
     /// would otherwise collapse project_root into store_root, and provider
@@ -15237,49 +15783,84 @@ impl ServeProjects {
     fn from_resolved(store: &HarnessStore, resolved: &ResolvedStore) -> Self {
         // A project identity only exists when resolution went through the registry /
         // global path (not a raw `--store`/`HARNESS_ROOT` override).
-        let (harness_home, default_id) = match &resolved.context {
-            Some(ctx) => (project::harness_home().ok(), ctx.id.clone()),
-            None => (None, "_store".to_string()),
-        };
+        let registry_backed =
+            resolved.context.is_some() || resolved.execution_space_context.is_some();
+        let harness_home = registry_backed
+            .then(project::harness_home)
+            .and_then(Result::ok);
+        let default_id = resolved
+            .context
+            .as_ref()
+            .map(|context| context.id.clone())
+            .unwrap_or_else(|| "_store".to_string());
         Self {
             harness_home,
-            default_id,
+            default_id: resolved
+                .execution_space_context
+                .as_ref()
+                .map(|space| space.id.clone())
+                .unwrap_or(default_id),
             default_store: store.clone(),
+            default_space: resolved.execution_space_context.clone(),
             default_context: resolved.context.clone(),
         }
     }
 
-    /// Resolve a `?project=<id>` query value to `(id, store)`. An absent or unknown
-    /// id (or raw-override mode) falls back to the default project so old clients —
-    /// and clients asking for a project this serve does not know — keep working.
-    fn store_for(&self, project: Option<&str>) -> (String, HarnessStore) {
-        if let (Some(home), Some(id)) = (&self.harness_home, project) {
+    /// Resolve an Execution Space selector to its coordination store. In
+    /// compatibility mode (no native space selected at startup), project-derived
+    /// stores remain readable through the old selector.
+    fn store_for(&self, selector: Option<&str>) -> (String, HarnessStore) {
+        if let (Some(home), Some(id)) = (&self.harness_home, selector) {
             if !id.is_empty() && id != self.default_id {
-                if let Ok(Some(ctx)) = project::context_for_id(home, id) {
-                    return (ctx.id, HarnessStore::new(ctx.store_root));
+                if let Ok(Some(space)) = execution_space::context_for_id(home, id) {
+                    return (space.id, HarnessStore::new(space.store_root));
+                }
+                if self.default_space.is_none() {
+                    if let Ok(Some(ctx)) = project::context_for_id(home, id) {
+                        return (ctx.id, HarnessStore::new(ctx.store_root));
+                    }
                 }
             }
         }
         (self.default_id.clone(), self.default_store.clone())
     }
 
-    /// Resolve the project execution context paired with a routed store. Raw
-    /// store mode has no registry identity, so it gets an honest synthetic
-    /// context rooted at the served store rather than falling back to the
-    /// harness server process cwd.
-    fn context_for(&self, project_id: &str, store: &HarnessStore) -> ProjectContext {
-        if project_id == self.default_id {
+    /// Resolve the independent Project Binding used for provider cwd.
+    fn context_for(
+        &self,
+        project_binding_id: Option<&str>,
+        execution_space_id: Option<&str>,
+        store: &HarnessStore,
+    ) -> ProjectContext {
+        if let (Some(id), Some(default)) = (project_binding_id, &self.default_context) {
+            if default.id == id {
+                return default.clone();
+            }
+        }
+        if let (Some(home), Some(id)) = (&self.harness_home, project_binding_id) {
+            if let Ok(Some(context)) = project::context_for_id(home, id) {
+                return context;
+            }
+        }
+        if project_binding_id.is_none() {
+            if let Some(binding_id) = execution_space_id
+                .and_then(|id| self.space_context_for(id))
+                .and_then(|space| space.default_project_binding_id)
+            {
+                if let Some(context) = self
+                    .harness_home
+                    .as_ref()
+                    .and_then(|home| project::context_for_id(home, &binding_id).ok().flatten())
+                {
+                    return context;
+                }
+            }
             if let Some(context) = &self.default_context {
                 return context.clone();
             }
         }
-        if let Some(home) = &self.harness_home {
-            if let Ok(Some(context)) = project::context_for_id(home, project_id) {
-                return context;
-            }
-        }
         ProjectContext {
-            id: project_id.to_string(),
+            id: project_binding_id.unwrap_or("_unbound").to_string(),
             project_root: store.root().to_path_buf(),
             store_root: store.root().to_path_buf(),
             kind: ProjectKind::Repo,
@@ -15287,21 +15868,30 @@ impl ServeProjects {
         }
     }
 
-    /// The currently-active project id, read live so a `POST /v1/projects/switch`
-    /// (or a CLI `project switch`) is reflected by `GET /v1/projects/current`
-    /// without restarting serve. Falls back to the startup default.
-    fn current_id(&self) -> String {
+    fn current_space_id(&self) -> String {
         if let Some(home) = &self.harness_home {
-            if let Ok(Some(id)) = project::active_project_id(home) {
+            if let Ok(Some(id)) = execution_space::active_space_id(home) {
                 return id;
             }
         }
         self.default_id.clone()
     }
 
+    fn current_project_binding_id(&self) -> String {
+        if let Some(home) = &self.harness_home {
+            if let Ok(Some(id)) = project::active_project_id(home) {
+                return id;
+            }
+        }
+        self.default_context
+            .as_ref()
+            .map(|context| context.id.clone())
+            .unwrap_or_else(|| "_unbound".to_string())
+    }
+
     /// Enumerate known projects for `GET /v1/projects`. In raw-override mode there is
     /// no registry, so only the served store is reported (as the synthetic default).
-    fn list(&self) -> Vec<ProjectContext> {
+    fn list_project_bindings(&self) -> Vec<ProjectContext> {
         match &self.harness_home {
             Some(home) => {
                 let mut contexts = project::list_projects(home).unwrap_or_default();
@@ -15322,17 +15912,50 @@ impl ServeProjects {
         }
     }
 
-    /// Map of project-id → store root for the SSE watcher to multiplex over. Always
-    /// includes the default project. In registry mode it covers every known project
-    /// so a client subscribing to any of them sees its frames.
+    fn list_spaces(&self) -> Vec<ExecutionSpace> {
+        match &self.harness_home {
+            Some(home) => {
+                let mut spaces = execution_space::list_spaces(home).unwrap_or_default();
+                if let Some(default) = &self.default_space {
+                    if !spaces.iter().any(|space| space.id == default.id) {
+                        spaces.push(default.clone());
+                    }
+                }
+                spaces
+            }
+            None => self.default_space.clone().into_iter().collect(),
+        }
+    }
+
+    fn space_context_for(&self, id: &str) -> Option<ExecutionSpace> {
+        if self
+            .default_space
+            .as_ref()
+            .is_some_and(|space| space.id == id)
+        {
+            return self.default_space.clone();
+        }
+        self.harness_home
+            .as_ref()
+            .and_then(|home| execution_space::context_for_id(home, id).ok().flatten())
+    }
+
+    /// Map of Execution-Space id → coordination store for SSE multiplexing.
+    /// Compatibility-mode servers retain the historical per-project map.
     fn watch_map(&self) -> std::collections::HashMap<String, PathBuf> {
         let mut map = std::collections::HashMap::new();
         map.insert(
             self.default_id.clone(),
             self.default_store.root().to_path_buf(),
         );
-        for ctx in self.list() {
-            map.entry(ctx.id).or_insert(ctx.store_root);
+        if self.default_space.is_some() {
+            for space in self.list_spaces() {
+                map.entry(space.id).or_insert(space.store_root);
+            }
+        } else {
+            for ctx in self.list_project_bindings() {
+                map.entry(ctx.id).or_insert(ctx.store_root);
+            }
         }
         map
     }
@@ -15352,6 +15975,7 @@ impl ServeProjects {
     fn company_store_for(
         &self,
         company: Option<&str>,
+        project_binding_id: Option<&str>,
     ) -> CliResult<Option<(String, HarnessStore)>> {
         let Some(home) = &self.harness_home else {
             if company.is_some() {
@@ -15367,13 +15991,34 @@ impl ServeProjects {
             Some(_) => None,
             None => company_store::active_company_id(home).map_err(company_store_err)?,
         };
-        let Some(id) = id else {
-            return Ok(None);
+        if let Some(id) = id {
+            let ctx = company_store::context_for_id(home, &id)
+                .map_err(company_store_err)?
+                .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
+            return Ok(Some((ctx.id.clone(), HarnessStore::new(ctx.store_root))));
+        }
+
+        // No Company Store is selected. Keep legacy Company OS rows readable
+        // from the selected Project Binding, but never fall through into the
+        // Execution Space coordination store.
+        let compatibility = if let Some(id) = project_binding_id.filter(|id| !id.is_empty()) {
+            Some(
+                project::context_for_id(home, id)
+                    .map_err(project_err)?
+                    .ok_or_else(|| CliError::Usage(format!("unknown project binding: {id}")))?,
+            )
+        } else {
+            project::active_project_id(home)
+                .map_err(project_err)?
+                .and_then(|id| project::context_for_id(home, &id).ok().flatten())
+                .or_else(|| self.default_context.clone())
         };
-        let ctx = company_store::context_for_id(home, &id)
-            .map_err(company_store_err)?
-            .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
-        Ok(Some((ctx.id.clone(), HarnessStore::new(ctx.store_root))))
+        Ok(compatibility.map(|context| {
+            (
+                format!("project-compat:{}", context.id),
+                HarnessStore::new(context.store_root),
+            )
+        }))
     }
 }
 
@@ -15392,29 +16037,28 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
         .unwrap_or_else(|_| store.root().to_path_buf())
         .display()
         .to_string();
-    println!("store: {store_display}  (override with --store <path> or HARNESS_ROOT)");
+    println!(
+        "coordination store: {store_display}  (select with --space/HARNESS_SPACE; raw --store/HARNESS_ROOT is deprecated)"
+    );
 
     let projects = ServeProjects::from_resolved(store, resolved);
     let watch_map = projects.watch_map();
     println!(
-        "default project: {} ({} project(s) watched)",
+        "default execution space: {} ({} coordination store(s) watched)",
         projects.default_id,
         watch_map.len()
     );
 
     let sse_manager = sse::SseManager::new();
 
-    // Start ONE project-multiplexed SSE watcher: per-project offsets + per-project
-    // subscriber channels, so a client subscribed to project A never sees B. The
-    // watcher re-scans the registry every poll (via `watch_map()`), so a project
-    // registered after serve starts gets a live `/v1/events` channel without a
-    // restart (#147 follow-up); each project's normalizer is built lazily by the
-    // factory below, scoped to that project's store.
+    // Start one Execution-Space-multiplexed SSE watcher. The watcher re-scans the
+    // registry so spaces registered after serve starts become live without a
+    // restart. Each stream stays scoped to its coordination store.
     let watcher_projects = projects.clone();
     sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
         .map_err(CliError::Io)?;
 
-    // Start the abandoned-run reaper PER WATCHED PROJECT: periodically flip
+    // Start the abandoned-run reaper per watched coordination store: periodically flip
     // `Running` runs whose driver process has died (or legacy runs past the stale
     // window) to `Failed`, so the dashboard never shows a phantom-running workflow
     // after a driver is killed/crashes. The terminal rows it appends are tailed and
@@ -15425,7 +16069,7 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
         std::thread::spawn(move || loop {
             std::thread::sleep(REAP_POLL_INTERVAL);
             let _ = reap_stale_workflow_runs(&reaper_store);
-            let _ = workflow_gc_worktrees(&reaper_store);
+            let _ = workflow_gc_worktrees(&reaper_store, None);
             let _ = reap_orphaned_workers(&reaper_store, false);
         });
     }
@@ -15543,11 +16187,17 @@ fn handle_http_connection(
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default().to_string();
     let path_only = path.split('?').next().unwrap_or_default().to_string();
-    // `?project=<id>` selects which project store this request reads/streams.
-    // Reads keep the historical unknown→default fallback. Authenticated Company
-    // OS writes reject an explicit unknown selector below to prevent misrouting.
+    // `?space=<id>` selects the coordination store. `?project=<id>` independently
+    // selects the provider workspace binding. In compatibility mode only, the
+    // old `?project` store selector remains readable.
     let project_param = query_param(&path, "project");
-    let (project_id, store_owned) = projects.store_for(project_param.as_deref());
+    let space_param = query_param(&path, "space");
+    let store_selector = if projects.default_space.is_some() {
+        space_param.as_deref()
+    } else {
+        space_param.as_deref().or(project_param.as_deref())
+    };
+    let (project_id, store_owned) = projects.store_for(store_selector);
     let company_param = query_param(&path, "company");
     let company_os_path = path_only.starts_with("/v1/company-os/");
     let dashboard_snapshot_path = matches!(
@@ -15555,13 +16205,19 @@ fn handle_http_connection(
         "/v1/snapshot" | "/v1/dashboard/snapshot"
     );
     let company_store_owned = if company_os_path || dashboard_snapshot_path {
-        match projects.company_store_for(company_param.as_deref()) {
+        match projects.company_store_for(company_param.as_deref(), project_param.as_deref()) {
             Ok(store) => store,
             Err(error) => {
+                let detail = error.to_string();
+                let code = if detail.starts_with("unknown project binding:") {
+                    "project_not_found"
+                } else {
+                    detail.as_str()
+                };
                 write_http_json(
                     &mut stream,
                     "404 Not Found",
-                    &serde_json::json!({"ok": false, "error": error.to_string()}),
+                    &serde_json::json!({"ok": false, "error": code, "detail": detail}),
                 )?;
                 return Ok(());
             }
@@ -15623,6 +16279,7 @@ fn handle_http_connection(
     if method == "POST"
         && path_only.starts_with("/v1/company-os/")
         && company_store_owned.is_none()
+        && projects.default_space.is_none()
         && project_param
             .as_deref()
             .is_some_and(|requested| requested != project_id)
@@ -15640,7 +16297,7 @@ fn handle_http_connection(
     }
 
     if method == "GET" {
-        if let Some(response) = company_os_api::handle_get(store, &path_only) {
+        if let Some(response) = company_os_api::handle_get(store, Some(&store_owned), &path_only) {
             write_http_json(&mut stream, response.status, &response.body)?;
             return Ok(());
         }
@@ -15705,9 +16362,9 @@ fn handle_http_connection(
             // + reserved `_global`) for the dashboard picker. `current` marks the
             // active project (multi-project P6 / project-api task).
             "/v1/projects" => {
-                let current = projects.current_id();
+                let current = projects.current_project_binding_id();
                 let list: Vec<serde_json::Value> = projects
-                    .list()
+                    .list_project_bindings()
                     .into_iter()
                     .map(|ctx| project_context_json(&ctx, &current))
                     .collect();
@@ -15720,17 +16377,46 @@ fn handle_http_connection(
             // GET /v1/projects/current — the active project id + its context. Read
             // live so a `switch` (API or CLI) is reflected without a serve restart.
             "/v1/projects/current" => {
-                let current = projects.current_id();
-                let (id, current_store) = projects.store_for(Some(&current));
-                let ctx = projects.list().into_iter().find(|c| c.id == id);
+                let current = projects.current_project_binding_id();
+                let ctx = projects
+                    .list_project_bindings()
+                    .into_iter()
+                    .find(|context| context.id == current);
                 let context_json = ctx.map(|c| project_context_json(&c, &current));
                 write_http_json(
                     &mut stream,
                     "200 OK",
                     &serde_json::json!({
-                        "current": id,
-                        "store_root": current_store.root().display().to_string(),
+                        "current": current,
                         "project": context_json,
+                    }),
+                )?
+            }
+            "/v1/spaces" => {
+                let current = projects.current_space_id();
+                let list = projects
+                    .list_spaces()
+                    .iter()
+                    .map(|space| execution_space_json(space, &current))
+                    .collect::<Vec<_>>();
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({"spaces": list, "current": current}),
+                )?
+            }
+            "/v1/spaces/current" => {
+                let current = projects.current_space_id();
+                let space = projects
+                    .list_spaces()
+                    .into_iter()
+                    .find(|space| space.id == current);
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "current": current,
+                        "space": space.map(|space| execution_space_json(&space, &current)),
                     }),
                 )?
             }
@@ -15952,8 +16638,37 @@ fn handle_http_connection(
     // store-action dispatch. The response's snapshot is the NEW active project's.
     if path_only == "/v1/projects/switch" {
         match handle_project_switch(projects, &body_json) {
+            Ok((id, _compatibility_store)) => {
+                let active_company_store = projects.company_store_for(None, Some(&id))?;
+                write_http_json(
+                    &mut stream,
+                    "200 OK",
+                    &serde_json::json!({
+                        "ok": true,
+                        "result": {"current": id},
+                        "snapshot": dashboard_snapshot_with_company(
+                            &store_owned,
+                            active_company_store
+                                .as_ref()
+                                .map(|(_, company_store)| company_store),
+                        )?,
+                    }),
+                )?
+            }
+            Err(error) => write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": error.to_string()}),
+            )?,
+        }
+        return Ok(());
+    }
+
+    if path_only == "/v1/spaces/switch" {
+        match handle_space_switch(projects, &body_json) {
             Ok((id, switch_store)) => {
-                let active_company_store = projects.company_store_for(None)?;
+                let active_company_store =
+                    projects.company_store_for(None, project_param.as_deref())?;
                 write_http_json(
                     &mut stream,
                     "200 OK",
@@ -16120,7 +16835,9 @@ fn handle_http_connection(
         })();
         match result {
             Ok((prepared, max_concurrency, idle_timeout)) => {
-                let context = projects.context_for(&project_id, store);
+                let context =
+                    projects.context_for(project_param.as_deref(), Some(&project_id), store);
+                let execution_space = projects.space_context_for(&project_id);
                 let activity_manager = sse_manager.clone();
                 let activity_project = project_id.clone();
                 let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
@@ -16131,6 +16848,7 @@ fn handle_http_connection(
                 std::thread::spawn(move || {
                     if let Err(error) = drive_prepared_team_run(
                         prepared,
+                        execution_space,
                         Some(context),
                         max_concurrency,
                         idle_timeout,
@@ -16163,7 +16881,7 @@ fn handle_http_connection(
     let project_context = projects
         .harness_home
         .as_ref()
-        .map(|_| projects.context_for(&project_id, store));
+        .map(|_| projects.context_for(project_param.as_deref(), Some(&project_id), store));
     match handle_http_action(store, project_context.as_ref(), &path_only, &body_json) {
         Ok(response) => write_http_json(
             &mut stream,
@@ -16209,6 +16927,25 @@ fn handle_project_switch(
     Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
 }
 
+fn handle_space_switch(
+    projects: &ServeProjects,
+    body: &serde_json::Value,
+) -> CliResult<(String, HarnessStore)> {
+    let id = json_string(body, "space")
+        .or_else(|| json_string(body, "id"))
+        .or_else(|| json_string(body, "space_id"))
+        .ok_or_else(|| CliError::Usage("missing `space` id to switch to".to_string()))?;
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
+        CliError::Usage(
+            "serve is running with a raw --store/HARNESS_ROOT override; Execution Space switch is unavailable"
+                .to_string(),
+        )
+    })?;
+    let space = execution_space::switch_current_space(home, &id, &now_string())
+        .map_err(execution_space_err)?;
+    Ok((space.id.clone(), HarnessStore::new(space.store_root)))
+}
+
 /// Apply a `POST /v1/companies/switch {company: <id>}` request. This switches
 /// only the active Company Store marker/registry pointer; project selection and
 /// execution routing are intentionally unchanged.
@@ -16231,15 +16968,28 @@ fn handle_company_switch(
     Ok((ctx.id.clone(), HarnessStore::new(ctx.store_root)))
 }
 
-/// Render a [`ProjectContext`] as the JSON the dashboard picker consumes, marking
-/// whether it is the currently-active project.
+/// Render the compatibility context as a native Project Binding. The old
+/// project-derived store remains visible only as an explicitly labelled
+/// compatibility locator; it is not the binding's owned state.
 fn project_context_json(ctx: &ProjectContext, current: &str) -> serde_json::Value {
+    let binding = project::harness_home()
+        .ok()
+        .and_then(|home| project::binding_for_root(&ctx.project_root, &home).ok());
     serde_json::json!({
         "id": ctx.id,
         "project_root": ctx.project_root.display().to_string(),
-        "store_root": ctx.store_root.display().to_string(),
+        "compatibility_store_root": ctx.store_root.display().to_string(),
         "kind": ctx.kind,
         "is_git_repo": ctx.is_git_repo,
+        "repository_url": binding.as_ref().and_then(|value| value.repository_url.clone()),
+        "default_branch": binding.as_ref().and_then(|value| value.default_branch.clone()),
+        "git_common_dir": binding.as_ref().and_then(|value| value.git_common_dir.as_ref()).map(|path| path.display().to_string()),
+        "instruction_boundary": binding.as_ref().map(|value| value.instruction_boundary.display().to_string()).unwrap_or_else(|| ctx.project_root.display().to_string()),
+        "skill_discovery_boundary": binding.as_ref().map(|value| value.skill_discovery_boundary.display().to_string()).unwrap_or_else(|| ctx.project_root.display().to_string()),
+        "worktree_policy": binding.as_ref().map(|value| value.worktree_policy.clone()),
+        "permission_policy": binding.as_ref().map(|value| value.permission_policy.clone()),
+        "identity_boundary": "project_binding",
+        "owns_execution_store": false,
         "is_current": ctx.id == current,
     })
 }
@@ -16439,6 +17189,7 @@ fn handle_http_action(
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
             store,
+            project_context,
             GatewayOptions {
                 dry_run: json_bool(body, "dry_run").unwrap_or(false),
                 start_runtime: json_bool(body, "start_runtime").unwrap_or(false),
@@ -16453,6 +17204,7 @@ fn handle_http_action(
     {
         return deliver_agent_messages_value(
             store,
+            project_context,
             DeliveryOptions {
                 agent_id: agent_id.into(),
                 message_filter: json_string(body, "message_id"),
@@ -17528,9 +18280,14 @@ fn pid_is_alive(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn deliver_agent_messages(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn deliver_agent_messages(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    args: &[String],
+) -> CliResult<()> {
     let result = deliver_agent_messages_value(
         store,
+        project_context,
         DeliveryOptions {
             agent_id: required(args, "--agent").or_else(|_| required(args, "--id"))?,
             message_filter: value(args, "--message"),
@@ -18035,11 +18792,12 @@ fn sanitize_worktree_slug(label: &str) -> String {
     }
 }
 
-/// Derive the [`ProjectContext`] a workflow run executes against, from the store
-/// it writes to (goal-multi-project P3/P4). The centralized store self-describes
-/// its project via `<store_root>/metadata.json` (`canonical_path` = the project
-/// root), so we read that to recover the project root WITHOUT threading the
-/// resolved context through every command signature.
+/// Derive the [`ProjectContext`] a workflow run executes against.
+///
+/// A native Execution Space may name a default Project Binding in its metadata.
+/// A project-derived compatibility store may still carry the old project
+/// metadata. Raw overrides with neither form preserve the historical cwd
+/// fallback.
 ///
 /// BACK-COMPAT: a store with no `metadata.json` — a raw `--store <path>` /
 /// `HARNESS_ROOT` / legacy cwd-walk-up store — has no pinned project identity, so
@@ -18049,6 +18807,15 @@ fn sanitize_worktree_slug(label: &str) -> String {
 /// unchanged: a project only overrides the cwd when it was explicitly selected.
 fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
     let store_root = store.root().to_path_buf();
+    if let Ok(Some(space)) = execution_space::read_metadata(&store_root) {
+        if let Some(binding_id) = space.default_project_binding_id.as_deref() {
+            if let Ok(home) = project::harness_home() {
+                if let Ok(Some(context)) = project::context_for_id(&home, binding_id) {
+                    return context;
+                }
+            }
+        }
+    }
     if let Ok(Some(meta)) = project::read_metadata(&store_root) {
         return ProjectContext {
             id: meta.project_id,
@@ -18068,6 +18835,41 @@ fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
         kind: ProjectKind::Repo,
         is_git_repo,
     }
+}
+
+fn workflow_project_context_for_run(
+    store: &HarnessStore,
+    run_id: &str,
+    explicit: Option<&ProjectContext>,
+) -> CliResult<ProjectContext> {
+    let binding_id = latest_workflow_runs_in_append_order(store)?
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .and_then(|run| run.project_binding_id);
+    if let Some(binding_id) = binding_id {
+        if let Some(context) = explicit {
+            if context.id != binding_id {
+                return Err(CliError::Usage(format!(
+                    "workflow run {run_id} is pinned to Project Binding {binding_id}, not {}",
+                    context.id
+                )));
+            }
+        }
+        let home = project::harness_home().map_err(project_err)?;
+        if let Some(context) = project::context_for_id(&home, &binding_id).map_err(project_err)? {
+            return Ok(context);
+        }
+        if let Some(context) = explicit {
+            return Ok(context.clone());
+        }
+        return Err(CliError::Usage(format!(
+            "workflow run {run_id} is pinned to unavailable Project Binding {binding_id}"
+        )));
+    }
+    if let Some(context) = explicit {
+        return Ok(context.clone());
+    }
+    Ok(workflow_project_context(store))
 }
 
 /// Resolve the repo root the worktrees are created under. The shared default
@@ -20028,11 +20830,18 @@ fn workflow_get_output_value(
     }))
 }
 
-fn workflow_gc_worktrees(store: &HarnessStore) -> CliResult<serde_json::Value> {
+fn workflow_gc_worktrees(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+) -> CliResult<serde_json::Value> {
     // Worktrees live under the PROJECT ROOT (not the centralized store, not the
     // harness process cwd), so GC them there too (goal-multi-project P4). The git
     // commands tolerate a missing/moved project_root by failing soft (empty output).
-    let repo_root = workflow_repo_root(&workflow_project_context(store));
+    let repo_root = workflow_repo_root(
+        &project_context
+            .cloned()
+            .unwrap_or_else(|| workflow_project_context(store)),
+    );
     let repo = repo_root.display().to_string();
 
     // Prune dangling administrative entries first.
@@ -20115,18 +20924,22 @@ fn created_ms(created_at: &str) -> u128 {
         .unwrap_or(0)
 }
 
-fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn workflow_command(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    args: &[String],
+) -> CliResult<()> {
     require_subcommand(
         args,
         "workflow run|run-script|get-output|patch|list|reap|reap-workers|gc-worktrees",
     )?;
     match args[0].as_str() {
         "patch" => {
-            let result = workflow_patch_command(store, &args[1..])?;
+            let result = workflow_patch_command(store, project_context, &args[1..])?;
             print_json(&result)?;
         }
         "gc-worktrees" => {
-            let result = workflow_gc_worktrees(store)?;
+            let result = workflow_gc_worktrees(store, project_context)?;
             print_json(&result)?;
         }
         "reap-workers" => {
@@ -20151,7 +20964,7 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&serde_json::json!({ "workflows": defs }))?;
         }
         "run" => {
-            let result = workflow_run_value(store, &args[1..])?;
+            let result = workflow_run_value(store, project_context, &args[1..])?;
             print_json(&result)?;
         }
         "get-output" => {
@@ -20186,7 +20999,7 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             eprintln!(
                 "workflow store: {store_display}  (point `serve` at the same path: --store <path>)"
             );
-            let result = workflow_run_script_value(store, &args[1..])?;
+            let result = workflow_run_script_value(store, project_context, &args[1..])?;
             print_json(&result)?;
         }
         other => {
@@ -20198,7 +21011,11 @@ fn workflow_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+fn workflow_run_value(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
     let name = value(args, "--name").unwrap_or_else(|| "investigate".to_string());
     let registry = workflow::WorkflowRegistry::builtin();
     let def = registry
@@ -20222,7 +21039,9 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         max_budget_usd: None,
         // Registry runs always retain their trace durably.
         progress: has_flag(args, "--progress"),
-        project: workflow_project_context(store),
+        project: project_context
+            .cloned()
+            .unwrap_or_else(|| workflow_project_context(store)),
     };
 
     // The run id is minted up front so the driver can journal each step's
@@ -20232,6 +21051,7 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
 
     // Read the Copy flag before the `move` driver closure consumes `options`.
     let is_dry_run = options.dry_run;
+    let project_binding_id = Some(options.project.id.clone());
 
     // Build the injectable real driver. The store, run id, and options are
     // captured by reference; the closure is Sync (HarnessStore serializes writes
@@ -20243,7 +21063,15 @@ fn workflow_run_value(store: &HarnessStore, args: &[String]) -> CliResult<serde_
         }
     };
 
-    run_workflow_with_driver(store, &run_id, def, &prompt, is_dry_run, &driver)
+    run_workflow_with_driver(
+        store,
+        &run_id,
+        def,
+        &prompt,
+        is_dry_run,
+        project_binding_id,
+        &driver,
+    )
 }
 
 /// `harness workflow run-script <prog.star> [--name <n>] [--args <json>]
@@ -20619,6 +21447,7 @@ fn git_dirty_paths(repo_root: &Path) -> CliResult<BTreeSet<String>> {
 
 fn apply_workflow_patch_record(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     patch: &WorkflowPatch,
     actor: Option<String>,
     reason: Option<String>,
@@ -20630,7 +21459,7 @@ fn apply_workflow_patch_record(
             patch.id, patch.status
         )));
     }
-    let project = workflow_project_context(store);
+    let project = workflow_project_context_for_run(store, &patch.run_id, project_context)?;
     let repo_root = workflow_repo_root(&project);
     let path = patch_file_path(store, patch);
     let bytes = fs::read(&path)?;
@@ -20816,7 +21645,11 @@ fn resolve_workflow_patch(store: &HarnessStore, args: &[String]) -> CliResult<Wo
     }
 }
 
-fn workflow_patch_command(store: &HarnessStore, args: &[String]) -> CliResult<serde_json::Value> {
+fn workflow_patch_command(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
     require_subcommand(args, "workflow patch list|show|apply|reject")?;
     match args[0].as_str() {
         "list" => {
@@ -20838,6 +21671,7 @@ fn workflow_patch_command(store: &HarnessStore, args: &[String]) -> CliResult<se
             let reason = value(&args[1..], "--reason");
             let applied = apply_workflow_patch_record(
                 store,
+                project_context,
                 &patch,
                 actor,
                 reason,
@@ -20947,7 +21781,7 @@ fn append_artifact_manifest(
             "artifact manifest requires at least one path".to_string(),
         ));
     }
-    let project = workflow_project_context(store);
+    let project = workflow_project_context_for_run(store, run_id, None)?;
     let repo_root = workflow_repo_root(&project);
     let files: Vec<_> = paths
         .iter()
@@ -21000,7 +21834,7 @@ fn persist_workflow_patches(
     outcome: &workflow::WorkflowOutcome,
     steps_json: &[serde_json::Value],
 ) -> CliResult<Vec<WorkflowPatch>> {
-    let project = workflow_project_context(store);
+    let project = workflow_project_context_for_run(store, &run.id, None)?;
     let repo_root = workflow_repo_root(&project);
     let base_sha = git_in(&repo_root, &["rev-parse", "HEAD"])
         .ok()
@@ -21235,6 +22069,7 @@ fn process_workflow_patch_actions(
         let updated = match action.get("action").and_then(|v| v.as_str()) {
             Some("apply") => match apply_workflow_patch_record(
                 store,
+                None,
                 &patch,
                 Some("workflow".to_string()),
                 reason,
@@ -21271,6 +22106,7 @@ fn process_workflow_patch_actions(
             }
             let updated = match apply_workflow_patch_record(
                 store,
+                None,
                 patch,
                 Some("workflow".to_string()),
                 Some("auto_apply_on_verdict".to_string()),
@@ -21313,6 +22149,7 @@ fn outcome_step_auto_apply(run: &WorkflowRun, label: &str) -> bool {
 
 fn workflow_run_script_value(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     args: &[String],
 ) -> CliResult<serde_json::Value> {
     // The script path is the first positional arg (not a --flag) or `--script <path>`.
@@ -21395,7 +22232,9 @@ fn workflow_run_script_value(
         default_effort: value(args, "--effort"),
         max_budget_usd: value(args, "--max-budget-usd").and_then(|v| v.parse::<f64>().ok()),
         progress: has_flag(args, "--progress"),
-        project: workflow_project_context(store),
+        project: project_context
+            .cloned()
+            .unwrap_or_else(|| workflow_project_context(store)),
     };
 
     // Who initiated the run: an explicit `--initiated-by <id>`, else the
@@ -21417,6 +22256,7 @@ fn workflow_run_script_value(
     let mut run = WorkflowRun {
         id: run_id.clone(),
         workflow_name: name.clone(),
+        project_binding_id: Some(options.project.id.clone()),
         status: WorkflowRunStatus::Running,
         step_ids: Vec::new(),
         created_at: now_string(),
@@ -21493,11 +22333,13 @@ fn run_workflow_with_driver(
     def: &workflow::WorkflowDef,
     prompt: &str,
     dry_run: bool,
+    project_binding_id: Option<String>,
     driver: &workflow::AgentStepFn<'_>,
 ) -> CliResult<serde_json::Value> {
     let run = WorkflowRun {
         id: run_id.to_string(),
         workflow_name: def.name.to_string(),
+        project_binding_id,
         status: WorkflowRunStatus::Running,
         step_ids: Vec::new(),
         created_at: now_string(),
@@ -21600,6 +22442,7 @@ fn journal_workflow_outcome(
 
 fn deliver_agent_messages_value(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     options: DeliveryOptions,
 ) -> CliResult<serde_json::Value> {
     let DeliveryOptions {
@@ -21609,13 +22452,12 @@ fn deliver_agent_messages_value(
         start_runtime,
         timeout_ms,
     } = options;
-    // The SELECTED project for this delivery (goal-multi-project P3, Stage 3). The
-    // centralized store self-describes its project via `metadata.json`, so we
-    // recover it the SAME way workflows do (`workflow_project_context`) instead of
-    // threading a resolved context through every command/API delivery entry point.
-    // A raw `--store`/`HARNESS_ROOT`/walk-up store with no pinned identity degrades
-    // to today's cwd-as-project-root behavior, preserving back-compat.
-    let project = workflow_project_context(store);
+    // Project Binding is independent from the Execution Space that owns these
+    // messages. Prefer the explicit request/CLI binding; only compatibility
+    // stores may infer a project from their historical metadata.
+    let project = project_context
+        .cloned()
+        .unwrap_or_else(|| workflow_project_context(store));
     let mut member = latest_member(store, &agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     let mut runtime = match member.provider_runtime_id.as_deref() {
@@ -21949,7 +22791,11 @@ struct GatewayOptions {
     claim_ttl_ms: u64,
 }
 
-fn run_provider_gateway(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+fn run_provider_gateway(
+    store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
+    args: &[String],
+) -> CliResult<()> {
     let options = GatewayOptions {
         dry_run: has_flag(args, "--dry-run"),
         start_runtime: has_flag(args, "--start-runtime"),
@@ -21965,7 +22811,7 @@ fn run_provider_gateway(store: &HarnessStore, args: &[String]) -> CliResult<()> 
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(1_000);
     loop {
-        let result = provider_gateway_tick_value(store, options.clone())?;
+        let result = provider_gateway_tick_value(store, project_context, options.clone())?;
         print_json(&result)?;
         if once {
             break;
@@ -21977,6 +22823,7 @@ fn run_provider_gateway(store: &HarnessStore, args: &[String]) -> CliResult<()> 
 
 fn provider_gateway_tick_value(
     store: &HarnessStore,
+    project_context: Option<&ProjectContext>,
     options: GatewayOptions,
 ) -> CliResult<serde_json::Value> {
     let expired_claims = expire_safe_delivery_claims_value(store, options.claim_ttl_ms)?;
@@ -21994,6 +22841,7 @@ fn provider_gateway_tick_value(
     for agent_id in agent_ids {
         match deliver_agent_messages_value(
             store,
+            project_context,
             DeliveryOptions {
                 agent_id: agent_id.clone(),
                 message_filter: None,
@@ -22883,15 +23731,15 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
 }
 
 fn dashboard_snapshot_with_company(
-    project_store: &HarnessStore,
+    execution_store: &HarnessStore,
     company_store: Option<&HarnessStore>,
 ) -> CliResult<serde_json::Value> {
-    let mut snapshot = dashboard_snapshot(project_store)?;
+    let mut snapshot = dashboard_snapshot(execution_store)?;
     if let Some(company_store) = company_store {
         if let Some(object) = snapshot.as_object_mut() {
             object.insert(
                 "company_os".to_string(),
-                company_os_api::snapshot(company_store)?,
+                company_os_api::snapshot_with_execution(company_store, execution_store)?,
             );
         }
     }
@@ -25899,6 +26747,9 @@ fn print_help() {
   init
   project add | project list | project current | project switch
   project remove | project show | project migrate
+  space init --id <space-id> [--name <name>] [--project-binding <binding-id>] [--company <company-id>]
+  space list | space current | space switch <space-id> | space show [space-id]
+  space migrate-from-project --from-project <binding-id|path> --id <space-id> [--name <name>] [--force]
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
@@ -25936,6 +26787,9 @@ fn print_help() {
 
 Retired coordination commands fail explicitly. Historical rows are available only
 through legacy-goal-task export|verify.
+
+Execution selection is independent: --space/HARNESS_SPACE selects coordination
+storage; --project/HARNESS_PROJECT selects the provider cwd/config/Skill boundary.
 
 Agent Team creation uses --lead <host-agent-id>; --owner remains a compatibility
 alias. Mission create-team defaults the Lead to the current Host Agent (`host`)."#
@@ -25996,6 +26850,7 @@ mod workflow_runtime_tests {
             .append_workflow_run(&WorkflowRun {
                 id: id.into(),
                 workflow_name: "gc-demo".into(),
+                project_binding_id: None,
                 status,
                 step_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
@@ -27501,8 +28356,9 @@ new file mode 100644
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
 
         let run_id = generated_id("wfrun");
-        let result = run_workflow_with_driver(&store, &run_id, def, "failure X", false, &driver)
-            .expect("run workflow");
+        let result =
+            run_workflow_with_driver(&store, &run_id, def, "failure X", false, None, &driver)
+                .expect("run workflow");
 
         // The returned run is completed and references 3 steps (serial + 2 parallel).
         let run = result.get("run").expect("run key");
@@ -27546,6 +28402,7 @@ new file mode 100644
         let mk = |id: &str, created: u128| WorkflowRun {
             id: id.into(),
             workflow_name: "demo".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: vec![],
             created_at: format!("unix-ms:{created}"),
@@ -27602,6 +28459,7 @@ new file mode 100644
             .append_workflow_run(&WorkflowRun {
                 id: "wfrun-dead".into(),
                 workflow_name: "demo".into(),
+                project_binding_id: None,
                 status: WorkflowRunStatus::Running,
                 step_ids: vec!["wfstep-dead".into()],
                 created_at: format!("unix-ms:{now}"),
@@ -27641,6 +28499,7 @@ new file mode 100644
             .append_workflow_run(&WorkflowRun {
                 id: "wfrun-live".into(),
                 workflow_name: "demo".into(),
+                project_binding_id: None,
                 status: WorkflowRunStatus::Running,
                 step_ids: vec![],
                 created_at: format!("unix-ms:{now}"),
@@ -27763,6 +28622,7 @@ new file mode 100644
             .append_workflow_run(&WorkflowRun {
                 id: id.into(),
                 workflow_name: "demo".into(),
+                project_binding_id: None,
                 status,
                 step_ids: vec![],
                 created_at: now_string(),
@@ -28253,6 +29113,7 @@ new file mode 100644
         let run = WorkflowRun {
             id: generated_id("wfrun"),
             workflow_name: "patch-artifact-test".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: Vec::new(),
             created_at: now_string(),
@@ -28308,6 +29169,7 @@ new file mode 100644
 
         let applied = apply_workflow_patch_record(
             &store,
+            None,
             &writer,
             Some("test".into()),
             Some("manual accept".into()),
@@ -28347,6 +29209,7 @@ new file mode 100644
         let run = WorkflowRun {
             id: generated_id("wfrun"),
             workflow_name: "direct-write-test".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: Vec::new(),
             created_at: now_string(),
@@ -28476,8 +29339,9 @@ new file mode 100644
             vec!["docs/outside.txt"],
             vec!["src"],
         );
-        let err = apply_workflow_patch_record(&store, &outside, Some("test".into()), None, false)
-            .expect_err("owned path violation must fail");
+        let err =
+            apply_workflow_patch_record(&store, None, &outside, Some("test".into()), None, false)
+                .expect_err("owned path violation must fail");
         assert!(err.to_string().contains("outside owned_paths"));
         assert_eq!(
             latest_status(&outside.id),
@@ -28500,7 +29364,7 @@ new file mode 100644
         .expect("reject pending patch");
         assert_eq!(rejected.status, WorkflowPatchStatus::Rejected);
         assert!(
-            apply_workflow_patch_record(&store, &rejected, Some("test".into()), None, false)
+            apply_workflow_patch_record(&store, None, &rejected, Some("test".into()), None, false,)
                 .is_err(),
             "rejected patches cannot be applied later"
         );
@@ -28515,7 +29379,7 @@ new file mode 100644
         );
         std::fs::write(project_root.join("untracked.tmp"), "unrelated").expect("dirty file");
         let applied_dirty =
-            apply_workflow_patch_record(&store, &dirty, Some("test".into()), None, false)
+            apply_workflow_patch_record(&store, None, &dirty, Some("test".into()), None, false)
                 .expect("unrelated dirt must not block a disjoint patch (D6)");
         assert_eq!(applied_dirty.status, WorkflowPatchStatus::Applied);
         assert_eq!(
@@ -28547,9 +29411,15 @@ new file mode 100644
             vec!["src/collide.txt"],
             vec!["src"],
         );
-        let err =
-            apply_workflow_patch_record(&store, &target_dirty, Some("test".into()), None, false)
-                .expect_err("a modified target path must block without --allow-dirty (D6)");
+        let err = apply_workflow_patch_record(
+            &store,
+            None,
+            &target_dirty,
+            Some("test".into()),
+            None,
+            false,
+        )
+        .expect_err("a modified target path must block without --allow-dirty (D6)");
         assert!(
             err.to_string().contains("uncommitted changes"),
             "scoped dirty guard names the colliding path: {err}"
@@ -28572,7 +29442,7 @@ new file mode 100644
             vec!["src"],
         );
         assert!(
-            apply_workflow_patch_record(&store, &conflict, Some("test".into()), None, false)
+            apply_workflow_patch_record(&store, None, &conflict, Some("test".into()), None, false,)
                 .is_err(),
             "git apply --check conflicts must fail"
         );
@@ -28584,8 +29454,9 @@ new file mode 100644
             vec!["src/good.txt"],
             vec!["src"],
         );
-        let applied = apply_workflow_patch_record(&store, &good, Some("test".into()), None, false)
-            .expect("apply clean patch");
+        let applied =
+            apply_workflow_patch_record(&store, None, &good, Some("test".into()), None, false)
+                .expect("apply clean patch");
         assert_eq!(applied.status, WorkflowPatchStatus::Applied);
         assert!(
             reject_workflow_patch_record(&store, &applied, Some("test".into()), None).is_err(),
@@ -28628,6 +29499,7 @@ new file mode 100644
         let run = WorkflowRun {
             id: generated_id("wfrun"),
             workflow_name: "patch-auto-test".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: Vec::new(),
             created_at: now_string(),
@@ -28690,6 +29562,7 @@ new file mode 100644
         let run = WorkflowRun {
             id: generated_id("wfrun"),
             workflow_name: "standalone".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: Vec::new(),
             created_at: now_string(),
@@ -28780,6 +29653,7 @@ new file mode 100644
         let run = WorkflowRun {
             id: generated_id("wfrun"),
             workflow_name: "standalone-ok".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: Vec::new(),
             created_at: now_string(),
@@ -28967,8 +29841,9 @@ new file mode 100644
             rejected_at: None,
         };
         store.append_workflow_patch(&patch).unwrap();
-        let err = apply_workflow_patch_record(&store, &patch, Some("test".into()), None, false)
-            .expect_err("crafted header must not slip past owned_paths");
+        let err =
+            apply_workflow_patch_record(&store, None, &patch, Some("test".into()), None, false)
+                .expect_err("crafted header must not slip past owned_paths");
         // numstat sees docs/evil.txt which is neither in changed_paths nor owned —
         // caught as an undisclosed-path mismatch (fail closed) OR an owned violation.
         assert!(
@@ -29101,6 +29976,46 @@ new file mode 100644
         assert_eq!(ctx.store_root, store.root());
         assert!(!ctx.is_git_repo);
         let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn workflow_run_rejects_a_different_explicit_project_binding() {
+        let store = temp_store("pinned-binding-conflict");
+        store
+            .append_workflow_run(&WorkflowRun {
+                id: "wfrun-pinned".into(),
+                workflow_name: "demo".into(),
+                project_binding_id: Some("binding-a".into()),
+                status: WorkflowRunStatus::Running,
+                step_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                ended_at: None,
+                summary: None,
+                args: None,
+                agents_spawned: 0,
+                final_output: None,
+                initiated_by: None,
+                design_intent: None,
+                spec: None,
+                host_pid: None,
+                dry_run: false,
+                terminal_reason: None,
+                partial_output_available: false,
+            })
+            .expect("append workflow run");
+        let conflicting = ProjectContext {
+            id: "binding-b".into(),
+            project_root: std::env::temp_dir(),
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        };
+
+        let error = workflow_project_context_for_run(&store, "wfrun-pinned", Some(&conflicting))
+            .expect_err("a selected binding must not override durable run identity");
+        assert!(error.to_string().contains(
+            "workflow run wfrun-pinned is pinned to Project Binding binding-a, not binding-b"
+        ));
     }
 
     #[test]
@@ -29341,7 +30256,7 @@ new file mode 100644
         let absent =
             add_registered_gc_worktree(&project_root, "wfrun-absent", "writer", "session-abs-0");
 
-        let out = workflow_gc_worktrees(&store).expect("gc worktrees");
+        let out = workflow_gc_worktrees(&store, None).expect("gc worktrees");
         let removed = out["removed"].as_array().expect("removed array");
         let terminal_display = terminal.display().to_string();
         let absent_display = absent.display().to_string();
@@ -29374,7 +30289,7 @@ new file mode 100644
             "session-running-0",
         );
 
-        let out = workflow_gc_worktrees(&store).expect("gc worktrees");
+        let out = workflow_gc_worktrees(&store, None).expect("gc worktrees");
         assert!(
             out["removed"].as_array().expect("removed array").is_empty(),
             "running owner should not be removed: {out}"
@@ -29413,8 +30328,9 @@ new file mode 100644
         };
 
         let run_id = generated_id("wfrun");
-        let result = run_workflow_with_driver(&store, &run_id, def, "failure Y", false, &driver)
-            .expect("run workflow");
+        let result =
+            run_workflow_with_driver(&store, &run_id, def, "failure Y", false, None, &driver)
+                .expect("run workflow");
         let run = result.get("run").expect("run key");
         assert_eq!(run.get("status").and_then(|s| s.as_str()), Some("failed"));
 
@@ -29453,7 +30369,7 @@ agent("fix: " + a, provider = "claude", label = "fixer")
             r#"{"area":"checkout"}"#.to_string(),
             "--dry-run".to_string(),
         ];
-        let result = workflow_run_script_value(&store, &args).expect("run script");
+        let result = workflow_run_script_value(&store, None, &args).expect("run script");
 
         // The run completed and references two steps.
         let run = result.get("run").expect("run key");
@@ -29538,7 +30454,7 @@ agent("fix per " + a, label = "fixer")
 
         // First run (dry-run) to journal succeeded steps carrying ordinals.
         let args = vec![path.display().to_string(), "--dry-run".to_string()];
-        let first = workflow_run_script_value(&store, &args).expect("first run");
+        let first = workflow_run_script_value(&store, None, &args).expect("first run");
         let prior_run_id = first
             .get("run")
             .and_then(|r| r.get("id"))
@@ -29565,7 +30481,7 @@ agent("fix per " + a, label = "fixer")
             "--resume".to_string(),
             prior_run_id.clone(),
         ];
-        let second = workflow_run_script_value(&store, &resume_args).expect("resume run");
+        let second = workflow_run_script_value(&store, None, &resume_args).expect("resume run");
         let run = second.get("run").expect("run key");
         assert_eq!(
             run.get("status").and_then(|s| s.as_str()),
@@ -29632,6 +30548,7 @@ agent("scan the code")
         fs::write(&path, original).expect("write script");
         let first = workflow_run_script_value(
             &store,
+            None,
             &[path.display().to_string(), "--dry-run".to_string()],
         )
         .expect("first run");
@@ -29651,6 +30568,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
         fs::write(&path, changed).expect("rewrite script");
         let err = workflow_run_script_value(
             &store,
+            None,
             &[
                 path.display().to_string(),
                 "--dry-run".to_string(),
@@ -29682,7 +30600,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
             "{not json".to_string(),
             "--dry-run".to_string(),
         ];
-        let err = workflow_run_script_value(&store, &args).expect_err("bad json");
+        let err = workflow_run_script_value(&store, None, &args).expect_err("bad json");
         assert!(matches!(err, CliError::Usage(_)));
     }
 
@@ -29697,7 +30615,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
         fs::write(&path, r#"agent("x")"#).expect("write script");
 
         let args = vec![path.display().to_string(), "--dry-run".to_string()];
-        let err = workflow_run_script_value(&store, &args).expect_err("rejected");
+        let err = workflow_run_script_value(&store, None, &args).expect_err("rejected");
         match err {
             CliError::Usage(message) => assert!(
                 message.contains("design_intent"),
@@ -29720,7 +30638,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
         let def = registry.get("investigate").expect("registered");
         let driver = |spec: &workflow::AgentStepSpec| ok_step(spec);
         let run_id = generated_id("wfrun");
-        run_workflow_with_driver(&store, &run_id, def, "x", false, &driver).expect("run");
+        run_workflow_with_driver(&store, &run_id, def, "x", false, None, &driver).expect("run");
 
         let snapshot = dashboard_snapshot(&store).expect("snapshot");
         let runs = snapshot
@@ -29830,7 +30748,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
             result
         };
 
-        let result = run_workflow_with_driver(&store, &run_id, def, "topic", false, &driver)
+        let result = run_workflow_with_driver(&store, &run_id, def, "topic", false, None, &driver)
             .expect("run workflow");
         assert_eq!(
             result
@@ -30608,6 +31526,7 @@ mod tests {
 
         let result = deliver_agent_messages(
             &store,
+            None,
             &["--agent".into(), "agent-1".into(), "--start-runtime".into()],
         );
 
@@ -30789,6 +31708,7 @@ mod tests {
 
         deliver_agent_messages(
             &store,
+            None,
             &["--agent".into(), "agent-1".into(), "--dry-run".into()],
         )
         .expect("deliver should not redeliver stale queued row");
@@ -30831,6 +31751,7 @@ mod tests {
 
         deliver_agent_messages(
             &store,
+            None,
             &["--agent".into(), "agent-1".into(), "--dry-run".into()],
         )
         .expect("dry-run delivery");
@@ -30949,6 +31870,7 @@ mod tests {
 
         let result = provider_gateway_tick_value(
             &store,
+            None,
             GatewayOptions {
                 dry_run: false,
                 start_runtime: false,
@@ -31001,6 +31923,7 @@ mod tests {
 
         let result = provider_gateway_tick_value(
             &store,
+            None,
             GatewayOptions {
                 dry_run: true,
                 start_runtime: false,
@@ -31051,6 +31974,7 @@ mod tests {
 
         let result = deliver_agent_messages(
             &store,
+            None,
             &["--agent".into(), "agent-1".into(), "--dry-run".into()],
         );
 
@@ -31714,6 +32638,7 @@ mod tests {
         let assignment = &created.assignment_messages[0];
         let envelope = member_collaboration_envelope(
             &ledger,
+            Some("space-example"),
             Some("example-project"),
             Some("/workspace/example-project"),
             member,
@@ -31739,6 +32664,10 @@ mod tests {
             .into_iter()
             .collect::<HashMap<_, _>>();
         assert_eq!(
+            env.get("HARNESS_SPACE").map(String::as_str),
+            Some("space-example")
+        );
+        assert_eq!(
             env.get("HARNESS_PROJECT").map(String::as_str),
             Some("/workspace/example-project")
         );
@@ -31763,6 +32692,42 @@ mod tests {
             env.keys().all(|key| key.starts_with("HARNESS_")),
             "only non-secret collaboration locators are injected"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_snapshot_stops_at_project_or_worktree_boundary() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-workspace-boundary-{}-{}",
+            std::process::id(),
+            generated_id("test")
+        ));
+        let project_root = root.join("project");
+        let cwd = project_root.join("src").join("nested");
+        std::fs::create_dir_all(cwd.join(".agents/skills/local")).expect("local skills");
+        std::fs::write(root.join("AGENTS.md"), "outside").expect("outside instructions");
+        std::fs::create_dir_all(root.join("skills/outside")).expect("outside skills");
+        std::fs::write(project_root.join("AGENTS.md"), "inside").expect("inside instructions");
+
+        let snapshot = snapshot_member_workspace(
+            &cwd,
+            Some("binding-1"),
+            Some(&project_root),
+            "project_binding_root",
+        );
+        let outside = project::canonicalize_best_effort(&root)
+            .display()
+            .to_string();
+        let inside = project::canonicalize_best_effort(&project_root)
+            .display()
+            .to_string();
+        assert!(snapshot.instruction_roots.contains(&inside));
+        assert!(!snapshot.instruction_roots.contains(&outside));
+        assert!(snapshot
+            .skill_roots
+            .iter()
+            .all(|path| !path.starts_with(&format!("{outside}/skills"))));
+        assert_eq!(snapshot.project_binding_id.as_deref(), Some("binding-1"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -31983,6 +32948,7 @@ mod sse_tests {
             previous_run_id: None,
             mission_id: None,
             wave_id: None,
+            project_binding_id: Some(context.id.clone()),
             host_surface: "test".into(),
             host_thread_id: None,
             objective: "test cwd precedence".into(),
@@ -32148,10 +33114,11 @@ mod sse_tests {
             harness_home: Some(std::env::temp_dir().join(generated_id("unrelated-registry"))),
             default_id: expected.id.clone(),
             default_store: store.clone(),
+            default_space: None,
             default_context: Some(expected.clone()),
         };
 
-        let resolved = projects.context_for(&expected.id, &store);
+        let resolved = projects.context_for(Some(&expected.id), None, &store);
         assert_eq!(resolved, expected);
         assert_eq!(resolved.project_root, worktree_root);
         assert_ne!(
@@ -32187,6 +33154,7 @@ mod sse_tests {
                 harness_home: None,
                 default_id: "_test".to_string(),
                 default_store: serve_store.clone(),
+                default_space: None,
                 default_context: None,
             };
             let watcher_projects = projects.clone();

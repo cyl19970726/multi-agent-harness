@@ -16,12 +16,12 @@ export interface UseEventStreamOptions {
   /** Harness API base; a change re-opens the stream against the new endpoint. */
   baseUrl: string;
   /**
-   * Selected project id (goal-multi-project P6). A change re-opens the stream
-   * scoped to the new project's channel — the OLD source is torn down first by
-   * the effect cleanup, so a client subscribed to project A never receives
-   * project B frames. Absent/empty subscribes to the active/`_global` channel.
+   * Selected Project Binding. It remains in the request for compatibility and
+   * provider-bound actions, but native coordination routing is owned by space.
    */
   project?: string | null;
+  /** Selected Execution Space; this scopes the durable coordination stream. */
+  space?: string | null;
   /** Connection confirmed; includes the project captured when this stream opened. */
   onConnect: (streamProject: string, generatedAt?: string) => void;
   /** A delta frame arrived; includes the project captured when this stream opened. */
@@ -47,6 +47,7 @@ export function useEventStream({
   enabled,
   baseUrl,
   project,
+  space,
   onConnect,
   onFrame,
 }: UseEventStreamOptions): LiveMode {
@@ -71,7 +72,7 @@ export function useEventStream({
     // Capture this effect's project, rather than reading a callback ref's latest
     // selection. A late event from a just-disposed A stream can then be rejected
     // by App after the user has synchronously selected B.
-    const streamProject = project ?? "";
+    const streamProject = space ?? project ?? "";
 
     const clearRetry = () => {
       if (retryTimer !== null) {
@@ -112,6 +113,7 @@ export function useEventStream({
             },
           },
           project,
+          space,
         );
       } catch {
         // baseUrl was empty/invalid: stay in polling and retry on the ladder.
@@ -130,7 +132,7 @@ export function useEventStream({
       clearRetry();
       closeSource?.();
     };
-  }, [enabled, baseUrl, project]);
+  }, [enabled, baseUrl, project, space]);
 
   return mode;
 }

@@ -29,7 +29,8 @@ fn resolve(
     cmd.current_dir(cwd)
         .envs(home.envs())
         .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT");
+        .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -51,8 +52,9 @@ fn init(home: &TempHome, cwd: &Path) {
     assert!(out.status.success(), "init failed: {:?}", out);
 }
 
-/// #89 invariant: after `init`, two commands from DIFFERENT cwds resolve the SAME
-/// central store via the registry's current project (replacing "shared cwd").
+/// After `init`, two commands from DIFFERENT cwds resolve the SAME native
+/// Execution Space. cwd only affects provider workspace discovery when no
+/// explicit Project Binding is selected.
 #[test]
 fn serve_and_run_script_converge_via_registry() {
     let home = TempHome::new("res-converge");
@@ -64,25 +66,27 @@ fn serve_and_run_script_converge_via_registry() {
     let (_o1, e1) = resolve(&home, &proj, &[], &[]);
     let (_o2, e2) = resolve(&home, &sub, &[], &[]);
     assert!(
-        e1.contains("RegistryCurrent"),
-        "expected RegistryCurrent from project root, got: {e1}"
+        e1.contains("SpaceCurrent"),
+        "expected SpaceCurrent from project root, got: {e1}"
     );
     assert!(
-        e2.contains("RegistryCurrent"),
-        "expected RegistryCurrent from subdir, got: {e2}"
+        e2.contains("SpaceCurrent"),
+        "expected SpaceCurrent from subdir, got: {e2}"
     );
     // Same central store root regardless of cwd.
     let root1 = root_of(&e1);
     let root2 = root_of(&e2);
     assert_eq!(root1, root2, "stores diverged: {root1} vs {root2}");
-    assert!(root1.contains("/projects/"), "not a central store: {root1}");
+    assert!(
+        root1.contains("/execution-spaces/"),
+        "not an Execution Space store: {root1}"
+    );
 }
 
 #[test]
-fn local_store_wins_over_active_registry_project() {
-    // Regression (review MAJOR): a PRESENT repo-local `.harness` must win over the
-    // registry-current project, so standing inside a legacy repo never silently
-    // shadows its own goals/tasks with an unrelated active project.
+fn active_execution_space_wins_over_legacy_cwd_store() {
+    // An explicitly active Execution Space is cwd-independent. A legacy
+    // repo-local `.harness` remains available only when no native space is active.
     let home = TempHome::new("res-local-wins");
     // Activate a central project elsewhere → registry has a current_project_id.
     let other = home.base().join("other-proj");
@@ -95,10 +99,10 @@ fn local_store_wins_over_active_registry_project() {
 
     let (_o, e) = resolve(&home, &repo, &[], &[]);
     assert!(
-        e.contains("CwdWalkUp"),
-        "a present local .harness must win over the active project, got: {e}"
+        e.contains("SpaceCurrent"),
+        "active Execution Space must win over cwd compatibility storage, got: {e}"
     );
-    assert!(root_of(&e).ends_with(".harness"), "stderr: {e}");
+    assert!(root_of(&e).contains("/execution-spaces/"), "stderr: {e}");
 }
 
 #[test]
@@ -131,7 +135,7 @@ fn harness_root_env_overrides_and_warns() {
 }
 
 #[test]
-fn project_flag_selects_by_id() {
+fn project_flag_selects_binding_without_switching_execution_store() {
     let home = TempHome::new("res-project-flag");
     let proj = home.base().join("repo");
     std::fs::create_dir_all(&proj).unwrap();
@@ -142,14 +146,15 @@ fn project_flag_selects_by_id() {
         serde_json::from_str(&std::fs::read_to_string(home.registry_path()).unwrap()).unwrap();
     let id = registry["current_project_id"].as_str().unwrap().to_string();
 
-    // From an unrelated cwd, --project <id> still resolves that project.
+    // From an unrelated cwd, --project <id> selects the provider binding but
+    // leaves coordination in the current Execution Space.
     let (_o, e) = resolve(&home, home.base(), &["--project", &id], &[]);
-    assert!(e.contains("ProjectFlag"), "stderr: {e}");
-    assert!(root_of(&e).ends_with(&id), "stderr: {e}");
+    assert!(e.contains("SpaceCurrent"), "stderr: {e}");
+    assert!(root_of(&e).contains("/execution-spaces/"), "stderr: {e}");
 }
 
 #[test]
-fn project_env_selects_by_id() {
+fn project_env_selects_binding_without_switching_execution_store() {
     let home = TempHome::new("res-project-env");
     let proj = home.base().join("repo");
     std::fs::create_dir_all(&proj).unwrap();
@@ -159,8 +164,8 @@ fn project_env_selects_by_id() {
     let id = registry["current_project_id"].as_str().unwrap().to_string();
 
     let (_o, e) = resolve(&home, home.base(), &[], &[("HARNESS_PROJECT", &id)]);
-    assert!(e.contains("ProjectEnv"), "stderr: {e}");
-    assert!(root_of(&e).ends_with(&id), "stderr: {e}");
+    assert!(e.contains("SpaceCurrent"), "stderr: {e}");
+    assert!(root_of(&e).contains("/execution-spaces/"), "stderr: {e}");
 }
 
 #[test]

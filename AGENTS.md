@@ -173,39 +173,43 @@ The Lead Agent should use this sequence for non-trivial new work:
 8. Re-plan the next Wave from plan-vs-actual deviation and close the Mission
    with an explicit outcome summary. Closing never archives or deletes a team.
 
-## Project Selection (Multi-Project)
+## Execution Space And Project Binding
 
-One `serve` / dashboard manages many projects. Each has a centralized
-`store_root` (`~/.harness/projects/<id>/`, the JSONL ledgers) and a `project_root`
-(the registered git repo where project instructions and configuration live).
+One `serve` / dashboard manages independent Execution Spaces and Project
+Bindings. Execution Spaces under `~/.harness/execution-spaces/<id>/` own
+Mission/Wave, Agent Team, and Workflow coordination. Project Bindings identify
+the registered Git repository/directory where providers execute and discover
+instructions, Skills, plugins, and MCP configuration. Selecting `--project`
+never switches the coordination store.
+
 Agent Team provider cwd resolves as member `worktree_ref` > TeamRun
-`execution_root` > `project_root`, never `store_root`. Overrides must be the
-project root or a Git worktree sharing its Git common directory; external Codex
-worktrees are valid. Because cwd changes which project/root instructions,
-skills, plugins, and MCP configuration a provider may discover, treat it as an
-explicit execution and permission boundary. See ADR 0033 and
-[docs/multi-project.md](docs/multi-project.md).
+`execution_root` > Project Binding `project_root`, never an Execution Space,
+Company Store, or compatibility store root. Overrides must be the binding root
+or a Git worktree sharing its Git common directory; external Codex worktrees
+are valid. Treat cwd as an explicit execution and permission boundary. See ADR
+0033, ADR 0042, and [docs/multi-project.md](docs/multi-project.md).
 
-- Select the project explicitly (`--project <id|path>`, `HARNESS_PROJECT`, or
-  `harness project switch`) before spawning workers; do not rely on cwd.
+- Select the Execution Space explicitly (`--space <id>`, `HARNESS_SPACE`, or
+  `harness space switch`) before writing coordination records.
+- Select the Project Binding explicitly (`--project <id|path>`,
+  `HARNESS_PROJECT`, or `harness project switch`) before spawning workers.
+- `AgentTeamRun.project_binding_id` and `WorkflowRun.project_binding_id` pin the
+  execution resource; later selector changes must not retarget them.
 - `--store` / `HARNESS_ROOT` still win as back-compat overrides but are
-  deprecation-warned — prefer `harness init` / `harness project switch`.
+  deprecation-warned — prefer `harness init` / `harness space switch`.
 - The reserved GLOBAL `_global` (`~/`) project is non-git: read-only work runs
   there, but `writable` / `isolation="worktree"` nodes are rejected with an
   actionable message (and have no diff evidence).
-- Centralize a legacy repo-local `.harness` with `harness project migrate` (copies
-  with no data loss; marks the old store). Full reference:
-  [docs/multi-project.md](docs/multi-project.md).
+- Copy project-derived execution history with explicit
+  `harness space migrate-from-project`; the source is retained and verified.
+  Centralize a repo-local `.harness` first with `harness project migrate` when
+  needed. Never silently migrate or dual-write.
 
-This is the current compatibility implementation for repo-scoped execution and
-project-derived stores. ADR 0042 defines the target split between Company
-Store, Execution Space, and Project Binding. Do not infer from the current
-`ProjectContext` that a Git repository owns Company OS truth. In the target
-model, an Agent Company Workspace / Company Store may contain multiple
-operating areas such as Wanchengwanling and AgentOS, while external Git
-repositories are Project Bindings or source/delivery mappings. Mission/Wave,
-Agent Team, Dynamic Workflow, and Host execution must also remain usable with
-no Company Store at all.
+`ProjectContext` is compatibility infrastructure. Do not infer that a Git
+repository owns execution or Company OS truth. An Agent Company Workspace /
+Company Store may contain multiple operating areas while external repositories
+remain Project Bindings or source/delivery mappings. Mission/Wave, Agent Team,
+Dynamic Workflow, and Host execution remain usable with no Company Store.
 
 ## Skills Are Optional Capabilities
 

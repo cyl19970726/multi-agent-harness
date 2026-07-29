@@ -73,7 +73,7 @@ fn run_with_fake_kimi(
 /// Read one store JSONL file with latest-wins-per-id projection, in append
 /// order (mirrors the harness's own projections).
 fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
-    let path = home.projects_dir().join(project_id).join(file);
+    let path = home.spaces_dir().join(project_id).join(file);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut ids: Vec<String> = Vec::new();
@@ -115,6 +115,7 @@ fn assert_collaboration_env(
         .as_str()
         .expect("canonical_path in metadata");
     for expected in [
+        format!("HARNESS_SPACE={project_id}"),
         format!("HARNESS_PROJECT_ID={project_id}"),
         format!("HARNESS_PROJECT={project_root}"),
         format!("HARNESS_TEAM_RUN_ID={run_id}"),
@@ -483,7 +484,7 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
         "only explicit outcome is durable: {member_actions:?}"
     );
     assert_eq!(member_actions[0]["action_type"], "completed");
-    let store_root = home.projects_dir().join(&project_id);
+    let store_root = home.spaces_dir().join(&project_id);
     for entry in std::fs::read_dir(store_root).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
@@ -566,7 +567,7 @@ fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stre
         "reviewing"
     );
     assert!(!home
-        .projects_dir()
+        .spaces_dir()
         .join(&project_id)
         .join("provider_sessions.jsonl")
         .exists());
@@ -753,7 +754,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         .is_some_and(|body| body.contains("executed approved plan"))));
 
     // Neither provider's hidden reasoning may appear in any durable ledger.
-    let store_root = home.projects_dir().join(&project_id);
+    let store_root = home.spaces_dir().join(&project_id);
     for entry in std::fs::read_dir(&store_root).expect("read store") {
         let path = entry.expect("store entry").path();
         if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
@@ -838,7 +839,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         .expect("spawn team run");
 
     let interaction_path = home
-        .projects_dir()
+        .spaces_dir()
         .join(&project_id)
         .join("pending_interactions.jsonl");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -985,7 +986,7 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
     assert!(output.status.success(), "start failed: {output:?}");
 
     let interaction_log = std::fs::read_to_string(
-        home.projects_dir()
+        home.spaces_dir()
             .join(&project_id)
             .join("pending_interactions.jsonl"),
     )

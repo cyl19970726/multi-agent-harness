@@ -92,6 +92,10 @@ fn active_company_routes_company_os_without_stealing_execution_store() {
         .harness_home()
         .join("projects")
         .join("multi-agent-harness");
+    let execution_store = home
+        .harness_home()
+        .join("execution-spaces")
+        .join("multi-agent-harness");
 
     let out = run_harness(
         &home,
@@ -161,8 +165,8 @@ fn active_company_routes_company_os_without_stealing_execution_store() {
     assert!(out.status.success(), "mission list failed: {out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("RegistryCurrent") && stderr.contains(project_store.to_str().unwrap()),
-        "execution command should continue using project store, stderr: {stderr}"
+        stderr.contains("SpaceCurrent") && stderr.contains(execution_store.to_str().unwrap()),
+        "execution command should use the active Execution Space, stderr: {stderr}"
     );
 
     let out = run_harness(
@@ -238,6 +242,8 @@ fn migrate_from_project_copies_only_company_os_ledgers() {
         &home,
         &repo,
         &[
+            "--store",
+            project_store.to_str().unwrap(),
             "mission",
             "create",
             "--id",
@@ -248,7 +254,10 @@ fn migrate_from_project_copies_only_company_os_ledgers() {
             "Stay in project store",
         ],
     );
-    assert!(out.status.success(), "mission create failed: {out:?}");
+    assert!(
+        out.status.success(),
+        "legacy project-store mission seed failed: {out:?}"
+    );
     assert!(project_store.join("missions.jsonl").is_file());
 
     let out = run_harness_with_env(

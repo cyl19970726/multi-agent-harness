@@ -10,7 +10,7 @@ The PRD explains why Star Harness exists. Architecture and schemas describe
 what is implemented. This document explains why the product is decomposed into
 Company OS truth systems plus a separate execution foundation.
 
-ADR 0040 adds the storage/identity boundary behind that decomposition:
+ADR 0042 adds the storage/identity boundary behind that decomposition:
 
 ```text
 Company Store       Execution Space       Project Binding

@@ -1277,6 +1277,7 @@ mod tests {
                         previous_run_id: None,
                         mission_id: Some("mission-concurrent".into()),
                         wave_id: Some(wave_id),
+                        project_binding_id: Some("project-concurrent".into()),
                         host_surface: "test".into(),
                         host_thread_id: None,
                         objective: "attempt".into(),
@@ -1590,6 +1591,7 @@ mod tests {
             previous_run_id: Some("tr-0".into()),
             mission_id: Some("mission-1".into()),
             wave_id: Some("wave-2".into()),
+            project_binding_id: Some("project-example".into()),
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
             objective: "Ship the feature".into(),
@@ -1619,6 +1621,7 @@ mod tests {
         assert!(sparse.previous_run_id.is_none());
         assert!(sparse.mission_id.is_none());
         assert!(sparse.wave_id.is_none());
+        assert!(sparse.project_binding_id.is_none());
         assert!(sparse.host_thread_id.is_none());
         assert!(sparse.execution_root.is_none());
         assert!(sparse.member_run_ids.is_empty());
@@ -1647,6 +1650,8 @@ mod tests {
             worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
             workspace_snapshot: Some(MemberWorkspaceSnapshot {
                 cwd: "/projects/example/worktrees/worker-1".into(),
+                project_binding_id: Some("project-example".into()),
+                resolution_source: Some("member_worktree".into()),
                 git_head: Some("0123456789abcdef".into()),
                 git_branch: Some("feature/worker-1".into()),
                 instruction_roots: vec!["/projects/example".into()],

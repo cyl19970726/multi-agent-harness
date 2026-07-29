@@ -1,9 +1,9 @@
-//! Integration coverage for the store_root / project_root split in workflow cwd
-//! (goal-multi-project, `worktree-root-split` task).
+//! Integration coverage for the Execution Space / Project Binding split in
+//! workflow cwd.
 //!
 //! A workflow worker's shared cwd + git-worktree base must root at the selected
 //! project's `project_root` (where CLAUDE.md / AGENTS.md / memory live), NOT the
-//! harness process cwd and NOT the centralized `~/.harness/projects/<id>/` store.
+//! harness process cwd and NOT the Execution Space coordination store.
 //! A long-running `serve` never `cd`s after a project switch, so reading the
 //! process cwd would run workers in the wrong tree.
 //!
@@ -81,6 +81,12 @@ agent("edit a file", provider = "claude", writable = True, label = "editor")
 "#,
     );
     let result = run_workflow(&home, &project_root, &elsewhere, &prog);
+    assert!(
+        result["run"]["project_binding_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the WorkflowRun must pin the selected Project Binding: {result}"
+    );
 
     let step = &result["steps"][0];
     let summary = step["output_summary"].as_str().unwrap_or_default();
@@ -99,9 +105,8 @@ agent("edit a file", provider = "claude", writable = True, label = "editor")
 
 #[test]
 fn workflow_worktree_base_is_not_the_centralized_store() {
-    // The centralized store (~/.harness/projects/<id>/) must never be used as a
-    // repo/worktree root. The non-git rejection names the project root, which is
-    // distinct from the store path under `<harness_home>/projects/`.
+    // The Execution Space store must never be used as a repo/worktree root. The
+    // non-git rejection names the Project Binding root, not a coordination path.
     let home = TempHome::new("cwd-store-distinct");
     let project_root = home.base().join("repo2");
     std::fs::create_dir_all(&project_root).unwrap();

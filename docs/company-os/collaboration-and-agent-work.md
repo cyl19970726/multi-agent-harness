@@ -28,6 +28,12 @@ The link is `StandingAgent -> participates_as -> MemberRun`; the MemberRun does
 not become a new organization member, and its completion does not retire the
 Standing Agent.
 
+The two records remain in their native stores. Company snapshots build this
+read-only relation by joining the Company Store's explicit Standing Agent id
+with the selected Execution Space's `MemberRun.agent_member_id`, assignment
+correlation, and TeamRun. They do not copy MemberRuns or provider sessions into
+Company storage.
+
 ## Collaboration spine
 
 The product does not create a global chat room as a second source of company

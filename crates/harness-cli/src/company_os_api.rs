@@ -106,9 +106,16 @@ fn finish(result: Result<Value, ApiError>) -> ApiResponse {
 }
 
 /// Handle a Company OS GET path. None means the path belongs to another API.
-pub fn handle_get(store: &HarnessStore, path: &str) -> Option<ApiResponse> {
+pub fn handle_get(
+    store: &HarnessStore,
+    execution_store: Option<&HarnessStore>,
+    path: &str,
+) -> Option<ApiResponse> {
     if path == "/v1/company-os/snapshot" {
-        return Some(finish(snapshot(store).map_err(ApiError::from)));
+        return Some(finish(
+            snapshot_with_execution(store, execution_store.unwrap_or(store))
+                .map_err(ApiError::from),
+        ));
     }
     if path == "/v1/company-os/work-projection" {
         return Some(finish(
@@ -191,8 +198,18 @@ fn authenticate_write_transport(token: Option<&str>) -> Result<(), ApiError> {
 
 /// Latest-row-wins projection embedded in the main Dashboard snapshot.
 pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
+    snapshot_with_execution(store, store)
+}
+
+/// Build Company OS truth from `store` while joining explicit Standing
+/// Agent→MemberRun participation from the independently selected Execution
+/// Space. No rows are copied or re-owned across the boundary.
+pub fn snapshot_with_execution(
+    store: &HarnessStore,
+    execution_store: &HarnessStore,
+) -> Result<Value, StoreError> {
     let actors = normalized_actors(store.latest_actors()?);
-    let standing_assignments = standing_assignment_projection(store)?;
+    let standing_assignments = standing_assignment_projection(store, execution_store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -265,35 +282,38 @@ pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
 /// Read-only join from durable Organization identity to explicitly linked
 /// Agent Team participation. It is intentionally rebuilt from latest rows and
 /// never infers identity from display names, roles, providers, or timestamps.
-fn standing_assignment_projection(store: &HarnessStore) -> Result<Vec<Value>, StoreError> {
-    let standing_agent_ids = store
+fn standing_assignment_projection(
+    company_store: &HarnessStore,
+    execution_store: &HarnessStore,
+) -> Result<Vec<Value>, StoreError> {
+    let standing_agent_ids = company_store
         .latest_standing_agents()?
         .into_iter()
         .map(|agent| agent.id)
         .collect::<BTreeSet<_>>();
     let member_runs =
-        store
+        execution_store
             .member_runs()?
             .into_iter()
             .fold(BTreeMap::new(), |mut latest, member| {
                 latest.insert(member.id.clone(), member);
                 latest
             });
-    let team_runs = store
-        .team_runs()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut latest, run| {
-            latest.insert(run.id.clone(), run);
-            latest
-        });
-    let messages =
-        store
-            .team_messages()?
+    let team_runs =
+        execution_store
+            .team_runs()?
             .into_iter()
-            .fold(BTreeMap::new(), |mut latest, message| {
-                latest.insert(message.id.clone(), message);
+            .fold(BTreeMap::new(), |mut latest, run| {
+                latest.insert(run.id.clone(), run);
                 latest
             });
+    let messages = execution_store.team_messages()?.into_iter().fold(
+        BTreeMap::new(),
+        |mut latest, message| {
+            latest.insert(message.id.clone(), message);
+            latest
+        },
+    );
     let mut assignment_by_member = BTreeMap::new();
     for message in messages.values() {
         if message.kind != TeamMessageKind::Assignment {

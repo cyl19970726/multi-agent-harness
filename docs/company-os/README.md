@@ -65,8 +65,8 @@ The current implementation now has the first explicit Company Store slice:
 `<HARNESS_HOME>/companies/<id>/`. If no Company is selected, the older
 project-derived Company OS compatibility path still works. The migration command
 copies only `company_os_*.jsonl` ledgers; it does not move Mission/Wave, Agent
-Team, Workflow, provider sessions, prompts, or runtimes. ADR 0040 defines the
-target identity split: Company Store owns Agent Company Workspace truth,
+Team, Workflow, provider sessions, prompts, or runtimes. ADR 0042 defines the
+implemented identity split: Company Store owns Agent Company Workspace truth,
 Execution Space owns Mission/Wave, Agent Team, Workflow, and Host coordination,
 and Project Binding owns repo / worktree / provider-cwd selection. Company is
 optional for execution.

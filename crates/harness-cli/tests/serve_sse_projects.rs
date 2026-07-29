@@ -1,12 +1,6 @@
-//! Integration coverage for per-project SSE multiplexing
-//! (goal-multi-project P6, sse-multiplex task).
+//! Integration coverage for per-Execution-Space SSE multiplexing.
 //!
-//! Two registered projects, one serve. A client subscribed to project A's
-//! `/v1/events?project=<A>` must receive frames appended to A's store and NEVER
-//! frames appended to B's store, and vice versa. This proves the watcher's
-//! per-(project,filename) offsets and per-project broadcast channels keep the two
-//! streams isolated even though every project has an identically-named
-//! `missions.jsonl`.
+//! Project Binding selection is deliberately irrelevant to stream ownership.
 
 use std::time::Duration;
 
@@ -22,13 +16,33 @@ fn init_project(home: &TempHome, name: &str) -> String {
 }
 
 /// Append a native Mission to a specific project's store.
-fn create_mission(home: &TempHome, project_id: &str, id: &str, objective: &str) {
+fn create_space(home: &TempHome, id: &str, project_binding: &str) {
+    let out = run_harness(
+        home,
+        home.base(),
+        &[
+            "space",
+            "init",
+            "--id",
+            id,
+            "--name",
+            id,
+            "--project-binding",
+            project_binding,
+        ],
+    );
+    assert!(out.status.success(), "space init failed: {out:?}");
+}
+
+fn create_mission(home: &TempHome, space_id: &str, project_id: &str, id: &str, objective: &str) {
     let out = run_harness(
         home,
         home.base(),
         &[
             "--project",
             project_id,
+            "--space",
+            space_id,
             "mission",
             "create",
             "--id",
@@ -50,20 +64,22 @@ fn record_ids(frames: &[serde_json::Value]) -> Vec<String> {
 }
 
 #[test]
-fn sse_streams_are_isolated_per_project() {
+fn sse_streams_are_isolated_per_execution_space() {
     let home = TempHome::new("sse-iso");
     let id_a = init_project(&home, "alpha");
     let id_b = init_project(&home, "beta");
+    create_space(&home, "space-alpha", &id_a);
+    create_space(&home, "space-beta", &id_b);
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     // Open one SSE stream per project (drained past the initial snapshot).
-    let mut sse_a = serve.open_sse(&format!("?project={id_a}"));
-    let mut sse_b = serve.open_sse(&format!("?project={id_b}"));
+    let mut sse_a = serve.open_sse(&format!("?space=space-alpha&project={id_a}"));
+    let mut sse_b = serve.open_sse(&format!("?space=space-beta&project={id_b}"));
 
     // Append a row to EACH project's store after the streams are live.
-    create_mission(&home, &id_a, "mission-alpha", "hello alpha");
-    create_mission(&home, &id_b, "mission-beta", "hello beta");
+    create_mission(&home, "space-alpha", &id_a, "mission-alpha", "hello alpha");
+    create_mission(&home, "space-beta", &id_b, "mission-beta", "hello beta");
 
     // Collect a few frames from each (watcher poll is ~150ms).
     let frames_a = collect_sse_data(&mut sse_a, Duration::from_secs(4), 1);
@@ -96,23 +112,31 @@ fn sse_streams_are_isolated_per_project() {
 /// restart required (goal-multi-project #147 follow-up). With the old startup-only
 /// `watch_map`, this stream would receive ZERO frames.
 #[test]
-fn newly_registered_project_gets_live_sse_without_restart() {
+fn newly_registered_space_gets_live_sse_without_restart() {
     let home = TempHome::new("sse-new-project");
-    let id_a = init_project(&home, "alpha"); // the only project at serve startup
+    let id_a = init_project(&home, "alpha");
+    create_space(&home, "space-alpha", &id_a);
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     // Register a NEW project after serve is already running. It is not in the
     // startup watch_map, so it only becomes watchable if serve re-scans the registry.
     let id_new = init_project(&home, "gamma");
+    create_space(&home, "space-gamma", &id_new);
     assert_ne!(
         id_new, id_a,
         "gamma must be a distinct, post-startup project"
     );
 
     // Subscribe to the new project's stream, then append a row to its store.
-    let mut sse_new = serve.open_sse(&format!("?project={id_new}"));
-    create_mission(&home, &id_new, "mission-gamma", "hello gamma");
+    let mut sse_new = serve.open_sse(&format!("?space=space-gamma&project={id_new}"));
+    create_mission(
+        &home,
+        "space-gamma",
+        &id_new,
+        "mission-gamma",
+        "hello gamma",
+    );
 
     let frames = collect_sse_data(&mut sse_new, Duration::from_secs(6), 1);
     let ids = record_ids(&frames);
@@ -124,15 +148,16 @@ fn newly_registered_project_gets_live_sse_without_restart() {
 }
 
 #[test]
-fn events_without_project_uses_active_default_stream() {
+fn events_without_space_uses_active_default_stream() {
     let home = TempHome::new("sse-default");
     let _id_a = init_project(&home, "alpha");
     let id_b = init_project(&home, "beta"); // beta active
+    create_space(&home, "space-beta", &id_b);
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     // No ?project → the active project (beta).
     let mut sse = serve.open_sse("");
-    create_mission(&home, &id_b, "mission-default", "to active");
+    create_mission(&home, "space-beta", &id_b, "mission-default", "to active");
 
     let frames = collect_sse_data(&mut sse, Duration::from_secs(4), 1);
     let ids = record_ids(&frames);
