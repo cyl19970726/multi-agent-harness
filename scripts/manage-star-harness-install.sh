@@ -51,7 +51,7 @@ NODE
 }
 trap rollback_on_error EXIT
 
-for command_name in node cargo codex claude; do
+for command_name in node npm cargo codex claude; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "missing required command: ${command_name}" >&2
     exit 1
@@ -112,6 +112,8 @@ echo "Building Harness..."
 
 VERSION_DIR="${INSTALL_BASE}/${VERSION}"
 VERSION_BIN="${VERSION_DIR}/harness"
+MARKETPLACE_SNAPSHOT="${VERSION_DIR}/marketplace"
+CLAUDE_RUNNER_INSTALL="${VERSION_DIR}/apps/claude-member-runner"
 if [[ -L "${BIN_LINK}" ]]; then
   PREVIOUS_BIN="$(readlink "${BIN_LINK}")"
 fi
@@ -120,6 +122,37 @@ INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
 APPLY_IN_PROGRESS="true"
 install -m 0755 "${REPO_ROOT}/target/debug/harness" "${VERSION_BIN}"
+
+case "${MARKETPLACE_SNAPSHOT}" in
+  "${INSTALL_BASE}/"*) ;;
+  *)
+    echo "refusing to replace marketplace snapshot outside ${INSTALL_BASE}" >&2
+    exit 1
+    ;;
+esac
+rm -rf "${MARKETPLACE_SNAPSHOT}"
+mkdir -p "${MARKETPLACE_SNAPSHOT}/.claude-plugin" "${MARKETPLACE_SNAPSHOT}/plugins"
+install -m 0644 \
+  "${REPO_ROOT}/.claude-plugin/marketplace.json" \
+  "${MARKETPLACE_SNAPSHOT}/.claude-plugin/marketplace.json"
+cp -R "${REPO_ROOT}/plugins/star-harness" "${MARKETPLACE_SNAPSHOT}/plugins/"
+
+case "${CLAUDE_RUNNER_INSTALL}" in
+  "${VERSION_DIR}/"*) ;;
+  *)
+    echo "refusing to replace Claude runner outside ${VERSION_DIR}" >&2
+    exit 1
+    ;;
+esac
+rm -rf "${CLAUDE_RUNNER_INSTALL}"
+mkdir -p "$(dirname "${CLAUDE_RUNNER_INSTALL}")"
+cp -R "${REPO_ROOT}/apps/claude-member-runner" "${CLAUDE_RUNNER_INSTALL}"
+npm install \
+  --prefix "${CLAUDE_RUNNER_INSTALL}" \
+  --omit=dev \
+  --no-audit \
+  --no-fund \
+  --ignore-scripts
 
 if [[ -e "${BIN_LINK}" && ! -L "${BIN_LINK}" ]]; then
   echo "refusing to replace non-symlink ${BIN_LINK}" >&2
@@ -131,9 +164,13 @@ echo
 echo "Refreshing Codex marketplace and installing one canonical owner..."
 CODEX_MARKETPLACES="$(codex plugin marketplace list)"
 if grep -q '^multi-agent-harness[[:space:]]' <<<"${CODEX_MARKETPLACES}"; then
-  codex plugin marketplace upgrade multi-agent-harness
-else
-  codex plugin marketplace add "${MARKETPLACE_REPO}"
+  codex plugin marketplace remove multi-agent-harness
+fi
+if ! codex plugin marketplace add "${MARKETPLACE_REPO}" \
+  --sparse .claude-plugin \
+  --sparse plugins/star-harness; then
+  echo "Codex Git marketplace refresh failed; using accepted local snapshot." >&2
+  codex plugin marketplace add "${MARKETPLACE_SNAPSHOT}"
 fi
 if grep -q 'star-harness@personal[[:space:]].*installed' <<<"${CODEX_PLUGINS_BEFORE}"; then
   REMOVE_PERSONAL_AFTER_INSTALL="true"
@@ -157,15 +194,17 @@ fi
 echo
 echo "Refreshing Claude marketplace and plugin..."
 CLAUDE_MARKETPLACES="$(claude plugin marketplace list)"
-if grep -A1 'multi-agent-harness' <<<"${CLAUDE_MARKETPLACES}" | grep -q 'Source: Directory'; then
+if grep -q 'multi-agent-harness' <<<"${CLAUDE_MARKETPLACES}"; then
   claude plugin marketplace remove multi-agent-harness --scope user
-  claude plugin marketplace add "${MARKETPLACE_REPO}" --scope user
-elif grep -q 'multi-agent-harness' <<<"${CLAUDE_MARKETPLACES}"; then
-  claude plugin marketplace update multi-agent-harness
-else
-  claude plugin marketplace add "${MARKETPLACE_REPO}" --scope user
 fi
-if grep -q 'star-harness@multi-agent-harness' <<<"${CLAUDE_PLUGINS_BEFORE}"; then
+if ! claude plugin marketplace add "${MARKETPLACE_REPO}" \
+  --scope user \
+  --sparse .claude-plugin plugins/star-harness; then
+  echo "Claude Git marketplace refresh failed; using accepted local snapshot." >&2
+  claude plugin marketplace add "${MARKETPLACE_SNAPSHOT}" --scope user
+fi
+CLAUDE_PLUGINS_AFTER_MARKETPLACE="$(claude plugin list)"
+if grep -q 'star-harness@multi-agent-harness' <<<"${CLAUDE_PLUGINS_AFTER_MARKETPLACE}"; then
   claude plugin update "${PLUGIN_SELECTOR}" --scope user
 else
   claude plugin install "${PLUGIN_SELECTOR}" --scope user

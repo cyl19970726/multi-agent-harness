@@ -14133,8 +14133,27 @@ fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
             path.display()
         )));
     }
+    let current_executable = std::env::current_exe()
+        .ok()
+        .map(|path| fs::canonicalize(&path).unwrap_or(path));
+    claude_agent_sdk_runner_path_from(cwd, current_executable.as_deref())
+}
+
+fn claude_agent_sdk_runner_path_from(
+    cwd: &Path,
+    current_executable: Option<&Path>,
+) -> CliResult<PathBuf> {
     const RELATIVE: &str = "apps/claude-member-runner/bin/claude-member-runner.mjs";
-    for base in cwd.ancestors() {
+    let mut bases = Vec::new();
+    if let Some(executable) = current_executable {
+        bases.extend(executable.ancestors().map(Path::to_path_buf));
+    }
+    bases.extend(cwd.ancestors().map(Path::to_path_buf));
+    let mut visited = HashSet::new();
+    for base in bases
+        .into_iter()
+        .filter(|base| visited.insert(base.clone()))
+    {
         let candidate = base.join(RELATIVE);
         if candidate.is_file() {
             return Ok(candidate);
@@ -14145,9 +14164,10 @@ fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
     // exists to remove. Since `claude_agent_sdk` is the only Claude Agent Team
     // mode, this message tells a first-time runner how to repair the host.
     Err(CliError::Usage(format!(
-        "claude_agent_sdk runner not found. Looked for `{RELATIVE}` in {} and \
-         every parent, and HARNESS_CLAUDE_MEMBER_RUNNER is unset.\n\
+        "claude_agent_sdk runner not found. Looked for `{RELATIVE}` from {} and \
+         the installed Harness binary, and HARNESS_CLAUDE_MEMBER_RUNNER is unset.\n\
          Fix one of:\n  \
+         - install Star Harness with `pnpm star-harness:install`\n  \
          - run from a checkout that contains the runner, or point \
          HARNESS_CLAUDE_MEMBER_RUNNER at it\n  \
          - install its dependency once: pnpm add @anthropic-ai/claude-agent-sdk",
@@ -32065,6 +32085,28 @@ mod tests {
                 "{provider} Agent Team mode must not start an independent native continuation loop"
             );
         }
+    }
+
+    #[test]
+    fn claude_runner_resolves_from_installed_harness_tree() {
+        let root =
+            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("runner")));
+        let project = root.join("unrelated-project");
+        let install = root.join("star-harness/0.4.2");
+        let executable = install.join("harness");
+        let runner = install.join("apps/claude-member-runner/bin/claude-member-runner.mjs");
+        std::fs::create_dir_all(&project).expect("create unrelated project");
+        std::fs::create_dir_all(runner.parent().expect("runner parent"))
+            .expect("create installed runner directory");
+        std::fs::write(&runner, "#!/usr/bin/env node\n").expect("write installed runner");
+        std::fs::write(&executable, b"binary").expect("write installed Harness path");
+
+        assert_eq!(
+            claude_agent_sdk_runner_path_from(&project, Some(&executable))
+                .expect("resolve installed runner"),
+            runner
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
