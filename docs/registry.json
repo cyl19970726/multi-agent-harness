@@ -3252,12 +3252,14 @@
    "lifecycle": "stable",
    "canonicalFor": [
     "first native Codex and Kimi Agent Team live-provider acceptance",
-    "interrupted foreground TeamRun recovery evidence"
+    "interrupted foreground TeamRun recovery evidence",
+    "2026-07-30 consecutive persistent Codex, Claude, and Kimi release acceptance"
    ],
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/integration/codex.md",
     "docs/integration/kimi.md",
+    "docs/product/agent-team-dogfood-loop.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
@@ -3269,7 +3271,9 @@
    "reviewAfter": "2026-08-21",
    "lastVerifiedWith": [
     "harness dashboard snapshot",
-    "cargo test -p harness-cli --test team_run_api"
+    "cargo test -p harness-cli --test team_run_api",
+    "harness team-run status|inbox|ack|close-member|complete",
+    "harness wave advance"
    ],
    "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change.",
   "authorityClass": "actual_evidence",
@@ -3880,6 +3884,56 @@
    "authorityClass": "canonical_contract",
    "implementationState": "design_only",
    "truthRefs": []
+  },
+  {
+   "path": "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref relation",
+    "explicit StandingAgent to AgentMember to MemberRun projection join",
+    "no inferred identity and no execution lifecycle writeback"
+   ],
+   "dependsOn": [
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
+    "docs/company-os/organization-and-actors.md",
+    "schemas/company-os/actors.schema.json",
+    "schemas/member-run.schema.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-10-30",
+   "lastVerifiedWith": [
+    "cargo test -p harness-cli --test mission_wave_api -- --test-threads=1",
+    "cargo test -p harness-store --test company_os",
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "StandingAgent, AgentMember, MemberRun, Organization projection, or lifecycle ownership semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/company-os/actors.schema.json"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/company_os_api.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-store/tests/company_os.rs"
+    }
+   ]
   },
   {
    "path": "docs/cli-map.md",

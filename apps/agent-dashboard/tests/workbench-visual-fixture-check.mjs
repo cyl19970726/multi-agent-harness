@@ -275,6 +275,13 @@ async function main() {
     "MemberRun Focus joins visible provider-native activity with Harness coordination and labels provenance",
   );
   check(
+    memberRunSource.includes("standing_assignment_conflicts")
+      && memberRunSource.includes("organizationLinkConflict")
+      && memberRunSource.includes("Ambiguous Standing Agent link")
+      && memberRunSource.includes("withholds the Organization identity instead of guessing"),
+    "MemberRun Focus refuses to guess a Standing Agent when the explicit execution link conflicts",
+  );
+  check(
     warRoomSource.includes('label="Execution root"')
       && warRoomSource.includes('label="Worktree override"')
       && warRoomSource.includes('label="Actual cwd"')

@@ -148,6 +148,10 @@ pub struct StandingAgent {
     pub id: String,
     pub display_name: String,
     pub role: String,
+    /// Optional Company-owned link to the reusable execution identity.
+    /// This is never inferred from `StandingAgent.id`.
+    #[serde(default)]
+    pub execution_agent_member_ref: Option<String>,
     pub status: MemberStatus,
     /// A business declaration. It must not be inferred from runtime health.
     pub availability: DeclaredAvailability,
@@ -180,6 +184,10 @@ impl ValidateCompanyOs for StandingAgent {
         required(&self.id, "StandingAgent.id")?;
         required(&self.display_name, "StandingAgent.display_name")?;
         required(&self.role, "StandingAgent.role")?;
+        optional_required(
+            self.execution_agent_member_ref.as_deref(),
+            "StandingAgent.execution_agent_member_ref",
+        )?;
         required(
             &self.responsibility_summary,
             "StandingAgent.responsibility_summary",

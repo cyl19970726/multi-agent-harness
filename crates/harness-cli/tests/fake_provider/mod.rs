@@ -155,6 +155,20 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ "${FAKE_KIMI_HANDOFF_DURING_TURN:-0}" = "1" ]; then
+        # Give the Harness reader a deterministic chance to consume the first
+        # ACP frame and publish its provider receipt before this bound member
+        # authors a correlation-checked Handoff from inside the active turn.
+        sleep 0.1
+        "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run send \
+          --id "$HARNESS_TEAM_RUN_ID" \
+          --from "$HARNESS_MEMBER_RUN_ID" \
+          --to host \
+          --kind handoff \
+          --body "## RESULT\ncompleted\n## SUMMARY\nexplicit handoff during active ACP turn" \
+          --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+          > "${FAKE_KIMI_HANDOFF_MARKER:?}" 2>&1
+      fi
       if [ "$ask" = "1" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"12:ask-user","title":"AskUserQuestion","kind":"other","status":"in_progress"}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","id":700,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"q0_opt_0","name":"Use native contract","kind":"allow_once"},{"optionId":"q0_skip","name":"Skip","kind":"reject_once"}],"toolCall":{"toolCallId":"12:ask-user","title":"AskUserQuestion","content":[{"type":"content","content":{"type":"text","text":"Which implementation should be used?"}}]}}}\n' "$session_id"
@@ -164,6 +178,9 @@ while IFS= read -r line; do
       else
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"fake_edit","kind":"edit","status":"in_progress"}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}\n' "$session_id"
+        if [ "${FAKE_KIMI_CONCATENATED_REPORT:-0}" = "1" ]; then
+          printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ordinary narration with no trailing newline"}}}}\n' "$session_id"
+        fi
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member finished round\\n"}}}}\n' "$session_id" "$result"
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
       fi
@@ -231,11 +248,11 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
         ;;
       *'"method":"thread/start"'*)
-        printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol"}}}\n' "$id" "$thread_id"
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"%s"}}}\n' "$id" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
-        printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol","turns":[]}}}\n' "$id" "$thread_id"
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"%s","turns":[]}}}\n' "$id" "$thread_id"
         ;;
       *'"method":"thread/name/set"'*)
         if [ -n "${FAKE_CODEX_NAME_MARKER:-}" ]; then

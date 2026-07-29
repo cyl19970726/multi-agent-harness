@@ -9,6 +9,7 @@ import type {
   ApprovalView,
   FinancialRecordView,
   RelatedLink,
+  StandingLinkConflict,
   TrademarkOperationsProjection,
   WorkItemView,
 } from "./types";
@@ -365,6 +366,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       acceptedWorkTypeRefs: stringArray(actor.accepted_work_type_refs),
       permissionPolicyRefs: stringArray(actor.permission_policy_refs),
       escalationPolicyRef: text(actor.escalation_policy_ref) || undefined,
+      executionAgentMemberRef: text(actor.execution_agent_member_ref) || undefined,
     };
   }
   const actor = (id: unknown): ActorSummary => actorById[refId(id)] ?? {
@@ -388,8 +390,10 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const standingAssignments: StandingExecutionAssignment[] = standingAssignmentRecords.map((record): StandingExecutionAssignment => ({
     id: text(record.id),
     agentMemberId: text(record.agent_member_id),
-    sourceKind: text(record.source_kind) === "mission_wave" ? "mission_wave" : "direct_assignment",
-    sourceRef: text(record.source_ref),
+    sourceKind: text(record.source_kind) === "agent_team_participation"
+      ? "agent_team_participation"
+      : "agent_team_assignment",
+    sourceRef: text(record.source_ref) || undefined,
     missionId: text(record.mission_id) || undefined,
     waveId: text(record.wave_id) || undefined,
     teamRunId: text(record.team_run_id),
@@ -399,11 +403,22 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     status: text(record.status, "unknown"),
     assignedAt: text(record.assigned_at),
     lastActivityAt: text(record.last_activity_at) || undefined,
-    correlationId: text(record.correlation_id),
+    correlationId: text(record.correlation_id) || undefined,
     nativeSession: record.native_session && typeof record.native_session === "object"
       ? record.native_session as StandingExecutionAssignment["nativeSession"]
       : undefined,
   })).filter((assignment) => assignment.agentMemberId && assignment.teamRunId && assignment.memberRunId);
+  const standingAssignmentConflictRecords = records(root.standing_assignment_conflicts);
+  const standingAssignmentConflicts: StandingLinkConflict[] = standingAssignmentConflictRecords.map((record): StandingLinkConflict => ({
+    id: text(record.id),
+    kind: text(record.kind),
+    severity: text(record.severity, "error"),
+    agentMemberId: text(record.agent_member_id),
+    standingAgentIds: stringArray(record.standing_agent_ids),
+    affectedMemberRunIds: stringArray(record.affected_member_run_ids),
+    detail: text(record.detail),
+    resolutionHint: text(record.resolution_hint) || undefined,
+  })).filter((conflict) => conflict.id && conflict.agentMemberId && conflict.standingAgentIds.length > 0);
   const metrics = [
     ...records(root.explicit_metrics),
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
@@ -597,6 +612,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     actors: actorById,
     actorList: Object.values(actorById),
     standingAssignments,
+    standingAssignmentConflicts,
     organization: {
       company: asRef(companyUnit.id, field(companyUnit, "name")),
       brandUnit: asRef(brandUnit.id, field(brandUnit, "name")),

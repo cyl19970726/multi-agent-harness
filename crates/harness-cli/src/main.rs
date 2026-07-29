@@ -2062,7 +2062,7 @@ fn company_context_json(ctx: &company_store::CompanyContext, current: &str) -> s
 fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions",
+        "company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution",
     )?;
     match args[0].as_str() {
         "actor" => company_org_actor_command(store, &args[1..]),
@@ -2076,8 +2076,10 @@ fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "add-membership" => company_org_add_membership_command(store, &args[1..]),
         "transition-actor" => company_org_transition_actor_command(store, &args[1..]),
         "update-permissions" => company_org_update_permissions_command(store, &args[1..]),
+        "link-execution" => company_org_link_execution_command(store, &args[1..]),
+        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions"
+            "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution"
         ))),
     }
 }
@@ -2257,6 +2259,7 @@ fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> Cl
             "id": id,
             "display_name": required(args, "--display-name")?,
             "role": required(args, "--role")?,
+            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
             "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
             "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
             "assignment_capacity": capacity,
@@ -2392,6 +2395,181 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     )
 }
 
+/// Require an active Human `company_os.admin` authority without writing a row.
+///
+/// The relation commands are idempotent, so some invocations append nothing.
+/// Those still have to prove authority up front: otherwise an unknown or
+/// non-admin `--authority` would appear to succeed whenever the relation
+/// already had the requested shape.
+fn company_org_require_admin_authority(store: &HarnessStore, authority: &str) -> CliResult<()> {
+    let authority_ref = company_actor_ref_json("human", authority)?;
+    company_os_api::authorize_administrative_actor_write(store, &authority_ref)
+        .map_err(CliError::Usage)
+}
+
+/// Open the Execution Space that owns AgentMember truth for a Company OS link.
+///
+/// `harness company ...` resolves its store from the Company Store registry and
+/// returns from [`resolve_store`] *before* the global `--space` selector is
+/// consumed, so a Company CLI command never holds an execution store. Per ADR
+/// 0042 the Company Store does not own AgentMember truth and a Project Binding
+/// only describes cwd, so the relation command names its Execution Space
+/// explicitly and this function is the single read-only bridge across the
+/// boundary. It deliberately has no fallback to the active space or to a
+/// Project Binding: a link validated against an unnamed store is not governed.
+fn company_execution_space_store(
+    space_id: &str,
+) -> CliResult<(harness_core::ExecutionSpace, HarnessStore)> {
+    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
+    let space = execution_space::context_for_id(&harness_home, space_id)
+        .map_err(execution_space_err)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "unknown execution space: {space_id}; list them with `harness space list`"
+            ))
+        })?;
+    let store = HarnessStore::new(space.store_root.clone());
+    Ok((space, store))
+}
+
+/// Link an EXISTING StandingAgent to an EXISTING AgentMember.
+///
+/// Both ids are explicit and neither is ever inferred from the other: equal ids
+/// must be typed twice. The StandingAgent is read latest-row-wins and re-appended
+/// with only `execution_agent_member_ref` and `updated_at` changed, so every other
+/// actor field round-trips. The write goes through the administrative governance
+/// envelope, never through a raw JSONL edit.
+fn company_org_link_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let actor_id = required(args, "--actor")?;
+    let agent_member_id = required(args, "--agent-member")?;
+    let space_id = required(args, "--execution-space")?;
+    let replace = has_flag(args, "--replace");
+    // Authorize every invocation, including the ones that turn out to change
+    // nothing: an idempotent no-op must not become an authorization bypass.
+    company_org_require_admin_authority(store, &authority)?;
+
+    let (space, execution_store) = company_execution_space_store(&space_id)?;
+    let members = latest_members(&execution_store)?;
+    let member = members.get(&agent_member_id).ok_or_else(|| {
+        CliError::Usage(format!(
+            "AgentMember not found in execution space {}: {agent_member_id} (store {})",
+            space.id,
+            space.store_root.display()
+        ))
+    })?;
+
+    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
+    let previous = actor["actor"]["execution_agent_member_ref"]
+        .as_str()
+        .map(str::to_string);
+    let validated_against = serde_json::json!({
+        "execution_space_id": space.id,
+        "execution_store_root": space.store_root.to_string_lossy(),
+        "agent_member_id": member.id,
+        "agent_member_name": member.name,
+        "agent_member_provider": member.provider,
+    });
+    if previous.as_deref() == Some(agent_member_id.as_str()) {
+        // Idempotent: a re-run of the same explicit pair appends no row.
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "command": "harness company org actor link-execution",
+            "result": {
+                "relation": "standing_agent_execution_member",
+                "changed": false,
+                "reason": "already_linked",
+                "standing_agent_id": actor_id,
+                "agent_member_id": agent_member_id,
+                "validated_against": validated_against,
+                "boundaries": company_org_boundaries()
+            }
+        }));
+    }
+    if let Some(previous_ref) = previous.as_deref() {
+        if !replace {
+            return Err(CliError::Usage(format!(
+                "StandingAgent {actor_id} already links execution AgentMember {previous_ref}; pass --replace to repoint it to {agent_member_id}"
+            )));
+        }
+    }
+    actor["actor"]["execution_agent_member_ref"] = serde_json::json!(agent_member_id);
+    actor["actor"]["updated_at"] = serde_json::json!(now_string());
+    company_org_admin_append_detail(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_standing_agent_execution_link_append",
+        serde_json::json!({
+            "relation": "standing_agent_execution_member",
+            "changed": true,
+            "standing_agent_id": actor_id,
+            "agent_member_id": agent_member_id,
+            "previous_agent_member_ref": previous,
+            "validated_against": validated_against,
+            "inference": "none_explicit_ids_only",
+            "execution_space_persistence": "write_time_assertion_not_persisted_on_standing_agent",
+        }),
+    )
+}
+
+/// Unlink an EXISTING StandingAgent from its execution AgentMember.
+///
+/// No Execution Space is required because clearing a reference validates
+/// nothing in the execution store. `--expect-agent-member` is an optional
+/// optimistic guard for scripted relink flows.
+fn company_org_unlink_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let actor_id = required(args, "--actor")?;
+    let expected = value(args, "--expect-agent-member");
+    // Authorize every invocation, including the ones that turn out to change
+    // nothing: an idempotent no-op must not become an authorization bypass.
+    company_org_require_admin_authority(store, &authority)?;
+
+    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
+    let previous = actor["actor"]["execution_agent_member_ref"]
+        .as_str()
+        .map(str::to_string);
+    let Some(previous_ref) = previous else {
+        // Idempotent: unlinking an unlinked Standing Agent appends no row.
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "command": "harness company org actor unlink-execution",
+            "result": {
+                "relation": "standing_agent_execution_member",
+                "changed": false,
+                "reason": "already_unlinked",
+                "standing_agent_id": actor_id,
+                "boundaries": company_org_boundaries()
+            }
+        }));
+    };
+    if let Some(expected) = expected.as_deref() {
+        if expected != previous_ref {
+            return Err(CliError::Usage(format!(
+                "StandingAgent {actor_id} links execution AgentMember {previous_ref}, not {expected}; refusing to unlink"
+            )));
+        }
+    }
+    actor["actor"]["execution_agent_member_ref"] = serde_json::Value::Null;
+    actor["actor"]["updated_at"] = serde_json::json!(now_string());
+    company_org_admin_append_detail(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_standing_agent_execution_unlink_append",
+        serde_json::json!({
+            "relation": "standing_agent_execution_member",
+            "changed": true,
+            "standing_agent_id": actor_id,
+            "agent_member_id": serde_json::Value::Null,
+            "previous_agent_member_ref": previous_ref,
+        }),
+    )
+}
+
 fn company_org_admin_append(
     store: &HarnessStore,
     path: &str,
@@ -2399,20 +2577,44 @@ fn company_org_admin_append(
     record: serde_json::Value,
     write_path: &str,
 ) -> CliResult<()> {
+    company_org_admin_append_detail(
+        store,
+        path,
+        authority,
+        record,
+        write_path,
+        serde_json::Value::Null,
+    )
+}
+
+fn company_org_admin_append_detail(
+    store: &HarnessStore,
+    path: &str,
+    authority: &str,
+    record: serde_json::Value,
+    write_path: &str,
+    detail: serde_json::Value,
+) -> CliResult<()> {
     let result = dispatch_company_docs_admin_append_value(
         store,
         path,
         company_actor_ref_json("human", authority)?,
         record,
     )?;
+    let mut payload = serde_json::json!({
+        "record": result,
+        "write_path": write_path,
+        "boundaries": company_org_boundaries()
+    });
+    if let (Some(target), Some(detail)) = (payload.as_object_mut(), detail.as_object()) {
+        for (key, value) in detail {
+            target.insert(key.clone(), value.clone());
+        }
+    }
     print_json(&serde_json::json!({
         "ok": true,
         "command": "harness company org",
-        "result": {
-            "record": result,
-            "write_path": write_path,
-            "boundaries": company_org_boundaries()
-        }
+        "result": payload
     }))
 }
 
@@ -3164,7 +3366,7 @@ fn company_work_milestone_close_command(store: &HarnessStore, args: &[String]) -
 fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "company org actor list|show|create-human|create-agent|update-status",
+        "company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -3220,8 +3422,10 @@ fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult
             }
             company_org_transition_actor_command(store, &forwarded)
         }
+        "link-execution" => company_org_link_execution_command(store, &args[1..]),
+        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status"
+            "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution"
         ))),
     }
 }
@@ -3324,6 +3528,7 @@ fn company_org_actor_create_agent_command(store: &HarnessStore, args: &[String])
             "id": id,
             "display_name": required(args, "--display-name")?,
             "role": required(args, "--role")?,
+            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
             "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
             "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
             "assignment_capacity": value(args, "--assignment-capacity").map(|v| v.parse::<u32>()).transpose().map_err(|_| CliError::Usage("--assignment-capacity must be a positive integer".into()))?,
@@ -8330,6 +8535,12 @@ fn agent_command(
                 ));
             }
             let mut member = build_member_from_args(args, AgentMemberStatus::Creating)?;
+            if latest_members(store)?.contains_key(&member.id) {
+                return Err(CliError::Usage(format!(
+                    "AgentMember already exists: {}",
+                    member.id
+                )));
+            }
             let prompt_ref = ensure_agent_prompt(store, &member, args)?;
             member.prompt_ref = Some(prompt_ref);
             if has_flag(args, "--start") {
@@ -11391,6 +11602,23 @@ fn team_run_command(
                     })?;
                 member.worktree_ref = Some(worktree_ref.to_string());
             }
+            for override_spec in many(args, "--member-owned-path") {
+                let (name, owned_path) = override_spec.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--member-owned-path expects name:path".to_string())
+                })?;
+                if owned_path.trim().is_empty() {
+                    return Err(CliError::Usage(
+                        "--member-owned-path path must not be empty".to_string(),
+                    ));
+                }
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--member-owned-path names unknown member {name}"))
+                    })?;
+                member.owned_paths.push(owned_path.to_string());
+            }
             let budget_limit_usd = value(args, "--budget-usd")
                 .map(|raw| {
                     raw.parse::<f64>()
@@ -13969,11 +14197,13 @@ fn run_codex_app_server_turn(
     for message in accepted_messages {
         mark_message_delivered(ledger, message, &member.id, &member.name, &turn_id)?;
     }
-    // The start response is the preferred active id. Codex 0.146 can,
-    // however, surface Goal/Plan work under a follow-up provider turn id.
-    // Bind to the first scoped non-terminal activity for this request, then
-    // require every later scoped frame (especially turn/completed) to match.
-    let mut observed_turn_id: Option<String> = None;
+    // The turn/start response is authoritative. A prior interrupted turn may
+    // still flush item activity after the next turn has started; rebinding on
+    // that stale item would make the real turn/completed look foreign and
+    // strand the MemberRun as running. Provider-native Goal/Plan continuation
+    // may move work to another turn, but only an explicit turn/started frame
+    // is allowed to change this active scope.
+    let mut active_turn_id = turn_id.clone();
     let mut final_text = String::new();
     let mut last_activity = Instant::now();
     let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
@@ -14059,27 +14289,18 @@ fn run_codex_app_server_turn(
                 let method = frame.get("method").and_then(|value| value.as_str());
                 let params = frame.get("params").unwrap_or(&frame);
                 // app-server may emit notifications for another turn on the
-                // same thread (for example a native Goal update finishing
-                // while the next Plan revision is already active). Never let
-                // a stale turn/completed, plan delta, or provider request
-                // terminate or contaminate the turn we actually started.
+                // same thread (for example an interrupted turn flushing its
+                // last item while the follow-up turn is already active).
+                // Never let stale item/terminal frames change the active turn.
                 let frame_turn_id = params
                     .get("turnId")
                     .and_then(|value| value.as_str())
                     .or_else(|| params.pointer("/turn/id").and_then(|value| value.as_str()));
-                let is_turn_activity = method == Some("turn/plan/updated")
-                    || method.is_some_and(|method| method.starts_with("item/"));
-                if observed_turn_id.is_none() && is_turn_activity {
-                    if let Some(frame_turn_id) = frame_turn_id {
-                        observed_turn_id = Some(frame_turn_id.to_string());
-                        turn_id = frame_turn_id.to_string();
-                    }
+                if !codex_frame_matches_active_turn(&mut active_turn_id, method, frame_turn_id) {
+                    continue;
                 }
-                if let Some(frame_turn_id) = frame_turn_id {
-                    let active_turn_id = observed_turn_id.as_deref().unwrap_or(&turn_id);
-                    if frame_turn_id != active_turn_id {
-                        continue;
-                    }
+                if method == Some("turn/started") {
+                    turn_id = active_turn_id.clone();
                 }
                 match method {
                     Some("turn/plan/updated") | Some("item/plan/delta") => {}
@@ -14178,6 +14399,22 @@ fn run_codex_app_server_turn(
             }
         }
     }
+}
+
+/// Fence app-server notifications to the turn that Harness actually started.
+/// Only an explicit turn/started notification may move the active scope; item
+/// activity from a prior interrupted turn is never authoritative.
+fn codex_frame_matches_active_turn(
+    active_turn_id: &mut String,
+    method: Option<&str>,
+    frame_turn_id: Option<&str>,
+) -> bool {
+    if method == Some("turn/started") {
+        if let Some(frame_turn_id) = frame_turn_id {
+            *active_turn_id = frame_turn_id.to_string();
+        }
+    }
+    frame_turn_id.is_none_or(|frame_turn_id| frame_turn_id == active_turn_id.as_str())
 }
 
 /// Drive one Claude Code Team Member without mirroring its stream-json output.
@@ -15045,7 +15282,10 @@ fn record_round_handoff(
         recipients: vec![compatibility_team_recipient("host")],
         to_member_ids: vec!["host".to_string()],
         kind: TeamMessageKind::Handoff,
-        body: record.final_text.to_string(),
+        // Provider streams may contain several ordinary assistant messages
+        // before the terminal structured report. Harness owns the explicit
+        // outcome, not a mirror of that provider narration.
+        body: canonical_member_report_text(record.final_text).to_string(),
         correlation_id,
         causation_id,
         evidence_refs: record.evidence_refs.to_vec(),
@@ -15446,6 +15686,12 @@ fn run_kimi_member(
             client.prompt(
                 &prompt_text,
                 idle_timeout,
+                |receipt| {
+                    for message in &accepted_messages {
+                        mark_message_delivered(ledger, message, &member.id, &member.name, receipt)?;
+                    }
+                    Ok(())
+                },
                 |update| mapper.handle(update),
                 |request| handle_kimi_provider_request(ledger, &member_row, request),
                 || {
@@ -15502,13 +15748,6 @@ fn run_kimi_member(
             )?
         };
         let round_trigger = accepted_messages.last().cloned();
-        for message in &accepted_messages {
-            let receipt = client
-                .session_id()
-                .map(|session_id| format!("kimi-acp-session:{session_id}"))
-                .unwrap_or_else(|| format!("kimi-acp-message:{}", message.id));
-            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
-        }
         accepted_messages.clear();
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
@@ -16548,9 +16787,32 @@ fn parse_round_result(final_text: &str) -> MemberRoundResult {
     }
 }
 
+/// Return the final structured member report when a provider stream contains
+/// interim assistant prose or more than one report. Reports that predate the
+/// `## RESULT` contract remain readable as their original trimmed text.
+fn canonical_member_report_text(text: &str) -> &str {
+    let upper = text.to_ascii_uppercase();
+    let marker = "## RESULT";
+    let last_result = upper
+        .match_indices(marker)
+        .filter_map(|(start, _)| {
+            let heading_tail = &text[start + marker.len()..];
+            let (same_line_tail, has_line_break) = heading_tail
+                .split_once('\n')
+                .map(|(tail, _)| (tail.trim_end_matches('\r'), true))
+                .unwrap_or((heading_tail, false));
+            (has_line_break && same_line_tail.trim().is_empty()).then_some(start)
+        })
+        .last();
+    last_result
+        .map(|start| text[start..].trim())
+        .unwrap_or_else(|| text.trim())
+}
+
 /// Loose `## <NAME>` section extractor: the trimmed body between the heading
 /// (matched case-insensitively) and the next `## ` heading or EOF.
 fn extract_report_section(text: &str, name: &str) -> Option<String> {
+    let text = canonical_member_report_text(text);
     let marker = format!("## {name}").to_uppercase();
     let mut in_section = false;
     let mut body = Vec::new();
@@ -19124,12 +19386,43 @@ fn create_message_value(
 
 /// Persist a freshly-built team. Mirrors the `team create` CLI arm.
 fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
+    if latest_teams(store)?.contains_key(&team.id) {
+        return Err(CliError::Usage(format!(
+            "AgentTeam already exists: {}",
+            team.id
+        )));
+    }
+    let members = latest_members(store)?;
+    let mut unique = BTreeSet::new();
+    for member_id in &team.member_ids {
+        if member_id.trim().is_empty() {
+            return Err(CliError::Usage(
+                "AgentTeam member id must not be empty".to_string(),
+            ));
+        }
+        if !unique.insert(member_id) {
+            return Err(CliError::Usage(format!(
+                "AgentTeam contains duplicate member id: {member_id}"
+            )));
+        }
+        if !members.contains_key(member_id) {
+            return Err(CliError::Usage(format!(
+                "AgentTeam references missing AgentMember: {member_id}"
+            )));
+        }
+    }
     store.append_team(team)?;
     Ok(())
 }
 
 /// Persist a freshly-built goal. Mirrors the `goal create` CLI arm.
 fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
+    if latest_members(store)?.contains_key(&member.id) {
+        return Err(CliError::Usage(format!(
+            "AgentMember already exists: {}",
+            member.id
+        )));
+    }
     store.append_member(member)?;
     append_agent_event(
         store,
@@ -25071,6 +25364,11 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let member_cards: Vec<_> = members
         .values()
         .map(|member| {
+            let derived_team_ids = teams
+                .values()
+                .filter(|team| team.member_ids.iter().any(|id| id == &member.id))
+                .map(|team| team.id.clone())
+                .collect::<Vec<_>>();
             let runtime = member
                 .provider_runtime_id
                 .as_ref()
@@ -25116,7 +25414,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "model": member.model,
                 "profile": member.profile,
                 "provider_config": member.provider_config,
-                "team_ids": member.team_ids,
+                // Reverse membership is derived from the latest reusable Team
+                // definitions. AgentMember.team_ids is compatibility input,
+                // never authoritative read-model state.
+                "team_ids": derived_team_ids,
                 "created_at": member.created_at,
                 "last_seen_at": member.last_seen_at,
                 "inbox_count": inbox_count,
@@ -28367,7 +28668,9 @@ fn print_help() {
   company finance commitment list|show|propose|transition
   company finance payment list|show|record
   company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions
-  company org actor list|show|create-human|create-agent|update-status
+  company org link-execution --authority <human> --actor <standing-agent> --agent-member <id> --execution-space <id> [--replace]
+  company org unlink-execution --authority <human> --actor <standing-agent> [--expect-agent-member <id>]
+  company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution
   company org unit list|show|create|update-status
   company org membership list|assign|update-status
   company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]
@@ -34609,6 +34912,18 @@ mod tests {
     #[test]
     fn create_team_value_persists_team_and_appears_in_snapshot() {
         let (store, root) = temp_store("wp-ii-team");
+        for (id, name) in [("worker-1", "Worker One"), ("worker-2", "Worker Two")] {
+            create_agent_value(
+                &store,
+                &serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "role": "worker",
+                    "provider": "codex"
+                }),
+            )
+            .expect("member create succeeds");
+        }
         let body = serde_json::json!({
             "name": "Platform Squad",
             "description": "Owns the dashboard",
@@ -34657,6 +34972,59 @@ mod tests {
             matches!(error, CliError::Usage(_)),
             "malformed body must be a Usage error, got: {error:?}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_team_rejects_missing_and_duplicate_member_ids() {
+        let (store, root) = temp_store("team-member-integrity");
+        let missing = serde_json::json!({
+            "id": "team-missing",
+            "name": "Invalid",
+            "description": "References a missing member",
+            "lead_agent_id": "host",
+            "member": ["missing"]
+        });
+        let error = create_team_value(&store, &missing).expect_err("missing member must fail");
+        assert!(error.to_string().contains("missing AgentMember"));
+
+        let member = build_member_from_args(
+            &[
+                "--id".into(),
+                "member-1".into(),
+                "--name".into(),
+                "Member".into(),
+                "--role".into(),
+                "builder".into(),
+            ],
+            AgentMemberStatus::Idle,
+        )
+        .expect("member");
+        finalize_member_creation(&store, &member).expect("member create");
+        let duplicate = serde_json::json!({
+            "id": "team-duplicate",
+            "name": "Invalid",
+            "description": "Duplicates a member",
+            "lead_agent_id": "host",
+            "member": ["member-1", "member-1"]
+        });
+        let error = create_team_value(&store, &duplicate).expect_err("duplicate must fail");
+        assert!(error.to_string().contains("duplicate member id"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_agent_rejects_duplicate_identity() {
+        let (store, root) = temp_store("duplicate-agent-member");
+        let body = serde_json::json!({
+            "id": "member-1",
+            "name": "Worker",
+            "role": "builder",
+            "provider": "codex"
+        });
+        create_agent_value(&store, &body).expect("first create");
+        let error = create_agent_value(&store, &body).expect_err("duplicate must fail");
+        assert!(error.to_string().contains("AgentMember already exists"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -34742,6 +35110,154 @@ mod tests {
             "malformed body must be a Usage error, got: {error:?}"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_turn_scope_ignores_stale_item_activity() {
+        let mut active = "turn-current".to_string();
+
+        assert!(!codex_frame_matches_active_turn(
+            &mut active,
+            Some("item/completed"),
+            Some("turn-interrupted"),
+        ));
+        assert_eq!(active, "turn-current");
+        assert!(codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/completed"),
+            Some("turn-current"),
+        ));
+    }
+
+    #[test]
+    fn codex_turn_scope_moves_only_on_explicit_turn_started() {
+        let mut active = "turn-start-response".to_string();
+
+        assert!(codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/started"),
+            Some("turn-provider-continuation"),
+        ));
+        assert_eq!(active, "turn-provider-continuation");
+        assert!(!codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/completed"),
+            Some("turn-start-response"),
+        ));
+        assert!(codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/completed"),
+            Some("turn-provider-continuation"),
+        ));
+    }
+
+    #[test]
+    fn member_handoff_uses_final_structured_report() {
+        let text = "I will inspect the inbox first.\n\
+                    Progress update before the result.\n\
+                    ## RESULT\n\
+                    done\n\
+                    ## SUMMARY\n\
+                    final evidence only\n";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## RESULT\ndone\n## SUMMARY\nfinal evidence only"
+        );
+        assert_eq!(
+            extract_report_section(text, "SUMMARY").as_deref(),
+            Some("final evidence only")
+        );
+    }
+
+    #[test]
+    fn member_handoff_last_structured_report_wins() {
+        let text = "## RESULT\nblocked\n## SUMMARY\nfirst attempt\n\
+                    Retrying after Host feedback.\n\
+                    ## RESULT\n\
+                    done\n\
+                    ## SUMMARY\n\
+                    accepted attempt\n";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## RESULT\ndone\n## SUMMARY\naccepted attempt"
+        );
+        assert_eq!(parse_round_result(text), MemberRoundResult::Done);
+        assert_eq!(
+            extract_report_section(text, "SUMMARY").as_deref(),
+            Some("accepted attempt")
+        );
+    }
+
+    #[test]
+    fn member_handoff_last_result_marker_is_case_insensitive_and_need_not_start_a_line() {
+        let text = "## RESULT\nblocked\n## SUMMARY\nfirst attempt\n\
+                    ACP appended the terminal chunk without a newline:## rEsUlT\n\
+                    done\n\
+                    ## SUMMARY\n\
+                    accepted concatenated attempt\n";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## rEsUlT\ndone\n## SUMMARY\naccepted concatenated attempt"
+        );
+        assert_eq!(parse_round_result(text), MemberRoundResult::Done);
+        assert_eq!(
+            extract_report_section(text, "SUMMARY").as_deref(),
+            Some("accepted concatenated attempt")
+        );
+    }
+
+    #[test]
+    fn member_handoff_accepts_acp_message_chunk_shape() {
+        let chunks = [
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": "ordinary assistant narration"}
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": "## RESULT\ndone\n"}
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": "## SUMMARY\nchunk-shaped terminal report"}
+            }),
+        ];
+        let accumulated = chunks
+            .iter()
+            .filter_map(|chunk| chunk["content"]["text"].as_str())
+            .collect::<String>();
+
+        assert_eq!(
+            canonical_member_report_text(&accumulated),
+            "## RESULT\ndone\n## SUMMARY\nchunk-shaped terminal report"
+        );
+        assert_eq!(parse_round_result(&accumulated), MemberRoundResult::Done);
+    }
+
+    #[test]
+    fn member_handoff_ignores_trailing_result_marker_mentioned_in_prose() {
+        let text = "interim narration## RESULT\n\
+                    blocked\n\
+                    ## SUMMARY\n\
+                    real terminal report\n\
+                    Reviewer note: do not repeat ## RESULT in prose.";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## RESULT\nblocked\n## SUMMARY\nreal terminal report\nReviewer note: do not repeat ## RESULT in prose."
+        );
+        assert_eq!(parse_round_result(text), MemberRoundResult::Blocked);
+    }
+
+    #[test]
+    fn member_handoff_without_result_heading_is_backward_compatible() {
+        assert_eq!(
+            canonical_member_report_text("  legacy free-form report  "),
+            "legacy free-form report"
+        );
     }
 }
 

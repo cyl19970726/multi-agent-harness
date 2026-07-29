@@ -122,6 +122,24 @@ export function MemberRunFocus({
   }, []);
 
   const context = selectMemberRunContext(model.snapshot, memberRunId);
+  const companyProjection = model.snapshot.company_os as {
+    actors?: Array<{
+      id?: string;
+      display_name?: string;
+      record?: { execution_agent_member_ref?: string | null };
+    }>;
+    standing_assignment_conflicts?: Array<{ agent_member_id?: string }>;
+  } | undefined;
+  const organizationLinkConflict = Boolean(
+    context?.member.agent_member_id
+    && companyProjection?.standing_assignment_conflicts?.some(
+      (conflict) => conflict.agent_member_id === context.member.agent_member_id,
+    ),
+  );
+  const organizationActor = context?.member.agent_member_id && !organizationLinkConflict
+    ? companyProjection?.actors?.find((actor) =>
+      actor.record?.execution_agent_member_ref === context.member.agent_member_id)
+    : undefined;
   const closeRequest = model.snapshot.team_member_close_requests?.find(
     (request) => request.member_run_id === memberRunId,
   );
@@ -241,6 +259,8 @@ export function MemberRunFocus({
           teamName={stableTeam?.name}
           evidence={evidence}
           sessionStatus={context.member.native_session?.availability}
+          organizationActor={organizationActor}
+          organizationLinkConflict={organizationLinkConflict}
           onSelectionChange={onSelectionChange}
         />
       }
@@ -532,6 +552,8 @@ function MemberContextRail({
   teamName,
   evidence,
   sessionStatus,
+  organizationActor,
+  organizationLinkConflict,
   onSelectionChange,
 }: {
   context: MemberRunContext;
@@ -540,6 +562,8 @@ function MemberContextRail({
   teamName?: string;
   evidence: EvidenceItem[];
   sessionStatus?: string;
+  organizationActor?: { id?: string; display_name?: string };
+  organizationLinkConflict: boolean;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
   const assignment = context.assignments[context.assignments.length - 1];
@@ -615,6 +639,41 @@ function MemberContextRail({
         <p className="mt-2 text-[11px] text-muted-foreground">
           {activeMembers} active · {context.needsYou.total ? `${context.needsYou.total} needs attention` : "no open signals"}
         </p>
+      </ContextModule>
+
+      <ContextModule
+        title="Organization identity"
+        icon={organizationLinkConflict
+          ? <ShieldAlert className="size-3.5" />
+          : <Users className="size-3.5" />}
+        tone={organizationLinkConflict ? "bad" : organizationActor ? "info" : undefined}
+        className="order-1 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
+        action={organizationActor?.id ? (
+          <RailOpenButton
+            label="Open profile"
+            onClick={() => onSelectionChange({
+              surface: "organization",
+              standingAgentId: organizationActor.id,
+            })}
+          />
+        ) : undefined}
+      >
+        {organizationLinkConflict ? (
+          <div role="alert" className="space-y-2 text-[12px]">
+            <p className="font-medium text-status-bad">Ambiguous Standing Agent link</p>
+            <p className="text-[11px] leading-5 text-muted-foreground">
+              More than one Standing Agent claims this AgentMember. Harness withholds the Organization identity instead of guessing a profile.
+            </p>
+          </div>
+        ) : organizationActor ? (
+          <div className="space-y-2 text-[12px]">
+            <RailKeyValue label="Standing Agent" value={organizationActor.display_name ?? organizationActor.id ?? "Linked actor"} />
+            <RailKeyValue label="AgentMember" value={context.member.agent_member_id ?? "Not linked"} mono />
+            <p className="text-[11px] text-muted-foreground">Explicit Company-owned execution identity link.</p>
+          </div>
+        ) : (
+          <RailEmpty>Ad-hoc execution. No Standing Agent explicitly links this AgentMember.</RailEmpty>
+        )}
       </ContextModule>
 
       <ContextModule

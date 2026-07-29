@@ -34,6 +34,15 @@ MemberRun + correlated Assignment
   -> explicit Host Close ends the app-server runtime
 ```
 
+The app-server handshake returns both thread identity and the effective model,
+but the response nesting is version-specific. Reviewed Codex `0.145.0` returns
+the effective model at `result.model`, alongside `result.thread`; earlier
+reviewed fixtures returned `result.thread.model`. The adapter accepts both
+shapes and then the explicitly requested model as a final fallback. It must not
+reject a valid current response merely because the model is not duplicated
+inside the thread object: that effective value is required for the complete
+per-turn `collaborationMode` preset.
+
 Ordinary provider turn completion does not destroy the Member. Interrupt and
 Close are different:
 

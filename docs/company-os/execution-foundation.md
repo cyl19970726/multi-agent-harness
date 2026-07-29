@@ -75,9 +75,9 @@ Agent.
 The implemented Agent Team path preserves this link when a TeamRun is created
 from an independent AgentTeam definition: the definition's member identifier is
 copied into `MemberRun.agent_member_id`. The Organization projection includes
-the participation only when a Company OS `StandingAgent` with that same stable
-identifier also exists. This is an explicit cross-layer join, not lifecycle
-collapse: the StandingAgent owns organization identity and authority, the
+participation only when a Company OS `StandingAgent.execution_agent_member_ref`
+names that AgentMember. Equal ids do not bind. This is an explicit cross-layer
+join, not lifecycle collapse: the StandingAgent owns organization identity and authority, the
 AgentMember definition owns reusable execution configuration, and MemberRun
 owns participation in one TeamRun.
 

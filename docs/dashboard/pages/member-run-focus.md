@@ -52,7 +52,9 @@ a provider self-description does not replace it.
 `AgentMember` is the stable reusable execution identity/configuration.
 `MemberRun` is one participation of that identity in one TeamRun. A Company OS
 `StandingAgent` is a separate organization identity and authority record; it
-may join to `AgentMember` only through an intentionally matching stable id.
+may join only through
+`StandingAgent.execution_agent_member_ref -> AgentMember.id`. Matching ids
+alone do not bind the objects.
 This explicit join allows shared layout and Inbox projections without
 collapsing lifecycle, permissions, or responsibility. An ad-hoc MemberRun
 remains temporary even when its name resembles a Standing Agent.

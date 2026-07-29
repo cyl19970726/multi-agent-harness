@@ -12,6 +12,117 @@ canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted
 > is not the target storage contract. The 2026-07-22 acceptance below replaces
 > its storage claim with native-session reads and no mirrored provider history.
 
+## 2026-07-30 consecutive persistent-Team release acceptance
+
+Mission `mission-star-harness-dogfood-20260729-v1` ran the canonical
+[Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md) against the
+trusted-development profile. The accepted live execution tree used Company
+Store `agent-company`, Execution Space `star-harness-dogfood`, Project Binding
+`multi-agent-harness`, and repository integration HEAD `1895f5f` before the
+final clean rebase onto `master`.
+
+The first attempt was deliberately rejected rather than normalized:
+
+- Wave 9 `wave-1785348433136-p52326-0` and TeamRun
+  `team-run-1785348596155-p55046-0` exposed two release-blocking defects:
+  Codex 0.145.0 returns the selected model at `/result/model`, while the
+  adapter read only the older nested response; and the Company projection
+  treated append-only TeamMessage revisions as separate logical assignments.
+- Repair Wave 10 `wave-1785349130290-p17767-0` fixed both boundaries and passed
+  the focused Rust suites, repository checks, and
+  `acceptance:mission-wave`.
+- The failed TeamRun and its native provider sessions remain preserved. It was
+  not counted as a green run.
+
+Two fresh matrices then passed consecutively with no intervening repair:
+
+| Accepted Wave | TeamRun | Codex native session | Claude native session | Kimi native session |
+| --- | --- | --- | --- | --- |
+| `wave-1785349414671-p30876-0` | `team-run-1785349414903-p30865-0` | `019faf1e-a9f8-7ea1-bf5d-4d84adfe280c` | `c17d30f8-70d4-4938-addb-392f6dd45229` | `session_c7190a7e-a17a-4fd0-af2f-edd648072b26` |
+| `wave-1785350178229-p29071-0` | `team-run-1785350184788-p29140-0` | `019faf2a-50a7-7da1-821b-ff083fb8002d` | `4378478d-64e6-4681-a057-9b6c9f07636c` | `session_3cecbab1-9013-443c-8236-1dc8c887bf86` |
+
+Both matrices proved the following from Harness records and the matching
+provider-owned sessions:
+
+- Codex `codex_app_server` 0.145.0, Claude `claude_agent_sdk` 2.1.220,
+  and Kimi `kimi_acp` 0.29.1 each bound a fresh native session. Kimi remains
+  `review_required` because its reviewed-version set still names 0.27.0; the
+  live result does not silently promote the adapter.
+- Each Member sent correlated Host progress and one Peer-ring message.
+  Claude accepted ordinary busy mail in-turn with an SDK receipt. Kimi kept
+  store-visible mail queued until a later native prompt, then delivered the
+  four-message batch with one terminal `kimi-acp-prompt:4` receipt boundary.
+- Host issued a real Codex Steer and Interrupt against one app-server turn.
+  Bounded native-session forensics found the Steer content, the matching
+  `turn_aborted`, and a later Host follow-up on the same Codex thread.
+- Host stopped the generation-1 Supervisor only after all Members were idle.
+  The expired lease became non-current without closing a Member. A
+  generation-2 Supervisor resumed the exact same MemberRuns and native session
+  ids, delivered one new correlated message to each provider, and received a
+  fresh Handoff from each.
+- Kimi prompt receipt counters restart with a new Supervisor transport. The
+  receipt is therefore a terminal fact for that delivery claim, not a
+  cross-Supervisor globally increasing sequence. Native session identity plus
+  Supervisor generation proves continuity.
+- The linked `agent-wcw-development` Standing Agent projected exactly one
+  logical Assignment in each accepted TeamRun. Its mailbox count equalled the
+  distinct addressed TeamMessage ids (`6/6` after each restart), with no
+  identity conflict or duplicate physical-revision row.
+- Host acknowledged every Host-bound message, explicitly closed all three
+  runtimes, observed all MemberRuns reach `stopped`, completed each TeamRun,
+  and only then accepted the Wave. Wave or Team completion itself did not
+  imply Close.
+
+No P0/P1 defect remains open from this matrix. Two lower-risk findings are
+tracked with owner and exact retest conditions:
+
+- [#266](https://github.com/cyl19970726/multi-agent-harness/issues/266)
+  is a P2 test-infrastructure race in the bind/drop/spawn free-port helper.
+  The serialized integration test and acceptance suite are green; acceptance
+  requires two default-parallel suite passes plus a concurrent-spawn stress
+  probe after a race-free handoff is implemented.
+- [#267](https://github.com/cyl19970726/multi-agent-harness/issues/267)
+  is a P2 terminal-delivery projection gap: mail for a Member that fails before
+  native binding stays durable but remains incorrectly actionable. Its owner
+  is Agent Team runtime/Store delivery; acceptance requires CLI, Dashboard and
+  `--all` to agree on a non-actionable terminal state without deleting history.
+
+The bounded forensic review found no tool failure, timeout, instrument
+forking, repository write, or hidden transcript mirror in either accepted
+Codex lane. It did expose three reusable review rules: a provider Handoff is
+not Host acceptance; `inbox --all` visibility is not delivery; and an API
+`interrupt_requested` result must be paired with the provider-native terminal
+event before it is accepted as an interrupt.
+
+### Post-clippy representation canary
+
+Repair Wave `wave-1785351218971-p10701-0` removed the final
+`clippy::large-enum-variant` release blocker by boxing only the
+`CompanyActor::Agent(StandingAgent)` payload. It did not add an allow-list
+exception or change the serialized Standing Agent contract. Focused Store,
+Company execution-link, CLI, Dashboard, documentation-governance and Plugin
+parity checks passed, followed by the complete CLI suite, `pnpm check`,
+`acceptance:mission-wave`, and `cargo clippy --all-targets -- -D warnings`.
+
+A fresh read-only three-provider canary then ran on integration HEAD
+`d4dc461554ef18a2b4c7fca9e02ef42e3634aa2b`:
+
+| TeamRun / MemberRun | Provider mode | Native session |
+| --- | --- | --- |
+| `team-run-1785351412922-p21722-0` / `member-run-1785351412922-p21722-1` | Codex `codex_app_server` | `019faf3c-f5ba-7d80-aeb9-8ede919f907f` |
+| `team-run-1785351412922-p21722-0` / `member-run-1785351412922-p21722-2` | Claude `claude_agent_sdk` | `d9dbb6b0-0b58-489f-b1d0-3d3325a4ef16` |
+| `team-run-1785351412922-p21722-0` / `member-run-1785351412922-p21722-3` | Kimi `kimi_acp` | `session_86a1fdf0-565c-4a70-b3cd-3202338733a2` |
+
+Each Member sent correlated Host progress, a Peer message, and a terminal
+Handoff. Terminal provider receipts proved the Peer ring in all directions;
+store visibility alone was not counted as delivery. The linked
+`agent-wcw-development` actor retained its `execution_agent_member_ref`, role,
+capabilities, permissions, membership and compact Organization projection.
+The projection contained exactly one Standing Assignment, three distinct
+addressed messages and no identity conflict. The Host acknowledged all eight
+Host-bound messages, explicitly closed each idle runtime, observed all three
+MemberRuns reach `stopped`, and only then completed the TeamRun.
+
 ## 2026-07-28 persistent lifecycle and Workspace addendum
 
 Mission `mission-1785227648994-p85779-0` revalidated the current persistent

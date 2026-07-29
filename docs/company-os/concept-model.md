@@ -79,12 +79,12 @@ Human participation is required for policies that explicitly demand human
 authority, such as funds movement, legal filing, organization changes, or
 credential delegation.
 
-### AgentMember
+### StandingAgent and AgentMember
 
-A durable standing Agent identity. Existing AgentMember capabilities remain
-valid: provider/model configuration, prompts, skills, permission posture,
-runtime/session links, and delivery lifecycle. The Company OS additionally
-needs a business profile separate from provider runtime state:
+`StandingAgent` is the durable Company identity and authority record.
+`AgentMember` is reusable execution configuration. Company OS may relate them
+only through optional `StandingAgent.execution_agent_member_ref`; equal ids do
+not bind, and MemberRun lifecycle never writes back to StandingAgent.
 
 ```text
 org_unit_id?
@@ -333,7 +333,7 @@ execution modes. It is not another executor.
 ```text
 id
 agent_member_id
-source_kind = work_item | mission_wave | workflow_participation | direct_assignment
+source_kind = work_item | agent_team_assignment | workflow_participation | direct_assignment
 source_ref
 title
 role

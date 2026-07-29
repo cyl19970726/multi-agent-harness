@@ -27,6 +27,7 @@ export interface ActorSummary {
   acceptedWorkTypeRefs?: string[];
   permissionPolicyRefs?: string[];
   escalationPolicyRef?: string;
+  executionAgentMemberRef?: string;
 }
 
 export interface RelatedLink {
@@ -83,8 +84,8 @@ export interface AssignmentView {
 export interface StandingExecutionAssignment {
   id: string;
   agentMemberId: string;
-  sourceKind: "mission_wave" | "direct_assignment";
-  sourceRef: string;
+  sourceKind: "agent_team_assignment" | "agent_team_participation";
+  sourceRef?: string;
   missionId?: string;
   waveId?: string;
   teamRunId: string;
@@ -94,13 +95,30 @@ export interface StandingExecutionAssignment {
   status: string;
   assignedAt: string;
   lastActivityAt?: string;
-  correlationId: string;
+  correlationId?: string;
   nativeSession?: {
     provider?: string;
     execution_mode?: string;
     native_session_id?: string;
     availability?: string;
   };
+}
+
+/**
+ * A Company OS integrity signal, not an execution record: two or more
+ * StandingAgents declared the same execution_agent_member_ref, so the
+ * affected participation is withheld from standingAssignments until a human
+ * unlinks one of the competing actors.
+ */
+export interface StandingLinkConflict {
+  id: string;
+  kind: string;
+  severity: string;
+  agentMemberId: string;
+  standingAgentIds: string[];
+  affectedMemberRunIds: string[];
+  detail: string;
+  resolutionHint?: string;
 }
 
 export type WorkItemTransitionStatus = "in_progress" | "blocked" | "in_review" | "completed";
@@ -224,6 +242,8 @@ export interface TrademarkOperationsProjection {
   workItems?: WorkItemView[];
   assignments?: AssignmentView[];
   standingAssignments?: StandingExecutionAssignment[];
+  /** Empty/absent means no conflict; a healthy snapshot renders nothing extra. */
+  standingAssignmentConflicts?: StandingLinkConflict[];
   commitment: FinancialRecordView;
   approval: ApprovalView;
   evidence: RelatedLink[];
