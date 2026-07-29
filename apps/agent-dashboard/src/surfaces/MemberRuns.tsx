@@ -45,7 +45,13 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
-import type { NativeActivityItem, NativeActivityProjection, TeamMessage, Wave } from "@/types";
+import type {
+  NativeActivityItem,
+  NativeActivityProjection,
+  TeamMemberCloseRequest,
+  TeamMessage,
+  Wave,
+} from "@/types";
 import type { SelectionState } from "@/app/selection";
 
 const ACTIONS_DISABLED_HINT = "Connect a live source to message this member";
@@ -116,6 +122,9 @@ export function MemberRunFocus({
   }, []);
 
   const context = selectMemberRunContext(model.snapshot, memberRunId);
+  const closeRequest = model.snapshot.team_member_close_requests?.find(
+    (request) => request.member_run_id === memberRunId,
+  );
   const canLiveSteer = context?.member.provider_profile?.execution_mode === "codex_app_server"
     && context?.member.status === "running";
 
@@ -218,6 +227,7 @@ export function MemberRunFocus({
       header={
         <MemberHeroHeader
           context={context}
+          closeRequest={closeRequest}
           actionsEnabled={actionsEnabled}
           onAction={onAction}
           onBack={goBackToTeam}
@@ -323,11 +333,13 @@ export function MemberRunFocus({
 
 function MemberHeroHeader({
   context,
+  closeRequest,
   actionsEnabled,
   onAction,
   onBack,
 }: {
   context: MemberRunContext;
+  closeRequest?: TeamMemberCloseRequest;
   actionsEnabled: boolean;
   onAction?: MemberRunFocusProps["onAction"];
   onBack: () => void;
@@ -354,6 +366,9 @@ function MemberHeroHeader({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {closeRequest?.status === "pending" && (
+          <Badge tone="warn" title={closeRequest.reason}>Close pending</Badge>
+        )}
         {desktopUri && (
           <Button asChild size="sm" variant="outline">
             <a
@@ -373,7 +388,7 @@ function MemberHeroHeader({
           <Button
             size="sm"
             variant="outline"
-            disabled={!actionsEnabled}
+            disabled={!actionsEnabled || closeRequest?.status === "pending"}
             onClick={() => dispatch(onAction, closeTeamMember(context.run.id, context.member.id))}
           >
             <Square className="size-3" /> Close

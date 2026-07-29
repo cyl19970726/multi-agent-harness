@@ -57,6 +57,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
 | `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
+| `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
 | `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |

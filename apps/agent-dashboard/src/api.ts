@@ -13,6 +13,7 @@ import type {
   PendingInteraction,
   Project,
   TeamMessage,
+  TeamMemberCloseRequest,
   TeamSupervisorLease,
   AgentMessageRoute,
   TeamRun,
@@ -319,6 +320,7 @@ export type SseFrame =
   | { kind: "member_run"; member: MemberRun }
   | { kind: "team_message"; message: TeamMessage }
   | { kind: "team_supervisor_lease"; lease: TeamSupervisorLease }
+  | { kind: "team_member_close_request"; request: TeamMemberCloseRequest }
   | { kind: "agent_message_route"; route: AgentMessageRoute }
   | { kind: "member_action"; action: MemberAction }
   | { kind: "pending_interaction"; interaction: PendingInteraction }
@@ -411,6 +413,10 @@ export function openEventStream(
   source.addEventListener("team_supervisor_lease", (event) => {
     const data = parse<TeamSupervisorLease>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "team_supervisor_lease", lease: data });
+  });
+  source.addEventListener("team_member_close_request", (event) => {
+    const data = parse<TeamMemberCloseRequest>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "team_member_close_request", request: data });
   });
   source.addEventListener("agent_message_route", (event) => {
     const data = parse<AgentMessageRoute>(event as MessageEvent);
@@ -514,6 +520,16 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
           snapshot.team_supervisor_leases,
           frame.lease,
           "team_run_id",
+        ),
+        generated_at: new Date().toISOString(),
+      };
+    case "team_member_close_request":
+      return {
+        ...snapshot,
+        team_member_close_requests: upsertByKey(
+          snapshot.team_member_close_requests,
+          frame.request,
+          "member_run_id",
         ),
         generated_at: new Date().toISOString(),
       };

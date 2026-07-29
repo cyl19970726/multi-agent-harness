@@ -1,0 +1,10 @@
+{
+  "id": "member-close-1",
+  "team_run_id": "team-run-1",
+  "member_run_id": "member-run-1",
+  "requested_by": "host",
+  "reason": "The lane has been accepted.",
+  "status": "pending",
+  "requested_at": "2026-07-29T10:00:00Z",
+  "applied_at": null
+}

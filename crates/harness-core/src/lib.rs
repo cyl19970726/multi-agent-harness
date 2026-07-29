@@ -1745,6 +1745,29 @@ pub struct TeamSupervisorLease {
     pub released_unix_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMemberCloseStatus {
+    Pending,
+    Applied,
+}
+
+/// Durable Host request to end one MemberRun runtime. The owning Supervisor
+/// applies the latest pending row before starting or resuming provider work.
+/// Latest row wins by `member_run_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMemberCloseRequest {
+    pub id: String,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub requested_by: String,
+    pub reason: String,
+    pub status: TeamMemberCloseStatus,
+    pub requested_at: String,
+    #[serde(default)]
+    pub applied_at: Option<String>,
+}
+
 /// Non-secret workspace facts observed when a member runtime starts.
 ///
 /// These values make the execution location reconstructable without copying
@@ -1893,6 +1916,17 @@ impl Validate for TeamSupervisorLease {
         require_non_empty(&self.team_run_id, "TeamSupervisorLease.team_run_id")?;
         require_non_empty(&self.supervisor_id, "TeamSupervisorLease.supervisor_id")?;
         require_non_empty(&self.owner_locator, "TeamSupervisorLease.owner_locator")
+    }
+}
+
+impl Validate for TeamMemberCloseRequest {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "TeamMemberCloseRequest.id")?;
+        require_non_empty(&self.team_run_id, "TeamMemberCloseRequest.team_run_id")?;
+        require_non_empty(&self.member_run_id, "TeamMemberCloseRequest.member_run_id")?;
+        require_non_empty(&self.requested_by, "TeamMemberCloseRequest.requested_by")?;
+        require_non_empty(&self.reason, "TeamMemberCloseRequest.reason")?;
+        require_non_empty(&self.requested_at, "TeamMemberCloseRequest.requested_at")
     }
 }
 

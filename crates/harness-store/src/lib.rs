@@ -10,9 +10,9 @@ use harness_core::{
     DelegationRun, Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery,
     MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
     Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryStatus,
-    TeamMessage, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest,
-    WorkflowPatch, WorkflowRun, WorkflowStep,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLease, TeamSupervisorLeaseStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus,
+    WaveStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -881,6 +881,76 @@ impl HarnessStore {
         Ok(lease)
     }
 
+    /// Persist a Host Close before touching the process-local provider handle.
+    /// Repeated requests while one is pending are idempotent.
+    pub fn latch_team_member_close(
+        &self,
+        value: &TeamMemberCloseRequest,
+    ) -> StoreResult<TeamMemberCloseRequest> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let member = latest_by_id(
+            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        )
+        .remove(&value.member_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("MemberRun not found: {}", value.member_run_id))
+        })?;
+        if member.team_run_id != value.team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} belongs to {}, not {}",
+                value.member_run_id, member.team_run_id, value.team_run_id
+            )));
+        }
+        if let Some(current) = latest_by_id(
+            self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
+            |request| request.member_run_id.clone(),
+        )
+        .remove(&value.member_run_id)
+        {
+            if current.status == TeamMemberCloseStatus::Pending {
+                return Ok(current);
+            }
+        }
+        self.append_jsonl_unlocked("team_member_close_requests.jsonl", value)?;
+        Ok(value.clone())
+    }
+
+    /// Mark one durable Close as applied after the MemberRun is stopped.
+    pub fn complete_team_member_close(
+        &self,
+        team_run_id: &str,
+        member_run_id: &str,
+        request_id: &str,
+        applied_at: &str,
+    ) -> StoreResult<TeamMemberCloseRequest> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut request = latest_by_id(
+            self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
+            |request| request.member_run_id.clone(),
+        )
+        .remove(member_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "MemberRun {member_run_id} has no durable Close request"
+            ))
+        })?;
+        if request.team_run_id != team_run_id || request.id != request_id {
+            return Err(StoreError::Conflict(format!(
+                "Close request {request_id} does not own MemberRun {member_run_id} in TeamRun {team_run_id}"
+            )));
+        }
+        if request.status == TeamMemberCloseStatus::Applied {
+            return Ok(request);
+        }
+        request.status = TeamMemberCloseStatus::Applied;
+        request.applied_at = Some(applied_at.to_string());
+        self.append_jsonl_unlocked("team_member_close_requests.jsonl", &request)?;
+        Ok(request)
+    }
+
     /// Claim one queued TeamMessage delivery under the same durable lock used
     /// for the Supervisor lease. A claim must be completed with a real provider
     /// receipt or explicitly reconciled; it is never auto-requeued on expiry.
@@ -1462,6 +1532,20 @@ impl HarnessStore {
             lease.team_run_id.clone()
         })
         .remove(team_run_id))
+    }
+
+    pub fn team_member_close_requests(&self) -> StoreResult<Vec<TeamMemberCloseRequest>> {
+        self.read_jsonl("team_member_close_requests.jsonl")
+    }
+
+    pub fn latest_team_member_close_request(
+        &self,
+        member_run_id: &str,
+    ) -> StoreResult<Option<TeamMemberCloseRequest>> {
+        Ok(latest_by_id(self.team_member_close_requests()?, |request| {
+            request.member_run_id.clone()
+        })
+        .remove(member_run_id))
     }
 
     pub fn member_actions(&self) -> StoreResult<Vec<MemberAction>> {
@@ -2446,6 +2530,93 @@ mod tests {
             acknowledged_again.deliveries[0].status,
             TeamDeliveryStatus::Acknowledged
         );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn member_close_request_survives_store_reopen_and_is_idempotent() {
+        let root = team_test_root("durable-member-close");
+        let store = HarnessStore::new(&root);
+        let run = AgentTeamRun {
+            id: "tr-close".into(),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            project_binding_id: None,
+            host_surface: "codex-app".into(),
+            host_thread_id: Some("thread-close".into()),
+            host_actor: None,
+            host_control_mode: Default::default(),
+            objective: "close once".into(),
+            execution_root: None,
+            status: TeamRunStatus::Running,
+            member_run_ids: vec!["mr-close".into()],
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        let member = MemberRun {
+            id: "mr-close".into(),
+            team_run_id: run.id.clone(),
+            slot_id: None,
+            agent_member_id: None,
+            name: "Builder".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_profile: None,
+            status: MemberRunStatus::Running,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        store.append_team_run(&run).expect("append run");
+        store.append_member_run(&member).expect("append member");
+
+        let request = TeamMemberCloseRequest {
+            id: "close-1".into(),
+            team_run_id: run.id.clone(),
+            member_run_id: member.id.clone(),
+            requested_by: "host".into(),
+            reason: "accepted".into(),
+            status: TeamMemberCloseStatus::Pending,
+            requested_at: "unix-ms:2".into(),
+            applied_at: None,
+        };
+        let latched = store
+            .latch_team_member_close(&request)
+            .expect("latch Close");
+        let repeated = store
+            .latch_team_member_close(&TeamMemberCloseRequest {
+                id: "close-duplicate".into(),
+                ..request.clone()
+            })
+            .expect("repeat Close");
+        assert_eq!(latched.id, repeated.id);
+
+        let reopened = HarnessStore::new(&root);
+        let pending = reopened
+            .latest_team_member_close_request(&member.id)
+            .expect("read Close after reopen")
+            .expect("durable Close");
+        assert_eq!(pending.status, TeamMemberCloseStatus::Pending);
+        let applied = reopened
+            .complete_team_member_close(&run.id, &member.id, &pending.id, "unix-ms:3")
+            .expect("apply Close");
+        assert_eq!(applied.status, TeamMemberCloseStatus::Applied);
+        assert_eq!(applied.applied_at.as_deref(), Some("unix-ms:3"));
+        let applied_again = reopened
+            .complete_team_member_close(&run.id, &member.id, &pending.id, "unix-ms:4")
+            .expect("Close apply is idempotent");
+        assert_eq!(applied_again.applied_at.as_deref(), Some("unix-ms:3"));
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }

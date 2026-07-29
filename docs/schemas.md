@@ -68,6 +68,7 @@ schema contracts are checked with valid and invalid fixtures.
 | Provider-native session locator | [native-session-ref.schema.json](../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../schemas/team-supervisor-lease.schema.json) |
+| Durable Member Close | [team-member-close-request.schema.json](../schemas/team-member-close-request.schema.json) |
 | Stable Agent message route | [agent-message-route.schema.json](../schemas/agent-message-route.schema.json) |
 | Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](../schemas/pending-interaction.schema.json) |

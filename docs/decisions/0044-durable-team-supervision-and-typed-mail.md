@@ -242,7 +242,10 @@ manufacturing an uncertain claim before `turn/start` can reach the Provider.
 Close is durably latched by the owning Supervisor before process-local
 dispatch; a transport-generation race may return `supervisor_close_latched`
 instead of a turn-level acknowledgement, but the accepted Close remains in
-force across reattachment.
+force across reattachment. The latch is a latest-wins
+`TeamMemberCloseRequest` (`pending -> applied`) in the Execution Space store,
+not a process-memory flag. A restarted Supervisor checks it before starting or
+resuming Provider work.
 
 ## Consequences
 

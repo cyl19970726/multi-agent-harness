@@ -133,6 +133,8 @@ pointing to the exact Host or peer follow-up that caused that provider round.
 - Add, rename, deactivate, steer, interrupt, explicitly close, or resume a
   member where the selected provider mode honestly supports it. Interrupt ends
   one turn; Close ends the runtime.
+- Roll up pending `TeamMemberCloseRequest` rows in the Team header so a lost
+  Supervisor connection cannot make an accepted Close disappear from view.
 - Inspect delivery/ACK/correlation lineage and answer PendingInteractions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.

@@ -11,8 +11,8 @@ use std::time::Duration;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
     AgentEvent, AgentMessageRoute, AgentTeamRun, MemberAction, MemberRun, Message, Mission,
-    PendingInteraction, TeamMessage, TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun,
-    WorkflowStep,
+    PendingInteraction, TeamMemberCloseRequest, TeamMessage, TeamRunEvent, TeamSupervisorLease,
+    Wave, WorkflowRun, WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -49,6 +49,8 @@ pub enum SseEventFrame {
     TeamMessage(TeamMessage),
     /// Durable ownership of one TeamRun's provider-native controls.
     TeamSupervisorLease(TeamSupervisorLease),
+    /// Durable Host Close latch for one MemberRun.
+    TeamMemberCloseRequest(TeamMemberCloseRequest),
     /// Stable Agent Inbox mail was atomically routed to one concrete MemberRun.
     AgentMessageRoute(AgentMessageRoute),
     /// A durable member action was appended or updated. These rows are the
@@ -211,6 +213,7 @@ const WATCHED_FILES: &[&str] = &[
     "member_runs.jsonl",
     "team_messages.jsonl",
     "team_supervisor_leases.jsonl",
+    "team_member_close_requests.jsonl",
     "agent_message_routes.jsonl",
     "member_actions.jsonl",
     "pending_interactions.jsonl",
@@ -339,6 +342,21 @@ fn poll_project(
             serde_json::from_str::<TeamSupervisorLease>(line)
                 .ok()
                 .map(SseEventFrame::TeamSupervisorLease)
+                .into_iter()
+                .collect()
+        },
+        manager,
+    );
+
+    check_and_broadcast_appends(
+        project_id,
+        store_root,
+        "team_member_close_requests.jsonl",
+        consumed_offsets,
+        |line| {
+            serde_json::from_str::<TeamMemberCloseRequest>(line)
+                .ok()
+                .map(SseEventFrame::TeamMemberCloseRequest)
                 .into_iter()
                 .collect()
         },

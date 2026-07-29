@@ -41,7 +41,7 @@ ownership. It consumes their stable selection and Workspace contracts.
 | Persistent Member modes | Codex `codex_app_server`, Claude `claude_agent_sdk`, and Kimi `kimi_acp` | proportional live canary remains |
 | Native execution truth | Harness stores a locator, not a second transcript | native receipt reconciliation still requires operator judgment after ambiguous crash |
 | Team coordination | correlated Assignment, message, Handoff, Inbox/Outbox, atomic ACK | cross-process claim, Provider receipt, two-service control routing, MCP provenance, and full deterministic regression passed; ambiguous post-crash receipts still require explicit reconciliation |
-| Member lifecycle | idle, disconnected, resume, Interrupt, explicit Close | durable lease and cross-service loopback routing implemented; Provider handles remain process-local behind the owning Supervisor |
+| Member lifecycle | idle, disconnected, resume, Interrupt, explicit Close | durable lease, `TeamMemberCloseRequest`, and cross-service loopback routing implemented; Provider handles remain process-local behind the owning Supervisor |
 | Host Inbox | exact native surface + thread binding | Codex/Claude/Kimi safe-boundary hooks implemented; live canary remains |
 | External input | typed actors plus stable Agent Inbox → MemberRun route | remote authentication/policy remains additive gateway work |
 

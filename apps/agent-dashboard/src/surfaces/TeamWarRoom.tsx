@@ -157,6 +157,9 @@ export function TeamWarRoom({
     && supervisor.status === "active"
     && supervisor.expires_unix_ms > Date.now(),
   );
+  const pendingCloseCount = model.snapshot.team_member_close_requests?.filter(
+    (request) => request.team_run_id === run.id && request.status === "pending",
+  ).length ?? 0;
   const orderedMembers = [...members].sort(
     (left, right) => memberPressureRank(left.status) - memberPressureRank(right.status),
   );
@@ -340,6 +343,7 @@ export function TeamWarRoom({
               <Badge tone={supervisorCurrent ? "good" : status === "running" ? "bad" : "muted"}>
                 Supervisor · {supervisorCurrent ? `live g${supervisor?.generation}` : "offline"}
               </Badge>
+              {pendingCloseCount > 0 && <Badge tone="warn">Close pending · {pendingCloseCount}</Badge>}
               {navigationWave && <Badge tone={gateTone(navigationWave.gate_status)}>Host plan: Wave {navigationWave.index}</Badge>}
             </>
           }

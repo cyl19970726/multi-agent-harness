@@ -24,12 +24,12 @@ use harness_core::{
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
     ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
     ProviderFeatureMode, ProviderIntegrationProfile, ProviderInteractionMode, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
+    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{
     HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
@@ -835,6 +835,7 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "member_runs.jsonl",
     "team_messages.jsonl",
     "team_supervisor_leases.jsonl",
+    "team_member_close_requests.jsonl",
     "member_actions.jsonl",
     "pending_interactions.jsonl",
     "delegation_runs.jsonl",
@@ -11794,6 +11795,7 @@ fn member_run_detail_json(
         })
         .collect::<Vec<_>>();
     let supervisor = store.latest_team_supervisor_lease(&member.team_run_id)?;
+    let close_request = store.latest_team_member_close_request(member_run_id)?;
     let stable_agent_routes = match member.agent_member_id.as_deref() {
         Some(agent_member_id) => store
             .agent_message_routes()?
@@ -11834,6 +11836,7 @@ fn member_run_detail_json(
         },
         "pending_interactions": pending_interactions,
         "supervisor": supervisor,
+        "close_request": close_request,
         "stable_agent_routes": stable_agent_routes,
         "actions": actions,
         "latest_handoff": latest_handoff,
@@ -11931,16 +11934,7 @@ static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> =
 /// registry is only the live transport into the currently running provider
 /// turn and is deliberately not reconstructed after process restart.
 static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
-static LIVE_MEMBER_CLOSE_REQUESTS: OnceLock<Mutex<HashMap<String, PendingMemberClose>>> =
-    OnceLock::new();
 static LIVE_TEAM_SUPERVISORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-#[derive(Clone)]
-struct PendingMemberClose {
-    team_run_id: String,
-    requested_by: String,
-    reason: String,
-}
 
 #[derive(Clone)]
 struct LiveMemberControl {
@@ -12272,6 +12266,25 @@ fn require_current_supervisor_lease(
     Ok(lease)
 }
 
+fn latch_member_close(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    requested_by: &str,
+    reason: &str,
+) -> CliResult<TeamMemberCloseRequest> {
+    store_conflict_as_usage(store.latch_team_member_close(&TeamMemberCloseRequest {
+        id: generated_id("member-close"),
+        team_run_id: team_run_id.to_string(),
+        member_run_id: member_run_id.to_string(),
+        requested_by: requested_by.to_string(),
+        reason: reason.to_string(),
+        status: TeamMemberCloseStatus::Pending,
+        requested_at: now_string(),
+        applied_at: None,
+    }))
+}
+
 fn dispatch_local_live_member_control(
     store: &HarnessStore,
     supervisor_id: &str,
@@ -12283,6 +12296,16 @@ fn dispatch_local_live_member_control(
     let is_close = matches!(&request, LiveMemberControlRequest::Close { .. });
     // Fence immediately before touching the process-local provider handle.
     require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
+    if let LiveMemberControlRequest::Close {
+        reason,
+        requested_by,
+        ..
+    } = &request
+    {
+        // The durable request is written before process-local dispatch, so an
+        // acknowledged Close survives receiver loss and Supervisor restart.
+        latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+    }
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -12290,24 +12313,7 @@ fn dispatch_local_live_member_control(
         .get(&member_run_id)
         .cloned();
     let Some(control) = control else {
-        if let LiveMemberControlRequest::Close {
-            reason,
-            requested_by,
-            ..
-        } = request
-        {
-            LIVE_MEMBER_CLOSE_REQUESTS
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .insert(
-                    member_run_id.clone(),
-                    PendingMemberClose {
-                        team_run_id,
-                        requested_by,
-                        reason,
-                    },
-                );
+        if matches!(request, LiveMemberControlRequest::Close { .. }) {
             return Ok(serde_json::json!({
                 "member_run_id": member_run_id,
                 "status": "close_requested",
@@ -12368,25 +12374,11 @@ fn dispatch_local_live_member_control(
             reason,
             requested_by,
             ..
-        } => {
-            LIVE_MEMBER_CLOSE_REQUESTS
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .insert(
-                    member_run_id.clone(),
-                    PendingMemberClose {
-                        team_run_id: team_run_id.clone(),
-                        requested_by: requested_by.clone(),
-                        reason: reason.clone(),
-                    },
-                );
-            MemberControlCommand::Close {
-                reason,
-                requested_by,
-                reply: reply_tx,
-            }
-        }
+        } => MemberControlCommand::Close {
+            reason,
+            requested_by,
+            reply: reply_tx,
+        },
     };
     if control.sender.send(command).is_err() {
         if is_close {
@@ -12750,27 +12742,19 @@ impl TeamRunLedger {
     }
 }
 
-fn pending_member_close(member_run_id: &str) -> Option<PendingMemberClose> {
-    LIVE_MEMBER_CLOSE_REQUESTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .get(member_run_id)
-        .cloned()
-}
-
-fn clear_pending_member_close(member_run_id: &str) {
-    LIVE_MEMBER_CLOSE_REQUESTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .remove(member_run_id);
+fn pending_member_close(
+    store: &HarnessStore,
+    member_run_id: &str,
+) -> CliResult<Option<TeamMemberCloseRequest>> {
+    Ok(store
+        .latest_team_member_close_request(member_run_id)?
+        .filter(|request| request.status == TeamMemberCloseStatus::Pending))
 }
 
 fn stop_member_for_latched_close(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
-    close: &PendingMemberClose,
+    close: &TeamMemberCloseRequest,
 ) -> CliResult<()> {
     if close.team_run_id != ledger.run_id {
         return Err(CliError::Usage(format!(
@@ -12797,7 +12781,12 @@ fn stop_member_for_latched_close(
         "updated",
         &format!("member {} closed by Host supervisor", member_row.name),
     )?;
-    clear_pending_member_close(&member_row.id);
+    store_conflict_as_usage(ledger.store.complete_team_member_close(
+        &ledger.run_id,
+        &member_row.id,
+        &close.id,
+        &now_string(),
+    ))?;
     Ok(())
 }
 
@@ -12835,7 +12824,14 @@ fn wait_for_idle_member_wake(
                         "updated",
                         &format!("member {} closed by Host while idle", member_row.name),
                     )?;
-                    clear_pending_member_close(&member_row.id);
+                    if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {
+                        store_conflict_as_usage(ledger.store.complete_team_member_close(
+                            &ledger.run_id,
+                            &member_row.id,
+                            &close.id,
+                            &now_string(),
+                        ))?;
+                    }
                     let _ = reply.send(Ok(serde_json::json!({
                         "member_run_id": member_row.id,
                         "status": "closed",
@@ -12857,7 +12853,7 @@ fn wait_for_idle_member_wake(
                 }
             }
         }
-        if let Some(close) = pending_member_close(&member_row.id) {
+        if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {
             stop_member_for_latched_close(ledger, member_row, &close)?;
             return Ok(IdleMemberWake::Closed);
         }
@@ -13229,7 +13225,13 @@ fn run_member_orchestration(
             .ok()
             .flatten()
             .unwrap_or_else(|| member.clone());
-        if let Some(close) = pending_member_close(&current.id) {
+        let pending_close = match pending_member_close(&ledger.store, &current.id) {
+            Ok(close) => close,
+            Err(error) => {
+                return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string())
+            }
+        };
+        if let Some(close) = pending_close {
             if let Err(error) = stop_member_for_latched_close(ledger, &mut current, &close) {
                 return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string());
             }
@@ -13270,7 +13272,14 @@ fn run_member_orchestration(
         match result {
             Ok(outcome) => {
                 if outcome.status == MemberRunStatus::Stopped {
-                    clear_pending_member_close(&current.id);
+                    if let Ok(Some(close)) = pending_member_close(&ledger.store, &current.id) {
+                        let _ = ledger.store.complete_team_member_close(
+                            &ledger.run_id,
+                            &current.id,
+                            &close.id,
+                            &now_string(),
+                        );
+                    }
                 }
                 return outcome;
             }
@@ -16707,6 +16716,15 @@ fn handle_sse_stream(
                             }
                         }
                     }
+                    sse::SseEventFrame::TeamMemberCloseRequest(request) => {
+                        if let Ok(json) = serde_json::to_value(&request) {
+                            if sse::write_sse_frame(&mut stream, "team_member_close_request", &json)
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                     sse::SseEventFrame::AgentMessageRoute(route) => {
                         if let Ok(json) = serde_json::to_value(&route) {
                             if sse::write_sse_frame(&mut stream, "agent_message_route", &json)
@@ -18400,27 +18418,6 @@ fn close_team_member_value(
         )));
     }
     cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
-    let live_lease = store
-        .latest_team_supervisor_lease(team_run_id)?
-        .filter(|lease| {
-            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                && lease.expires_unix_ms > current_unix_ms_u64()
-        });
-    if live_lease.is_some() {
-        return match dispatch_live_member_control(
-            store,
-            LiveMemberControlRequest::Close {
-                team_run_id: team_run_id.to_string(),
-                member_run_id: member_run_id.to_string(),
-                reason,
-                requested_by,
-            },
-        ) {
-            Ok(result) => Ok(result),
-            Err(error) => Err(error),
-        };
-    }
-
     let member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|member| member.id == member_run_id)
@@ -18429,7 +18426,14 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
     ) {
-        clear_pending_member_close(member_run_id);
+        if let Some(close) = pending_member_close(store, member_run_id)? {
+            store_conflict_as_usage(store.complete_team_member_close(
+                team_run_id,
+                member_run_id,
+                &close.id,
+                &now_string(),
+            ))?;
+        }
         return Ok(serde_json::json!({
             "member_run_id": member.id,
             "status": serde_snake_label(&member.status),
@@ -18437,18 +18441,44 @@ fn close_team_member_value(
             "idempotent": true,
         }));
     }
+
+    let live_lease = store
+        .latest_team_supervisor_lease(team_run_id)?
+        .filter(|lease| {
+            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        });
+    if live_lease.is_some() {
+        return dispatch_live_member_control(
+            store,
+            LiveMemberControlRequest::Close {
+                team_run_id: team_run_id.to_string(),
+                member_run_id: member_run_id.to_string(),
+                reason,
+                requested_by,
+            },
+        );
+    }
+
+    let close = latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?;
     if matches!(
         member.status,
         MemberRunStatus::Starting | MemberRunStatus::Running
     ) {
-        clear_pending_member_close(member_run_id);
-        return Err(CliError::Usage(format!(
-            "member {member_run_id} is {} but its provider session is not owned by this server process; send close through the Host process that started the TeamRun",
-            serde_snake_label(&member.status)
-        )));
+        return Ok(serde_json::json!({
+            "member_run_id": member.id,
+            "status": "close_requested",
+            "provider_ack": "durable_close_pending_supervisor",
+            "close_request_id": close.id,
+        }));
     }
     let member = deactivate_team_run_member(store, team_run_id, member_run_id, &reason)?;
-    clear_pending_member_close(member_run_id);
+    store_conflict_as_usage(store.complete_team_member_close(
+        team_run_id,
+        member_run_id,
+        &close.id,
+        &now_string(),
+    ))?;
     Ok(serde_json::json!({
         "member_run_id": member.id,
         "status": "stopped",
@@ -24721,6 +24751,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let member_runs = latest_member_runs_in_append_order(store)?;
     let team_messages = latest_team_messages_in_append_order(store)?;
     let team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
+    let team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
     let agent_message_routes = store.agent_message_routes()?;
     // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
     // intact for migration/audit, but never project those rows into a new
@@ -24804,6 +24835,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "member_runs": member_runs,
         "team_messages": team_messages,
         "team_supervisor_leases": team_supervisor_leases,
+        "team_member_close_requests": team_member_close_requests,
         "agent_message_routes": agent_message_routes,
         "member_actions": member_actions,
         "pending_interactions": pending_interactions,
@@ -24914,6 +24946,22 @@ fn latest_team_supervisor_leases_in_append_order(
     Ok(ids
         .into_iter()
         .filter_map(|id| by_team_run.remove(&id))
+        .collect())
+}
+
+fn latest_team_member_close_requests_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<TeamMemberCloseRequest>> {
+    let mut ids = Vec::new();
+    let mut by_member_run = BTreeMap::new();
+    for request in store.team_member_close_requests()? {
+        ids.retain(|id| id != &request.member_run_id);
+        ids.push(request.member_run_id.clone());
+        by_member_run.insert(request.member_run_id.clone(), request);
+    }
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| by_member_run.remove(&id))
         .collect())
 }
 
@@ -33173,6 +33221,62 @@ mod tests {
             ],
         )
         .expect("create team run")
+    }
+
+    #[test]
+    fn close_without_live_supervisor_is_applied_after_store_reopen() {
+        let (store, root) = temp_store("durable-close-restart");
+        let created = create_two_member_team_run(&store);
+        let mut run = created.team_run;
+        run.status = TeamRunStatus::Running;
+        run.updated_at = "unix-ms:2".into();
+        store.append_team_run(&run).expect("mark run running");
+        let mut member = created.member_runs[0].clone();
+        member.status = MemberRunStatus::Running;
+        member.last_event_at = Some("unix-ms:2".into());
+        store
+            .append_member_run(&member)
+            .expect("mark member running");
+
+        let result = close_team_member_value(
+            &store,
+            &run.id,
+            &member.id,
+            &serde_json::json!({
+                "requested_by": "host",
+                "reason": "lane accepted"
+            }),
+        )
+        .expect("durably request Close");
+        assert_eq!(result["status"].as_str(), Some("close_requested"));
+        assert_eq!(
+            result["provider_ack"].as_str(),
+            Some("durable_close_pending_supervisor")
+        );
+        drop(store);
+
+        let reopened = HarnessStore::new(&root);
+        let close = pending_member_close(&reopened, &member.id)
+            .expect("read pending Close")
+            .expect("Close survived reopen");
+        let ledger = TeamRunLedger::without_supervisor(&reopened, &run.id);
+        stop_member_for_latched_close(&ledger, &mut member, &close)
+            .expect("restarted Supervisor applies Close");
+        let stopped = latest_member_runs_in_append_order(&reopened)
+            .expect("read MemberRun")
+            .into_iter()
+            .find(|row| row.id == member.id)
+            .expect("MemberRun");
+        assert_eq!(stopped.status, MemberRunStatus::Stopped);
+        assert_eq!(
+            reopened
+                .latest_team_member_close_request(&member.id)
+                .expect("read Close")
+                .expect("Close row")
+                .status,
+            TeamMemberCloseStatus::Applied
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

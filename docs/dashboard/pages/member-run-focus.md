@@ -197,6 +197,10 @@ it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
 execution fact, not an implicit Wave advance.
 
+Render the latest `TeamMemberCloseRequest` beside those controls. `pending`
+disables duplicate Close actions and remains visible across Supervisor restart;
+`applied` is retained as lifecycle evidence.
+
 For a bound Claude `claude_agent_sdk` session, Member Focus may expose **Open in
 Claude Desktop** using `claude://resume?session=<native-session-id>`. This is an
 explicit provider-owned import/view action, not a Harness resume or transcript

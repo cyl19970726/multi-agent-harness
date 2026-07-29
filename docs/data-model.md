@@ -13,6 +13,7 @@ Star Harness must turn durable intent into:
 Mission -> ordered Host-plan Wave
 Mission <-> AgentTeam -> Mission-scoped TeamRun -> MemberRun
   -> TeamSupervisorLease generation
+  -> TeamMemberCloseRequest pending/applied
   -> typed TeamMessage -> claim -> provider receipt -> recipient ACK
   -> explicit coordination/artifacts/outcome + provider-native session refs
   -> explicit Host advance -> next Wave or Mission closeout
@@ -35,6 +36,7 @@ provider-native sessions without duplicating those sessions.
 | How is Agent Team work assigned? | `TeamMessage(kind=assignment)` plus its `correlation_id`. |
 | Who is accountable inside a team attempt? | `MemberRun` role/identity plus assignment and handoff lineage. |
 | Who currently owns live Team control? | Latest active `TeamSupervisorLease` generation and its loopback owner locator. |
+| Does an explicit Close survive restart? | Latest `TeamMemberCloseRequest`; `pending` is applied before Provider resume. |
 | Who actually sent and receives a message? | Typed `TeamActorRef` sender/recipients; Member authorship requires a bound Member context. |
 | Was mail safely accepted? | Atomic delivery claim, provider receipt, and recipient ACK are distinct states. |
 | How does durable Agent mail reach a run? | `AgentMessageRoute` explicitly joins one stable Agent Inbox message to one active MemberRun and TeamMessage. |
@@ -57,6 +59,7 @@ provider-native sessions without duplicating those sessions.
 | Agent Team assignment | assignment `TeamMessage` plus correlation lineage | member current action, lane UI |
 | Agent Team identity | `MemberRun` inside one TeamRun | provider thread id, prompt file |
 | Team control ownership | latest active `TeamSupervisorLease` generation | process-local handle, pid, socket |
+| Member Close intent | latest `TeamMemberCloseRequest` | provider-specific shutdown acknowledgement |
 | Runtime health | Harness lifecycle/control acknowledgement plus provider adapter availability and transport preflight | pid, socket, native provider status |
 | Stable Agent routing | `AgentMessageRoute` latest rows | Organization/Agent Inbox projection |
 | Provider execution | provider-native session selected by `NativeSessionRef` | ephemeral normalized Dashboard projection |
@@ -81,6 +84,7 @@ flowchart TD
   TeamRun --> TeamMsg[TeamMessage assignment + correlation]
   TeamRun --> Member[MemberRun]
   TeamRun --> Supervisor[TeamSupervisorLease]
+  TeamRun --> CloseRequest[TeamMemberCloseRequest]
   AgentInbox[Stable Agent Inbox] --> Route[AgentMessageRoute]
   Route --> TeamMsg
   Route --> Member

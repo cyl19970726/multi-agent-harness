@@ -516,6 +516,17 @@ export interface TeamSupervisorLease {
   released_unix_ms?: number | null;
 }
 
+export interface TeamMemberCloseRequest {
+  id: string;
+  team_run_id: string;
+  member_run_id: string;
+  requested_by: string;
+  reason: string;
+  status: "pending" | "applied" | string;
+  requested_at: string;
+  applied_at?: string | null;
+}
+
 export interface AgentMessageRoute {
   id: string;
   agent_message_id: string;
@@ -631,6 +642,7 @@ export interface DashboardSnapshot {
   member_runs?: MemberRun[];
   team_messages?: TeamMessage[];
   team_supervisor_leases?: TeamSupervisorLease[];
+  team_member_close_requests?: TeamMemberCloseRequest[];
   agent_message_routes?: AgentMessageRoute[];
   member_actions?: MemberAction[];
   pending_interactions?: PendingInteraction[];
