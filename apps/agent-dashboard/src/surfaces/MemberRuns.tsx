@@ -122,12 +122,21 @@ export function MemberRunFocus({
   }, []);
 
   const context = selectMemberRunContext(model.snapshot, memberRunId);
-  const companyProjection = model.snapshot.company_os as { actors?: Array<{
-    id?: string;
-    display_name?: string;
-    record?: { execution_agent_member_ref?: string | null };
-  }> } | undefined;
-  const organizationActor = context?.member.agent_member_id
+  const companyProjection = model.snapshot.company_os as {
+    actors?: Array<{
+      id?: string;
+      display_name?: string;
+      record?: { execution_agent_member_ref?: string | null };
+    }>;
+    standing_assignment_conflicts?: Array<{ agent_member_id?: string }>;
+  } | undefined;
+  const organizationLinkConflict = Boolean(
+    context?.member.agent_member_id
+    && companyProjection?.standing_assignment_conflicts?.some(
+      (conflict) => conflict.agent_member_id === context.member.agent_member_id,
+    ),
+  );
+  const organizationActor = context?.member.agent_member_id && !organizationLinkConflict
     ? companyProjection?.actors?.find((actor) =>
       actor.record?.execution_agent_member_ref === context.member.agent_member_id)
     : undefined;
@@ -251,6 +260,7 @@ export function MemberRunFocus({
           evidence={evidence}
           sessionStatus={context.member.native_session?.availability}
           organizationActor={organizationActor}
+          organizationLinkConflict={organizationLinkConflict}
           onSelectionChange={onSelectionChange}
         />
       }
@@ -543,6 +553,7 @@ function MemberContextRail({
   evidence,
   sessionStatus,
   organizationActor,
+  organizationLinkConflict,
   onSelectionChange,
 }: {
   context: MemberRunContext;
@@ -552,6 +563,7 @@ function MemberContextRail({
   evidence: EvidenceItem[];
   sessionStatus?: string;
   organizationActor?: { id?: string; display_name?: string };
+  organizationLinkConflict: boolean;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
   const assignment = context.assignments[context.assignments.length - 1];
@@ -631,8 +643,10 @@ function MemberContextRail({
 
       <ContextModule
         title="Organization identity"
-        icon={<Users className="size-3.5" />}
-        tone={organizationActor ? "info" : undefined}
+        icon={organizationLinkConflict
+          ? <ShieldAlert className="size-3.5" />
+          : <Users className="size-3.5" />}
+        tone={organizationLinkConflict ? "bad" : organizationActor ? "info" : undefined}
         className="order-1 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
         action={organizationActor?.id ? (
           <RailOpenButton
@@ -644,7 +658,14 @@ function MemberContextRail({
           />
         ) : undefined}
       >
-        {organizationActor ? (
+        {organizationLinkConflict ? (
+          <div role="alert" className="space-y-2 text-[12px]">
+            <p className="font-medium text-status-bad">Ambiguous Standing Agent link</p>
+            <p className="text-[11px] leading-5 text-muted-foreground">
+              More than one Standing Agent claims this AgentMember. Harness withholds the Organization identity instead of guessing a profile.
+            </p>
+          </div>
+        ) : organizationActor ? (
           <div className="space-y-2 text-[12px]">
             <RailKeyValue label="Standing Agent" value={organizationActor.display_name ?? organizationActor.id ?? "Linked actor"} />
             <RailKeyValue label="AgentMember" value={context.member.agent_member_id ?? "Not linked"} mono />
