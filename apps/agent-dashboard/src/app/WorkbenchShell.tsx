@@ -38,7 +38,7 @@ import {
 import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
 
 import type { WorkbenchModel } from "../model/readModel";
-import type { Company, Project } from "../types";
+import type { Company, ExecutionSpace, Project } from "../types";
 import {
   AgentDetail,
   AgentsList,
@@ -59,14 +59,18 @@ interface WorkbenchShellProps {
   /** Known projects for the header picker (goal-multi-project P6); empty for a
    * single-store / pre-multi-project backend, which hides the picker. */
   projects: Project[];
+  /** Independent Mission/Wave/Team/Workflow coordination namespaces. */
+  spaces: ExecutionSpace[];
   /** Known Company Stores for the header picker; empty in raw-store mode. */
   companies: Company[];
   /** The currently-selected project id ("" before one is chosen/adopted). */
   selectedProjectId: string;
+  selectedSpaceId: string;
   /** The currently-selected Company Store id for Company OS truth. */
   selectedCompanyId: string;
   /** Switch the active project: re-points the scoped snapshot + SSE stream. */
   onSelectProject: (projectId: string) => void;
+  onSelectSpace: (spaceId: string) => void;
   /** Switch the active Company Store without changing the execution project. */
   onSelectCompany: (companyId: string) => void;
   onApiUrlChange: (value: string) => void;
@@ -133,10 +137,13 @@ export function WorkbenchShell({
   model,
   companies,
   projects,
+  spaces,
   selectedCompanyId,
   selectedProjectId,
+  selectedSpaceId,
   onSelectCompany,
   onSelectProject,
+  onSelectSpace,
   onApiUrlChange,
   onRefresh,
   onSelectionChange,
@@ -173,10 +180,13 @@ export function WorkbenchShell({
           model={model}
           companies={companies}
           projects={projects}
+          spaces={spaces}
           selectedCompanyId={selectedCompanyId}
           selectedProjectId={selectedProjectId}
+          selectedSpaceId={selectedSpaceId}
           onSelectCompany={onSelectCompany}
           onSelectProject={onSelectProject}
+          onSelectSpace={onSelectSpace}
           onApiUrlChange={onApiUrlChange}
           onRefresh={onRefresh}
           sourceError={sourceError}
@@ -202,6 +212,8 @@ export function WorkbenchShell({
                 actionsEnabled={actionsEnabled}
                 onAction={onAction}
                 apiUrl={apiUrl}
+                projectBindingId={selectedProjectId}
+                executionSpaceId={selectedSpaceId}
                 isLoading={isLoading}
               />
             );
@@ -262,10 +274,13 @@ function TopBar({
   model,
   companies,
   projects,
+  spaces,
   selectedCompanyId,
   selectedProjectId,
+  selectedSpaceId,
   onSelectCompany,
   onSelectProject,
+  onSelectSpace,
   onApiUrlChange,
   onRefresh,
   sourceError,
@@ -312,6 +327,11 @@ function TopBar({
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelectProject={onSelectProject}
+        />
+        <SpacePicker
+          spaces={spaces}
+          selectedSpaceId={selectedSpaceId}
+          onSelectSpace={onSelectSpace}
         />
         <CompanyPicker
           companies={companies}
@@ -409,12 +429,11 @@ function TopBar({
 }
 
 /**
- * Compact project picker in the TopBar (goal-multi-project P6). A native
- * `<select>` styled to match the other TopBar controls — switching re-points the
- * scoped snapshot + SSE stream (handled by the App). It remains visible but
- * disabled for one registered project so the root tooltip still distinguishes
- * project_root from store_root. The `_global` (`kind: "global") project gets a
- * globe icon; repo projects a git-folder icon.
+ * Compact Project Binding picker in the TopBar. Switching changes provider cwd,
+ * instruction/Skill discovery, Git/worktree and permission boundaries without
+ * changing the selected Execution Space or its snapshot/SSE stream. The
+ * `_global` (`kind: "global") binding gets a globe icon; repo bindings a
+ * git-folder icon.
  */
 function ProjectPicker({
   projects,
@@ -452,8 +471,52 @@ function ProjectPicker({
         </label>
       </TooltipTrigger>
       <TooltipContent className="max-w-[36rem] space-y-1">
-        <p><span className="text-muted-foreground">Registered project root:</span> <span className="font-mono">{selected.project_root}</span></p>
-        <p><span className="text-muted-foreground">Central store root:</span> <span className="font-mono">{selected.store_root}</span></p>
+        <p><span className="text-muted-foreground">Provider cwd boundary:</span> <span className="font-mono">{selected.project_root}</span></p>
+        <p><span className="text-muted-foreground">Skill discovery boundary:</span> <span className="font-mono">{selected.skill_discovery_boundary ?? selected.project_root}</span></p>
+        <p>Project Binding does not own Mission, Wave, Team, or Workflow storage.</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function SpacePicker({
+  spaces,
+  selectedSpaceId,
+  onSelectSpace,
+}: {
+  spaces: ExecutionSpace[];
+  selectedSpaceId: string;
+  onSelectSpace: (spaceId: string) => void;
+}) {
+  const selected = spaces.find((space) => space.id === selectedSpaceId);
+  if (!selected) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <label className="relative ml-1 hidden items-center sm:flex" aria-label="Execution Space">
+          <span className="pointer-events-none absolute left-2 text-primary">
+            <Target className="size-3.5" />
+          </span>
+          <select
+            aria-label="Active execution space"
+            value={selectedSpaceId}
+            disabled={spaces.length === 1}
+            onChange={(event) => onSelectSpace(event.target.value)}
+            className="h-8 max-w-[190px] appearance-none truncate rounded-md border border-primary/25 bg-primary/5 pl-7 pr-7 text-[11px] text-foreground outline-none transition-colors hover:border-primary/45 focus:border-primary disabled:opacity-100"
+          >
+            {spaces.map((space) => (
+              <option key={space.id} value={space.id}>
+                {space.name?.trim() ? `${space.name} (${space.id})` : space.id}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted-foreground" />
+        </label>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[36rem] space-y-1">
+        <p><span className="text-muted-foreground">Execution coordination:</span> Mission / Wave / Agent Team / Workflow</p>
+        <p><span className="text-muted-foreground">Store:</span> <span className="font-mono">{selected.store_root}</span></p>
+        <p><span className="text-muted-foreground">Default binding:</span> <span className="font-mono">{selected.default_project_binding_id ?? "none"}</span></p>
       </TooltipContent>
     </Tooltip>
   );
@@ -843,6 +906,8 @@ function SurfaceSwitch({
   actionsEnabled,
   onAction,
   apiUrl,
+  projectBindingId,
+  executionSpaceId,
   isLoading,
 }: {
   model: WorkbenchModel;
@@ -852,9 +917,19 @@ function SurfaceSwitch({
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
   apiUrl: string;
+  projectBindingId: string;
+  executionSpaceId: string;
   isLoading: boolean;
 }) {
-  const shared = { model, onSelectionChange, actionsEnabled, onAction, apiUrl };
+  const shared = {
+    model,
+    onSelectionChange,
+    actionsEnabled,
+    onAction,
+    apiUrl,
+    projectBindingId,
+    executionSpaceId,
+  };
   if (isCompanyOsSurface(selection.surface)) {
     return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} onSelectionChange={onSelectionChange} />;
   }

@@ -59,6 +59,8 @@ interface WorkflowSurfaceProps {
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void;
   apiUrl?: string;
+  projectBindingId?: string;
+  executionSpaceId?: string;
 }
 
 /* ================================================================== */
@@ -272,7 +274,13 @@ function ShapeGlyph({ steps }: { steps: WorkflowStep[] }) {
 /* DETAIL — one run, top-to-bottom report                              */
 /* ================================================================== */
 
-export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: WorkflowSurfaceProps) {
+export function WorkflowRunDetail({
+  model,
+  onSelectionChange,
+  apiUrl,
+  projectBindingId,
+  executionSpaceId,
+}: WorkflowSurfaceProps) {
   const run = model.selectedWorkflowRun;
   const back = () => onSelectionChange({ surface: "workflows", workflowRunId: undefined });
 
@@ -420,7 +428,15 @@ export function WorkflowRunDetail({ model, onSelectionChange, apiUrl }: Workflow
 
       <DocSection label="Detailed workflow timeline">
         {phases.length ? (
-          <Timeline phases={phases} model={model} apiUrl={apiUrl} run={run} onSelectionChange={onSelectionChange} />
+          <Timeline
+            phases={phases}
+            model={model}
+            apiUrl={apiUrl}
+            projectBindingId={projectBindingId}
+            executionSpaceId={executionSpaceId}
+            run={run}
+            onSelectionChange={onSelectionChange}
+          />
         ) : (
           <EmptyState
             icon={Workflow}
@@ -1239,12 +1255,16 @@ function Timeline({
   phases,
   model,
   apiUrl,
+  projectBindingId,
+  executionSpaceId,
   run,
   onSelectionChange,
 }: {
   phases: WorkflowPhase[];
   model: WorkbenchModel;
   apiUrl?: string;
+  projectBindingId?: string;
+  executionSpaceId?: string;
   run: WorkflowRun;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
 }) {
@@ -1279,6 +1299,8 @@ function Timeline({
                 phase={phase}
                 model={model}
                 apiUrl={apiUrl}
+                projectBindingId={projectBindingId}
+                executionSpaceId={executionSpaceId}
                 run={run}
                 onSelectionChange={onSelectionChange}
               />
@@ -1408,6 +1430,8 @@ function StepCard({
   apiUrl,
   run,
   onSelectionChange,
+  projectBindingId,
+  executionSpaceId,
 }: {
   step: WorkflowStep;
   phase: WorkflowPhase;
@@ -1415,6 +1439,8 @@ function StepCard({
   apiUrl?: string;
   run: WorkflowRun;
   onSelectionChange: (selection: Partial<SelectionState>) => void;
+  projectBindingId?: string;
+  executionSpaceId?: string;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const tone = workflowStepTone(step.status);
@@ -1424,13 +1450,23 @@ function StepCard({
   useEffect(() => {
     setNativeActivity(undefined);
     if (!apiUrl || !session) return;
-    const project = new URLSearchParams(window.location.search).get("project");
     let cancelled = false;
-    fetchNativeWorkflowStepActivity(apiUrl, step.id, project)
+    fetchNativeWorkflowStepActivity(
+      apiUrl,
+      step.id,
+      projectBindingId,
+      executionSpaceId,
+    )
       .then((projection) => { if (!cancelled) setNativeActivity(projection); })
       .catch(() => { /* missing provider history remains an honest empty state */ });
     return () => { cancelled = true; };
-  }, [apiUrl, step.id, session?.native_session_id]);
+  }, [
+    apiUrl,
+    step.id,
+    projectBindingId,
+    executionSpaceId,
+    session?.native_session_id,
+  ]);
   // The step actor is a PROVIDER that ran in a one-shot ephemeral worker
   // (codex/claude), carried on the structured result — not a pre-existing
   // member. `isolation` is set when the node opted into a throwaway worktree.

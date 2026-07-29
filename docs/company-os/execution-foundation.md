@@ -19,7 +19,7 @@ system. A Mission, Wave, AgentTeamRun, WorkflowRun, native session reference, or
 does not own a company business domain merely because it executed some work for
 it.
 
-ADR 0040 formalizes the identity boundary:
+ADR 0042 formalizes the identity boundary:
 
 ```text
 Company Store       Execution Space       Project Binding
@@ -29,8 +29,10 @@ Company Store       Execution Space       Project Binding
 
 Company WorkItems may reference execution. Execution must not require a
 Company. Project/repository selection is a runtime binding, not Company truth.
-The current project-scoped store routing is compatibility behavior until the
-Execution Space and Company Store registries are implemented.
+Company Store, Execution Space, and Project Binding registries and selectors
+are implemented independently. Project-derived execution/Company stores remain
+an explicitly labelled compatibility path until their data is migrated and
+retired through governed operations.
 
 ## Execution objects retained from the Harness
 
@@ -81,8 +83,9 @@ owns participation in one TeamRun.
 
 An AgentTeamRun may execute against one Project Binding, while another TeamRun
 inside the same Mission uses a different Project Binding. The Mission/Wave
-history belongs to the Execution Space, not to any one repository-derived
-store.
+history belongs to the Execution Space. `AgentTeamRun.project_binding_id` pins
+provider execution context so a later selector change cannot retarget existing
+members.
 
 The Host owns member lifecycle explicitly. Starting a Team member creates or
 resumes its persistent provider runtime; ordinary turn completion does not
@@ -117,7 +120,9 @@ recorded in
 Dynamic Workflow remains the engine for one-shot structured work. A
 `WorkflowRun` and its `WorkflowStep`s own the workflow's internal steps,
 fan-out, retries, results, and artifacts. They do not become a TeamRun and do
-not acquire organizational identity.
+not acquire organizational identity. `WorkflowRun.project_binding_id` pins the
+provider cwd, instruction/Skill boundary, and patch/artifact root independently
+from the Execution Space that owns the run rows.
 
 A WorkItem may reference the WorkflowRun that fulfilled it. An Agent-centric
 projection may cite workflow participation only when a step has an explicit

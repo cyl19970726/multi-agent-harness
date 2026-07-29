@@ -309,7 +309,7 @@ fn mcp_stdio_agent_team_tools() {
         .expect("team_run_id")
         .to_string();
     let expected_dashboard = format!(
-        "http://127.0.0.1:5173/?api=.&surface=team&team={team_run_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp"
+        "http://127.0.0.1:5173/?api=.&surface=team&team={team_run_id}&space={project_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp"
     );
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
@@ -366,7 +366,7 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         mission_scoped["dashboard_url"].as_str(),
         Some(
-            format!("http://127.0.0.1:5173/?api=.&surface=team&team={mission_scoped_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp")
+            format!("http://127.0.0.1:5173/?api=.&surface=team&team={mission_scoped_id}&space={project_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp")
                 .as_str()
         )
     );
@@ -633,7 +633,7 @@ fn mcp_stdio_agent_team_tools() {
     // Simulate the provider delivery boundary, then prove ACK persists and
     // appears in the run event stream. The provider-specific start tests own
     // actual delivery; this test owns the Host-facing MCP contract.
-    let store = HarnessStore::new(home.projects_dir().join(&project_id));
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let mut delivered_assignment = store
         .team_messages()
         .expect("team messages")
@@ -770,7 +770,7 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         started["dashboard_url"].as_str(),
         Some(
-            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp-start")
+            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&space={project_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp-start")
                 .as_str()
         )
     );

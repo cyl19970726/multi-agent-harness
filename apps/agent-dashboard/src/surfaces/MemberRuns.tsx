@@ -74,6 +74,8 @@ export interface MemberRunFocusProps {
   onAction?: (path: string, body?: unknown) => void;
   /** Live Harness API used for on-demand provider-native activity reads. */
   apiUrl?: string;
+  projectBindingId?: string;
+  executionSpaceId?: string;
   isLoading?: boolean;
 }
 
@@ -94,6 +96,8 @@ export function MemberRunFocus({
   actionsEnabled = false,
   onAction,
   apiUrl,
+  projectBindingId,
+  executionSpaceId,
   isLoading = false,
 }: MemberRunFocusProps) {
   const [now, setNow] = useState(() => Date.now());
@@ -117,9 +121,8 @@ export function MemberRunFocus({
     setNativeActivity(undefined);
     setNativeActivityState(apiUrl && memberRunId ? "loading" : "idle");
     if (!apiUrl || !memberRunId) return;
-    const project = new URLSearchParams(window.location.search).get("project");
     let cancelled = false;
-    fetchNativeMemberActivity(apiUrl, memberRunId, project)
+    fetchNativeMemberActivity(apiUrl, memberRunId, projectBindingId, executionSpaceId)
       .then((projection) => {
         if (!cancelled) {
           setNativeActivity(projection);
@@ -130,7 +133,13 @@ export function MemberRunFocus({
         if (!cancelled) setNativeActivityState("unavailable");
       });
     return () => { cancelled = true; };
-  }, [apiUrl, memberRunId, context?.member.native_session?.native_session_id]);
+  }, [
+    apiUrl,
+    memberRunId,
+    projectBindingId,
+    executionSpaceId,
+    context?.member.native_session?.native_session_id,
+  ]);
 
   if (!context) {
     if (isLoading) {

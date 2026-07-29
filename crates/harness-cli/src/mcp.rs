@@ -73,15 +73,18 @@ fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_i
         (Some(mission_id), None) => format!("&mission={mission_id}"),
         _ => String::new(),
     };
-    let base = match resolved.context.as_ref() {
-        Some(project) => format!(
-            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}&project={}",
-            project.id
-        ),
-        None => format!(
-            "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}"
-        ),
-    };
+    let mut selectors = String::new();
+    if let Some(space) = resolved.execution_space_context.as_ref() {
+        selectors.push_str("&space=");
+        selectors.push_str(&space.id);
+    }
+    if let Some(project) = resolved.context.as_ref() {
+        selectors.push_str("&project=");
+        selectors.push_str(&project.id);
+    }
+    let base = format!(
+        "{DASHBOARD_UI_ORIGIN}/?api={DASHBOARD_SAME_ORIGIN_API_BASE}&surface=team&team={team_run_id}{selectors}"
+    );
     base + &context
 }
 
@@ -253,10 +256,12 @@ fn tool_team_run_start(
     }
     let prepared =
         prepare_team_run_start(store, id, max_concurrency).map_err(|error| error.to_string())?;
+    let execution_space = resolved.execution_space_context.clone();
     let project_context = resolved.context.clone();
     std::thread::spawn(move || {
         if let Err(error) = drive_prepared_team_run(
             prepared,
+            execution_space,
             project_context,
             max_concurrency,
             Duration::from_secs(idle_timeout_s),

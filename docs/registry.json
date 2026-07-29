@@ -1376,18 +1376,18 @@
    "ownerRole": "operations",
    "status": "stable",
    "lifecycle": "volatile",
-    "canonicalFor": [
-      "multi-project store_root vs project_root model",
-      "central store layout and project identity",
-      "project resolution precedence + project commands",
-      "Agent Team execution root and member worktree relationship",
-      "GLOBAL _global policy + migration path",
-    "multi-project live acceptance"
+   "canonicalFor": [
+    "Execution Space and Project Binding implementation contract",
+    "independent coordination-store and provider-cwd selection",
+    "Project Binding instruction, Skill, worktree, and permission boundary",
+    "execution migration and compatibility-store retirement path",
+    "GLOBAL _global policy and multi-project acceptance"
    ],
-    "dependsOn": [
-      "README.md",
-      "docs/decisions/0033-agent-team-workspace-contract.md",
-      "crates/harness-core/src/lib.rs",
+   "dependsOn": [
+    "README.md",
+    "docs/decisions/0033-agent-team-workspace-contract.md",
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
+    "crates/harness-core/src/lib.rs",
     "crates/harness-cli/src/main.rs"
    ],
    "machineConsumers": [
@@ -1396,15 +1396,16 @@
    ],
    "reviewAfter": "2026-09-30",
    "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
+    "pnpm test:multi-project",
+    "pnpm check:dashboard"
    ],
-   "reorgTrigger": "The store_root/project_root split, project identity rules, resolution precedence, project commands, GLOBAL policy, or migration flow change.",
+   "reorgTrigger": "Execution Space, Project Binding, cwd/Skill boundary, selector precedence, GLOBAL policy, or migration flow changes.",
    "authorityClass": "implementation_reference",
    "implementationState": "implemented",
     "truthRefs": [
       {
         "kind": "decision",
-        "ref": "docs/decisions/0033-agent-team-workspace-contract.md"
+        "ref": "docs/decisions/0042-company-store-execution-space-project-binding.md"
       },
       {
         "kind": "api",
@@ -1668,6 +1669,8 @@
    "reviewAfter": "2026-08-22",
    "lastVerifiedWith": [
     "cargo test -p harness-cli --test company_os_api",
+    "cargo test -p harness-cli --test execution_space_cli",
+    "pnpm test:multi-project",
     "npx pnpm@9.15.4 check:company-os",
     "frontend-visual-contract validate_manifest.py"
    ],
@@ -2123,6 +2126,7 @@
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md",
     "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
     "docs/company-os/concept-model.md",
     "docs/company-os/work-items-and-approvals.md"
    ],
@@ -2132,7 +2136,8 @@
    ],
    "reviewAfter": "2026-08-20",
    "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
+    "pnpm test:multi-project",
+    "pnpm check:dashboard"
    ],
    "reorgTrigger": "Execution substrate, execution-reference, provider, or transient-thinking boundary changes.",
    "authorityClass": "canonical_contract",
@@ -2145,6 +2150,10 @@
     {
      "kind": "decision",
      "ref": "docs/decisions/0026-mission-wave-architecture.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0042-company-store-execution-space-project-binding.md"
     }
    ]
   },
@@ -3718,7 +3727,7 @@
    "status": "stable",
    "lifecycle": "stable",
    "canonicalFor": [
-    "target identity boundary between Company Store, Execution Space, and Project Binding",
+    "implemented identity boundary between Company Store, Execution Space, and Project Binding",
     "Company OS truth ownership independent from Git repository paths",
     "standalone execution capability without a Company Store",
     "migration direction from project-derived compatibility stores"
@@ -3735,11 +3744,14 @@
    ],
    "reviewAfter": "2026-09-30",
    "lastVerifiedWith": [
+    "cargo test -p harness-cli --test execution_space_cli",
+    "pnpm test:multi-project",
+    "pnpm check:dashboard",
     "harness governance check"
    ],
    "reorgTrigger": "Company registry, Execution Space registry, Project Binding migration, dashboard selectors, or execution routing boundaries change.",
    "authorityClass": "canonical_contract",
-   "implementationState": "partial",
+   "implementationState": "implemented",
    "truthRefs": [
     {
      "kind": "decision",
@@ -3747,11 +3759,11 @@
     },
     {
      "kind": "api",
-     "ref": "crates/harness-cli/src/company_store.rs"
+     "ref": "crates/harness-cli/src/execution_space.rs"
     },
     {
      "kind": "test",
-     "ref": "crates/harness-cli/tests/company_store_cli.rs"
+     "ref": "crates/harness-cli/tests/execution_space_cli.rs"
     },
     {
      "kind": "test",

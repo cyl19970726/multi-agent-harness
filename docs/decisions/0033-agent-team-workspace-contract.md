@@ -14,8 +14,8 @@ outside the registered repository path.
 
 Keep four explicit values:
 
-- `ProjectContext.store_root`: centralized Harness coordination storage only;
-- `ProjectContext.project_root`: registered Workspace identity;
+- `ExecutionSpace.store_root`: Harness coordination storage only;
+- `ProjectBinding.project_root`: registered execution-resource identity;
 - `AgentTeamRun.execution_root`: run-level cwd, defaulting to `project_root`;
 - `MemberRun.worktree_ref`: optional member-level cwd override.
 
@@ -23,20 +23,23 @@ New CLI, HTTP, and MCP creation accepts the latter two overrides. With a
 registered project, each override must be the canonical project root or a Git
 worktree top level whose canonical Git common directory matches the project.
 Provider spawn resolves `worktree_ref > execution_root > project_root` and
-never falls back to `store_root`.
+never falls back to an Execution Space or Company Store. The internal
+`ProjectContext` adapter may still carry a compatibility store locator, but it
+does not own native coordination writes.
 
 The provider collaboration environment preserves the same separation:
 
 - `HARNESS_PROJECT_ID` carries stable Workspace identity;
 - `HARNESS_PROJECT` carries an executable selector (normally canonical
-  `project_root`) so a nested provider process can resolve the same store even
-  when its cwd is an unregistered linked worktree;
+  `project_root`) so a nested provider process resolves the same execution
+  boundary even when its cwd is an unregistered linked worktree;
+- `HARNESS_SPACE` carries the coordination namespace independently;
 - `HARNESS_BIN` carries the exact Host executable so Member CLI calls cannot
   drift to an older binary on `PATH`.
 
 An in-memory `serve` context created from an unregistered worktree retains its
-exact `project_root` and `store_root`. Project enumeration must not reconstruct
-that context by treating `store_root` as a repository root.
+exact `project_root`. Project enumeration must not reconstruct that context by
+treating any coordination Store as a repository root.
 
 Immediately before spawn, Harness records `MemberRun.workspace_snapshot` with
 the actual canonical cwd, Git HEAD/branch when available, and non-secret

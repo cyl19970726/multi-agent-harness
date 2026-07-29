@@ -192,7 +192,8 @@ fn seed_offsets_at_eof(
     }
 }
 
-/// The JSONL files the watcher tails in every project store.
+/// The JSONL files tailed in every Execution Space or compatibility
+/// coordination store.
 const WATCHED_FILES: &[&str] = &[
     "agent_events.jsonl",
     "messages.jsonl",
@@ -563,6 +564,7 @@ mod tests {
         WorkflowRun {
             id: id.into(),
             workflow_name: "test".into(),
+            project_binding_id: None,
             status: WorkflowRunStatus::Running,
             step_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -979,7 +981,7 @@ mod tests {
         assert_eq!(manager.client_count("proj-b"), 1);
     }
 
-    /// Identical filenames across two project stores are tracked independently:
+    /// Identical filenames across two coordination stores are tracked independently:
     /// appending to A's `messages.jsonl` advances only A's offset and broadcasts
     /// only to A.
     #[test]

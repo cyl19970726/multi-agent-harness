@@ -98,12 +98,12 @@ harness --project <current-compat-project-selector> \
   --path <additional-path>
 ```
 
-In the current compatibility implementation, the top-level `--project` selects
-the project-scoped Store to write into. Under ADR 0040 this must become an
-explicit Company Store selector, while the command-level `--project-id`
-continues to identify the external software source / future Project Binding
-being observed. The command reads a local Git worktree, records repo metadata
-and file snapshots, and writes native Docs `TypedRecord`s:
+The top-level `--company` selects Company Store truth and the top-level
+`--project` independently selects the local Project Binding used to read the
+source worktree. The command-level `--project-id` identifies the external
+software source being observed; it is not a Store selector. The command reads
+a local Git worktree, records repo metadata and file snapshots, and writes
+native Docs `TypedRecord`s:
 `external_project`, `product_doc_source`, `product_doc_snapshot`, and
 `source_sync_run`.
 

@@ -3,6 +3,7 @@ import type {
   Company,
   DashboardSnapshot,
   DocRegistryEntry,
+  ExecutionSpace,
   LiveMemberActivity,
   MemberAction,
   MemberRun,
@@ -37,7 +38,7 @@ export function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, "");
 }
 
-/** True only when an SSE callback belongs to the currently selected project. */
+/** True only when an SSE callback belongs to the selected coordination stream. */
 export function matchesStreamProject(
   selectedProject: string | null | undefined,
   streamProject: string | null | undefined,
@@ -46,12 +47,9 @@ export function matchesStreamProject(
 }
 
 /**
- * Append `?project=<id>` to a `/v1/...` path so a single serve can multiplex
- * many project stores (goal-multi-project P6). An absent/empty id yields the
- * bare path, which the backend resolves to the active/`_global` project — old
- * clients (and the picker before a project is chosen) keep working unchanged.
- * Project ids are restricted to `[A-Za-z0-9._-]`, so no percent-encoding is
- * needed to match the backend's `query_param` parser.
+ * Add independent selectors to one API path. `space` chooses coordination
+ * truth; `project` chooses provider cwd/config/Skill boundaries; `company`
+ * chooses Company OS truth.
  */
 function withQuery(
   path: string,
@@ -66,16 +64,13 @@ function withQuery(
   return `${path}${sep}${query}`;
 }
 
-function withProject(path: string, project?: string | null): string {
-  return withQuery(path, { project });
-}
-
 function withProjectAndCompany(
   path: string,
   project?: string | null,
   company?: string | null,
+  space?: string | null,
 ): string {
-  return withQuery(path, { project, company });
+  return withQuery(path, { space, project, company });
 }
 
 /**
@@ -86,22 +81,24 @@ function withCompanyOsRoute(
   path: string,
   project?: string | null,
   company?: string | null,
+  space?: string | null,
 ): string {
   return path.startsWith("/v1/company-os/")
-    ? withProjectAndCompany(path, project, company)
-    : withProject(path, project);
+    ? withProjectAndCompany(path, project, company, space)
+    : withQuery(path, { space, project });
 }
 
 export async function fetchSnapshot(
   baseUrl: string,
   project?: string | null,
   company?: string | null,
+  space?: string | null,
 ): Promise<DashboardSnapshot> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${withProjectAndCompany("/v1/snapshot", project, company)}`);
+  const response = await fetch(`${normalized}${withProjectAndCompany("/v1/snapshot", project, company, space)}`);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -114,10 +111,11 @@ export async function fetchNativeMemberActivity(
   baseUrl: string,
   memberRunId: string,
   project?: string | null,
+  space?: string | null,
 ): Promise<NativeActivityProjection> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) throw new Error("Harness API URL is required");
-  const response = await fetch(`${normalized}${withProject(`/v1/member-runs/${encodeURIComponent(memberRunId)}/native-activity`, project)}`);
+  const response = await fetch(`${normalized}${withQuery(`/v1/member-runs/${encodeURIComponent(memberRunId)}/native-activity`, { space, project })}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as NativeActivityProjection;
 }
@@ -126,20 +124,18 @@ export async function fetchNativeWorkflowStepActivity(
   baseUrl: string,
   workflowStepId: string,
   project?: string | null,
+  space?: string | null,
 ): Promise<NativeActivityProjection> {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) throw new Error("Harness API URL is required");
-  const response = await fetch(`${normalized}${withProject(`/v1/workflow-steps/${encodeURIComponent(workflowStepId)}/native-activity`, project)}`);
+  const response = await fetch(`${normalized}${withQuery(`/v1/workflow-steps/${encodeURIComponent(workflowStepId)}/native-activity`, { space, project })}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as NativeActivityProjection;
 }
 
 /**
- * Enumerate known projects via `GET /v1/projects` (registry + on-disk stores +
- * reserved `_global`). The response also names the currently-active project so
- * the picker can default to it. In raw `--store`/`HARNESS_ROOT` override mode the
- * backend reports only the served store as a synthetic default. Throws on
- * missing source / HTTP error.
+ * Enumerate Project Bindings. These entries define execution/source boundaries
+ * and do not own Mission/Wave/Team/Workflow storage.
  */
 export async function fetchProjects(
   baseUrl: string,
@@ -154,6 +150,17 @@ export async function fetchProjects(
   }
   const data = (await response.json()) as { projects?: Project[]; current?: string };
   return { projects: data.projects ?? [], current: data.current ?? "" };
+}
+
+export async function fetchSpaces(
+  baseUrl: string,
+): Promise<{ spaces: ExecutionSpace[]; current: string }> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}/v1/spaces`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const data = (await response.json()) as { spaces?: ExecutionSpace[]; current?: string };
+  return { spaces: data.spaces ?? [], current: data.current ?? "" };
 }
 
 /**
@@ -216,16 +223,21 @@ export async function fetchCurrentProject(
 }
 
 /**
- * Flip the active project via `POST /v1/projects/switch {project}` so a live
- * serve AND CLI-spawned workers converge on the same central store (#89
- * invariant). The response carries the NEW active project's snapshot, returned
- * here so the caller can swap the read model without a second fetch.
+ * Flip the active Project Binding. This changes the default provider workspace,
+ * not the selected Execution Space or its coordination snapshot.
  */
 export async function switchProject(
   baseUrl: string,
   project: string,
 ): Promise<ActionResponse> {
   return postAction(baseUrl, "/v1/projects/switch", { project });
+}
+
+export async function switchSpace(
+  baseUrl: string,
+  space: string,
+): Promise<ActionResponse> {
+  return postAction(baseUrl, "/v1/spaces/switch", { space });
 }
 
 export async function switchCompany(
@@ -328,14 +340,16 @@ export function openEventStream(
   baseUrl: string,
   handlers: EventStreamHandlers,
   project?: string | null,
+  space?: string | null,
 ): () => void {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  // Scope the SSE channel to the selected project so a client subscribed to
-  // project A never receives project B frames (P6 per-project broadcast).
-  const source = new EventSource(`${normalized}${withProject("/v1/events", project)}`);
+  // Scope durable coordination by Execution Space. `project` remains present
+  // for compatibility and provider-bound live actions, but does not select the
+  // event ledger on a native-space server.
+  const source = new EventSource(`${normalized}${withQuery("/v1/events", { space, project })}`);
 
   const parse = <T,>(event: MessageEvent): T | null => {
     try {
@@ -713,12 +727,13 @@ export async function postAction(
   project?: string | null,
   company?: string | null,
   options: ActionRequestOptions = {},
+  space?: string | null,
 ): Promise<ActionResponse> {
   const normalized = baseUrl.trim().replace(/\/$/, "");
   if (!normalized) {
     throw new Error("Harness API URL is required");
   }
-  const response = await fetch(`${normalized}${withCompanyOsRoute(path, project, company)}`, {
+  const response = await fetch(`${normalized}${withCompanyOsRoute(path, project, company, space)}`, {
     method: "POST",
     headers: { ...options.headers, "Content-Type": "application/json" },
     body: JSON.stringify(body),

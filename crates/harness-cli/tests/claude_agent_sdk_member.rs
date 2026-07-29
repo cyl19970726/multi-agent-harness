@@ -221,11 +221,11 @@ fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
     );
     assert!(
         home.harness_home()
-            .join("projects")
+            .join("execution-spaces")
             .join(project_id)
             .join("member_runs.jsonl")
             .is_file(),
-        "MemberRun and its native-session binding remain in the execution/project store"
+        "MemberRun and its native-session binding remain in the Execution Space"
     );
 }
 

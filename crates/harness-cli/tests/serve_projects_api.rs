@@ -1,19 +1,18 @@
-//! Integration coverage for the multi-project serve HTTP API
-//! (goal-multi-project P6, project-api task).
+//! Integration coverage for independent Execution Space and Project Binding
+//! selectors in the serve HTTP API.
 //!
 //! Spawns the real `harness serve` against an isolated HOME with TWO registered
 //! projects, then asserts:
 //!   - `GET /v1/projects` lists both registry projects + the reserved `_global`,
 //!   - `GET /v1/projects/current` reflects the registry's active project,
-//!   - `GET /v1/snapshot?project=<id>` reads exactly that project's store,
-//!   - `GET /v1/snapshot` (no param) reads the active/default project,
-//!   - `POST /v1/projects/switch` flips the active project (registry + marker) so a
-//!     later CLI command from a different cwd converges on the same store.
+//!   - `GET /v1/snapshot?space=<id>` reads that coordination store,
+//!   - `?project=<id>` only selects provider cwd/config/Skill boundaries,
+//!   - project and space switches update their independent active markers.
 
 use std::path::Path;
 
 mod harness_env;
-use harness_env::{current_project_id, run_harness, ServeHandle, TempHome};
+use harness_env::{current_project_id, current_space_id, run_harness, ServeHandle, TempHome};
 
 /// `harness init` a project rooted at `<base>/<name>` and return its derived id.
 fn init_project(home: &TempHome, name: &str) -> (std::path::PathBuf, String) {
@@ -25,14 +24,35 @@ fn init_project(home: &TempHome, name: &str) -> (std::path::PathBuf, String) {
     (root, id)
 }
 
-/// Create a Mission in a specific project's store via `--project <id>`.
-fn create_goal(home: &TempHome, project_id: &str, goal_id: &str, title: &str) {
+fn create_space(home: &TempHome, id: &str, project_binding: &str) {
+    let out = run_harness(
+        home,
+        home.base(),
+        &[
+            "space",
+            "init",
+            "--id",
+            id,
+            "--name",
+            id,
+            "--project-binding",
+            project_binding,
+        ],
+    );
+    assert!(out.status.success(), "space init failed: {out:?}");
+}
+
+/// Create a Mission in a specific Execution Space while independently selecting
+/// the provider Project Binding.
+fn create_goal(home: &TempHome, space_id: &str, project_id: &str, goal_id: &str, title: &str) {
     let out = run_harness(
         home,
         home.base(),
         &[
             "--project",
             project_id,
+            "--space",
+            space_id,
             "mission",
             "create",
             "--id",
@@ -99,16 +119,18 @@ fn current_endpoint_reflects_active_project() {
 }
 
 #[test]
-fn snapshot_with_project_param_reads_that_store_only() {
+fn snapshot_space_selector_isolated_while_project_selector_does_not_switch_store() {
     let home = TempHome::new("api-scoped");
     let (_a, id_a) = init_project(&home, "alpha");
     let (_b, id_b) = init_project(&home, "beta");
-    create_goal(&home, &id_a, "goal-in-alpha", "Alpha goal");
-    create_goal(&home, &id_b, "goal-in-beta", "Beta goal");
+    create_space(&home, "space-alpha", &id_a);
+    create_space(&home, "space-beta", &id_b);
+    create_goal(&home, "space-alpha", &id_a, "goal-in-alpha", "Alpha goal");
+    create_goal(&home, "space-beta", &id_b, "goal-in-beta", "Beta goal");
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
-    let (sa, snap_a) = serve.get_json(&format!("/v1/snapshot?project={id_a}"));
+    let (sa, snap_a) = serve.get_json(&format!("/v1/snapshot?space=space-alpha&project={id_a}"));
     assert_eq!(sa, 200);
     let ga = goal_ids(&snap_a);
     assert!(
@@ -120,7 +142,7 @@ fn snapshot_with_project_param_reads_that_store_only() {
         "alpha snapshot leaked beta's goal: {ga:?}"
     );
 
-    let (sb, snap_b) = serve.get_json(&format!("/v1/snapshot?project={id_b}"));
+    let (sb, snap_b) = serve.get_json(&format!("/v1/snapshot?space=space-beta&project={id_b}"));
     assert_eq!(sb, 200);
     let gb = goal_ids(&snap_b);
     assert!(
@@ -131,24 +153,32 @@ fn snapshot_with_project_param_reads_that_store_only() {
         !gb.contains(&"goal-in-alpha".to_string()),
         "beta snapshot leaked alpha's goal: {gb:?}"
     );
+
+    let (_status, same_space_other_binding) =
+        serve.get_json(&format!("/v1/snapshot?space=space-alpha&project={id_b}"));
+    let ids = goal_ids(&same_space_other_binding);
+    assert!(ids.contains(&"goal-in-alpha".to_string()));
+    assert!(!ids.contains(&"goal-in-beta".to_string()));
 }
 
 #[test]
-fn snapshot_without_project_uses_active_default() {
+fn snapshot_without_space_uses_active_execution_space() {
     let home = TempHome::new("api-default");
     let (_a, id_a) = init_project(&home, "alpha");
     let (_b, id_b) = init_project(&home, "beta"); // beta is active
-    create_goal(&home, &id_a, "goal-in-alpha", "Alpha goal");
-    create_goal(&home, &id_b, "goal-in-beta", "Beta goal");
+    create_space(&home, "space-alpha", &id_a);
+    create_space(&home, "space-beta", &id_b);
+    create_goal(&home, "space-alpha", &id_a, "goal-in-alpha", "Alpha goal");
+    create_goal(&home, "space-beta", &id_b, "goal-in-beta", "Beta goal");
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
-    // No ?project → the active project (beta).
+    // No ?space → the active Execution Space (space-beta).
     let (status, snap) = serve.get_json("/v1/snapshot");
     assert_eq!(status, 200);
     let g = goal_ids(&snap);
     assert!(
         g.contains(&"goal-in-beta".to_string()),
-        "default snapshot should be active (beta): {g:?}"
+        "default snapshot should use active space-beta: {g:?}"
     );
     assert!(
         !g.contains(&"goal-in-alpha".to_string()),
@@ -162,6 +192,7 @@ fn post_switch_updates_registry_and_marker() {
     let (_a, id_a) = init_project(&home, "alpha");
     let (_b, id_b) = init_project(&home, "beta"); // beta active initially
     assert_eq!(current_project_id(&home), id_b);
+    let space_before = current_space_id(&home);
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let (status, body) =
@@ -183,14 +214,13 @@ fn post_switch_updates_registry_and_marker() {
         "live current: {cur}"
     );
 
-    // A CLI command from a DIFFERENT cwd now converges on the switched store.
+    // Project switching must not move coordination storage.
     let other = home.base().join("somewhere").join("else");
     std::fs::create_dir_all(&other).unwrap();
     let (_src, src_stderr) = store_source(&home, &other);
-    assert!(
-        src_stderr.contains(&id_a),
-        "CLI from other cwd did not converge on switched project {id_a}: {src_stderr}"
-    );
+    assert!(src_stderr.contains("SpaceCurrent"), "{src_stderr}");
+    assert!(src_stderr.contains(&space_before), "{src_stderr}");
+    assert_eq!(current_space_id(&home), space_before);
 }
 
 /// Run `harness --store-source mission list` and return (stdout, stderr).

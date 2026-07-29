@@ -19,6 +19,17 @@ pub struct TempHome {
     harness_home: PathBuf,
 }
 
+pub fn current_space_id(home: &TempHome) -> String {
+    let registry: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.space_registry_path()).expect("space registry"),
+    )
+    .expect("space registry JSON");
+    registry["current_space_id"]
+        .as_str()
+        .expect("current_space_id")
+        .to_string()
+}
+
 impl TempHome {
     pub fn new(tag: &str) -> Self {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -64,6 +75,18 @@ impl TempHome {
 
     pub fn active_marker_path(&self) -> PathBuf {
         self.harness_home.join("ACTIVE_PROJECT")
+    }
+
+    pub fn spaces_dir(&self) -> PathBuf {
+        self.harness_home.join("execution-spaces")
+    }
+
+    pub fn space_registry_path(&self) -> PathBuf {
+        self.spaces_dir().join("registry.json")
+    }
+
+    pub fn active_space_marker_path(&self) -> PathBuf {
+        self.harness_home.join("ACTIVE_SPACE")
     }
 
     /// Env pairs to pass to a spawned `harness` process.
@@ -128,6 +151,7 @@ impl ServeHandle {
             .envs(home.envs())
             .env_remove("HARNESS_ROOT")
             .env_remove("HARNESS_PROJECT")
+            .env_remove("HARNESS_SPACE")
             .env_remove("HARNESS_COMPANY")
             // Production supervisors never retire an idle Member implicitly.
             // Integration processes need a bounded escape after they have

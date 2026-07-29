@@ -1,26 +1,25 @@
-//! Project identity + registry layer (goal-multi-project, P1/P2).
+//! Project Binding identity + registry layer.
 //!
 //! This module turns the pure path→id functions in `harness-core`
 //! (`project_id_for_path`, `project_store_root`, `GLOBAL_PROJECT_ID`,
 //! `ProjectContext`) into a persistent, on-disk control plane:
 //!
 //! - a **registry** at `<harness_home>/projects/registry.json` tracking every
-//!   known project + the single `current_project_id` (the convergence point that
-//!   replaces "shared cwd" for the #89 invariant),
+//!   known Project Binding + the single default `current_project_id`,
 //! - an `ACTIVE_PROJECT` marker file (mirror of `current_project_id`) read by
 //!   `serve`/CLI-spawned workers without parsing the whole registry,
-//! - a `metadata.json` written into each project's STORE so a project's identity
-//!   (canonical path, kind, git-ness) survives a fresh clone / re-pin.
+//! - compatibility `metadata.json` that pins path, kind, and Git identity.
 //!
-//! Everything here is additive and back-compat: the registry is only *consulted*
-//! when no explicit `--store`/`HARNESS_ROOT` override and no cwd walk-up applies.
+//! Project selection controls provider cwd/config/Skill boundaries. Native
+//! coordination storage is selected independently by Execution Space.
 //! `harness_home()` honors `HARNESS_HOME` so tests never touch the developer's
 //! real `~/.harness`.
 
 use std::path::{Path, PathBuf};
 
 use harness_core::{
-    project_id_for_path, project_store_root, ProjectContext, ProjectKind, GLOBAL_PROJECT_ID,
+    project_id_for_path, project_store_root, ProjectBinding, ProjectContext, ProjectKind,
+    GLOBAL_PROJECT_ID,
 };
 use serde::{Deserialize, Serialize};
 
@@ -87,8 +86,8 @@ pub fn harness_home() -> ProjectResult<PathBuf> {
     Ok(home_dir()?.join(".harness"))
 }
 
-/// `<harness_home>/projects` — the directory holding per-project stores + the
-/// registry.
+/// `<harness_home>/projects` — Project Binding registry plus legacy
+/// project-derived compatibility stores.
 pub fn projects_dir(harness_home: &Path) -> PathBuf {
     harness_home.join("projects")
 }
@@ -216,7 +215,7 @@ impl ProjectRegistry {
 
 /// Build a [`ProjectContext`] for a project root, deriving the id from the
 /// canonical path relative to HOME. Does NOT touch the filesystem registry — it
-/// only computes identity + the two roots.
+/// only computes identity plus the compatibility-store locator.
 pub fn context_for_root(project_root: &Path, harness_home: &Path) -> ProjectResult<ProjectContext> {
     let home = home_dir()?;
     let canonical = canonicalize_best_effort(project_root);
@@ -235,6 +234,65 @@ pub fn context_for_root(project_root: &Path, harness_home: &Path) -> ProjectResu
         kind,
         is_git_repo,
     })
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Resolve a native Project Binding for a local directory.
+///
+/// This deliberately contains no execution store root. The existing
+/// [`ProjectContext`] remains a compatibility adapter for legacy stores.
+pub fn binding_for_root(project_root: &Path, harness_home: &Path) -> ProjectResult<ProjectBinding> {
+    let context = context_for_root(project_root, harness_home)?;
+    let canonical_root = context.project_root.clone();
+    let git_common_dir = git_output(&canonical_root, &["rev-parse", "--git-common-dir"])
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                canonicalize_best_effort(&path)
+            } else {
+                canonicalize_best_effort(&canonical_root.join(path))
+            }
+        });
+    Ok(ProjectBinding {
+        id: context.id,
+        project_root: canonical_root.clone(),
+        kind: context.kind,
+        is_git_repo: context.is_git_repo,
+        repository_url: git_output(&canonical_root, &["remote", "get-url", "origin"]),
+        default_branch: git_output(
+            &canonical_root,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .and_then(|value| value.rsplit('/').next().map(ToString::to_string)),
+        git_common_dir,
+        instruction_boundary: canonical_root.clone(),
+        skill_discovery_boundary: canonical_root,
+        worktree_policy: if context.is_git_repo {
+            "same_git_common_dir".to_string()
+        } else {
+            "within_project_root".to_string()
+        },
+        permission_policy: "project_workspace".to_string(),
+    })
+}
+
+pub fn binding_for_id(harness_home: &Path, id: &str) -> ProjectResult<Option<ProjectBinding>> {
+    context_for_id(harness_home, id)?
+        .map(|context| binding_for_root(&context.project_root, harness_home))
+        .transpose()
 }
 
 /// Build a [`ProjectContext`] for the reserved GLOBAL project (`$HOME`).
@@ -468,15 +526,13 @@ pub fn active_project_id(harness_home: &Path) -> ProjectResult<Option<String>> {
 /// `GET /v1/projects` endpoint (goal-multi-project P6 / project-api task).
 ///
 /// Sources, merged and de-duplicated by id (first writer wins):
-/// 1. registry entries (the authoritative pinned `path`/`store_root`),
-/// 2. any `<harness_home>/projects/<id>/metadata.json` not already in the registry
-///    (a store materialized by `init`/`migrate` before a registry write landed),
+/// 1. registry entries (the authoritative pinned Project Binding path),
+/// 2. compatibility metadata not already in the registry,
 /// 3. the reserved `_global` project, always present even if never explicitly
 ///    registered.
 ///
-/// A missing `projects/` dir (first run) yields just `_global`. Corrupt metadata is
-/// skipped rather than aborting the whole enumeration so one bad store cannot hide
-/// every other project from the picker.
+/// A missing `projects/` dir yields just `_global`. Corrupt compatibility
+/// metadata is skipped rather than hiding every Project Binding from the picker.
 pub fn list_projects(harness_home: &Path) -> ProjectResult<Vec<ProjectContext>> {
     let mut out: Vec<ProjectContext> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();

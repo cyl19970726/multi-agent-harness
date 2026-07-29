@@ -31,7 +31,7 @@ fn init_project(home: &TempHome, name: &str) -> String {
 /// surfaces can prove their optional joins without depending on a separate
 /// Mission authoring command in this integration suite.
 fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
-    let store = home.projects_dir().join(project_id);
+    let store = home.spaces_dir().join(project_id);
     std::fs::write(
         store.join("missions.jsonl"),
         serde_json::json!({
@@ -229,7 +229,7 @@ fn team_run_cli_create_list_status_send_events() {
 
     // The compatibility field counts only manual_ack deliveries that actually
     // reached delivered: a queued manual ACK remains non-actionable.
-    let store = HarnessStore::new(home.projects_dir().join(&project_id));
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let mut assignments = store.team_messages().expect("assignment messages");
     assignments.sort_by(|left, right| left.id.cmp(&right.id));
     assignments[0].deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
@@ -552,7 +552,7 @@ fn team_run_cli_message_reuses_assignment_lineage_only_within_its_run() {
     );
     let foreign_member_id = foreign["member_runs"][0]["id"].as_str().unwrap();
     let messages_before_invalid = std::fs::read_to_string(
-        home.projects_dir()
+        home.spaces_dir()
             .join(&project_id)
             .join("team_messages.jsonl"),
     )
@@ -625,7 +625,7 @@ fn team_run_cli_message_reuses_assignment_lineage_only_within_its_run() {
         String::from_utf8_lossy(&out.stderr)
     );
     let messages_after_invalid = std::fs::read_to_string(
-        home.projects_dir()
+        home.spaces_dir()
             .join(&project_id)
             .join("team_messages.jsonl"),
     )
@@ -704,7 +704,7 @@ fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
     let home = TempHome::new("team-run-wrong-executor");
     let project_id = init_project(&home, "alpha");
     seed_native_mission_wave(&home, &project_id);
-    let wave_path = home.projects_dir().join(&project_id).join("waves.jsonl");
+    let wave_path = home.spaces_dir().join(&project_id).join("waves.jsonl");
     let wave = std::fs::read_to_string(&wave_path)
         .expect("read seeded wave")
         .replace("\"agent_team\"", "\"dynamic_workflow\"");
@@ -734,7 +734,7 @@ fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
     );
     assert!(
         !home
-            .projects_dir()
+            .spaces_dir()
             .join(&project_id)
             .join("team_runs.jsonl")
             .exists(),
@@ -809,11 +809,7 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
     use std::io::Write as _;
     let mut ledger = std::fs::OpenOptions::new()
         .append(true)
-        .open(
-            home.projects_dir()
-                .join(&project_id)
-                .join("team_runs.jsonl"),
-        )
+        .open(home.spaces_dir().join(&project_id).join("team_runs.jsonl"))
         .expect("open team run ledger");
     writeln!(ledger, "{reviewing}").expect("append reviewing row");
     let completed = run_harness(
@@ -2559,7 +2555,7 @@ fn post_team_run_transition_and_compatibility_lineage() {
         .and_then(|run| run["id"].as_str())
         .expect("wave 2 id")
         .to_string();
-    let store_root = home.projects_dir().join(&project_id);
+    let store_root = home.spaces_dir().join(&project_id);
     let mut ledger = std::fs::OpenOptions::new()
         .append(true)
         .open(store_root.join("team_runs.jsonl"))

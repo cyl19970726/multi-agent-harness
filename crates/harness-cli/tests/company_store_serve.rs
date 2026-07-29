@@ -4,6 +4,79 @@ mod harness_env;
 use harness_env::{run_harness, run_harness_with_env, ServeHandle, TempHome};
 
 #[test]
+fn serve_company_compatibility_uses_project_binding_not_execution_space() {
+    let home = TempHome::new("company-serve-project-compat");
+    let repo = home.home().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let out = run_harness(&home, &repo, &["init"]);
+    assert!(out.status.success(), "project init failed: {out:?}");
+    let out = run_harness_with_env(
+        &home,
+        &repo,
+        &[
+            "company",
+            "org",
+            "create-human",
+            "--id",
+            "compat-human",
+            "--display-name",
+            "Compatibility Human",
+            "--responsibility",
+            "Prove compatibility routing",
+            "--permission",
+            "company_os.admin",
+            "--authority",
+            "compat-human",
+        ],
+        &[("HARNESS_COMPANY_OS_TOKEN", "test-token")],
+    );
+    assert!(out.status.success(), "compatibility write failed: {out:?}");
+
+    let project_id = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(home.registry_path()).unwrap(),
+    )
+    .unwrap()["current_project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let space_id = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(home.space_registry_path()).unwrap(),
+    )
+    .unwrap()["current_space_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(home
+        .projects_dir()
+        .join(&project_id)
+        .join("company_os_human_members.jsonl")
+        .is_file());
+    assert!(
+        !home
+            .spaces_dir()
+            .join(&space_id)
+            .join("company_os_human_members.jsonl")
+            .exists(),
+        "Company compatibility truth must not enter the Execution Space"
+    );
+
+    let server = ServeHandle::spawn(&home, &repo, &[]);
+    let (status, snapshot) = server.get_json(&format!(
+        "/v1/company-os/snapshot?space={space_id}&project={project_id}"
+    ));
+    assert_eq!(status, 200);
+    assert!(
+        snapshot["result"]["actors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|actor| actor["id"] == "compat-human"),
+        "HTTP compatibility read should use the Project Binding store: {snapshot}"
+    );
+}
+
+#[test]
 fn serve_lists_switches_and_routes_company_os_by_company_store() {
     let home = TempHome::new("company-serve");
     let repo = home.home().join("repo");

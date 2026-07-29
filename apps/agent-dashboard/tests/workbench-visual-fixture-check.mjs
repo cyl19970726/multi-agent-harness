@@ -101,11 +101,13 @@ async function main() {
     "Current four-member TeamRun is Mission-scoped and independent of one Wave",
   );
   check(
-    shellSource.includes("Registered project root:")
-      && shellSource.includes("Central store root:")
+    shellSource.includes("Provider cwd boundary:")
+      && shellSource.includes("Skill discovery boundary:")
+      && shellSource.includes("Execution coordination:")
+      && shellSource.includes("Project Binding does not own Mission, Wave, Team, or Workflow storage.")
       && shellSource.includes("selected.project_root")
       && shellSource.includes("selected.store_root"),
-    "Workspace picker exposes registered project_root and centralized store_root without conflating them",
+    "TopBar keeps Project Binding boundaries independent from Execution Space storage",
   );
   check(
     currentRun?.execution_root === "/workspace/multi-agent-harness"

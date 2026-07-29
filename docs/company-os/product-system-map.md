@@ -22,7 +22,7 @@ execution foundation rather than a second company model.
 The product-level subject is an **Agent Company Workspace**: a company-like
 operating boundary where humans, Standing Agents, Docs, Work, Organization,
 Finance, plugins/gateways, and external repositories are coordinated. The
-technical Store boundary for that subject is the **Company Store**. ADR 0040
+technical Store boundary for that subject is the **Company Store**. ADR 0042
 separates that Company Store from standalone **Execution Spaces** and
 repository/worktree **Project Bindings**.
 
@@ -110,7 +110,7 @@ An external GitHub repository may own the software product contract for a real
 application. Company OS still owns the commercial model, operating modules,
 WorkItems, Organization, Finance, and launch readiness around that application.
 The integration contract is [External Project Product Sources](external-project-product-sources.md).
-Under ADR 0040, the Git repository is a Project Binding and/or external source,
+Under ADR 0042, the Git repository is a Project Binding and/or external source,
 not the owner of the Company Store. One Agent Company Workspace may contain
 multiple operating areas, such as Wanchengwanling and AgentOS / Star Harness,
 while mapping several repositories.
@@ -119,7 +119,7 @@ while mapping several repositories.
 
 | Area | Current truth | Next product gap |
 | --- | --- | --- |
-| Company / execution identity | ADR 0042 defines Company Store, Execution Space, and Project Binding as distinct target identities; Company Store CLI registry, `harness company ...` routing, migration from project-derived Company OS rows, serve API selectors, blended dashboard snapshots, and Dashboard Company Store picker now exist | Execution Space registry and Project Binding migration |
+| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; CLI/API/Dashboard route all three identities independently; explicit copy-and-verify migrations preserve source data; blended snapshots join Standing Agent identity to execution participation without copying rows | governed retirement of legacy project-derived compatibility stores and a durable cross-process Team Supervisor |
 | Docs substrate | native schemas, stores, APIs, standard views, and Store-live evidence exist | deeper document authoring and governed module evolution |
 | Organization substrate | actor kinds, OrgUnit membership, and mixed-actor UI exist | governance-led reporting records, governed organization mutation, and the target Organization Overview |
 | Work read model | native Milestone/WorkType/business-line projection and six responsive Store-live views exist | governed intake, reassignment, Milestone mutation, saved views, and delivery adapters |

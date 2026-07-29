@@ -49,7 +49,7 @@ fn force_team_run_reviewing(
 ) {
     use std::io::Write as _;
 
-    let path = home.projects_dir().join(project_id).join("team_runs.jsonl");
+    let path = home.spaces_dir().join(project_id).join("team_runs.jsonl");
     let mut ledger = std::fs::OpenOptions::new()
         .append(true)
         .open(path)
