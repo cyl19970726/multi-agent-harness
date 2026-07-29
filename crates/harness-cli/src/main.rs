@@ -16588,7 +16588,19 @@ fn parse_round_result(final_text: &str) -> MemberRoundResult {
 /// interim assistant prose or more than one report. Reports that predate the
 /// `## RESULT` contract remain readable as their original trimmed text.
 fn canonical_member_report_text(text: &str) -> &str {
-    let last_result = text.to_ascii_uppercase().rfind("## RESULT");
+    let upper = text.to_ascii_uppercase();
+    let marker = "## RESULT";
+    let last_result = upper
+        .match_indices(marker)
+        .filter_map(|(start, _)| {
+            let heading_tail = &text[start + marker.len()..];
+            let (same_line_tail, has_line_break) = heading_tail
+                .split_once('\n')
+                .map(|(tail, _)| (tail.trim_end_matches('\r'), true))
+                .unwrap_or((heading_tail, false));
+            (has_line_break && same_line_tail.trim().is_empty()).then_some(start)
+        })
+        .last();
     last_result
         .map(|start| text[start..].trim())
         .unwrap_or_else(|| text.trim())
@@ -35018,6 +35030,21 @@ mod tests {
             "## RESULT\ndone\n## SUMMARY\nchunk-shaped terminal report"
         );
         assert_eq!(parse_round_result(&accumulated), MemberRoundResult::Done);
+    }
+
+    #[test]
+    fn member_handoff_ignores_trailing_result_marker_mentioned_in_prose() {
+        let text = "interim narration## RESULT\n\
+                    blocked\n\
+                    ## SUMMARY\n\
+                    real terminal report\n\
+                    Reviewer note: do not repeat ## RESULT in prose.";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## RESULT\nblocked\n## SUMMARY\nreal terminal report\nReviewer note: do not repeat ## RESULT in prose."
+        );
+        assert_eq!(parse_round_result(text), MemberRoundResult::Blocked);
     }
 
     #[test]

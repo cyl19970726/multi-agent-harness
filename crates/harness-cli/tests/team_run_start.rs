@@ -441,6 +441,64 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
 }
 
 #[test]
+fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
+    let home = TempHome::new("team-run-kimi-concatenated-report");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let (run_id, member_ids) = create_two_member_run(&home, &fake_bin, &project_id);
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+            "--max-concurrency",
+            "2",
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_CONCATENATED_REPORT", "1")
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .output()
+        .expect("start fake kimi team");
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    for member_id in member_ids {
+        let handoff = messages
+            .iter()
+            .find(|message| message["kind"] == "handoff" && message["from_member_id"] == member_id)
+            .expect("adapter handoff");
+        let body = handoff["body"].as_str().expect("handoff body");
+        assert!(
+            body.starts_with("## RESULT\ndone\n## SUMMARY\n"),
+            "the durable handoff must start at the terminal report: {body:?}"
+        );
+        assert!(
+            !body.contains("ordinary narration"),
+            "interim ACP narration must remain provider-native: {body:?}"
+        );
+    }
+}
+
+#[test]
 fn kimi_member_explicitly_resumes_provider_native_session() {
     let home = TempHome::new("team-run-kimi-native-resume");
     let project_id = init_project(&home, "alpha");
