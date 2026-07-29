@@ -34,6 +34,13 @@ with the selected Execution Space's `MemberRun.agent_member_id`, assignment
 correlation, and TeamRun. They do not copy MemberRuns or provider sessions into
 Company storage.
 
+External messages to a Standing Agent use its stable Agent Inbox. When that
+Agent is participating in a live TeamRun, an explicit idempotent
+`AgentMessageRoute` may route the message to its active MemberRun and typed
+TeamMessage. The current Team Supervisor delivers it to the provider-native
+session. This transport join never makes StandingAgent, AgentMember, and
+MemberRun one object.
+
 ## Collaboration spine
 
 The product does not create a global chat room as a second source of company
@@ -60,6 +67,11 @@ Shared primitives are deliberately small:
 Messages communicate context. They do not establish responsibility, approval,
 or payment. Responsibility requires WorkItem and Assignment; authority requires
 Approval; financial truth requires FinancialRecord.
+
+Agent Team delivery adds transport facts without changing those rules:
+Supervisor claim, provider receipt, recipient ACK, semantic reply, and Host
+acceptance are distinct. An Operator or Host cannot impersonate a Member merely
+by choosing its name in a composer.
 
 ## Where collaboration appears
 

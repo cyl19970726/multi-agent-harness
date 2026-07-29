@@ -27,10 +27,30 @@ PY
 IFS='|' read -r event_name session_id turn_id stop_hook_active <<<"$hook_fields"
 stop_hook_active="${stop_hook_active:-false}"
 
+# Resolve the native surface before either Member telemetry or Host Inbox
+# handling. The same discriminator also supplies the explicit provider identity
+# for bound Member hook events; hook ingestion must never guess Codex merely
+# because no provider flag was passed.
+if [[ -n "${HARNESS_HOST_SURFACE:-}" ]]; then
+  host_surface="$HARNESS_HOST_SURFACE"
+elif [[ -n "${KIMI_PLUGIN_ROOT:-}" ]]; then
+  host_surface="kimi-cli"
+elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+  host_surface="claude-code"
+else
+  host_surface="codex-app"
+fi
+case "$host_surface" in
+  codex-app|codex*) hook_provider="codex" ;;
+  claude-code|claude*) hook_provider="claude" ;;
+  kimi-cli|kimi*) hook_provider="kimi" ;;
+  *) hook_provider="${HARNESS_PROVIDER:-codex}" ;;
+esac
+
 # Forward bound lifecycle events to Harness. Core ingestion owns sanitization;
 # unbound raw hook payloads are deliberately not persisted by this plugin.
 if [[ -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then
-  args=(hook record --agent "$HARNESS_AGENT_MEMBER_ID")
+  args=(hook record --provider "$hook_provider" --agent "$HARNESS_AGENT_MEMBER_ID")
   if [[ -n "${HARNESS_AGENT_RUNTIME_ID:-}" ]]; then
     args+=(--runtime "$HARNESS_AGENT_RUNTIME_ID")
   fi
@@ -58,17 +78,6 @@ case "$event_name" in
     ;;
 esac
 
-# Common hook input identifies the provider-native task. The surface can be
-# overridden by another provider integration; Kimi's plugin root is a reliable
-# local discriminator for its current manifest.
-if [[ -n "${HARNESS_HOST_SURFACE:-}" ]]; then
-  host_surface="$HARNESS_HOST_SURFACE"
-elif [[ -n "${KIMI_PLUGIN_ROOT:-}" ]]; then
-  host_surface="kimi-cli"
-else
-  host_surface="codex-app"
-fi
-
 if [[ -z "$session_id" ]]; then
   # Only Codex Stop requires structured stdout. Without native identity there
   # is no safe mailbox to inject, so fail open rather than reading every run.
@@ -87,15 +96,21 @@ inbox_json="$("$harness_bin" team-run host-inbox \
 }
 
 if [[ "$event_name" == "Stop" || "$event_name" == "stop" ]]; then
-  # A Stop continuation is a real same-thread safe boundary for Codex. It
-  # handles mail that arrived while the Host was busy without mid-turn
-  # interruption. `stop_hook_active` prevents a continuation loop. Kimi Stop
-  # does not expose Codex's `turn_id`, so it remains a normal fail-open hook.
-  if [[ -z "$turn_id" || "$stop_hook_active" == "true" ]]; then
-    [[ -n "$turn_id" ]] && printf '{}\n'
+  # Stop is the provider-reviewed safe boundary for an external Host task.
+  # Codex identifies it with turn_id and consumes structured JSON. Claude Code
+  # consumes the same decision=block shape without turn_id. Kimi shell hooks
+  # block with exit 2 and read the reason from stderr. All three expose
+  # stop_hook_active to cap continuation at one pass.
+  if [[ "$stop_hook_active" == "true" ]]; then
+    [[ "$host_surface" != "kimi-cli" ]] && printf '{}\n'
     exit 0
   fi
-  INBOX_JSON="$inbox_json" python3 - 2>/dev/null <<'PY'
+  if [[ "$host_surface" == "codex-app" && -z "$turn_id" ]]; then
+    printf '{}\n'
+    exit 0
+  fi
+  continuation_json="$(
+    INBOX_JSON="$inbox_json" HOST_SURFACE="$host_surface" python3 - 2>/dev/null <<'PY'
 import json
 import os
 import re
@@ -132,13 +147,37 @@ for run_id, message in messages[:5]:
     )
 if len(messages) > 5:
     lines.append(f"- ... and {len(messages) - 5} more; use `harness team-run host-inbox "
-                 f"--surface codex-app --thread-id <session-id> --json`.")
+                 f"--surface {os.environ.get('HOST_SURFACE', '?')} "
+                 f"--thread-id <session-id> --json`.")
 lines.append(
     "Use `harness team-run ack --id <team-run-id> --message-id <message-id> "
     "--member-id host` after intake. Do not treat transport ACK as semantic acceptance."
 )
 print(json.dumps({"decision": "block", "reason": "\n".join(lines)}))
 PY
+  )"
+  if [[ "$host_surface" == "kimi-cli" ]]; then
+    continuation_reason="$(
+      CONTINUATION_JSON="$continuation_json" python3 - 2>/dev/null <<'PY'
+import json
+import os
+try:
+    value = json.loads(os.environ.get("CONTINUATION_JSON", "") or "{}")
+except ValueError:
+    value = {}
+print(value.get("reason", "") if value.get("decision") == "block" else "")
+PY
+    )"
+    if [[ -n "$continuation_reason" ]]; then
+      printf '%s\n' "$continuation_reason" >&2
+      exit 2
+    fi
+    exit 0
+  fi
+  if [[ -z "$continuation_json" ]]; then
+    continuation_json='{}'
+  fi
+  printf '%s\n' "$continuation_json"
   exit 0
 fi
 

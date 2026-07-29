@@ -46,6 +46,13 @@ Harness never silently falls back from ACP to one-shot print mode. The older
 `ProviderCapabilities::kimi_exec()` preset describes bounded Workflow
 execution and must not be used to infer Team capability.
 
+Current compatibility is explicit: the installed Kimi Code probe reports
+`0.29.1`, while `kimi-acp-v1` is reviewed only for `0.27.0`. The adapter
+therefore reports `review_required`. Do not promote 0.29.1, change versions, or
+infer support from the existing hot path without explicit Human confirmation,
+protocol/schema regeneration, deterministic checks, and a proportional live
+canary.
+
 The Agent Team runtime is:
 
 ```text
@@ -82,7 +89,12 @@ Binary resolution order is implemented by `resolve_kimi_bin()`:
 
 Source: `crates/harness-cli/src/main.rs:14317-14345`.
 
-## Message Delivery
+## Bounded AgentRuntime / Workflow Delivery (Not Agent Team)
+
+This compatibility section describes the one-shot `kimi_exec` path used by
+bounded workflows and the older standalone AgentRuntime API. It is not the
+Agent Team delivery algorithm. New Team Members always use the persistent ACP
+contract below; do not copy `kimi -p` behavior into Team lifecycle code.
 
 每次投递消息时，harness 构造一个包含：
 
@@ -269,8 +281,16 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
   `session/cancel`, waits for the prompt's terminal `stopReason=cancelled`, and
   only then returns the MemberRun to `idle`; the profile reports
   `supports_cancel=true`. Kimi ACP still does not support same-turn steer, so
-  normal chat is queued for the next provider round. Only explicit Member Close
+  ordinary Message is queued for the next provider round. An attempted Steer
+  fails rather than being silently converted. Only explicit Member Close
   records `stopped`.
+- The current durable Team Supervisor generation atomically claims one queued
+  delivery before `session/prompt`, but only after proving the ACP transport is
+  live; failed preflight leaves mail queued and reconnects the recorded
+  session. `delivered` is recorded only after ACP returns its native
+  request/session receipt. An uncertain post-crash claim requires explicit
+  reconciliation and is never blindly replayed. Explicit Close is durably
+  latched before process teardown.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.
 - Kimi-native Agent/AgentSwarm/background-task and hook events are not yet

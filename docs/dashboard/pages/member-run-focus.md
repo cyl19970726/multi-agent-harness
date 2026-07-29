@@ -30,7 +30,10 @@ Required data:
 - `Mission`, `Wave`, and Wave exit criteria/gate projection;
 - parent `AgentTeamRun` and retry lineage;
 - the selected `MemberRun`;
+- current `TeamSupervisorLease` generation and control/reconnect state;
 - `TeamMessage`, especially `kind=assignment` and its `correlation_id`;
+- typed message actors, delivery claim, provider receipt, recipient ACK, and
+  any explicit `AgentMessageRoute`;
 - Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
   outcomes, and evidence/check references;
 - `PendingInteraction` records attributable to this MemberRun, with exact
@@ -46,11 +49,13 @@ Required data:
 The assignment message plus correlation is the sole run-scoped ownership proof;
 a provider self-description does not replace it.
 
-`MemberRun` is an execution instance. `StandingAgent` is a future, long-lived
-identity/capability object. A MemberRun may optionally be sourced from a
-StandingAgent, a plugin/provider instance, or an ad-hoc host-created member;
-it must never be rendered or stored as though it *is* a StandingAgent. Shared
-layout components are allowed; shared object identity is not assumed.
+`AgentMember` is the stable reusable execution identity/configuration.
+`MemberRun` is one participation of that identity in one TeamRun. A Company OS
+`StandingAgent` is a separate organization identity and authority record; it
+may join to `AgentMember` only through an intentionally matching stable id.
+This explicit join allows shared layout and Inbox projections without
+collapsing lifecycle, permissions, or responsibility. An ad-hoc MemberRun
+remains temporary even when its name resembles a Standing Agent.
 
 Thinking is a best-effort live preview: sanitized, TTL-bound, local to the
 current project/session, never persisted, replayed, forwarded, or accepted as
@@ -132,8 +137,9 @@ than page-specific cards. Its default order is:
    Host's current judgment. It must label absent evidence honestly.
 5. **RuntimeSummary** — provider/model/native-session binding, availability,
    resume compatibility, selected execution driver, continuation state,
-   worktree lease, permission posture, and actionable failure state. It is
-   operational context, not the primary page.
+   Team Supervisor generation/heartbeat, provider-transport and reconnect
+   state, Close latch, worktree lease, permission posture, and actionable
+   failure state. It is operational context, not the primary page.
 6. **DelegationSummary** — observed provider-native or orchestrated child work,
    with attribution and control limits made explicit.
 7. **CollaborationThread** — Host and same-Team peer messages for the current
@@ -170,10 +176,13 @@ reordering is not a requirement.
 - **Steer** is a separate explicit action. Only that selection may inject into
   a currently active provider turn; ordinary Clarify/Review messages stay in
   the coordination queue. If the selected execution mode cannot steer the
-  active turn, Steer degrades visibly to queued control guidance for the next
-  provider round.
+  active turn, Steer is disabled with the reason. The operator may deliberately
+  choose an ordinary queued Message, but the UI never converts one into the
+  other.
 - Select an existing Assignment correlation when replying. A new message chain
   is visually distinct and never silently loses lineage.
+- Render the selected typed author explicitly. Operator-authored messages remain
+  Operator messages; only the bound provider session can author as this Member.
 - Open the assignment anchor and other correlated messages.
 - Open the Team or selected Host-plan Wave without losing navigation context.
 - Open an artifact, check, or provider session summary.
@@ -187,6 +196,10 @@ exposes cooperative turn interruption. Close is a separate Host-owned action:
 it sends the selected adapter's real close/cancel protocol and must not be
 presented as ordinary turn completion. Completion of the MemberRun is an
 execution fact, not an implicit Wave advance.
+
+Render the latest `TeamMemberCloseRequest` beside those controls. `pending`
+disables duplicate Close actions and remains visible across Supervisor restart;
+`applied` is retained as lifecycle evidence.
 
 For a bound Claude `claude_agent_sdk` session, Member Focus may expose **Open in
 Claude Desktop** using `claude://resume?session=<native-session-id>`. This is an
@@ -207,6 +220,9 @@ modes do not receive a fabricated Desktop target.
 - **Member failed/blocked:** show the explicit failure or blocker action, its
   correlation when present, and the responsible next action; never fabricate a
   reason from status alone.
+- **Supervisor disconnected/stale:** preserve durable mail and native-session
+  locator, disable fake live controls, and offer reattach only through the
+  current generation-acquisition path. Unclaimed mail stays queued.
 - **Read/model error:** keep the last successful header/context state marked
   stale, show scoped retry, and do not replace the page with an empty shell.
 - **Finished assignment or TeamRun:** render history read-only and disable
@@ -239,7 +255,8 @@ must remain immutable while awaiting explicit user approval.
 
 ## Explicit Boundaries
 
-- This page is for a `MemberRun`, not a StandingAgent profile.
+- This page is for a `MemberRun`, not a StandingAgent profile. Shared identity
+  modules require an explicit stable AgentMember ↔ StandingAgent join.
 - It does not require or display a legacy dependency graph as the ownership model.
 - Provider-native subagents remain observed delegation unless the harness owns
   their lifecycle.

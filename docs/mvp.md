@@ -34,6 +34,14 @@ dependency.
 - MemberRuns and provider-native sessions may continue across Wave advance.
 - Assignment ownership uses `TeamMessage(kind=assignment)` and
   `correlation_id`; optional `origin_wave_id` is navigation metadata.
+- One latest-wins `TeamSupervisorLease` generation owns provider transports,
+  message claims, reconnect, and real live controls for the TeamRun.
+- TeamMessage uses typed Host/Member/Agent/Operator sender and recipients;
+  unbound API/MCP/UI callers cannot impersonate a Member.
+- Delivery separates atomic claim, provider receipt, recipient ACK, semantic
+  response, and Host acceptance.
+- A stable Agent Inbox may route explicitly and idempotently through
+  `AgentMessageRoute`; it does not turn a Standing Agent into a MemberRun.
 - Host can add a repair member while the run is active without erasing prior
   assignments or attempts.
 
@@ -61,7 +69,9 @@ dependency.
 - Mission Canvas renders long Markdown context, linked teams, ordered Wave
   history, responsibility tables, carry-over, advance, and closeout.
 - Team and Member pages provide honest activity, navigation, chat, pending
-  interaction, steer, interrupt, and resume according to adapter capability.
+  interaction, current Supervisor/reconnect state, typed message provenance,
+  delivery claim/receipt/ACK, steer, interrupt, Close, and resume according to
+  adapter capability.
 
 ## Deterministic Acceptance Journey
 
@@ -75,9 +85,14 @@ dependency.
 8. Verify Mission, Wave history, linked team, messages, origin metadata,
    pending interactions, artifacts, and native-session resolution in CLI/API
    and Dashboard.
-9. Close the Mission without deleting, archiving, or silently completing the
+9. Route a control from a second service to the current Supervisor, restart the
+   owner, reconnect the same native session, and prove only one delivery under
+   concurrent claim attempts.
+10. Explicitly close a Member and prove queued mail cannot revive it.
+11. Close the Mission without deleting, archiving, or silently completing the
    team.
-10. Prove the optional MCP adapter delegates to the same behavior.
+12. Prove the optional MCP adapter delegates to the same behavior and cannot
+    author Member-originated mail while unbound.
 
 Run:
 

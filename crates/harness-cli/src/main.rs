@@ -7,29 +7,33 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
-    AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
-    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionSpace, LaunchMcp,
-    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberExecutionDriver,
-    MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission, MissionStatus,
-    NativeSessionAvailability, NativeSessionRef, PendingInteraction, PendingInteractionKind,
-    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
-    ProjectKind, ProviderCapabilities, ProviderCompatibilityStatus, ProviderEventFidelity,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus,
+    AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionSpace,
+    HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
+    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, PendingInteraction,
+    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
+    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
+    ProviderFeatureMode, ProviderIntegrationProfile, ProviderInteractionMode, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
     Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
     WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
-use harness_store::{HarnessStore, MessageDeliveryClaimResult, StoreError};
+use harness_store::{
+    HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
+};
 use thiserror::Error;
 
 mod codex_app_server;
@@ -821,6 +825,7 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "agent_events.jsonl",
     "proposals.jsonl",
     "messages.jsonl",
+    "agent_message_routes.jsonl",
     "evidence.jsonl",
     "decisions.jsonl",
     "reviews.jsonl",
@@ -829,6 +834,8 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "team_runs.jsonl",
     "member_runs.jsonl",
     "team_messages.jsonl",
+    "team_supervisor_leases.jsonl",
+    "team_member_close_requests.jsonl",
     "member_actions.jsonl",
     "pending_interactions.jsonl",
     "delegation_runs.jsonl",
@@ -8070,7 +8077,7 @@ fn agent_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "agent create|list|show|start|health|hooks|send|deliver|retry-delivery|reconcile-delivery|gateway|close",
+        "agent create|list|show|start|health|hooks|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close",
     )?;
     match args[0].as_str() {
         "create" => {
@@ -8200,6 +8207,24 @@ fn agent_command(
                 None,
             )?;
             print_json(&message)?;
+        }
+        "route-inbox" => {
+            let agent_id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
+            let routes = route_agent_inbox_messages(
+                store,
+                &agent_id,
+                value(args, "--member-run-id").as_deref(),
+                value(args, "--message").as_deref(),
+            )?;
+            print_json(&serde_json::json!({
+                "agent_member_id": agent_id,
+                "routes": routes,
+                "note": if routes.is_empty() {
+                    "no uniquely routable queued Agent Inbox mail"
+                } else {
+                    "routed to MemberRun mailbox"
+                }
+            }))?;
         }
         "deliver" => deliver_agent_messages(store, project_context, args)?,
         "retry-delivery" => {
@@ -9829,6 +9854,8 @@ fn create_team_run(
         project_binding_id: project_context.map(|context| context.id.clone()),
         host_surface: host_surface.to_string(),
         host_thread_id,
+        host_actor: Some(compatibility_team_actor("host", "team_run_create")),
+        host_control_mode: HostControlMode::External,
         objective: objective.to_string(),
         execution_root: Some(execution_root),
         status: TeamRunStatus::Planning,
@@ -9878,7 +9905,9 @@ fn create_team_run(
             id: generated_id("tmsg"),
             team_run_id: run_id.clone(),
             origin_wave_id: team_run.wave_id.clone(),
+            sender: Some(compatibility_team_actor("host", "team_run_create")),
             from_member_id: "host".to_string(),
+            recipients: vec![compatibility_team_recipient(&member_run.id)],
             to_member_ids: vec![member_run.id.clone()],
             kind: TeamMessageKind::Assignment,
             body: format!(
@@ -9888,13 +9917,7 @@ fn create_team_run(
             correlation_id: generated_id("corr"),
             causation_id: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
-                member_id: member_run.id.clone(),
-                policy: TeamDeliveryPolicy::Queue,
-                status: TeamDeliveryStatus::Queued,
-                attempt: 0,
-                updated_at: now_string(),
-            }],
+            deliveries: vec![queued_team_delivery(&member_run.id)],
             created_at: now_string(),
         };
         store.append_team_message(&message)?;
@@ -10188,6 +10211,71 @@ fn resolve_team_run_mission_wave(
     Ok((mission_id, wave_id, wave))
 }
 
+fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActorRef {
+    TeamActorRef {
+        kind: if id == "host" {
+            TeamActorKind::Host
+        } else if id.starts_with("operator") {
+            TeamActorKind::Operator
+        } else if id.starts_with("service:") {
+            TeamActorKind::Service
+        } else if id.starts_with("agent-member:") {
+            TeamActorKind::AgentMember
+        } else {
+            TeamActorKind::MemberRun
+        },
+        id: id.to_string(),
+        display_name: None,
+        authn_source: Some(authn_source.to_string()),
+    }
+}
+
+fn compatibility_team_recipient(id: &str) -> TeamRecipientRef {
+    TeamRecipientRef {
+        kind: if id == "host" {
+            TeamRecipientKind::Host
+        } else if id.starts_with("agent-member:") {
+            TeamRecipientKind::AgentMember
+        } else {
+            TeamRecipientKind::MemberRun
+        },
+        id: id.to_string(),
+    }
+}
+
+fn queued_team_delivery(member_id: &str) -> TeamMessageDelivery {
+    TeamMessageDelivery {
+        member_id: member_id.to_string(),
+        policy: TeamDeliveryPolicy::Queue,
+        status: TeamDeliveryStatus::Queued,
+        attempt: 0,
+        claim_id: None,
+        claimed_by_supervisor_id: None,
+        claimed_generation: None,
+        claimed_unix_ms: None,
+        claim_expires_unix_ms: None,
+        provider_receipt_id: None,
+        updated_at: now_string(),
+    }
+}
+
+fn parse_team_actor_kind(value: &str) -> CliResult<TeamActorKind> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown actor kind `{value}` (host|member_run|agent_member|operator|service)"
+        ))
+    })
+}
+
+fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
+    match actor.kind {
+        TeamActorKind::Host => TeamRunEventSourceKind::Host,
+        TeamActorKind::MemberRun | TeamActorKind::AgentMember => TeamRunEventSourceKind::Member,
+        TeamActorKind::Operator => TeamRunEventSourceKind::Operator,
+        TeamActorKind::Service => TeamRunEventSourceKind::Service,
+    }
+}
+
 /// Route a message inside a team run and fold it into the event log. Shared
 /// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
 /// does not drive the member state machine: a handoff/blocker from a member is
@@ -10204,6 +10292,38 @@ fn send_team_message(
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
 ) -> CliResult<TeamMessage> {
+    send_team_message_as(
+        store,
+        team_run_id,
+        compatibility_team_actor(
+            from_member_id,
+            if from_member_id == "host" {
+                "host_cli"
+            } else {
+                "member_runtime"
+            },
+        ),
+        to_member_ids,
+        kind,
+        body,
+        correlation_id,
+        causation_id,
+        origin_wave_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_team_message_as(
+    store: &HarnessStore,
+    team_run_id: &str,
+    sender: TeamActorRef,
+    to_member_ids: Vec<String>,
+    kind: TeamMessageKind,
+    body: &str,
+    correlation_id: Option<String>,
+    causation_id: Option<String>,
+    origin_wave_id: Option<String>,
+) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
     if body.trim().is_empty() {
@@ -10212,11 +10332,58 @@ fn send_team_message(
         ));
     }
     let valid_member = |id: &str| id == "host" || run.member_run_ids.iter().any(|row| row == id);
-    if !valid_member(from_member_id) {
-        return Err(CliError::Usage(format!(
-            "message sender {from_member_id} does not belong to team run {team_run_id}"
-        )));
-    }
+    let member_runs = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    let from_member_id = match sender.kind {
+        TeamActorKind::Host => {
+            if sender.id != "host"
+                && run
+                    .host_actor
+                    .as_ref()
+                    .is_none_or(|actor| actor.id != sender.id)
+            {
+                return Err(CliError::Usage(format!(
+                    "Host actor {} is not bound to team run {team_run_id}",
+                    sender.id
+                )));
+            }
+            "host".to_string()
+        }
+        TeamActorKind::MemberRun => {
+            if !run.member_run_ids.iter().any(|id| id == &sender.id) {
+                return Err(CliError::Usage(format!(
+                    "message sender {} does not belong to team run {team_run_id}",
+                    sender.id
+                )));
+            }
+            sender.id.clone()
+        }
+        TeamActorKind::AgentMember => {
+            let linked = member_runs
+                .iter()
+                .filter(|member| member.agent_member_id.as_deref() == Some(sender.id.as_str()))
+                .collect::<Vec<_>>();
+            match linked.as_slice() {
+                [member] => member.id.clone(),
+                [] => {
+                    return Err(CliError::Usage(format!(
+                        "Agent identity {} has no MemberRun in team run {team_run_id}",
+                        sender.id
+                    )))
+                }
+                _ => {
+                    return Err(CliError::Usage(format!(
+                        "Agent identity {} has several MemberRuns in team run {team_run_id}; author as an explicit member_run",
+                        sender.id
+                    )))
+                }
+            }
+        }
+        TeamActorKind::Operator => format!("operator:{}", sender.id),
+        TeamActorKind::Service => format!("service:{}", sender.id),
+    };
     if to_member_ids.is_empty() {
         return Err(CliError::Usage(
             "team message requires at least one recipient".to_string(),
@@ -10255,7 +10422,12 @@ fn send_team_message(
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
         origin_wave_id,
-        from_member_id: from_member_id.to_string(),
+        sender: Some(sender.clone()),
+        from_member_id: from_member_id.clone(),
+        recipients: to_member_ids
+            .iter()
+            .map(|member_id| compatibility_team_recipient(member_id))
+            .collect(),
         to_member_ids: to_member_ids.clone(),
         kind,
         body: body.to_string(),
@@ -10269,54 +10441,205 @@ fn send_team_message(
                 // The Host control plane receives member-originated mail at
                 // creation time. Provider members, by contrast, consume
                 // ordinary coordination mail at their next available round.
-                policy: if member_id == "host" && from_member_id != "host" {
+                policy: if member_id == "host" && sender.kind != TeamActorKind::Host {
                     TeamDeliveryPolicy::ManualAck
                 } else {
                     TeamDeliveryPolicy::Queue
                 },
-                status: if member_id == "host" && from_member_id != "host" {
+                status: if member_id == "host" && sender.kind != TeamActorKind::Host {
                     TeamDeliveryStatus::Delivered
                 } else {
                     TeamDeliveryStatus::Queued
                 },
-                attempt: if member_id == "host" && from_member_id != "host" {
+                attempt: if member_id == "host" && sender.kind != TeamActorKind::Host {
                     1
                 } else {
                     0
                 },
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
                 updated_at: now_string(),
             })
             .collect(),
         created_at: now_string(),
     };
     store_conflict_as_usage(store.append_team_message_checked(&message))?;
-    let from_host = from_member_id == "host";
     let seq = next_team_run_seq(store, team_run_id)?;
     append_team_run_event(
         store,
         team_run_id,
         seq,
-        if from_host {
-            TeamRunEventSourceKind::Host
-        } else {
-            TeamRunEventSourceKind::Member
-        },
-        if from_host {
-            None
-        } else {
-            Some(from_member_id.to_string())
-        },
+        team_event_source_for_actor(&sender),
+        matches!(
+            sender.kind,
+            TeamActorKind::MemberRun | TeamActorKind::AgentMember
+        )
+        .then(|| from_member_id.clone()),
         "message",
         &message.id,
         "created",
         &format!(
             "{} from {} to [{}]",
             team_message_kind_label(&message.kind),
-            from_member_id,
+            sender.id,
             to_member_ids.join(",")
         ),
     )?;
     Ok(message)
+}
+
+fn active_member_runs_for_agent(
+    store: &HarnessStore,
+    agent_member_id: &str,
+) -> CliResult<Vec<MemberRun>> {
+    Ok(latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.agent_member_id.as_deref() == Some(agent_member_id))
+        .filter(|member| {
+            !matches!(
+                member.status,
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+            )
+        })
+        .collect())
+}
+
+fn actor_for_agent_inbox_message(message: &Message) -> TeamActorRef {
+    match message.sender_kind {
+        SenderKind::Agent => TeamActorRef {
+            kind: TeamActorKind::AgentMember,
+            id: message.from_agent_id.clone(),
+            display_name: None,
+            authn_source: Some("agent_inbox".to_string()),
+        },
+        SenderKind::Operator => TeamActorRef {
+            kind: TeamActorKind::Operator,
+            id: message.from_agent_id.clone(),
+            display_name: None,
+            authn_source: Some("agent_inbox".to_string()),
+        },
+        SenderKind::System => TeamActorRef {
+            kind: TeamActorKind::Service,
+            id: message.from_agent_id.clone(),
+            display_name: None,
+            authn_source: Some("agent_inbox".to_string()),
+        },
+    }
+}
+
+/// Promote waiting stable-Agent mail into one concrete MemberRun. A missing
+/// runtime is a normal queued state; more than one eligible runtime is
+/// intentionally ambiguous unless the caller names one.
+fn route_agent_inbox_messages(
+    store: &HarnessStore,
+    agent_member_id: &str,
+    explicit_member_run_id: Option<&str>,
+    message_filter: Option<&str>,
+) -> CliResult<Vec<AgentMessageRoute>> {
+    let eligible = active_member_runs_for_agent(store, agent_member_id)?;
+    let target = if let Some(member_run_id) = explicit_member_run_id {
+        eligible
+            .iter()
+            .find(|member| member.id == member_run_id)
+            .cloned()
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "MemberRun {member_run_id} is not an active runtime for Agent {agent_member_id}"
+                ))
+            })?
+    } else {
+        match eligible.as_slice() {
+            [] => return Ok(Vec::new()),
+            [member] => member.clone(),
+            _ => {
+                return Err(CliError::Usage(format!(
+                    "Agent {agent_member_id} has {} eligible MemberRuns; pass --member-run-id explicitly",
+                    eligible.len()
+                )))
+            }
+        }
+    };
+    let existing_routes = store
+        .agent_message_routes()?
+        .into_iter()
+        .map(|route| route.agent_message_id)
+        .collect::<HashSet<_>>();
+    let waiting = latest_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| message.to_agent_id.as_deref() == Some(agent_member_id))
+        .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
+        .filter(|message| !existing_routes.contains(&message.id))
+        .filter(|message| message_filter.is_none_or(|id| message.id == id))
+        .collect::<Vec<_>>();
+    let mut routes = Vec::new();
+    for source in waiting {
+        let team_message_id = generated_id("tmsg");
+        let correlation_id = generated_id("corr");
+        let team_kind = match source.kind {
+            MessageKind::Assignment => TeamMessageKind::Assignment,
+            MessageKind::Message | MessageKind::Report => TeamMessageKind::Message,
+        };
+        let actor = actor_for_agent_inbox_message(&source);
+        let team_message = TeamMessage {
+            id: team_message_id.clone(),
+            team_run_id: target.team_run_id.clone(),
+            origin_wave_id: None,
+            sender: Some(actor.clone()),
+            from_member_id: match actor.kind {
+                TeamActorKind::Operator => format!("operator:{}", actor.id),
+                TeamActorKind::Service => format!("service:{}", actor.id),
+                _ => format!("agent-member:{}", actor.id),
+            },
+            recipients: vec![TeamRecipientRef {
+                kind: TeamRecipientKind::MemberRun,
+                id: target.id.clone(),
+            }],
+            to_member_ids: vec![target.id.clone()],
+            kind: team_kind,
+            body: source.content.clone(),
+            correlation_id,
+            causation_id: None,
+            evidence_refs: source
+                .evidence_ids
+                .iter()
+                .cloned()
+                .chain(std::iter::once(format!("agent-message:{}", source.id)))
+                .collect(),
+            deliveries: vec![queued_team_delivery(&target.id)],
+            created_at: now_string(),
+        };
+        let route = AgentMessageRoute {
+            id: generated_id("agent-message-route"),
+            agent_message_id: source.id.clone(),
+            agent_member_id: agent_member_id.to_string(),
+            team_run_id: target.team_run_id.clone(),
+            member_run_id: target.id.clone(),
+            team_message_id,
+            routed_at: now_string(),
+        };
+        let route =
+            store_conflict_as_usage(store.route_agent_message_to_team(&route, &team_message))?;
+        append_team_run_event(
+            store,
+            &target.team_run_id,
+            next_team_run_seq(store, &target.team_run_id)?,
+            team_event_source_for_actor(&actor),
+            None,
+            "message",
+            &team_message.id,
+            "created",
+            &format!(
+                "Agent Inbox message {} routed to MemberRun {}",
+                source.id, target.id
+            ),
+        )?;
+        routes.push(route);
+    }
+    Ok(routes)
 }
 
 /// Latest-wins read model for one TeamRun recipient.
@@ -10633,7 +10956,7 @@ fn recover_interrupted_team_run(
         )));
     }
 
-    let ledger = TeamRunLedger::new(store, team_run_id);
+    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     let members = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
@@ -10752,7 +11075,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|host-inbox|bind-host|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
+        "team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -10913,6 +11236,11 @@ fn team_run_command(
                 .filter(|message| message.team_run_id == id)
                 .filter(|message| has_actionable_delivered_manual_ack(message))
                 .count();
+            let supervisor = store.latest_team_supervisor_lease(&id)?;
+            let supervisor_current = supervisor.as_ref().is_some_and(|lease| {
+                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                    && lease.expires_unix_ms > current_unix_ms_u64()
+            });
             if json {
                 let members: Vec<serde_json::Value> = member_runs
                     .iter()
@@ -10928,6 +11256,10 @@ fn team_run_command(
                     "wave_index": team_run_wave_index(store, &run)?,
                     "members": members,
                     "unacked_messages": unacked_messages,
+                    "supervisor": {
+                        "lease": supervisor,
+                        "current": supervisor_current,
+                    },
                 }))?;
             } else {
                 let wave_index = team_run_wave_index(store, &run)?
@@ -10955,6 +11287,17 @@ fn team_run_command(
                     );
                 }
                 println!("unacked_messages (delivered manual ACKs): {unacked_messages}");
+                match supervisor {
+                    Some(lease) => println!(
+                        "supervisor: {}\tgeneration={}\tstatus={}\tcurrent={}\texpires_unix_ms={}",
+                        lease.supervisor_id,
+                        lease.generation,
+                        serde_snake_label(&lease.status),
+                        supervisor_current,
+                        lease.expires_unix_ms
+                    ),
+                    None => println!("supervisor: none"),
+                }
             }
         }
         "host-inbox" => {
@@ -11070,6 +11413,41 @@ fn team_run_command(
                 println!("{message_id}\tacknowledged\tmember={member_id}");
             }
         }
+        "reconcile-delivery" => {
+            let team_run_id = required(args, "--id")?;
+            let message_id = required(args, "--message-id")?;
+            let member_run_id = required(args, "--member-run-id")?;
+            let claim_id = required(args, "--claim-id")?;
+            let reason = required(args, "--reason")?;
+            let provider_accepted = has_flag(args, "--provider-accepted");
+            let requeue = has_flag(args, "--requeue");
+            let provider_receipt_id = value(args, "--provider-receipt-id");
+            let reconciled = reconcile_team_message_delivery_value(
+                store,
+                &team_run_id,
+                &message_id,
+                &serde_json::json!({
+                    "member_run_id": member_run_id,
+                    "claim_id": claim_id,
+                    "reason": reason,
+                    "provider_accepted": provider_accepted,
+                    "requeue": requeue,
+                    "provider_receipt_id": provider_receipt_id,
+                }),
+            )?;
+            if json {
+                print_json(&reconciled)?;
+            } else {
+                println!(
+                    "{message_id}\tmember={member_run_id}\t{}",
+                    if provider_accepted {
+                        "delivered"
+                    } else {
+                        "queued"
+                    }
+                );
+            }
+        }
         "send" => {
             let to_member_ids: Vec<String> = required(args, "--to")?
                 .split(',')
@@ -11082,17 +11460,42 @@ fn team_run_command(
                     "--to must name at least one member id".to_string(),
                 ));
             }
-            let message = send_team_message(
-                store,
-                &required(args, "--id")?,
-                &required(args, "--from")?,
-                to_member_ids,
-                parse_team_message_kind(&required(args, "--kind")?)?,
-                &required(args, "--body")?,
-                value(args, "--correlation-id"),
-                value(args, "--causation-id"),
-                value(args, "--origin-wave-id"),
-            )?;
+            let team_run_id = required(args, "--id")?;
+            let from = required(args, "--from")?;
+            let kind = parse_team_message_kind(&required(args, "--kind")?)?;
+            let body = required(args, "--body")?;
+            let message = if let Some(actor_kind) = value(args, "--actor-kind") {
+                send_team_message_as(
+                    store,
+                    &team_run_id,
+                    TeamActorRef {
+                        kind: parse_team_actor_kind(&actor_kind)?,
+                        id: from,
+                        display_name: value(args, "--actor-name"),
+                        authn_source: Some("local_cli_explicit".to_string()),
+                    },
+                    to_member_ids,
+                    kind,
+                    &body,
+                    value(args, "--correlation-id"),
+                    value(args, "--causation-id"),
+                    value(args, "--origin-wave-id"),
+                )?
+            } else {
+                // Compatibility path for existing Host/member scripts. New
+                // external clients should always supply --actor-kind.
+                send_team_message(
+                    store,
+                    &team_run_id,
+                    &from,
+                    to_member_ids,
+                    kind,
+                    &body,
+                    value(args, "--correlation-id"),
+                    value(args, "--causation-id"),
+                    value(args, "--origin-wave-id"),
+                )?
+            };
             if json {
                 print_json(&message)?;
             } else {
@@ -11391,6 +11794,18 @@ fn member_run_detail_json(
                 && interaction.member_run_id == member_run_id
         })
         .collect::<Vec<_>>();
+    let supervisor = store.latest_team_supervisor_lease(&member.team_run_id)?;
+    let close_request = store.latest_team_member_close_request(member_run_id)?;
+    let stable_agent_routes = match member.agent_member_id.as_deref() {
+        Some(agent_member_id) => store
+            .agent_message_routes()?
+            .into_iter()
+            .filter(|route| {
+                route.agent_member_id == agent_member_id && route.member_run_id == member_run_id
+            })
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
     let actionable_inbox = inbox
         .iter()
         .filter(|message| {
@@ -11420,20 +11835,22 @@ fn member_run_detail_json(
             "actionable_inbox_count": actionable_inbox,
         },
         "pending_interactions": pending_interactions,
+        "supervisor": supervisor,
+        "close_request": close_request,
+        "stable_agent_routes": stable_agent_routes,
         "actions": actions,
         "latest_handoff": latest_handoff,
     }))
 }
 
 // ---------------------------------------------------------------------------
-// `harness team-run start` — Agent Team v0 orchestration loop.
+// `harness team-run start` — durable Agent Team Supervisor.
 //
-// The orchestrator is a FOREGROUND CLI process and the single WRITER of member
-// state transitions; `harness serve` stays a pure read/broadcast surface (its
-// SSE watcher tails the same JSONL files, so a live console sees every row the
-// orchestrator journals). Registered modes are Codex exec/app-server, Kimi ACP,
-// and Claude CLI. Other providers or modes fail explicitly instead of being
-// silently skipped or substituted.
+// The starter currently attaches the durable Supervisor to its process, while
+// the store lease is the cross-process authority and crash-recovery boundary.
+// `harness serve` remains a read/broadcast plus control gateway. Registered
+// Agent Team modes are only Codex app-server, Kimi ACP, and Claude Agent SDK;
+// bounded exec/CLI modes belong to Dynamic Workflow.
 //
 // Persistence and execution concurrency are intentionally separate. Every
 // unclosed Member owns one lightweight supervisor thread, while
@@ -11517,16 +11934,7 @@ static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> =
 /// registry is only the live transport into the currently running provider
 /// turn and is deliberately not reconstructed after process restart.
 static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
-static LIVE_MEMBER_CLOSE_REQUESTS: OnceLock<Mutex<HashMap<String, PendingMemberClose>>> =
-    OnceLock::new();
 static LIVE_TEAM_SUPERVISORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-#[derive(Clone)]
-struct PendingMemberClose {
-    team_run_id: String,
-    requested_by: String,
-    reason: String,
-}
 
 #[derive(Clone)]
 struct LiveMemberControl {
@@ -11536,6 +11944,64 @@ struct LiveMemberControl {
     supports_interrupt: bool,
     supports_close: bool,
     sender: SyncSender<MemberControlCommand>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+enum LiveMemberControlRequest {
+    Steer {
+        team_run_id: String,
+        member_run_id: String,
+        content: String,
+        requested_by: String,
+    },
+    Interrupt {
+        team_run_id: String,
+        member_run_id: String,
+        reason: String,
+        requested_by: String,
+    },
+    Close {
+        team_run_id: String,
+        member_run_id: String,
+        reason: String,
+        requested_by: String,
+    },
+}
+
+impl LiveMemberControlRequest {
+    fn team_run_id(&self) -> &str {
+        match self {
+            Self::Steer { team_run_id, .. }
+            | Self::Interrupt { team_run_id, .. }
+            | Self::Close { team_run_id, .. } => team_run_id,
+        }
+    }
+
+    fn member_run_id(&self) -> &str {
+        match self {
+            Self::Steer { member_run_id, .. }
+            | Self::Interrupt { member_run_id, .. }
+            | Self::Close { member_run_id, .. } => member_run_id,
+        }
+    }
+
+    fn requirement(&self) -> LiveMemberControlRequirement {
+        match self {
+            Self::Steer { .. } => LiveMemberControlRequirement::Steer,
+            Self::Interrupt { .. } => LiveMemberControlRequirement::Interrupt,
+            Self::Close { .. } => LiveMemberControlRequirement::Close,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct LiveMemberControlResponse {
+    ok: bool,
+    #[serde(default)]
+    result: Option<serde_json::Value>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 enum MemberControlCommand {
@@ -11575,10 +12041,33 @@ struct LiveMemberControlRegistration {
 
 struct TeamSupervisorRegistration {
     team_run_id: String,
+    supervisor_id: String,
+    generation: u64,
+    store: HarnessStore,
+    heartbeat_stop: Arc<AtomicBool>,
+    heartbeat_valid: Arc<AtomicBool>,
+    heartbeat_thread: Option<std::thread::JoinHandle<()>>,
+    control_stop: Arc<AtomicBool>,
+    control_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for TeamSupervisorRegistration {
     fn drop(&mut self) {
+        self.control_stop.store(true, Ordering::Release);
+        if let Some(handle) = self.control_thread.take() {
+            let _ = handle.join();
+        }
+        self.heartbeat_stop.store(true, Ordering::Release);
+        if let Some(handle) = self.heartbeat_thread.take() {
+            let _ = handle.join();
+        }
+        let _ = self.store.release_team_supervisor_lease(
+            &self.team_run_id,
+            &self.supervisor_id,
+            self.generation,
+            current_unix_ms_u64(),
+        );
+        self.heartbeat_valid.store(false, Ordering::Release);
         LIVE_TEAM_SUPERVISORS
             .get_or_init(|| Mutex::new(HashSet::new()))
             .lock()
@@ -11587,7 +12076,22 @@ impl Drop for TeamSupervisorRegistration {
     }
 }
 
-fn reserve_team_supervisor(team_run_id: &str) -> CliResult<TeamSupervisorRegistration> {
+fn current_unix_ms_u64() -> u64 {
+    current_unix_ms().min(u64::MAX as u128) as u64
+}
+
+fn team_supervisor_lease_ttl_ms() -> u64 {
+    std::env::var("HARNESS_TEAM_SUPERVISOR_LEASE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|ttl| *ttl > 0)
+        .unwrap_or(15_000)
+}
+
+fn reserve_team_supervisor(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<TeamSupervisorRegistration> {
     let mut supervisors = LIVE_TEAM_SUPERVISORS
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
@@ -11597,8 +12101,97 @@ fn reserve_team_supervisor(team_run_id: &str) -> CliResult<TeamSupervisorRegistr
             "team run {team_run_id} already has a live supervisor in this Host process"
         )));
     }
+    drop(supervisors);
+
+    let supervisor_id = generated_id("supervisor");
+    let ttl_ms = team_supervisor_lease_ttl_ms();
+    let control_listener = TcpListener::bind("127.0.0.1:0")?;
+    control_listener.set_nonblocking(true)?;
+    let owner_locator = format!("tcp://{}", control_listener.local_addr()?);
+    let lease = match store.acquire_team_supervisor_lease(
+        team_run_id,
+        &supervisor_id,
+        std::process::id(),
+        &owner_locator,
+        current_unix_ms_u64(),
+        ttl_ms,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            LIVE_TEAM_SUPERVISORS
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(team_run_id);
+            return Err(store_conflict_as_usage::<TeamSupervisorLease>(Err(error))
+                .expect_err("Supervisor acquisition error must remain an error"));
+        }
+    };
+    let heartbeat_stop = Arc::new(AtomicBool::new(false));
+    let heartbeat_valid = Arc::new(AtomicBool::new(true));
+    let heartbeat_store = HarnessStore::new(store.root().to_path_buf());
+    let heartbeat_team_run_id = team_run_id.to_string();
+    let heartbeat_supervisor_id = supervisor_id.clone();
+    let heartbeat_stop_thread = Arc::clone(&heartbeat_stop);
+    let heartbeat_valid_thread = Arc::clone(&heartbeat_valid);
+    let generation = lease.generation;
+    let heartbeat_interval_ms = (ttl_ms / 3).clamp(50, 1_000);
+    let heartbeat_thread = std::thread::spawn(move || {
+        while !heartbeat_stop_thread.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(heartbeat_interval_ms));
+            if heartbeat_stop_thread.load(Ordering::Acquire) {
+                break;
+            }
+            if heartbeat_store
+                .renew_team_supervisor_lease(
+                    &heartbeat_team_run_id,
+                    &heartbeat_supervisor_id,
+                    generation,
+                    current_unix_ms_u64(),
+                    ttl_ms,
+                )
+                .is_err()
+            {
+                heartbeat_valid_thread.store(false, Ordering::Release);
+                break;
+            }
+        }
+    });
+    let control_stop = Arc::new(AtomicBool::new(false));
+    let control_store = HarnessStore::new(store.root().to_path_buf());
+    let control_team_run_id = team_run_id.to_string();
+    let control_supervisor_id = supervisor_id.clone();
+    let control_generation = lease.generation;
+    let control_stop_thread = Arc::clone(&control_stop);
+    let control_thread = std::thread::spawn(move || {
+        while !control_stop_thread.load(Ordering::Acquire) {
+            match control_listener.accept() {
+                Ok((stream, _)) => {
+                    handle_live_member_control_connection(
+                        stream,
+                        &control_store,
+                        &control_team_run_id,
+                        &control_supervisor_id,
+                        control_generation,
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
     Ok(TeamSupervisorRegistration {
         team_run_id: team_run_id.to_string(),
+        supervisor_id,
+        generation: lease.generation,
+        store: HarnessStore::new(store.root().to_path_buf()),
+        heartbeat_stop,
+        heartbeat_valid,
+        heartbeat_thread: Some(heartbeat_thread),
+        control_stop,
+        control_thread: Some(control_thread),
     })
 }
 
@@ -11647,29 +12240,96 @@ fn register_live_member_control(
     )
 }
 
-fn dispatch_live_member_control(
+fn require_current_supervisor_lease(
+    store: &HarnessStore,
+    team_run_id: &str,
+    supervisor_id: &str,
+    generation: u64,
+) -> CliResult<TeamSupervisorLease> {
+    let now = current_unix_ms_u64();
+    let lease = store
+        .latest_team_supervisor_lease(team_run_id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "team run {team_run_id} has no durable Supervisor lease"
+            ))
+        })?;
+    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active
+        || lease.supervisor_id != supervisor_id
+        || lease.generation != generation
+        || lease.expires_unix_ms <= now
+    {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} Supervisor lease moved to another owner"
+        )));
+    }
+    Ok(lease)
+}
+
+fn latch_member_close(
+    store: &HarnessStore,
     team_run_id: &str,
     member_run_id: &str,
-    command: impl FnOnce(SyncSender<CliResult<serde_json::Value>>) -> MemberControlCommand,
-    requirement: LiveMemberControlRequirement,
+    requested_by: &str,
+    reason: &str,
+) -> CliResult<TeamMemberCloseRequest> {
+    store_conflict_as_usage(store.latch_team_member_close(&TeamMemberCloseRequest {
+        id: generated_id("member-close"),
+        team_run_id: team_run_id.to_string(),
+        member_run_id: member_run_id.to_string(),
+        requested_by: requested_by.to_string(),
+        reason: reason.to_string(),
+        status: TeamMemberCloseStatus::Pending,
+        requested_at: now_string(),
+        applied_at: None,
+    }))
+}
+
+fn dispatch_local_live_member_control(
+    store: &HarnessStore,
+    supervisor_id: &str,
+    generation: u64,
+    request: LiveMemberControlRequest,
 ) -> CliResult<serde_json::Value> {
+    let team_run_id = request.team_run_id().to_string();
+    let member_run_id = request.member_run_id().to_string();
+    let is_close = matches!(&request, LiveMemberControlRequest::Close { .. });
+    // Fence immediately before touching the process-local provider handle.
+    require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
+    if let LiveMemberControlRequest::Close {
+        reason,
+        requested_by,
+        ..
+    } = &request
+    {
+        // The durable request is written before process-local dispatch, so an
+        // acknowledged Close survives receiver loss and Supervisor restart.
+        latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+    }
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .get(member_run_id)
-        .cloned()
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "member {member_run_id} has no live provider session in this server process"
-            ))
-        })?;
+        .get(&member_run_id)
+        .cloned();
+    let Some(control) = control else {
+        if matches!(request, LiveMemberControlRequest::Close { .. }) {
+            return Ok(serde_json::json!({
+                "member_run_id": member_run_id,
+                "status": "close_requested",
+                "provider_ack": "supervisor_close_latched",
+            }));
+        }
+        return Err(CliError::Usage(format!(
+            "member {member_run_id} has no live provider session in its owning Supervisor"
+        )));
+    };
     if control.team_run_id != team_run_id {
         return Err(CliError::Usage(format!(
             "member {member_run_id} does not belong to team run {team_run_id}"
         )));
     }
-    match requirement {
+    match request.requirement() {
         LiveMemberControlRequirement::Steer if !control.supports_steer => {
             return Err(CliError::Usage(format!(
                 "{} does not support mid-turn steer; send a queued TeamMessage instead",
@@ -11691,14 +12351,161 @@ fn dispatch_live_member_control(
         _ => {}
     }
     let (reply_tx, reply_rx) = sync_channel(1);
-    control.sender.send(command(reply_tx)).map_err(|_| {
-        CliError::Usage(format!(
+    let command = match request {
+        LiveMemberControlRequest::Steer {
+            content,
+            requested_by,
+            ..
+        } => MemberControlCommand::Steer {
+            content,
+            requested_by,
+            reply: reply_tx,
+        },
+        LiveMemberControlRequest::Interrupt {
+            reason,
+            requested_by,
+            ..
+        } => MemberControlCommand::Interrupt {
+            reason,
+            requested_by,
+            reply: reply_tx,
+        },
+        LiveMemberControlRequest::Close {
+            reason,
+            requested_by,
+            ..
+        } => MemberControlCommand::Close {
+            reason,
+            requested_by,
+            reply: reply_tx,
+        },
+    };
+    if control.sender.send(command).is_err() {
+        if is_close {
+            return Ok(serde_json::json!({
+                "member_run_id": member_run_id,
+                "status": "close_requested",
+                "provider_ack": "supervisor_close_latched",
+            }));
+        }
+        return Err(CliError::Usage(format!(
             "member {member_run_id} provider session already ended"
-        ))
-    })?;
-    reply_rx
-        .recv_timeout(Duration::from_secs(15))
-        .map_err(|_| CliError::Usage("provider control acknowledgement timed out".to_string()))?
+        )));
+    }
+    match reply_rx.recv_timeout(Duration::from_secs(15)) {
+        Ok(result) => result,
+        Err(_) if is_close => Ok(serde_json::json!({
+            "member_run_id": member_run_id,
+            "status": "close_requested",
+            "provider_ack": "supervisor_close_latched",
+        })),
+        Err(_) => Err(CliError::Usage(
+            "provider control acknowledgement timed out".to_string(),
+        )),
+    }
+}
+
+fn handle_live_member_control_connection(
+    mut stream: TcpStream,
+    store: &HarnessStore,
+    team_run_id: &str,
+    supervisor_id: &str,
+    generation: u64,
+) {
+    let response = (|| -> CliResult<serde_json::Value> {
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(20)))?;
+        let mut line = String::new();
+        BufReader::new(stream.try_clone()?)
+            .take(262_145)
+            .read_line(&mut line)?;
+        if line.len() > 262_144 {
+            return Err(CliError::Usage(
+                "Supervisor control request exceeds 256 KiB".to_string(),
+            ));
+        }
+        let request: LiveMemberControlRequest = serde_json::from_str(&line)?;
+        if request.team_run_id() != team_run_id {
+            return Err(CliError::Usage(format!(
+                "Supervisor for team run {team_run_id} cannot control {}",
+                request.team_run_id()
+            )));
+        }
+        dispatch_local_live_member_control(store, supervisor_id, generation, request)
+    })();
+    let envelope = match response {
+        Ok(result) => LiveMemberControlResponse {
+            ok: true,
+            result: Some(result),
+            error: None,
+        },
+        Err(error) => LiveMemberControlResponse {
+            ok: false,
+            result: None,
+            error: Some(error.to_string()),
+        },
+    };
+    if let Ok(mut payload) = serde_json::to_vec(&envelope) {
+        payload.push(b'\n');
+        let _ = stream.write_all(&payload);
+        let _ = stream.flush();
+    }
+}
+
+fn dispatch_live_member_control(
+    store: &HarnessStore,
+    request: LiveMemberControlRequest,
+) -> CliResult<serde_json::Value> {
+    let team_run_id = request.team_run_id();
+    let lease = store
+        .latest_team_supervisor_lease(team_run_id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "team run {team_run_id} has no live Supervisor for provider control"
+            ))
+        })?;
+    require_current_supervisor_lease(store, team_run_id, &lease.supervisor_id, lease.generation)?;
+    let address = lease
+        .owner_locator
+        .strip_prefix("tcp://")
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "team run {team_run_id} Supervisor locator is not routable: {}",
+                lease.owner_locator
+            ))
+        })?
+        .parse::<std::net::SocketAddr>()
+        .map_err(|error| CliError::Usage(format!("invalid Supervisor locator: {error}")))?;
+    let mut stream =
+        TcpStream::connect_timeout(&address, Duration::from_secs(3)).map_err(|error| {
+            CliError::Usage(format!(
+                "cannot reach team run {team_run_id} Supervisor at {}: {error}",
+                lease.owner_locator
+            ))
+        })?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut payload = serde_json::to_vec(&request)?;
+    payload.push(b'\n');
+    stream.write_all(&payload)?;
+    stream.flush()?;
+    let mut line = String::new();
+    BufReader::new(stream).take(262_145).read_line(&mut line)?;
+    if line.len() > 262_144 {
+        return Err(CliError::Usage(
+            "Supervisor control response exceeds 256 KiB".to_string(),
+        ));
+    }
+    let response: LiveMemberControlResponse = serde_json::from_str(&line)?;
+    if response.ok {
+        response.result.ok_or_else(|| {
+            CliError::Usage("Supervisor returned an empty control acknowledgement".to_string())
+        })
+    } else {
+        Err(CliError::Usage(response.error.unwrap_or_else(|| {
+            "Supervisor rejected provider control".to_string()
+        })))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -11717,16 +12524,71 @@ type LiveMemberActivitySink = Arc<dyn Fn(LiveMemberActivityPreview) + Send + Syn
 struct TeamRunLedger {
     store: HarnessStore,
     run_id: String,
+    supervisor_id: String,
+    supervisor_generation: u64,
+    supervisor_valid: Arc<AtomicBool>,
     write_lock: Mutex<()>,
 }
 
 impl TeamRunLedger {
-    fn new(store: &HarnessStore, run_id: &str) -> Self {
+    fn new(
+        store: &HarnessStore,
+        run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        supervisor_valid: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             store: HarnessStore::new(store.root().to_path_buf()),
             run_id: run_id.to_string(),
+            supervisor_id: supervisor_id.to_string(),
+            supervisor_generation,
+            supervisor_valid,
             write_lock: Mutex::new(()),
         }
+    }
+
+    /// Read/journal helper for maintenance paths that do not start provider
+    /// side effects. Any attempt to claim mail through this view fails.
+    fn without_supervisor(store: &HarnessStore, run_id: &str) -> Self {
+        Self {
+            store: HarnessStore::new(store.root().to_path_buf()),
+            run_id: run_id.to_string(),
+            supervisor_id: "none".to_string(),
+            supervisor_generation: 0,
+            supervisor_valid: Arc::new(AtomicBool::new(false)),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    fn require_supervisor_lease(&self) -> CliResult<()> {
+        if !self.supervisor_valid.load(Ordering::Acquire) {
+            return Err(CliError::Usage(format!(
+                "team run {} lost its durable Supervisor lease; refusing provider side effects",
+                self.run_id
+            )));
+        }
+        let now = current_unix_ms_u64();
+        let lease = self
+            .store
+            .latest_team_supervisor_lease(&self.run_id)?
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "team run {} has no durable Supervisor lease",
+                    self.run_id
+                ))
+            })?;
+        if lease.supervisor_id != self.supervisor_id
+            || lease.generation != self.supervisor_generation
+            || lease.expires_unix_ms <= now
+        {
+            self.supervisor_valid.store(false, Ordering::Release);
+            return Err(CliError::Usage(format!(
+                "team run {} Supervisor lease moved to another owner",
+                self.run_id
+            )));
+        }
+        Ok(())
     }
 
     fn write_lock(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -11848,29 +12710,51 @@ impl TeamRunLedger {
             })
             .collect())
     }
+
+    fn claim_message(&self, message_id: &str, member_id: &str) -> CliResult<Option<TeamMessage>> {
+        self.require_supervisor_lease()?;
+        let claim_id = generated_id("delivery-claim");
+        match store_conflict_as_usage(self.store.claim_team_message_delivery(
+            &self.run_id,
+            message_id,
+            member_id,
+            &self.supervisor_id,
+            self.supervisor_generation,
+            &claim_id,
+            current_unix_ms_u64(),
+            team_supervisor_lease_ttl_ms(),
+            &now_string(),
+        ))? {
+            TeamMessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
+            TeamMessageDeliveryClaimResult::NotQueued => Ok(None),
+        }
+    }
+
+    fn claim_queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+        let queued = self.queued_messages_for(member_id)?;
+        let mut claimed = Vec::with_capacity(queued.len());
+        for message in queued {
+            if let Some(message) = self.claim_message(&message.id, member_id)? {
+                claimed.push(message);
+            }
+        }
+        Ok(claimed)
+    }
 }
 
-fn pending_member_close(member_run_id: &str) -> Option<PendingMemberClose> {
-    LIVE_MEMBER_CLOSE_REQUESTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .get(member_run_id)
-        .cloned()
-}
-
-fn clear_pending_member_close(member_run_id: &str) {
-    LIVE_MEMBER_CLOSE_REQUESTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .remove(member_run_id);
+fn pending_member_close(
+    store: &HarnessStore,
+    member_run_id: &str,
+) -> CliResult<Option<TeamMemberCloseRequest>> {
+    Ok(store
+        .latest_team_member_close_request(member_run_id)?
+        .filter(|request| request.status == TeamMemberCloseStatus::Pending))
 }
 
 fn stop_member_for_latched_close(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
-    close: &PendingMemberClose,
+    close: &TeamMemberCloseRequest,
 ) -> CliResult<()> {
     if close.team_run_id != ledger.run_id {
         return Err(CliError::Usage(format!(
@@ -11897,7 +12781,12 @@ fn stop_member_for_latched_close(
         "updated",
         &format!("member {} closed by Host supervisor", member_row.name),
     )?;
-    clear_pending_member_close(&member_row.id);
+    store_conflict_as_usage(ledger.store.complete_team_member_close(
+        &ledger.run_id,
+        &member_row.id,
+        &close.id,
+        &now_string(),
+    ))?;
     Ok(())
 }
 
@@ -11935,7 +12824,14 @@ fn wait_for_idle_member_wake(
                         "updated",
                         &format!("member {} closed by Host while idle", member_row.name),
                     )?;
-                    clear_pending_member_close(&member_row.id);
+                    if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {
+                        store_conflict_as_usage(ledger.store.complete_team_member_close(
+                            &ledger.run_id,
+                            &member_row.id,
+                            &close.id,
+                            &now_string(),
+                        ))?;
+                    }
                     let _ = reply.send(Ok(serde_json::json!({
                         "member_run_id": member_row.id,
                         "status": "closed",
@@ -11957,23 +12853,34 @@ fn wait_for_idle_member_wake(
                 }
             }
         }
-        if let Some(close) = pending_member_close(&member_row.id) {
+        if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {
             stop_member_for_latched_close(ledger, member_row, &close)?;
             return Ok(IdleMemberWake::Closed);
         }
 
-        let queued = ledger.queued_messages_for(&member_row.id)?;
-        if !queued.is_empty() {
+        // Fence the provider transport before taking durable ownership of any
+        // queued mail. If the transport died after the previous turn, resume
+        // the same native session first; otherwise a message could be left in
+        // the intentionally-uncertain `claimed` state before turn/start even
+        // reached the provider.
+        ensure_transport_alive()?;
+        if let Some(agent_member_id) = member_row.agent_member_id.as_deref() {
+            let eligible = active_member_runs_for_agent(&ledger.store, agent_member_id)?;
+            if eligible.len() == 1 && eligible[0].id == member_row.id {
+                route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
+            }
+        }
+        let claimed = ledger.claim_queued_messages_for(&member_row.id)?;
+        if !claimed.is_empty() {
             member_row.status = MemberRunStatus::Running;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
             ledger.save_member_run(member_row)?;
-            return Ok(IdleMemberWake::Messages(queued));
+            return Ok(IdleMemberWake::Messages(claimed));
         }
         if member_supervisor_test_idle_grace().is_some_and(|grace| idle_since.elapsed() >= grace) {
             return Ok(IdleMemberWake::TestRetired);
         }
-        ensure_transport_alive()?;
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -12034,12 +12941,18 @@ pub(crate) fn prepare_team_run_start(
             serde_snake_label(&run.status)
         )));
     }
-    let supervisor_registration = reserve_team_supervisor(run_id)?;
+    let supervisor_registration = reserve_team_supervisor(store, run_id)?;
     let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == run_id && member.status != MemberRunStatus::Stopped)
         .collect();
-    let ledger = Arc::new(TeamRunLedger::new(store, run_id));
+    let ledger = Arc::new(TeamRunLedger::new(
+        store,
+        run_id,
+        &supervisor_registration.supervisor_id,
+        supervisor_registration.generation,
+        Arc::clone(&supervisor_registration.heartbeat_valid),
+    ));
     let running = if run.status == TeamRunStatus::Planning {
         let mut running = run.clone();
         running.status = TeamRunStatus::Running;
@@ -12061,7 +12974,9 @@ pub(crate) fn prepare_team_run_start(
         run_id,
         "updated",
         &format!(
-            "member supervisor {} ({} unclosed member(s), max-concurrency {max_concurrency})",
+            "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
+            supervisor_registration.supervisor_id,
+            supervisor_registration.generation,
             if run.status == TeamRunStatus::Planning {
                 "started"
             } else {
@@ -12310,7 +13225,13 @@ fn run_member_orchestration(
             .ok()
             .flatten()
             .unwrap_or_else(|| member.clone());
-        if let Some(close) = pending_member_close(&current.id) {
+        let pending_close = match pending_member_close(&ledger.store, &current.id) {
+            Ok(close) => close,
+            Err(error) => {
+                return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string())
+            }
+        };
+        if let Some(close) = pending_close {
             if let Err(error) = stop_member_for_latched_close(ledger, &mut current, &close) {
                 return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string());
             }
@@ -12351,7 +13272,14 @@ fn run_member_orchestration(
         match result {
             Ok(outcome) => {
                 if outcome.status == MemberRunStatus::Stopped {
-                    clear_pending_member_close(&current.id);
+                    if let Ok(Some(close)) = pending_member_close(&ledger.store, &current.id) {
+                        let _ = ledger.store.complete_team_member_close(
+                            &ledger.run_id,
+                            &current.id,
+                            &close.id,
+                            &now_string(),
+                        );
+                    }
                 }
                 return outcome;
             }
@@ -12760,7 +13688,7 @@ fn run_codex_app_server_turn(
     } = context;
     let mut turn_id = client.start_turn(prompt)?;
     for message in accepted_messages {
-        mark_message_delivered(ledger, message, &member.id, &member.name)?;
+        mark_message_delivered(ledger, message, &member.id, &member.name, &turn_id)?;
     }
     // The start response is the preferred active id. Codex 0.146 can,
     // however, surface Goal/Plan work under a follow-up provider turn id.
@@ -13046,7 +13974,13 @@ fn run_claude_team_member(
                 // `claude_cli` has no live delivery receipt. A successfully
                 // completed first provider turn is the earliest honest proof
                 // that the one-shot process accepted its Assignment.
-                mark_message_delivered(ledger, assignment, &member.id, &member.name)?;
+                mark_message_delivered(
+                    ledger,
+                    assignment,
+                    &member.id,
+                    &member.name,
+                    &turn.session_id,
+                )?;
             }
         }
         member_row.native_session = Some(native_session_ref(
@@ -13062,7 +13996,9 @@ fn run_claude_team_member(
             origin_wave_id: assignment
                 .as_ref()
                 .and_then(|message| message.origin_wave_id.clone()),
+            sender: Some(compatibility_team_actor(&member.id, "member_runtime")),
             from_member_id: member.id.clone(),
+            recipients: vec![compatibility_team_recipient("host")],
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Handoff,
             body: turn.final_text.clone(),
@@ -13077,6 +14013,12 @@ fn run_claude_team_member(
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
                 attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("harness-control-plane".to_string()),
                 updated_at: now_string(),
             }],
             created_at: now_string(),
@@ -13140,7 +14082,7 @@ fn run_claude_team_member(
         if round >= TEAM_RUN_START_MAX_ROUNDS {
             break;
         }
-        let queued = ledger.queued_messages_for(&member.id)?;
+        let queued = ledger.claim_queued_messages_for(&member.id)?;
         if queued.is_empty() {
             break;
         }
@@ -13152,7 +14094,13 @@ fn run_claude_team_member(
                 team_message_kind_label(&message.kind),
                 message.body
             ));
-            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+            mark_message_delivered(
+                ledger,
+                message,
+                &member.id,
+                &member.name,
+                &format!("historical-claude-cli-round-{}", round + 1),
+            )?;
         }
         member_row.status = MemberRunStatus::Running;
         member_row.finished_at = None;
@@ -13504,9 +14452,28 @@ fn run_claude_agent_sdk_team_member(
                 "delivered" => {
                     if let Some(message_id) = data.get("id").and_then(|v| v.as_str()) {
                         if let Some(message) = inflight_messages.remove(message_id) {
-                            mark_message_delivered(ledger, &message, &member.id, &member.name)?;
-                            delivered_message_ids.insert(message_id.to_string());
                             delivered_messages.insert(message_id.to_string(), message);
+                        }
+                    }
+                }
+                "consumed" => {
+                    if let Some(message_id) = data.get("id").and_then(|v| v.as_str()) {
+                        if let Some(message) = delivered_messages.get(message_id) {
+                            let receipt = data
+                                .get("sessionId")
+                                .and_then(|value| value.as_str())
+                                .map(|session_id| {
+                                    format!("claude-sdk-session:{session_id}:{message_id}")
+                                })
+                                .unwrap_or_else(|| format!("claude-sdk-consumed:{message_id}"));
+                            mark_message_delivered(
+                                ledger,
+                                message,
+                                &member.id,
+                                &member.name,
+                                &receipt,
+                            )?;
+                            delivered_message_ids.insert(message_id.to_string());
                         }
                     }
                 }
@@ -13604,7 +14571,7 @@ fn run_claude_agent_sdk_team_member(
         // `inflight_messages` prevents duplicate injection during that window;
         // `delivered_message_ids` also protects this live adapter generation
         // from a stale latest-wins read immediately after the receipt append.
-        let queued = ledger.queued_messages_for(&member.id)?;
+        let queued = ledger.claim_queued_messages_for(&member.id)?;
         let mut delivered_any = false;
         for message in queued {
             if inflight_messages.contains_key(&message.id)
@@ -13774,7 +14741,9 @@ fn record_round_handoff(
         id: generated_id("tmsg"),
         team_run_id: ledger.run_id.clone(),
         origin_wave_id,
+        sender: Some(compatibility_team_actor(&member_row.id, "member_runtime")),
         from_member_id: member_row.id.clone(),
+        recipients: vec![compatibility_team_recipient("host")],
         to_member_ids: vec!["host".to_string()],
         kind: TeamMessageKind::Handoff,
         body: record.final_text.to_string(),
@@ -13786,6 +14755,12 @@ fn record_round_handoff(
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
             attempt: 1,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: Some("harness-control-plane".to_string()),
             updated_at: now_string(),
         }],
         created_at: now_string(),
@@ -14229,7 +15204,11 @@ fn run_kimi_member(
         };
         let round_trigger = accepted_messages.last().cloned();
         for message in &accepted_messages {
-            mark_message_delivered(ledger, message, &member.id, &member.name)?;
+            let receipt = client
+                .session_id()
+                .map(|session_id| format!("kimi-acp-session:{session_id}"))
+                .unwrap_or_else(|| format!("kimi-acp-message:{}", message.id));
+            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
         }
         accepted_messages.clear();
         let final_text = mapper.text().to_string();
@@ -14409,7 +15388,7 @@ fn journal_member_disconnected(
     if disconnected.status == MemberRunStatus::Stopped {
         return;
     }
-    disconnected.status = MemberRunStatus::Waiting;
+    disconnected.status = MemberRunStatus::Disconnected;
     disconnected.finished_at = None;
     disconnected.last_event_at = Some(now_string());
     let _ = ledger.save_member_run(&disconnected);
@@ -14439,12 +15418,16 @@ fn latest_queued_assignment(
     ledger: &TeamRunLedger,
     member_id: &str,
 ) -> CliResult<Option<TeamMessage>> {
-    Ok(ledger.team_messages()?.into_iter().rfind(|message| {
+    let candidate = ledger.team_messages()?.into_iter().rfind(|message| {
         message.kind == TeamMessageKind::Assignment
             && message.deliveries.iter().any(|delivery| {
                 delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
             })
-    }))
+    });
+    match candidate {
+        Some(message) => ledger.claim_message(&message.id, member_id),
+        None => Ok(None),
+    }
 }
 
 /// Flip every queued delivery of `message` addressed to `member_id` to
@@ -14455,16 +15438,39 @@ fn mark_message_delivered(
     message: &TeamMessage,
     member_id: &str,
     member_name: &str,
+    provider_receipt_id: &str,
 ) -> CliResult<()> {
-    let mut updated = message.clone();
-    for delivery in &mut updated.deliveries {
-        if delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued {
-            delivery.status = TeamDeliveryStatus::Delivered;
-            delivery.attempt += 1;
-            delivery.updated_at = now_string();
-        }
+    ledger.require_supervisor_lease()?;
+    let delivery = message
+        .deliveries
+        .iter()
+        .find(|delivery| delivery.member_id == member_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "message {} has no delivery for {member_id}",
+                message.id
+            ))
+        })?;
+    if delivery.status == TeamDeliveryStatus::Delivered {
+        return Ok(());
     }
-    ledger.save_message(&updated)?;
+    let claim_id = delivery.claim_id.as_deref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "message {} delivery to {member_id} has no durable claim",
+            message.id
+        ))
+    })?;
+    store_conflict_as_usage(ledger.store.complete_team_message_delivery_claim(
+        &ledger.run_id,
+        &message.id,
+        member_id,
+        &ledger.supervisor_id,
+        ledger.supervisor_generation,
+        claim_id,
+        provider_receipt_id,
+        current_unix_ms_u64(),
+        &now_string(),
+    ))?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member_id.to_string()),
@@ -14472,7 +15478,7 @@ fn mark_message_delivered(
         &message.id,
         "updated",
         &format!(
-            "{} delivered to {}",
+            "{} accepted by provider for {} ({provider_receipt_id})",
             team_message_kind_label(&message.kind),
             member_name
         ),
@@ -14488,48 +15494,36 @@ pub(crate) fn acknowledge_team_message(
     message_id: &str,
     member_id: &str,
 ) -> CliResult<TeamMessage> {
-    let mut message = latest_team_messages_in_append_order(store)?
+    let message = latest_team_messages_in_append_order(store)?
         .into_iter()
         .find(|message| message.id == message_id)
         .ok_or_else(|| CliError::Usage(format!("team message not found: {message_id}")))?;
-    let delivery = message
-        .deliveries
-        .iter_mut()
-        .find(|delivery| delivery.member_id == member_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "message {message_id} has no delivery for {member_id}"
-            ))
-        })?;
-    match delivery.status {
-        TeamDeliveryStatus::Queued => {
-            return Err(CliError::Usage(format!(
-                "message {message_id} has not been delivered to {member_id}"
-            )));
-        }
-        TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => {
-            return Err(CliError::Usage(format!(
-                "message {message_id} delivery to {member_id} is {} and cannot be acknowledged",
-                serde_snake_label(&delivery.status)
-            )));
-        }
-        TeamDeliveryStatus::Acknowledged => return Ok(message),
-        TeamDeliveryStatus::Delivered => {}
-    }
-    delivery.status = TeamDeliveryStatus::Acknowledged;
-    delivery.updated_at = now_string();
-    store.append_team_message(&message)?;
-    append_team_run_event(
-        store,
+    let was_acknowledged = message.deliveries.iter().any(|delivery| {
+        delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Acknowledged
+    });
+    let message = store_conflict_as_usage(store.acknowledge_team_message_delivery(
         &message.team_run_id,
-        0,
-        TeamRunEventSourceKind::Host,
-        (member_id != "host").then(|| member_id.to_string()),
-        "message",
         message_id,
-        "updated",
-        &format!("message acknowledged by {member_id}"),
-    )?;
+        member_id,
+        &now_string(),
+    ))?;
+    if !was_acknowledged {
+        append_team_run_event(
+            store,
+            &message.team_run_id,
+            0,
+            if member_id == "host" {
+                TeamRunEventSourceKind::Host
+            } else {
+                TeamRunEventSourceKind::Member
+            },
+            (member_id != "host").then(|| member_id.to_string()),
+            "message",
+            message_id,
+            "updated",
+            &format!("message acknowledged by {member_id}"),
+        )?;
+    }
     Ok(message)
 }
 
@@ -15709,6 +16703,33 @@ fn handle_sse_stream(
                     sse::SseEventFrame::TeamMessage(message) => {
                         if let Ok(json) = serde_json::to_value(&message) {
                             if sse::write_sse_frame(&mut stream, "team_message", &json).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::TeamSupervisorLease(lease) => {
+                        if let Ok(json) = serde_json::to_value(&lease) {
+                            if sse::write_sse_frame(&mut stream, "team_supervisor_lease", &json)
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::TeamMemberCloseRequest(request) => {
+                        if let Ok(json) = serde_json::to_value(&request) {
+                            if sse::write_sse_frame(&mut stream, "team_member_close_request", &json)
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    sse::SseEventFrame::AgentMessageRoute(route) => {
+                        if let Ok(json) = serde_json::to_value(&route) {
+                            if sse::write_sse_frame(&mut stream, "agent_message_route", &json)
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -17142,6 +18163,9 @@ fn handle_http_action(
         if let [team_run_id, "messages", message_id, "ack"] = parts.as_slice() {
             return acknowledge_team_message_value(store, team_run_id, message_id, body);
         }
+        if let [team_run_id, "messages", message_id, "reconcile-delivery"] = parts.as_slice() {
+            return reconcile_team_message_delivery_value(store, team_run_id, message_id, body);
+        }
         if let [team_run_id, "interactions", interaction_id, "resolve"] = parts.as_slice() {
             return resolve_pending_interaction_value(store, team_run_id, interaction_id, body);
         }
@@ -17197,6 +18221,18 @@ fn handle_http_action(
                 claim_ttl_ms: json_u64(body, "claim_ttl_ms").unwrap_or(300_000),
             },
         );
+    }
+    if let Some(agent_id) = path
+        .strip_prefix("/v1/agents/")
+        .and_then(|rest| rest.strip_suffix("/route-inbox"))
+    {
+        let routes = route_agent_inbox_messages(
+            store,
+            agent_id,
+            optional_json_string(body, "member_run_id")?.as_deref(),
+            optional_json_string(body, "message_id")?.as_deref(),
+        )?;
+        return Ok(serde_json::json!({"routes": routes}));
     }
     if let Some(agent_id) = path
         .strip_prefix("/v1/agents/")
@@ -17271,19 +18307,23 @@ fn steer_team_member_value(
     let requested_by =
         optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
     let result = dispatch_live_member_control(
-        team_run_id,
-        member_run_id,
-        |reply| MemberControlCommand::Steer {
+        store,
+        LiveMemberControlRequest::Steer {
+            team_run_id: team_run_id.to_string(),
+            member_run_id: member_run_id.to_string(),
             content: content.clone(),
             requested_by: requested_by.clone(),
-            reply,
         },
-        LiveMemberControlRequirement::Steer,
     )?;
-    let mut message = send_team_message(
+    let mut message = send_team_message_as(
         store,
         team_run_id,
-        "host",
+        TeamActorRef {
+            kind: TeamActorKind::Operator,
+            id: requested_by.clone(),
+            display_name: None,
+            authn_source: Some("http_control".to_string()),
+        },
         vec![member_run_id.to_string()],
         TeamMessageKind::Control,
         &content,
@@ -17312,14 +18352,13 @@ fn interrupt_team_member_value(
         .unwrap_or_else(|| "operator requested interruption".to_string());
     cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
     dispatch_live_member_control(
-        team_run_id,
-        member_run_id,
-        |reply| MemberControlCommand::Interrupt {
+        store,
+        LiveMemberControlRequest::Interrupt {
+            team_run_id: team_run_id.to_string(),
+            member_run_id: member_run_id.to_string(),
             reason,
             requested_by,
-            reply,
         },
-        LiveMemberControlRequirement::Interrupt,
     )
 }
 
@@ -17379,44 +18418,6 @@ fn close_team_member_value(
         )));
     }
     cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
-    LIVE_MEMBER_CLOSE_REQUESTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .insert(
-            member_run_id.to_string(),
-            PendingMemberClose {
-                team_run_id: team_run_id.to_string(),
-                requested_by: requested_by.clone(),
-                reason: reason.clone(),
-            },
-        );
-
-    let has_live_control = LIVE_MEMBER_CONTROLS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .contains_key(member_run_id);
-    if has_live_control {
-        return match dispatch_live_member_control(
-            team_run_id,
-            member_run_id,
-            |reply| MemberControlCommand::Close {
-                reason,
-                requested_by,
-                reply,
-            },
-            LiveMemberControlRequirement::Close,
-        ) {
-            Ok(result) => Ok(result),
-            Err(_) => Ok(serde_json::json!({
-                "member_run_id": member_run_id,
-                "status": "close_requested",
-                "provider_ack": "supervisor_close_latched",
-            })),
-        };
-    }
-
     let member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|member| member.id == member_run_id)
@@ -17425,7 +18426,14 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
     ) {
-        clear_pending_member_close(member_run_id);
+        if let Some(close) = pending_member_close(store, member_run_id)? {
+            store_conflict_as_usage(store.complete_team_member_close(
+                team_run_id,
+                member_run_id,
+                &close.id,
+                &now_string(),
+            ))?;
+        }
         return Ok(serde_json::json!({
             "member_run_id": member.id,
             "status": serde_snake_label(&member.status),
@@ -17433,18 +18441,44 @@ fn close_team_member_value(
             "idempotent": true,
         }));
     }
+
+    let live_lease = store
+        .latest_team_supervisor_lease(team_run_id)?
+        .filter(|lease| {
+            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        });
+    if live_lease.is_some() {
+        return dispatch_live_member_control(
+            store,
+            LiveMemberControlRequest::Close {
+                team_run_id: team_run_id.to_string(),
+                member_run_id: member_run_id.to_string(),
+                reason,
+                requested_by,
+            },
+        );
+    }
+
+    let close = latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?;
     if matches!(
         member.status,
         MemberRunStatus::Starting | MemberRunStatus::Running
     ) {
-        clear_pending_member_close(member_run_id);
-        return Err(CliError::Usage(format!(
-            "member {member_run_id} is {} but its provider session is not owned by this server process; send close through the Host process that started the TeamRun",
-            serde_snake_label(&member.status)
-        )));
+        return Ok(serde_json::json!({
+            "member_run_id": member.id,
+            "status": "close_requested",
+            "provider_ack": "durable_close_pending_supervisor",
+            "close_request_id": close.id,
+        }));
     }
     let member = deactivate_team_run_member(store, team_run_id, member_run_id, &reason)?;
-    clear_pending_member_close(member_run_id);
+    store_conflict_as_usage(store.complete_team_member_close(
+        team_run_id,
+        member_run_id,
+        &close.id,
+        &now_string(),
+    ))?;
     Ok(serde_json::json!({
         "member_run_id": member.id,
         "status": "stopped",
@@ -17663,6 +18697,68 @@ fn acknowledge_team_message_value(
     )?)?)
 }
 
+/// Explicit operator reconciliation for a delivery left in `claimed` after a
+/// Supervisor crash. It never guesses whether the provider consumed content.
+pub(crate) fn reconcile_team_message_delivery_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    message_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let member_run_id = required_json_string(body, "member_run_id")?;
+    let claim_id = required_json_string(body, "claim_id")?;
+    let reason = required_json_string(body, "reason")?;
+    if reason.trim().is_empty() {
+        return Err(CliError::Usage("reason must not be empty".to_string()));
+    }
+    let provider_accepted = json_bool(body, "provider_accepted").unwrap_or(false);
+    let requeue = json_bool(body, "requeue").unwrap_or(false);
+    if provider_accepted == requeue {
+        return Err(CliError::Usage(
+            "choose exactly one of provider_accepted=true or requeue=true".to_string(),
+        ));
+    }
+    let provider_receipt_id = optional_json_string(body, "provider_receipt_id")?;
+    if provider_accepted && provider_receipt_id.is_none() {
+        return Err(CliError::Usage(
+            "provider_accepted requires provider_receipt_id".to_string(),
+        ));
+    }
+    if requeue && provider_receipt_id.is_some() {
+        return Err(CliError::Usage(
+            "provider_receipt_id is invalid when requeue=true".to_string(),
+        ));
+    }
+    let message = store_conflict_as_usage(store.reconcile_team_message_delivery_claim(
+        team_run_id,
+        message_id,
+        &member_run_id,
+        &claim_id,
+        provider_accepted,
+        provider_receipt_id.as_deref(),
+        &now_string(),
+    ))?;
+    append_team_run_event(
+        store,
+        team_run_id,
+        next_team_run_seq(store, team_run_id)?,
+        TeamRunEventSourceKind::Operator,
+        None,
+        "message",
+        message_id,
+        "updated",
+        &format!(
+            "delivery for {member_run_id} reconciled as {}: {reason}",
+            if provider_accepted {
+                "provider_accepted"
+            } else {
+                "requeued"
+            }
+        ),
+    )?;
+    Ok(serde_json::to_value(message)?)
+}
+
 fn create_message_value(
     store: &HarnessStore,
     body: &serde_json::Value,
@@ -17871,10 +18967,23 @@ fn send_team_message_value(
             "missing JSON field: to_member_ids".to_string(),
         ));
     }
-    let message = send_team_message(
+    let sender_kind = json_string(body, "sender_kind").unwrap_or_else(|| "operator".to_string());
+    let sender_id = json_string(body, "sender_id").unwrap_or_else(|| {
+        if sender_kind == "host" || sender_kind == "member_run" {
+            json_string(body, "from_member_id").unwrap_or_else(|| "operator".to_string())
+        } else {
+            "operator".to_string()
+        }
+    });
+    let message = send_team_message_as(
         store,
         team_run_id,
-        &required_json_string(body, "from_member_id")?,
+        TeamActorRef {
+            kind: parse_team_actor_kind(&sender_kind)?,
+            id: sender_id,
+            display_name: json_string(body, "sender_name"),
+            authn_source: Some("http_request".to_string()),
+        },
         to_member_ids,
         parse_team_message_kind(&required_json_string(body, "kind")?)?,
         &required_json_string(body, "body")?,
@@ -23641,6 +24750,9 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let team_runs = latest_team_runs_in_append_order(store)?;
     let member_runs = latest_member_runs_in_append_order(store)?;
     let team_messages = latest_team_messages_in_append_order(store)?;
+    let team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
+    let team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
+    let agent_message_routes = store.agent_message_routes()?;
     // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
@@ -23722,6 +24834,9 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "team_runs": team_runs,
         "member_runs": member_runs,
         "team_messages": team_messages,
+        "team_supervisor_leases": team_supervisor_leases,
+        "team_member_close_requests": team_member_close_requests,
+        "agent_message_routes": agent_message_routes,
         "member_actions": member_actions,
         "pending_interactions": pending_interactions,
         "delegation_runs": delegation_runs,
@@ -23816,6 +24931,38 @@ fn latest_team_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<T
         by_id.insert(message.id.clone(), message);
     }
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
+}
+
+fn latest_team_supervisor_leases_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<TeamSupervisorLease>> {
+    let mut ids = Vec::new();
+    let mut by_team_run = BTreeMap::new();
+    for lease in store.team_supervisor_leases()? {
+        ids.retain(|id| id != &lease.team_run_id);
+        ids.push(lease.team_run_id.clone());
+        by_team_run.insert(lease.team_run_id.clone(), lease);
+    }
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| by_team_run.remove(&id))
+        .collect())
+}
+
+fn latest_team_member_close_requests_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<TeamMemberCloseRequest>> {
+    let mut ids = Vec::new();
+    let mut by_member_run = BTreeMap::new();
+    for request in store.team_member_close_requests()? {
+        ids.retain(|id| id != &request.member_run_id);
+        ids.push(request.member_run_id.clone());
+        by_member_run.insert(request.member_run_id.clone(), request);
+    }
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| by_member_run.remove(&id))
+        .collect())
 }
 
 fn latest_member_actions_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberAction>> {
@@ -24500,15 +25647,11 @@ trait ProviderAdapter: Sync {
     /// (codex `--sandbox`, claude `--permission-mode`).
     fn map_permission(&self, perm: LaunchPermission) -> &'static str;
 
-    /// Record a provider hook event into the neutral event log. Hooks are a
-    /// codex-runtime mechanism; the default reports the provider has no hook
-    /// integration — an explicit error beats silently recording a codex-shaped
-    /// event. Only CodexAdapter overrides this.
-    fn record_hook_event(&self, _store: &HarnessStore, _args: &[String]) -> CliResult<()> {
-        Err(CliError::Usage(format!(
-            "provider {} does not support hook events",
-            self.name()
-        )))
+    /// Record a provider hook event into the neutral event log. Each plugin
+    /// must pass its explicit provider identity; the shared recorder preserves
+    /// native session/turn identity without copying the provider transcript.
+    fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
+        record_provider_hook_event(store, args, self.name())
     }
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
@@ -24588,72 +25731,7 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn record_hook_event(&self, store: &HarnessStore, args: &[String]) -> CliResult<()> {
-        store.init()?;
-        let agent_id = value(args, "--agent")
-            .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
-            .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
-        let runtime_id =
-            value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
-        let mut stdin = String::new();
-        std::io::stdin().read_to_string(&mut stdin)?;
-        let payload = parse_hook_payload(&stdin);
-        let hook_event_name = value(args, "--event")
-            .or_else(|| json_str(&payload, "hook_event_name"))
-            .unwrap_or_else(|| "unknown".into());
-        let task_id = value(args, "--task")
-            .or_else(|| env::var("HARNESS_TASK_ID").ok())
-            .or_else(|| {
-                latest_member(store, &agent_id)
-                    .ok()
-                    .and_then(|member| member.current_task_id)
-            });
-        let provider_thread_id = thread_id_from_container(&payload);
-        let provider_turn_id =
-            json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
-        let event_id = generated_id("event");
-        let now = now_string();
-        let event = AgentEvent {
-            id: event_id,
-            agent_member_id: agent_id.clone(),
-            provider_runtime_id: runtime_id.clone(),
-            task_id: task_id.clone(),
-            provider: self.name().into(),
-            provider_thread_id: provider_thread_id.clone(),
-            provider_turn_id: provider_turn_id.clone(),
-            provider_child_thread_id: json_str(&payload, "agent_id"),
-            event_type: format!("codex_hook.{hook_event_name}"),
-            summary: codex_hook_summary(&hook_event_name, &payload),
-            payload_ref: None,
-            created_at: now.clone(),
-        };
-        store.append_event(&event)?;
-        if let Ok(mut member) = latest_member(store, &agent_id) {
-            member.last_seen_at = Some(now.clone());
-            member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
-                member.current_task_id = None;
-                AgentMemberStatus::Idle
-            } else {
-                AgentMemberStatus::Running
-            };
-            store.append_member(&member)?;
-        }
-        if let Some(runtime_id) = runtime_id {
-            if let Some(mut runtime) = latest_runtime(store, &runtime_id)? {
-                runtime.last_event_at = Some(now);
-                store.append_runtime(&runtime)?;
-            }
-        }
-        if hook_event_name.eq_ignore_ascii_case("stop") {
-            reconcile_running_delivery_attempts(
-                store,
-                &agent_id,
-                task_id.as_deref(),
-                provider_thread_id.as_deref(),
-                provider_turn_id.as_deref(),
-                MessageTerminalSource::HookStop,
-            )?;
-        }
-        Ok(())
+        record_provider_hook_event(store, args, self.name())
     }
 
     fn spawn_ephemeral(&self, ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
@@ -26530,28 +27608,109 @@ fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn codex_hook_summary(hook_event_name: &str, payload: &serde_json::Value) -> String {
+fn provider_hook_summary(
+    provider: &str,
+    hook_event_name: &str,
+    payload: &serde_json::Value,
+) -> String {
+    let provider_label = match provider {
+        "codex" => "Codex",
+        "claude" => "Claude",
+        "kimi" => "Kimi",
+        other => other,
+    };
     match hook_event_name {
         "SessionStart" | "sessionStart" => format!(
-            "Codex SessionStart hook source={}",
+            "{provider_label} SessionStart hook source={}",
             json_str(payload, "source").unwrap_or_else(|| "unknown".into())
         ),
         "PreToolUse" | "PostToolUse" | "PermissionRequest" | "preToolUse" | "postToolUse"
         | "permissionRequest" => format!(
-            "Codex {hook_event_name} hook tool={}",
+            "{provider_label} {hook_event_name} hook tool={}",
             json_str(payload, "tool_name").unwrap_or_else(|| "unknown".into())
         ),
         "SubagentStart" | "SubagentStop" | "subagentStart" | "subagentStop" => format!(
-            "Codex {hook_event_name} hook child={} type={}",
+            "{provider_label} {hook_event_name} hook child={} type={}",
             json_str(payload, "agent_id").unwrap_or_else(|| "unknown".into()),
             json_str(payload, "agent_type").unwrap_or_else(|| "unknown".into())
         ),
         "Stop" | "stop" => format!(
-            "Codex Stop hook turn={}",
+            "{provider_label} Stop hook turn={}",
             json_str(payload, "turn_id").unwrap_or_else(|| "unknown".into())
         ),
-        other => format!("Codex hook {other}"),
+        other => format!("{provider_label} hook {other}"),
     }
+}
+
+fn record_provider_hook_event(
+    store: &HarnessStore,
+    args: &[String],
+    provider: &str,
+) -> CliResult<()> {
+    store.init()?;
+    let agent_id = value(args, "--agent")
+        .or_else(|| env::var("HARNESS_AGENT_MEMBER_ID").ok())
+        .ok_or_else(|| CliError::Usage("--agent is required".into()))?;
+    let runtime_id = value(args, "--runtime").or_else(|| env::var("HARNESS_AGENT_RUNTIME_ID").ok());
+    let mut stdin = String::new();
+    std::io::stdin().read_to_string(&mut stdin)?;
+    let payload = parse_hook_payload(&stdin);
+    let hook_event_name = value(args, "--event")
+        .or_else(|| json_str(&payload, "hook_event_name"))
+        .unwrap_or_else(|| "unknown".into());
+    let task_id = value(args, "--task")
+        .or_else(|| env::var("HARNESS_TASK_ID").ok())
+        .or_else(|| {
+            latest_member(store, &agent_id)
+                .ok()
+                .and_then(|member| member.current_task_id)
+        });
+    let provider_thread_id = thread_id_from_container(&payload);
+    let provider_turn_id =
+        json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
+    let now = now_string();
+    let event = AgentEvent {
+        id: generated_id("event"),
+        agent_member_id: agent_id.clone(),
+        provider_runtime_id: runtime_id.clone(),
+        task_id: task_id.clone(),
+        provider: provider.into(),
+        provider_thread_id: provider_thread_id.clone(),
+        provider_turn_id: provider_turn_id.clone(),
+        provider_child_thread_id: json_str(&payload, "agent_id"),
+        event_type: format!("{provider}_hook.{hook_event_name}"),
+        summary: provider_hook_summary(provider, &hook_event_name, &payload),
+        payload_ref: None,
+        created_at: now.clone(),
+    };
+    store.append_event(&event)?;
+    if let Ok(mut member) = latest_member(store, &agent_id) {
+        member.last_seen_at = Some(now.clone());
+        member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
+            member.current_task_id = None;
+            AgentMemberStatus::Idle
+        } else {
+            AgentMemberStatus::Running
+        };
+        store.append_member(&member)?;
+    }
+    if let Some(runtime_id) = runtime_id {
+        if let Some(mut runtime) = latest_runtime(store, &runtime_id)? {
+            runtime.last_event_at = Some(now);
+            store.append_runtime(&runtime)?;
+        }
+    }
+    if hook_event_name.eq_ignore_ascii_case("stop") {
+        reconcile_running_delivery_attempts(
+            store,
+            &agent_id,
+            task_id.as_deref(),
+            provider_thread_id.as_deref(),
+            provider_turn_id.as_deref(),
+            MessageTerminalSource::HookStop,
+        )?;
+    }
+    Ok(())
 }
 
 fn append_agent_event(
@@ -26754,7 +27913,7 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|host-inbox|bind-host|inbox|ack|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
   member-run show --id <member-run-id> [--json]
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
@@ -26777,7 +27936,7 @@ fn print_help() {
   company org unit list|show|create|update-status
   company org membership list|assign|update-status
   company approval list|show|request|decide
-  agent create|list|show|start|health|send|deliver|retry-delivery|reconcile-delivery|gateway|close
+  agent create|list|show|start|health|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   hook record --agent <agent> [--runtime <runtime>]
@@ -32065,6 +33224,62 @@ mod tests {
     }
 
     #[test]
+    fn close_without_live_supervisor_is_applied_after_store_reopen() {
+        let (store, root) = temp_store("durable-close-restart");
+        let created = create_two_member_team_run(&store);
+        let mut run = created.team_run;
+        run.status = TeamRunStatus::Running;
+        run.updated_at = "unix-ms:2".into();
+        store.append_team_run(&run).expect("mark run running");
+        let mut member = created.member_runs[0].clone();
+        member.status = MemberRunStatus::Running;
+        member.last_event_at = Some("unix-ms:2".into());
+        store
+            .append_member_run(&member)
+            .expect("mark member running");
+
+        let result = close_team_member_value(
+            &store,
+            &run.id,
+            &member.id,
+            &serde_json::json!({
+                "requested_by": "host",
+                "reason": "lane accepted"
+            }),
+        )
+        .expect("durably request Close");
+        assert_eq!(result["status"].as_str(), Some("close_requested"));
+        assert_eq!(
+            result["provider_ack"].as_str(),
+            Some("durable_close_pending_supervisor")
+        );
+        drop(store);
+
+        let reopened = HarnessStore::new(&root);
+        let close = pending_member_close(&reopened, &member.id)
+            .expect("read pending Close")
+            .expect("Close survived reopen");
+        let ledger = TeamRunLedger::without_supervisor(&reopened, &run.id);
+        stop_member_for_latched_close(&ledger, &mut member, &close)
+            .expect("restarted Supervisor applies Close");
+        let stopped = latest_member_runs_in_append_order(&reopened)
+            .expect("read MemberRun")
+            .into_iter()
+            .find(|row| row.id == member.id)
+            .expect("MemberRun");
+        assert_eq!(stopped.status, MemberRunStatus::Stopped);
+        assert_eq!(
+            reopened
+                .latest_team_member_close_request(&member.id)
+                .expect("read Close")
+                .expect("Close row")
+                .status,
+            TeamMemberCloseStatus::Applied
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn team_member_identity_link_requires_registered_agent_member() {
         let (store, root) = temp_store("member-identity-link");
         let linked = TeamMemberSpec {
@@ -32134,6 +33349,164 @@ mod tests {
             created.member_runs[0].agent_member_id.as_deref(),
             Some("agent-standing-builder")
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stable_agent_inbox_routes_once_to_its_unique_member_run() {
+        let (store, root) = temp_store("agent-inbox-route");
+        let agent = make_member("agent-standing-builder");
+        store.append_member(&agent).expect("append Agent identity");
+        let created = create_team_run(
+            &store,
+            None,
+            None,
+            "Route stable Agent mail",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                agent_member_id: Some(agent.id.clone()),
+                name: "StandingBuilder".into(),
+                role: "builder".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                worktree_ref: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+            }],
+        )
+        .expect("create linked runtime");
+        store
+            .append_message(&Message {
+                id: "agent-mail-1".into(),
+                task_id: None,
+                from_agent_id: "human-owner".into(),
+                to_agent_id: Some(agent.id.clone()),
+                channel: Some("agent-direct".into()),
+                kind: MessageKind::Message,
+                delivery_status: MessageDeliveryStatus::Queued,
+                content: "Please review the current architecture.".into(),
+                evidence_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                delivery: None,
+                sender_kind: SenderKind::Operator,
+            })
+            .expect("append stable inbox mail");
+
+        let routes = route_agent_inbox_messages(&store, &agent.id, None, None)
+            .expect("route unique runtime");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].member_run_id, created.member_runs[0].id);
+        let source = latest_message(&store, "agent-mail-1").expect("source latest");
+        assert_eq!(source.delivery_status, MessageDeliveryStatus::Acknowledged);
+        let routed = latest_team_messages_in_append_order(&store)
+            .expect("team messages")
+            .into_iter()
+            .find(|message| message.id == routes[0].team_message_id)
+            .expect("routed TeamMessage");
+        assert_eq!(
+            routed.sender.as_ref().map(|sender| sender.kind),
+            Some(TeamActorKind::Operator)
+        );
+        assert_eq!(
+            routed.to_member_ids,
+            vec![created.member_runs[0].id.clone()]
+        );
+        assert_eq!(
+            routed.deliveries[0].status,
+            TeamDeliveryStatus::Queued,
+            "routing into a mailbox is not provider acceptance"
+        );
+
+        let second = route_agent_inbox_messages(&store, &agent.id, None, None)
+            .expect("idempotent second routing scan");
+        assert!(second.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stable_agent_inbox_requires_explicit_target_when_several_runtimes_are_active() {
+        let (store, root) = temp_store("agent-inbox-ambiguous");
+        let agent = make_member("agent-standing-builder");
+        store.append_member(&agent).expect("append Agent identity");
+        let spec = || TeamMemberSpec {
+            agent_member_id: Some(agent.id.clone()),
+            name: "StandingBuilder".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            worktree_ref: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+        };
+        let first = create_team_run(
+            &store,
+            None,
+            None,
+            "First runtime",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[spec()],
+        )
+        .expect("first run");
+        create_team_run(
+            &store,
+            None,
+            None,
+            "Second runtime",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[spec()],
+        )
+        .expect("second run");
+        store
+            .append_message(&Message {
+                id: "agent-mail-ambiguous".into(),
+                task_id: None,
+                from_agent_id: "human-owner".into(),
+                to_agent_id: Some(agent.id.clone()),
+                channel: Some("agent-direct".into()),
+                kind: MessageKind::Message,
+                delivery_status: MessageDeliveryStatus::Queued,
+                content: "Do not guess which runtime owns this.".into(),
+                evidence_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                delivery: None,
+                sender_kind: SenderKind::Operator,
+            })
+            .expect("append inbox mail");
+
+        let error = route_agent_inbox_messages(&store, &agent.id, None, None)
+            .expect_err("ambiguous route must fail");
+        assert!(error.to_string().contains("eligible MemberRuns"));
+        assert_eq!(
+            latest_message(&store, "agent-mail-ambiguous")
+                .expect("source remains")
+                .delivery_status,
+            MessageDeliveryStatus::Queued
+        );
+        let explicit =
+            route_agent_inbox_messages(&store, &agent.id, Some(&first.member_runs[0].id), None)
+                .expect("explicit target routes");
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit[0].member_run_id, first.member_runs[0].id);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -32633,7 +34006,7 @@ mod tests {
     fn collaboration_envelope_contains_ids_roster_and_safe_environment() {
         let (store, root) = temp_store("team-envelope");
         let created = create_two_member_team_run(&store);
-        let ledger = TeamRunLedger::new(&store, &created.team_run.id);
+        let ledger = TeamRunLedger::without_supervisor(&store, &created.team_run.id);
         let member = &created.member_runs[0];
         let assignment = &created.assignment_messages[0];
         let envelope = member_collaboration_envelope(
@@ -32951,6 +34324,8 @@ mod sse_tests {
             project_binding_id: Some(context.id.clone()),
             host_surface: "test".into(),
             host_thread_id: None,
+            host_actor: None,
+            host_control_mode: Default::default(),
             objective: "test cwd precedence".into(),
             execution_root: Some(execution_root.display().to_string()),
             status: TeamRunStatus::Planning,

@@ -306,6 +306,8 @@ export interface TeamRun {
   previous_run_id?: string | null;
   host_surface?: string | null;
   host_thread_id?: string | null;
+  host_actor?: TeamActorRef | null;
+  host_control_mode?: "managed" | "external" | string;
   objective?: string | null;
   /** Concrete workspace selected for this attempt; distinct from the centralized store root. */
   execution_root?: string | null;
@@ -324,6 +326,7 @@ export type MemberRunStatus =
   | "queued"
   | "running"
   | "waiting"
+  | "disconnected"
   | "reviewing"
   | "blocked"
   | "completed"
@@ -435,9 +438,29 @@ export interface LiveMemberActivity {
 export interface TeamMessageDelivery {
   member_id?: string;
   policy?: string;
-  status?: "queued" | "delivered" | "acknowledged" | "failed" | "expired" | string;
+  status?: "queued" | "claimed" | "delivered" | "acknowledged" | "failed" | "expired" | string;
   attempt?: number;
+  claim_id?: string | null;
+  claimed_by_supervisor_id?: string | null;
+  claimed_generation?: number | null;
+  claimed_unix_ms?: number | null;
+  claim_expires_unix_ms?: number | null;
+  provider_receipt_id?: string | null;
   updated_at?: string;
+}
+
+export type TeamActorKind = "host" | "member_run" | "agent_member" | "operator" | "service";
+
+export interface TeamActorRef {
+  kind: TeamActorKind | string;
+  id: string;
+  display_name?: string | null;
+  authn_source?: string | null;
+}
+
+export interface TeamRecipientRef {
+  kind: "host" | "member_run" | "agent_member" | string;
+  id: string;
 }
 
 /** Kind of a {@link TeamMessage} (open enum; rendered as a colored pill). */
@@ -467,7 +490,9 @@ export interface TeamMessage {
   id: string;
   team_run_id?: string;
   origin_wave_id?: string | null;
+  sender?: TeamActorRef | null;
   from_member_id?: string;
+  recipients?: TeamRecipientRef[];
   to_member_ids?: string[];
   kind?: TeamMessageKind | string;
   body?: string;
@@ -476,6 +501,40 @@ export interface TeamMessage {
   evidence_refs?: string[];
   deliveries?: TeamMessageDelivery[];
   created_at?: string;
+}
+
+export interface TeamSupervisorLease {
+  team_run_id: string;
+  supervisor_id: string;
+  generation: number;
+  owner_process_id: number;
+  owner_locator: string;
+  status: "active" | "released" | string;
+  acquired_unix_ms: number;
+  heartbeat_unix_ms: number;
+  expires_unix_ms: number;
+  released_unix_ms?: number | null;
+}
+
+export interface TeamMemberCloseRequest {
+  id: string;
+  team_run_id: string;
+  member_run_id: string;
+  requested_by: string;
+  reason: string;
+  status: "pending" | "applied" | string;
+  requested_at: string;
+  applied_at?: string | null;
+}
+
+export interface AgentMessageRoute {
+  id: string;
+  agent_message_id: string;
+  agent_member_id: string;
+  team_run_id: string;
+  member_run_id: string;
+  team_message_id: string;
+  routed_at: string;
 }
 
 /** One recorded action of a member run (tool call, progress note, …). */
@@ -548,7 +607,7 @@ export interface TeamRunEvent {
   id: string;
   seq?: number;
   team_run_id?: string;
-  source_kind?: "host" | "member" | "delegation" | string;
+  source_kind?: "host" | "member" | "delegation" | "operator" | "service" | string;
   member_run_id?: string | null;
   delegation_run_id?: string | null;
   entity_type?: string;
@@ -582,6 +641,9 @@ export interface DashboardSnapshot {
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
   team_messages?: TeamMessage[];
+  team_supervisor_leases?: TeamSupervisorLease[];
+  team_member_close_requests?: TeamMemberCloseRequest[];
+  agent_message_routes?: AgentMessageRoute[];
   member_actions?: MemberAction[];
   pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];

@@ -8,7 +8,8 @@ commands, file activity, native children, and resume state.
 
 ```text
 Harness coordination truth
-  assignment / delivery / pending interaction / control ack
+  assignment / typed mail / Supervisor / claim / provider receipt / ACK
+  pending interaction / stable Agent route / control acknowledgement
   explicit outcome / artifact / check / Host Wave decision
                      +
 NativeSessionRef
@@ -30,7 +31,9 @@ live state and is never replayed or evidence.
 | Question | Authoritative signal |
 | --- | --- |
 | Was work assigned? | Harness Assignment message and correlation |
-| Is a delivery attempt active? | latest `MessageDelivery.execution_status` |
+| Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
+| Who sent the input? | typed TeamMessage actor; bound Member context for Member authorship |
+| Is a delivery attempt active? | latest claim/provider-receipt/recipient-ACK projection |
 | Is the runtime executable? | `AgentRuntimeHealth` process, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
 | Is input or approval required? | Harness `PendingInteraction` |
@@ -45,6 +48,9 @@ and delivery probes; unknown or stale layers render amber.
 Durable Harness data:
 
 - runtime identity and health;
+- current Team Supervisor generation, owner locator/heartbeat, reconnect state,
+  typed Team actors, delivery claims/provider receipts/ACKs, and
+  `AgentMessageRoute`;
 - TeamRun `execution_root`, optional member `worktree_ref`, and the launch-time
   `workspace_snapshot` containing actual cwd, Git HEAD/branch, and only the
   instruction/skill directory paths Harness discovered relative to that cwd;
@@ -99,6 +105,12 @@ provider release triggers compatibility review when the observed version no
 longer matches the adapter profile. Unsupported controls remain visibly
 unsupported; adapters must not simulate acknowledgements.
 
+Persistent Team adapters also prove provider transport health before delivery
+claim, route cross-process controls through the current Supervisor generation,
+reattach the same native session after lease rollover, and latch explicit Close
+before teardown. An uncertain claim remains visible until reconciled; it is
+never replayed merely because a process restarted.
+
 ## Interaction routing
 
 Provider questions and permission requests cross a governance boundary and are
@@ -122,6 +134,10 @@ runtime; Resume must use the bound provider-native session. The Host can
 perform the same lifecycle operations through CLI, HTTP, MCP, and Dashboard
 application logic.
 
-The Team and Member views also expose the registered project/store roots from
-Workspace selection, TeamRun execution root, member worktree override, and
-actual launch snapshot without conflating any of them.
+Team and Member views show claim, provider receipt, recipient ACK, and semantic
+reply as distinct states. A stale/missing Supervisor disables live controls
+without hiding durable mail or changing Member status locally.
+
+The Team and Member views also expose the selected Execution Space, Project
+Binding root, TeamRun execution root, member worktree override, and actual
+launch snapshot without conflating any of them.

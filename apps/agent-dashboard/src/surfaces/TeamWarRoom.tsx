@@ -149,6 +149,17 @@ export function TeamWarRoom({
       (!navigationMission || item.mission_id === navigationMission.id),
   );
   const stableTeam = model.snapshot.teams?.find((item) => item.id === run.agent_team_id);
+  const supervisor = model.snapshot.team_supervisor_leases?.find(
+    (lease) => lease.team_run_id === run.id,
+  );
+  const supervisorCurrent = Boolean(
+    supervisor
+    && supervisor.status === "active"
+    && supervisor.expires_unix_ms > Date.now(),
+  );
+  const pendingCloseCount = model.snapshot.team_member_close_requests?.filter(
+    (request) => request.team_run_id === run.id && request.status === "pending",
+  ).length ?? 0;
   const orderedMembers = [...members].sort(
     (left, right) => memberPressureRank(left.status) - memberPressureRank(right.status),
   );
@@ -280,6 +291,9 @@ export function TeamWarRoom({
     if (!canSend) return;
     const descriptor = sendTeamMessage(run.id, {
       fromMemberId: "host",
+      senderKind: "operator",
+      senderId: "operator",
+      senderName: "Operator",
       toMemberIds: explicitRecipients,
       kind,
       body: draft.trim(),
@@ -326,6 +340,10 @@ export function TeamWarRoom({
               <Badge tone={teamTone(status)}>{status}</Badge>
               <Badge tone="muted">attempt {attemptNumber(attempts, run.id)}</Badge>
               <Badge tone="muted">Lead · {teamLeadLabel(stableTeam?.owner_agent_id)}</Badge>
+              <Badge tone={supervisorCurrent ? "good" : status === "running" ? "bad" : "muted"}>
+                Supervisor · {supervisorCurrent ? `live g${supervisor?.generation}` : "offline"}
+              </Badge>
+              {pendingCloseCount > 0 && <Badge tone="warn">Close pending · {pendingCloseCount}</Badge>}
               {navigationWave && <Badge tone={gateTone(navigationWave.gate_status)}>Host plan: Wave {navigationWave.index}</Badge>}
             </>
           }
@@ -891,7 +909,9 @@ function TeamMailboxStrip({
       <div className="flex snap-x gap-2 overflow-x-auto pb-1 xl:grid xl:grid-cols-5 xl:overflow-visible" data-testid="team-mailbox-strip">
         {participants.map((participant, index) => {
           const inbox = messages.filter((message) => (message.to_member_ids ?? []).includes(participant.id));
-          const outbox = messages.filter((message) => message.from_member_id === participant.id);
+          const outbox = messages.filter(
+            (message) => messageSenderParticipantId(message) === participant.id,
+          );
           const awaiting = inbox.filter((message) => message.deliveries?.some(
             (delivery) => delivery.member_id === participant.id && ["queued", "delivered"].includes(delivery.status ?? ""),
           )).length;
@@ -994,7 +1014,7 @@ function LeadInbox({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>
-                    <span className="text-[11px] font-semibold text-foreground">{memberLabel(members, message.from_member_id ?? "")}</span>
+                    <span className="text-[11px] font-semibold text-foreground">{teamMessageActorLabel(message, members)}</span>
                     <span className="text-[10px] text-muted-foreground">{formatTime(message.created_at)}</span>
                   </div>
                   <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-foreground/85">{message.body || "No message body"}</p>
@@ -1002,6 +1022,7 @@ function LeadInbox({
                     <span>correlation · {message.correlation_id ? shortId(message.correlation_id) : "missing"}</span>
                     <span>caused by · {message.causation_id ? shortId(message.causation_id) : "root message"}</span>
                     <span>delivery · {delivery?.policy ?? "unknown"} / {delivery?.status ?? "unknown"}</span>
+                    {delivery?.provider_receipt_id && <span className="text-status-good">provider receipt · {shortId(delivery.provider_receipt_id)}</span>}
                     {delivery?.status === "acknowledged" && <span className="text-status-good">ACK</span>}
                   </div>
                 </div>
@@ -1100,6 +1121,7 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
 
 function memberPressureRank(status?: string | null): number {
   if (["blocked", "failed"].includes(status ?? "")) return 0;
+  if (status === "disconnected") return 1;
   if (["waiting", "reviewing"].includes(status ?? "")) return 1;
   if (status === "running") return 2;
   if (status === "idle") return 3;
@@ -1241,9 +1263,12 @@ function toActivityItems(
     const actor = item.sourceMemberRunId ? memberLabel(members, item.sourceMemberRunId) : "Host";
     if (item.kind === "message") {
       const message = item.message;
+      const messageActor = teamMessageActorLabel(message, members);
       const recipients = (message.to_member_ids ?? []).map((id) => memberLabel(members, id)).join(", ") || "team";
       const evidenceRefs = message.evidence_refs ?? [];
-      const actorMember = message.from_member_id ? members.get(message.from_member_id) : undefined;
+      const actorMember = message.sender?.kind === "member_run" || !message.sender
+        ? (message.from_member_id ? members.get(message.from_member_id) : undefined)
+        : undefined;
       const deliverySummary = summarizeDeliveries(message);
       return {
         id: item.id,
@@ -1251,7 +1276,7 @@ function toActivityItems(
         glyph: teamMessageGlyph(message.kind, evidenceRefs.length > 0),
         title: (
           <span className="flex flex-wrap items-center gap-2">
-            <span>{actor} <span className="font-normal text-muted-foreground">to {recipients}</span></span>
+            <span>{messageActor} <span className="font-normal text-muted-foreground">to {recipients}</span></span>
             <Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>
             {deliverySummary && <span className="text-[10px] font-normal text-muted-foreground">{deliverySummary}</span>}
           </span>
@@ -1263,15 +1288,15 @@ function toActivityItems(
         timestamp: formatTime(message.created_at),
         evidenceRefs,
         tone: messageTone(message.kind),
-        actorAvatarName: actor,
+        actorAvatarName: messageActor,
         actorTone: actorMember ? memberTone(actorMember.status) : "info",
         onActorClick: actorMember ? () => onOpenMember(actorMember) : undefined,
         relatedMemberIds: [
           ...(message.from_member_id ? [message.from_member_id] : []),
           ...(message.to_member_ids ?? []),
         ],
-        rawText: `${message.kind ?? ""} ${message.body ?? ""} ${actor} ${recipients} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
-        actorLabel: actor,
+        rawText: `${message.kind ?? ""} ${message.body ?? ""} ${messageActor} ${recipients} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
+        actorLabel: messageActor,
         statusLabel: deliverySummary,
         messageKind: message.kind ?? "message",
         bodySource: message.body ?? undefined,
@@ -1333,6 +1358,18 @@ function latestActionTitle(actions: Array<{ member_run_id?: string; title?: stri
 function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string; body: unknown }): void | Promise<boolean> | undefined { return onAction?.(action.path, action.body); }
 function attemptNumber(attempts: Array<{ id: string }>, id: string): number { return Math.max(1, attempts.findIndex((attempt) => attempt.id === id) + 1); }
 function memberLabel(members: Map<string, MemberRun>, id: string): string { return id === "host" ? "Host" : members.get(id)?.name ?? id; }
+function teamMessageActorLabel(message: TeamMessage, members: Map<string, MemberRun>): string {
+  if (message.sender?.display_name) return message.sender.display_name;
+  if (message.sender?.kind === "operator") return "Operator";
+  if (message.sender?.kind === "service") return `Service · ${message.sender.id}`;
+  if (message.sender?.kind === "agent_member") return `Agent · ${message.sender.id}`;
+  return memberLabel(members, message.from_member_id ?? message.sender?.id ?? "host");
+}
+function messageSenderParticipantId(message: TeamMessage): string | undefined {
+  if (message.sender?.kind === "operator" || message.sender?.kind === "service") return undefined;
+  if (message.sender?.kind === "host") return "host";
+  return message.from_member_id;
+}
 function shortId(value: string): string { return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-5)}` : value; }
 function hostDelivery(message: TeamMessage) { return message.deliveries?.find((delivery) => delivery.member_id === "host"); }
 function hostDeliveryStatus(message: TeamMessage): string | undefined { return hostDelivery(message)?.status; }
@@ -1342,7 +1379,7 @@ function formatTime(value?: string | null): string { if (!value) return "—"; c
 function relativeTime(value?: string | null): string { const ms = timestamp(value); if (!ms) return "no update"; const delta = Math.max(0, Date.now() - ms); if (delta < 60_000) return "just now"; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`; return `${Math.floor(delta / 86_400_000)}d ago`; }
 function pressureLabel(status?: string | null): string { if (["blocked", "failed"].includes(status ?? "")) return "blocked"; if (["waiting", "reviewing"].includes(status ?? "")) return "waiting"; if (status === "running") return "active"; return status ?? "idle"; }
 function teamTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (status === "planning") return "info"; return "idle"; }
-function memberTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["blocked", "failed", "stopped"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (["queued", "starting"].includes(status ?? "")) return "info"; return "idle"; }
+function memberTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["blocked", "failed", "stopped"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing", "disconnected"].includes(status ?? "")) return "warn"; if (["queued", "starting"].includes(status ?? "")) return "info"; return "idle"; }
 function waveTone(status?: string | null): StatusTone { if (status === "completed") return "good"; if (["blocked", "failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting"].includes(status ?? "")) return "warn"; if (status === "running") return "running"; return "info"; }
 function gateTone(status?: string | null): StatusTone { if (status === "accepted") return "good"; if (status === "blocked") return "bad"; if (status === "revise") return "warn"; return "decision"; }
 function messageTone(kind?: string | null): StatusTone { if (kind === "blocker") return "bad"; if (["review_request", "plan_feedback"].includes(kind ?? "")) return "warn"; if (["review_result", "answer", "plan_approval"].includes(kind ?? "")) return "good"; if (["handoff", "question", "plan_proposal"].includes(kind ?? "")) return "decision"; if (kind === "progress") return "running"; if (["assignment", "broadcast", "plan_request"].includes(kind ?? "")) return "info"; return "idle"; }

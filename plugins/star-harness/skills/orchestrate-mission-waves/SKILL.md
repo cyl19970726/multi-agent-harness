@@ -28,6 +28,7 @@ Host = goal, boundaries, lane ownership, conflicts, acceptance
 Member = autonomous end-to-end lane owner
 Harness = identity, mailbox, correlation, delivery facts, evidence refs
 Provider = native session, tools, subagents, execution, resume
+Supervisor = the one durable control owner for a TeamRun's native sessions
 ```
 
 If the Host can express an action clearly in an Assignment or message, prefer
@@ -178,10 +179,11 @@ harness team-run bind-host --id <run> --surface <provider-surface> \
 ```
 
 The Star Harness Plugin injects a bounded `Needs you` summary at supported
-SessionStart and user-prompt boundaries. For Codex, a `Stop` hook may continue
-the same native task once when actionable mail arrived while the Host was busy.
-It never interrupts the middle of a turn, never loops after
-`stop_hook_active`, and never scans another native task's Inbox.
+SessionStart and user-prompt boundaries. Codex and Claude Stop hooks use their
+reviewed structured continuation response; Kimi uses its reviewed blocking
+exit contract. Each may continue the same native task once when actionable mail
+arrived while the Host was busy. No hook interrupts the middle of a turn, loops
+after `stop_hook_active`, scans another native task's Inbox, or marks mail read.
 
 Treat hook context as orientation, not mailbox truth: read the canonical Inbox
 before acting. No hook may silently ACK, answer, or accept. If a Desktop/CLI
@@ -211,10 +213,18 @@ use `team_run_close_member` to end the Member runtime. A resumed Member is
 created or added with an explicit provider-owned native session id. Turn
 completion and Handoff return an unclosed Member to `idle`; later Host or peer
 mail wakes that same MemberRun/session. Wave, TeamRun, and Mission completion
-never imply Close. Live controls must go through the Host process currently
-supervising the run. After a Host restart, start the TeamRun again to reattach
-unclosed Members to their recorded native sessions; already delivered
-Assignments are not replayed.
+never imply Close.
+
+One durable Supervisor lease owns every live control and message-delivery claim
+for the TeamRun. `team-run status` must show a current lease before the Host
+claims a live control is available. Controls from another Dashboard, MCP, CLI,
+or Harness process route through the current lease locator to the owning
+Supervisor; that owner fences id, generation, status, and expiry again
+immediately before the Provider operation. After a process crash, start the
+TeamRun again to acquire the next generation and reattach unclosed Members to
+their recorded native sessions. A delivery left `claimed` is uncertain:
+inspect the provider-native record and explicitly reconcile it with a provider
+receipt or return it to `queued`. Never auto-replay it.
 
 ## Write Useful Context
 
@@ -309,8 +319,21 @@ harness member-run show --id <member-run-id> --json
 ```
 
 `member-run show` explains one Member's assignment, mailbox, latest action,
-native-session binding, handoff, and runtime facts. It does not mirror the
-provider transcript.
+native-session binding, stable Agent Inbox routes, Supervisor, handoff, and
+runtime facts. It does not mirror the provider transcript.
+
+When a reusable Team member has `MemberRun.agent_member_id`, external messages
+may first enter that stable Agent identity Inbox. Harness atomically routes the
+source Message into one concrete active MemberRun:
+
+```bash
+harness agent route-inbox --id <agent-member-id> \
+  --member-run-id <member-run-id> --json
+```
+
+If exactly one eligible runtime exists, `--member-run-id` may be omitted.
+Several active runtimes require explicit selection. The source Message remains
+identity-level truth; the resulting TeamMessage owns provider delivery.
 
 ## Use Messages Deliberately
 
@@ -328,8 +351,14 @@ inside ordinary messages, not additional lifecycle states. Historical
 specialized kinds remain readable but are read-only on new public writes.
 
 Provider-pausing questions and approvals are
-`PendingInteraction`, not ordinary chat. Unsupported live Steer becomes a
-clearly labeled queued next-round message; never fabricate a control ACK.
+`PendingInteraction`, not ordinary chat. If live Steer is unsupported, reject
+the Steer action. The Host may then deliberately send an ordinary queued
+Message for the next round; never silently convert one operation into the
+other or fabricate a control ACK.
+
+An unbound MCP connection may author only as the bound Host, an Operator, or a
+Service. It may not select `member_run` or `agent_member` by supplying an id.
+Member-originated mail comes from that member's bound Provider runtime.
 
 ## Debate A Member Plan
 
@@ -414,6 +443,10 @@ Before claiming completion, verify that another Host can reconstruct:
 - linked Agent Teams and member composition changes;
 - assignment correlation, blockers, handoffs, and Host answers;
 - unchanged native session bindings for carried work;
+- one current Supervisor generation and reconciled delivery claims;
+- typed Host, MemberRun, AgentMember, Operator, and Service authorship;
+- stable Agent Inbox routes where an external message entered by durable
+  identity;
 - explicit Wave advance outcomes and useful artifacts/checks; and
 - explicit Mission closeout without team deletion.
 

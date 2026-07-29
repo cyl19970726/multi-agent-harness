@@ -85,7 +85,7 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
           <div className="grid gap-3 lg:grid-cols-2">
             {attempts.map(({ run, team, mission, legacyWave, members }) => {
               const tone = runTone(run.status);
-              const pressure = members.filter((member) => ["blocked", "failed", "waiting", "reviewing"].includes(member.status ?? ""));
+              const pressure = members.filter((member) => ["blocked", "failed", "waiting", "reviewing", "disconnected"].includes(member.status ?? ""));
               return (
                 <button
                   key={run.id}
@@ -162,7 +162,7 @@ function runTone(status?: string | null): StatusTone {
   if (status === "running") return "running";
   if (status === "completed") return "good";
   if (["failed", "cancelled"].includes(status ?? "")) return "bad";
-  if (["waiting", "reviewing"].includes(status ?? "")) return "warn";
+  if (["waiting", "reviewing", "disconnected"].includes(status ?? "")) return "warn";
   if (status === "planning") return "info";
   return "idle";
 }
@@ -171,7 +171,7 @@ function memberTone(status?: string | null): StatusTone {
   if (status === "running") return "running";
   if (status === "completed") return "good";
   if (["blocked", "failed"].includes(status ?? "")) return "bad";
-  if (["waiting", "reviewing"].includes(status ?? "")) return "warn";
+  if (["waiting", "reviewing", "disconnected"].includes(status ?? "")) return "warn";
   return "idle";
 }
 

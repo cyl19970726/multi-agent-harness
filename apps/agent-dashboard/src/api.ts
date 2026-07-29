@@ -13,6 +13,9 @@ import type {
   PendingInteraction,
   Project,
   TeamMessage,
+  TeamMemberCloseRequest,
+  TeamSupervisorLease,
+  AgentMessageRoute,
   TeamRun,
   TeamRunEvent,
   Wave,
@@ -316,6 +319,9 @@ export type SseFrame =
   | { kind: "agent_team_run"; run: TeamRun }
   | { kind: "member_run"; member: MemberRun }
   | { kind: "team_message"; message: TeamMessage }
+  | { kind: "team_supervisor_lease"; lease: TeamSupervisorLease }
+  | { kind: "team_member_close_request"; request: TeamMemberCloseRequest }
+  | { kind: "agent_message_route"; route: AgentMessageRoute }
   | { kind: "member_action"; action: MemberAction }
   | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
@@ -403,6 +409,18 @@ export function openEventStream(
   source.addEventListener("team_message", (event) => {
     const data = parse<TeamMessage>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "team_message", message: data });
+  });
+  source.addEventListener("team_supervisor_lease", (event) => {
+    const data = parse<TeamSupervisorLease>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "team_supervisor_lease", lease: data });
+  });
+  source.addEventListener("team_member_close_request", (event) => {
+    const data = parse<TeamMemberCloseRequest>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "team_member_close_request", request: data });
+  });
+  source.addEventListener("agent_message_route", (event) => {
+    const data = parse<AgentMessageRoute>(event as MessageEvent);
+    if (data) handlers.onFrame({ kind: "agent_message_route", route: data });
   });
   source.addEventListener("member_action", (event) => {
     const data = parse<MemberAction>(event as MessageEvent);
@@ -493,6 +511,32 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       return {
         ...snapshot,
         team_messages: upsertById(snapshot.team_messages, frame.message),
+        generated_at: new Date().toISOString(),
+      };
+    case "team_supervisor_lease":
+      return {
+        ...snapshot,
+        team_supervisor_leases: upsertByKey(
+          snapshot.team_supervisor_leases,
+          frame.lease,
+          "team_run_id",
+        ),
+        generated_at: new Date().toISOString(),
+      };
+    case "team_member_close_request":
+      return {
+        ...snapshot,
+        team_member_close_requests: upsertByKey(
+          snapshot.team_member_close_requests,
+          frame.request,
+          "member_run_id",
+        ),
+        generated_at: new Date().toISOString(),
+      };
+    case "agent_message_route":
+      return {
+        ...snapshot,
+        agent_message_routes: upsertById(snapshot.agent_message_routes, frame.route),
         generated_at: new Date().toISOString(),
       };
     case "member_action":
@@ -715,6 +759,19 @@ function upsertById<T extends { id: string }>(list: T[] | undefined, incoming: T
   if (index === -1) {
     return [...current, incoming];
   }
+  const next = current.slice();
+  next[index] = incoming;
+  return next;
+}
+
+function upsertByKey<T, K extends keyof T>(
+  list: T[] | undefined,
+  incoming: T,
+  key: K,
+): T[] {
+  const current = list ?? [];
+  const index = current.findIndex((item) => item[key] === incoming[key]);
+  if (index < 0) return [...current, incoming];
   const next = current.slice();
   next[index] = incoming;
   return next;

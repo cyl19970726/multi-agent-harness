@@ -50,7 +50,9 @@ open_questions:
 
 The current product direction is Mission context -> ordered Host-plan Waves,
 with independent Agent Teams linked at Mission scope, owned by
-[ADR 0034](../../decisions/0034-host-plan-waves-and-mission-teams.md). The
+[ADR 0034](../../decisions/0034-host-plan-waves-and-mission-teams.md), while
+durable Team control and typed mail are owned by
+[ADR 0044](../../decisions/0044-durable-team-supervision-and-typed-mail.md). The
 implemented primary pages are the Mission/Wave Canvas and Agent Team War Room. Historical
 Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
 define the new information architecture.

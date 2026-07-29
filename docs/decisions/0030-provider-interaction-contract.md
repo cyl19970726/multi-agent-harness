@@ -9,6 +9,12 @@ Amended by ADR
 is durable Harness state, while provider tool/event activity remains solely in
 the native provider session.
 
+Amended by ADR
+[0044](0044-durable-team-supervision-and-typed-mail.md): the current Team
+Supervisor generation owns live provider transports and interaction controls;
+typed actor provenance and generation fencing apply to every CLI/HTTP/MCP/UI
+resolution.
+
 ## Context
 
 Codex, Kimi, Claude, and future providers expose different capabilities in

@@ -10,6 +10,9 @@
 | Member run | [member-run.schema.json](member-run.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](team-message.schema.json) |
+| Team Supervisor lease | [team-supervisor-lease.schema.json](team-supervisor-lease.schema.json) |
+| Durable Member Close | [team-member-close-request.schema.json](team-member-close-request.schema.json) |
+| Agent Inbox runtime route | [agent-message-route.schema.json](agent-message-route.schema.json) |
 | Member action | [member-action.schema.json](member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |

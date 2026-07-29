@@ -173,7 +173,9 @@ It is not a standing organization and is not owned by one Wave.
 | --- | --- | --- |
 | `AgentTeamRun` | One standalone or Mission-scoped team execution. | May span Waves; every terminal run remains read-only history. |
 | `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
-| `TeamMessage` | Run-scoped communication envelope with delivery records. | Assignment, handoff, blocker, review, and control messages live here. |
+| `TeamMessage` | Run-scoped typed communication envelope with delivery records. | Assignment, question, answer, progress, blocker, handoff, review, and ordinary messages live here; it is not a fake live-control protocol. |
+| `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Owns provider transports, delivery claims, reconnect, and real Steer/Interrupt/Close routing; it is not a provider transcript. |
+| `AgentMessageRoute` | Stable bridge from a reusable Agent Inbox message to one active MemberRun/TeamMessage. | Makes external Agent-addressed mail explicit and idempotent without collapsing Agent identity into MemberRun identity. |
 | `MemberAction` | Transitional Harness action row. Target use is limited to Harness-owned coordination/control facts. | Provider tool, command, file, chat, turn, and reasoning streams stay solely in the native provider session. |
 | `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
 | `TeamRunEvent` | Transitional ordered event projection for Harness-owned run lifecycle. | It must not become a mirror of provider-native activity. |
@@ -183,6 +185,12 @@ Relationship rules:
 - a Mission may link multiple independent teams and create multiple TeamRuns;
 - ownership is explained by `TeamMessage(kind=assignment)` plus
   `correlation_id`;
+- every message carries typed sender and recipient provenance; UI or MCP callers
+  cannot impersonate a Member unless they are explicitly bound to that
+  MemberRun;
+- the current Supervisor atomically claims delivery only after its provider
+  transport is healthy, records the native receipt, and preserves recipient
+  ACK as a separate idempotent state;
 - `TeamMessage`, explicit outcomes, and Harness control facts may reference
   artifacts or `Evidence`; the
   Host Wave advance needs an explicit outcome but does not require

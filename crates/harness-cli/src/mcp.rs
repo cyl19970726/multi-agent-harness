@@ -19,20 +19,23 @@ use std::{
     time::Duration,
 };
 
-use harness_core::{TeamRunEvent, TeamRunStatus, WaveStatus};
+use harness_core::{
+    TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus,
+};
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
     acknowledge_team_message, add_team_run_member, advance_wave, close_mission,
-    close_team_member_value, create_mission, create_team_run, create_wave,
+    close_team_member_value, create_mission, create_team_run, create_wave, current_unix_ms_u64,
     deactivate_team_run_member, drive_prepared_team_run, gate_wave,
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_message_kind, parse_wave_executor_kind, prepare_team_run_start,
-    rename_team_run_member, resolve_pending_interaction_value, revise_mission_context,
-    revise_mission_team_link, revise_wave, send_team_message, steer_team_member_value,
+    parse_team_actor_kind, parse_team_message_kind, parse_wave_executor_kind,
+    prepare_team_run_start, reconcile_team_message_delivery_value, rename_team_run_member,
+    resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
+    revise_wave, route_agent_inbox_messages, send_team_message_as, steer_team_member_value,
     team_member_specs_from_definition, team_run_inbox, team_run_wave_index, transition_team_run,
     visible_member_actions_in_append_order, ResolvedStore, TeamMemberSpec,
 };
@@ -186,6 +189,8 @@ fn call_tool(
         "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
+        "team_run_reconcile_delivery" => tool_team_run_reconcile_delivery(store, &arguments),
+        "agent_route_inbox" => tool_agent_route_inbox(store, &arguments),
         "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
@@ -729,12 +734,23 @@ fn tool_team_run_status(
         .filter(|message| message.team_run_id == id)
         .filter(|message| has_actionable_delivered_manual_ack(message))
         .count();
+    let supervisor = store
+        .latest_team_supervisor_lease(id)
+        .map_err(|error| error.to_string())?;
+    let supervisor_current = supervisor.as_ref().is_some_and(|lease| {
+        lease.status == TeamSupervisorLeaseStatus::Active
+            && lease.expires_unix_ms > current_unix_ms_u64()
+    });
     Ok(json!({
         "team_run": run,
         "wave_index": wave_index,
         "members": members,
         "pending_interactions": pending_interactions,
         "unacked_messages": unacked_messages,
+        "supervisor": {
+            "lease": supervisor,
+            "current": supervisor_current,
+        },
         "dashboard_url": team_dashboard_url(store, resolved, id),
     }))
 }
@@ -766,10 +782,38 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         .get("causation_id")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let message = send_team_message(
+    let sender_kind = optional_str(arguments, "sender_kind")?.unwrap_or_else(|| {
+        if from_member_id == "host" {
+            "host".to_string()
+        } else {
+            "member_run".to_string()
+        }
+    });
+    let sender_kind = parse_team_actor_kind(&sender_kind).map_err(|error| error.to_string())?;
+    if matches!(
+        sender_kind,
+        TeamActorKind::MemberRun | TeamActorKind::AgentMember
+    ) {
+        return Err(
+            "unbound MCP connections may not author MemberRun or AgentMember messages; \
+             member-originated messages must come from that member's bound provider runtime"
+                .to_string(),
+        );
+    }
+    if sender_kind == TeamActorKind::Host && from_member_id != "host" {
+        return Err("sender_kind=host requires from_member_id=host".to_string());
+    }
+    let sender_id =
+        optional_str(arguments, "sender_id")?.unwrap_or_else(|| from_member_id.to_string());
+    let message = send_team_message_as(
         store,
         team_run_id,
-        from_member_id,
+        TeamActorRef {
+            kind: sender_kind,
+            id: sender_id,
+            display_name: optional_str(arguments, "sender_name")?,
+            authn_source: Some("mcp".to_string()),
+        },
         to_member_ids,
         kind,
         body,
@@ -782,6 +826,30 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         "message_id": message.id,
         "correlation_id": message.correlation_id,
     }))
+}
+
+fn tool_team_run_reconcile_delivery(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    reconcile_team_message_delivery_value(
+        store,
+        required_str(arguments, "team_run_id")?,
+        required_str(arguments, "message_id")?,
+        arguments,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn tool_agent_route_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let routes = route_agent_inbox_messages(
+        store,
+        required_str(arguments, "agent_member_id")?,
+        optional_str(arguments, "member_run_id")?.as_deref(),
+        optional_str(arguments, "message_id")?.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(json!({"routes": routes}))
 }
 
 /// `team_run_inbox` — latest-wins coordination mail addressed to one member.
@@ -1142,12 +1210,15 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_send_message",
-            "description": "Route one message inside a team run and fold it into the run's event log. `from_member_id` may be a member run id or the reserved sender `host`. Omit lineage fields for a fresh opaque correlation; to reuse an assignment's ownership correlation, pass that assignment's `correlation_id` (and optionally its message id as `causation_id`). Returns the new message id and its correlation id.",
+            "description": "Route one typed message inside a team run and fold it into the run's event log. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a MemberRun. Omit lineage fields for a fresh opaque correlation; to reuse an assignment's ownership correlation, pass that assignment's `correlation_id` (and optionally its message id as `causation_id`). Returns the new message id and its correlation id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
-                    "from_member_id": {"type": "string", "description": "Sender: a member run id, or `host`."},
+                    "from_member_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
+                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author MemberRun or AgentMember messages; those originate from the bound provider runtime."},
+                    "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to from_member_id."},
+                    "sender_name": {"type": "string"},
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
                     "kind": {"type": "string", "enum": ["assignment", "message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Other historical labels are read-only."},
                     "body": {"type": "string"},
@@ -1156,6 +1227,37 @@ fn tool_definitions() -> Value {
                     ,"origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
+            }
+        },
+        {
+            "name": "team_run_reconcile_delivery",
+            "description": "Resolve one TeamMessage delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "message_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "claim_id": {"type": "string"},
+                    "provider_accepted": {"type": "boolean"},
+                    "provider_receipt_id": {"type": "string"},
+                    "requeue": {"type": "boolean"},
+                    "reason": {"type": "string", "minLength": 1}
+                },
+                "required": ["team_run_id", "message_id", "member_run_id", "claim_id", "reason"]
+            }
+        },
+        {
+            "name": "agent_route_inbox",
+            "description": "Atomically route queued mail from a durable AgentMember identity Inbox into one concrete linked MemberRun. If exactly one active runtime exists it is selected; otherwise member_run_id is required. The source Message remains identity truth and the resulting TeamMessage owns runtime delivery.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_member_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "message_id": {"type": "string"}
+                },
+                "required": ["agent_member_id"]
             }
         },
         {

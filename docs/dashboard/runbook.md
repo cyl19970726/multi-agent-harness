@@ -44,7 +44,7 @@ The execution Workbench uses these native safe-action families:
 ```text
 POST /v1/missions
 POST /v1/missions/{id}/context
-POST /v1/missions/{id}/teams/link
+POST /v1/missions/{id}/link-team
 POST /v1/missions/{id}/close
 POST /v1/waves
 POST /v1/waves/{id}/context
@@ -54,6 +54,10 @@ POST /v1/team-runs
 POST /v1/team-runs/{id}/start
 POST /v1/team-runs/{id}/messages
 POST /v1/team-runs/{id}/messages/{message_id}/ack
+POST /v1/team-runs/{id}/messages/{message_id}/reconcile-delivery
+POST /v1/team-runs/{id}/members/{member_run_id}/steer
+POST /v1/team-runs/{id}/members/{member_run_id}/interrupt
+POST /v1/team-runs/{id}/members/{member_run_id}/close
 POST /v1/team-runs/{id}/transition
 ```
 
@@ -85,7 +89,8 @@ The current execution surfaces show:
 - Agent Teams: independent and Mission-scoped long-lived runs, including
   historical direct-Wave compatibility rows;
 - Team War Room: member presence, assignments, unified activity, messages,
-  ACK, start, and attempt lifecycle;
+  typed authors/recipients, claim/provider receipt/ACK, current Supervisor,
+  reconnect state, start, and attempt lifecycle;
 - MemberRuns: run-scoped member detail;
 - Workflows: WorkflowRun/WorkflowStep, result, artifacts, and diagnostics;
 - the raw snapshot, read-only, behind the Debug boundary.
@@ -93,3 +98,9 @@ The current execution surfaces show:
 Company OS surfaces share the shell and expose Home, Docs, Work,
 Organization, Approvals, Finance, and Governance from either authoritative
 store projections or an explicitly labelled prototype fixture.
+
+If the current service does not own a live Team's process handles, the
+Workbench still shows durable state and routes real controls through the
+current `TeamSupervisorLease.owner_locator`. A missing or stale Supervisor
+disables Steer/Interrupt/Close with an explicit reason; the UI never changes
+status locally to imply provider work stopped.

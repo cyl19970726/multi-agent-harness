@@ -1,13 +1,16 @@
 //! Integration coverage for `harness mcp`: the binary is spawned as a stdio
 //! MCP server against an isolated HOME and driven with line-delimited
-//! JSON-RPC 2.0 — initialize handshake, tools/list, the five Agent Team v0
-//! tools end to end (create → start/status → send/ACK → events), and the -32601
-//! unknown-method error.
+//! JSON-RPC 2.0 — initialize handshake, tools/list, the Agent Team control
+//! surface end to end (create → start/status → route/reconcile → send/ACK →
+//! events), and the -32601 unknown-method error.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use harness_core::{TeamDeliveryPolicy, TeamDeliveryStatus};
+use harness_core::{
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
+    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef,
+};
 use harness_store::HarnessStore;
 
 mod fake_provider;
@@ -120,6 +123,33 @@ fn call_payload(response: &serde_json::Value) -> serde_json::Value {
 fn mcp_stdio_agent_team_tools() {
     let home = TempHome::new("mcp-stdio");
     let project_id = init_project(&home, "mcp-proj");
+    let project_root =
+        std::fs::canonicalize(home.base().join("mcp-proj")).expect("canonical project root");
+    let stable_agent = run_harness(
+        &home,
+        &project_root,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "stable-lead",
+            "--role",
+            "coordinator",
+            "--provider",
+            "kimi",
+        ],
+    );
+    assert!(
+        stable_agent.status.success(),
+        "create stable Agent failed: {}",
+        String::from_utf8_lossy(&stable_agent.stderr)
+    );
+    let stable_agent: serde_json::Value =
+        serde_json::from_slice(&stable_agent.stdout).expect("stable Agent JSON");
+    let stable_agent_id = stable_agent["id"]
+        .as_str()
+        .expect("stable Agent id")
+        .to_string();
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let mut mcp = McpClient::spawn(
@@ -188,6 +218,8 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_host_inbox",
             "team_run_inbox",
             "team_run_send_message",
+            "team_run_reconcile_delivery",
+            "agent_route_inbox",
             "team_run_resolve_interaction",
             "team_run_steer_member",
             "team_run_interrupt_member",
@@ -254,8 +286,6 @@ fn mcp_stdio_agent_team_tools() {
 
     // 3. Native Mission + Wave creation through MCP (the same helpers as CLI
     // and HTTP) supplies the outer identity for the TeamRun.
-    let project_root =
-        std::fs::canonicalize(home.base().join("mcp-proj")).expect("canonical project root");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -297,7 +327,7 @@ fn mcp_stdio_agent_team_tools() {
                 "host_surface": "codex-app",
                 "host_thread_id": "codex-host-mcp",
                 "members": [
-                    {"name": "lead", "role": "coordinator", "provider": "kimi"},
+                    {"name": "lead", "role": "coordinator", "provider": "kimi", "agent_member_id": stable_agent_id},
                     {"name": "worker-1", "role": "implementer", "provider": "codex", "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a", "docs"]}
                 ]
             }
@@ -342,7 +372,6 @@ fn mcp_stdio_agent_team_tools() {
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
     );
-
     // A Mission-scoped long-lived TeamRun has no runtime-owned Wave id, but
     // its fresh Dashboard URL still carries the Host's current Wave as
     // navigation context.
@@ -464,8 +493,55 @@ fn mcp_stdio_agent_team_tools() {
         Some(expected_dashboard.as_str())
     );
 
-    // 7. team_run_send_message can immediately reuse the automatic Assignment
-    // returned by team_run_create; the Host never needs a second fake anchor.
+    // 7. Stable Agent Inbox mail is routed atomically into its one eligible
+    // MemberRun without changing the source identity or inventing a second
+    // runtime.
+    let stable_message = run_harness(
+        &home,
+        &project_root,
+        &[
+            "agent",
+            "send",
+            "--to",
+            &stable_agent_id,
+            "--from",
+            "external-reviewer",
+            "--content",
+            "Please include the native receipt in the review.",
+        ],
+    );
+    assert!(
+        stable_message.status.success(),
+        "queue stable Agent mail failed: {}",
+        String::from_utf8_lossy(&stable_message.stderr)
+    );
+    let stable_message: serde_json::Value =
+        serde_json::from_slice(&stable_message.stdout).expect("stable message JSON");
+    let stable_message_id = stable_message["id"].as_str().expect("stable message id");
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "agent_route_inbox",
+            "arguments": {
+                "agent_member_id": stable_agent_id,
+                "message_id": stable_message_id
+            }
+        }),
+    );
+    let routed = call_payload(&response);
+    assert_eq!(routed["routes"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        routed["routes"][0]["member_run_id"].as_str(),
+        Some(member_ids[0].as_str())
+    );
+    assert_eq!(
+        routed["routes"][0]["agent_message_id"].as_str(),
+        Some(stable_message_id)
+    );
+
+    // 8. An unbound MCP connection cannot impersonate a MemberRun. The same
+    // tool remains the Host/operator/service send path and can immediately
+    // reuse the automatic Assignment correlation returned by team_run_create.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -473,9 +549,31 @@ fn mcp_stdio_agent_team_tools() {
             "arguments": {
                 "team_run_id": team_run_id,
                 "from_member_id": member_ids[0],
+                "sender_kind": "member_run",
                 "to_member_ids": [member_ids[1]],
                 "kind": "handoff",
-                "body": "handing off the slice",
+                "body": "attempted member impersonation",
+                "correlation_id": assignment_correlation.clone(),
+                "causation_id": assignment_id.clone()
+            }
+        }),
+    );
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("impersonation error")
+        .contains("unbound MCP connections may not author"));
+
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": "host",
+                "to_member_ids": [member_ids[1]],
+                "kind": "message",
+                "body": "Host coordination for the assigned slice",
                 "correlation_id": assignment_correlation.clone(),
                 "causation_id": assignment_id.clone()
             }
@@ -493,7 +591,47 @@ fn mcp_stdio_agent_team_tools() {
         "correlation id: {payload}"
     );
 
-    // 8. team_run_inbox reads the same latest-wins coordination projection.
+    // An ambiguous crash leaves a claim. MCP reconciliation requires the exact
+    // claim id and an explicit operator choice; here the audited choice is to
+    // requeue, so the normal inbox remains actionable exactly once.
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let mut claimed_message = store
+        .team_messages()
+        .expect("team messages")
+        .into_iter()
+        .rev()
+        .find(|message| message.id == message_id)
+        .expect("Host coordination row");
+    claimed_message.deliveries[0].status = TeamDeliveryStatus::Claimed;
+    claimed_message.deliveries[0].claim_id = Some("claim-mcp-crash".into());
+    claimed_message.deliveries[0].claimed_by_supervisor_id = Some("supervisor-dead".into());
+    claimed_message.deliveries[0].claimed_generation = Some(1);
+    claimed_message.deliveries[0].claimed_unix_ms = Some(1);
+    claimed_message.deliveries[0].claim_expires_unix_ms = Some(2);
+    store
+        .append_team_message(&claimed_message)
+        .expect("persist uncertain claim");
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_reconcile_delivery",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "message_id": message_id,
+                "member_run_id": member_ids[1],
+                "claim_id": "claim-mcp-crash",
+                "requeue": true,
+                "reason": "fake provider confirms the request was never consumed"
+            }
+        }),
+    );
+    let reconciled = call_payload(&response);
+    assert_eq!(
+        reconciled["deliveries"][0]["status"].as_str(),
+        Some("queued")
+    );
+
+    // 9. team_run_inbox reads the same latest-wins coordination projection.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -510,28 +648,50 @@ fn mcp_stdio_agent_team_tools() {
         inbox
             .iter()
             .any(|message| message["id"].as_str() == Some(message_id.as_str())),
-        "peer handoff must be actionable in MCP inbox: {payload}"
+        "Host coordination must be actionable in MCP inbox: {payload}"
     );
 
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "team_run_send_message",
-            "arguments": {
-                "team_run_id": team_run_id,
-                "from_member_id": member_ids[0],
-                "to_member_ids": ["host"],
-                "kind": "message",
-                "body": "QUESTION: choose interface A or B",
-                "correlation_id": assignment_correlation.clone(),
-                "causation_id": assignment_id
-            }
-        }),
-    );
-    let host_message = call_payload(&response)["message_id"]
-        .as_str()
-        .expect("Host message id")
-        .to_string();
+    // A trusted provider runtime persists Member-originated mail with its bound
+    // identity. It then appears in the Host-native inbox exposed by MCP.
+    let host_message = "tmsg-provider-bound-question".to_string();
+    store
+        .append_team_message(&TeamMessage {
+            id: host_message.clone(),
+            team_run_id: team_run_id.clone(),
+            origin_wave_id: None,
+            sender: Some(TeamActorRef {
+                kind: TeamActorKind::MemberRun,
+                id: member_ids[0].clone(),
+                display_name: Some("Provider-bound member".to_string()),
+                authn_source: Some("provider_runtime_test".to_string()),
+            }),
+            from_member_id: member_ids[0].clone(),
+            recipients: vec![TeamRecipientRef {
+                kind: TeamRecipientKind::Host,
+                id: "host".to_string(),
+            }],
+            to_member_ids: vec!["host".to_string()],
+            kind: TeamMessageKind::Message,
+            body: "QUESTION: choose interface A or B".to_string(),
+            correlation_id: assignment_correlation.clone(),
+            causation_id: Some(assignment_id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".to_string(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                updated_at: "2026-07-29T00:00:00Z".to_string(),
+            }],
+            created_at: "2026-07-29T00:00:00Z".to_string(),
+        })
+        .expect("persist provider-bound Host question");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -575,7 +735,7 @@ fn mcp_stdio_agent_team_tools() {
         "Host intake ACK remains separate from the message's semantic answer"
     );
 
-    // 9. team_run_events → strictly increasing seq, and the send above is
+    // 10. team_run_events → strictly increasing seq, and the send above is
     //    journaled as a message/created event. after_seq resumes the tail.
     let response = mcp.request(
         "tools/call",
@@ -616,7 +776,7 @@ fn mcp_stdio_agent_team_tools() {
     let payload = call_payload(&response);
     assert_eq!(payload.as_array().expect("events array").len(), 0);
 
-    // 10. ACK refuses a message that has not actually been delivered.
+    // 11. ACK refuses a message that has not actually been delivered.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -633,7 +793,6 @@ fn mcp_stdio_agent_team_tools() {
     // Simulate the provider delivery boundary, then prove ACK persists and
     // appears in the run event stream. The provider-specific start tests own
     // actual delivery; this test owns the Host-facing MCP contract.
-    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let mut delivered_assignment = store
         .team_messages()
         .expect("team messages")
@@ -677,6 +836,18 @@ fn mcp_stdio_agent_team_tools() {
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
+            "name": "team_message_acknowledge",
+            "arguments": {"message_id": assignment_id, "member_id": member_ids[0]}
+        }),
+    );
+    assert_eq!(
+        call_payload(&response)["message"]["deliveries"][0]["status"].as_str(),
+        Some("acknowledged"),
+        "repeated MCP ACK remains state-idempotent"
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
             "name": "team_run_status",
             "arguments": {"team_run_id": team_run_id}
         }),
@@ -694,19 +865,24 @@ fn mcp_stdio_agent_team_tools() {
         }),
     );
     let payload = call_payload(&response);
-    assert!(payload
+    let ack_events = payload
         .as_array()
         .expect("events array")
         .iter()
-        .any(|event| {
+        .filter(|event| {
             event["entity_id"].as_str() == Some(assignment_id.as_str())
                 && event["operation"].as_str() == Some("updated")
                 && event["summary"]
                     .as_str()
                     .is_some_and(|summary| summary.contains("acknowledged"))
-        }));
+        })
+        .count();
+    assert_eq!(
+        ack_events, 1,
+        "repeated MCP ACK must emit exactly one acknowledgement event"
+    );
 
-    // 10. A planning run can be cancelled through MCP using the same guarded
+    // 12. A planning run can be cancelled through MCP using the same guarded
     // transition helper as CLI and HTTP.
     let response = mcp.request(
         "tools/call",
@@ -722,7 +898,7 @@ fn mcp_stdio_agent_team_tools() {
         Some(expected_dashboard.as_str())
     );
 
-    // 11. MCP start is asynchronous: it immediately returns the reserved
+    // 13. MCP start is asynchronous: it immediately returns the reserved
     // running projection and exact URL, then the provider completes one turn
     // in the background while the same Host session remains responsive. Turn
     // completion returns the Member to idle; it does not complete the TeamRun.
@@ -847,7 +1023,7 @@ fn mcp_stdio_agent_team_tools() {
         Some("all intent satisfied")
     );
 
-    // 12. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
+    // 14. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
     //    tool call → isError:true with the reason as text.
     let response = mcp.request("harness/no_such_method", serde_json::json!({}));
     assert_eq!(response["error"]["code"].as_i64(), Some(-32601));

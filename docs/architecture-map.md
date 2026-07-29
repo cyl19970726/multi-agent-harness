@@ -24,6 +24,7 @@ flowchart TB
   Exec["Execution selection"]
   Mission["Mission context / ordered Host-plan Waves"]
   Team["Independent AgentTeam / AgentTeamRun / MemberRun"]
+  Supervisor["Durable Team Supervisor\nlease · typed mail · claims · controls"]
   Workflow["Dynamic Workflow"]
   Direct["Human / Standing Agent direct work"]
   Runtime["Providers · sessions · plugins · MCP"]
@@ -53,7 +54,8 @@ flowchart TB
   Mission -.->|relation + plan context| Team
   Mission -.->|plan context| Workflow
   Mission -.->|plan context| Direct
-  Team --> Runtime
+  Team --> Supervisor
+  Supervisor --> Runtime
   Workflow --> Runtime
   Direct --> Runtime
   Runtime --> Result
@@ -77,16 +79,20 @@ flowchart TB
 | Collaboration | assignments, cross-actor messages, interaction routing, handoff, artifacts, explicit outcomes, and provider-native session links | responsibility, approval, finance truth, copied provider transcripts, or raw thinking |
 | Work and Approval | Milestones, WorkItem responsibility, source/result provenance, policy gates, execution reference | Project hierarchy or executor-internal planning |
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
-| Execution | Mission context/Host-plan Waves, independent or Mission-scoped Agent Teams, Workflow, direct delivery | company organization or document truth; Wave runtime containment |
+| Execution | Mission context/Host-plan Waves, independent or Mission-scoped Agent Teams, durable Team Supervisors, typed mail, Workflow, direct delivery | company organization or document truth; Wave runtime containment |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
 
 For persistent Agent Team members, Assignment ownership and continuous native
 execution are separate. Harness owns the durable Assignment and mailbox; one
-selected execution driver owns provider cycles for a MemberRun/native
-session/writable Workspace. Provider Goal satisfaction never implies Host
-acceptance. See
+current `TeamSupervisorLease` generation owns delivery claims and live controls,
+while one selected execution driver owns provider cycles for a
+MemberRun/native session/writable Workspace. A provider receipt proves
+transport acceptance, not semantic completion. Provider Goal satisfaction
+never implies Host acceptance. See
 [Member Continuation Model](member-continuation-model.md) and
-[ADR 0041](decisions/0041-provider-neutral-member-continuation.md).
+[ADR 0041](decisions/0041-provider-neutral-member-continuation.md), plus
+[ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md) for
+cross-process ownership and typed-mail guarantees.
 
 ## Source-of-truth rule
 

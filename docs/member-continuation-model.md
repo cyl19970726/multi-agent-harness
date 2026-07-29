@@ -139,11 +139,13 @@ Harness remains the communication authority in both driver modes:
 | Situation | Required behavior |
 | --- | --- |
 | Member idle under `host_driven` | Claim and deliver the next eligible message. |
+| Provider transport unhealthy before claim | Leave mail queued; current Supervisor reconnects the recorded native session first. |
 | Member busy | Queue ordinary messages; never silently interrupt. |
 | Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
 | Provider asks for authority | Create `PendingInteraction`; do not infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await Handoff/Host acceptance as required. |
+| Host explicitly closes Member | Latch terminal Close before teardown; no driver, delivery, or later Supervisor may revive it. |
 
 Self-activation is allowed only when observable. If a Member activates native
 continuation through natural language or a provider command, the Adapter must

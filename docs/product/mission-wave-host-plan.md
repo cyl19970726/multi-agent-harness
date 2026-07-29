@@ -115,6 +115,8 @@ The existing assignment correlation and provider session continue.
 ### Messaging
 
 - Assignment ownership uses a correlation id.
+- Team messages carry typed Host, Member, stable Agent, Operator, or Service
+  sender and recipients; display names never define authorship.
 - Question, answer, progress, blocker, handoff, review, and control messages
   preserve the correlation.
 - Members may send direct peer messages inside the same TeamRun. Routine peer
@@ -127,6 +129,9 @@ The existing assignment correlation and provider session continue.
 - `origin_wave_id` is optional navigation metadata.
 - Host and members can query inbox/status projections without reading provider
   transcripts.
+- One current Team Supervisor generation owns provider delivery and live
+  controls. Claim, provider receipt, recipient ACK, semantic reply, and Host
+  acceptance remain distinct.
 
 ### Member autonomy
 
@@ -140,7 +145,8 @@ The existing assignment correlation and provider session continue.
 - Use another Member when a lane needs its own durable identity, Workspace,
   mailbox, native session, or independent acceptance.
 - Steer is live only when the execution mode supports real current-turn
-  injection. Otherwise the input is visibly queued for the next round.
+  injection. Unsupported/unavailable Steer fails; the caller may separately
+  choose an ordinary queued Message for the next round.
 - Provider-pausing questions and approvals are `PendingInteraction`; ordinary
   team coordination is `TeamMessage`.
 
@@ -162,6 +168,9 @@ Keep the approved Mission Canvas layout. Make targeted semantic changes:
 - “Update plan” edits the selected Wave Markdown and appends a revision.
 - Lead Inbox groups member questions, blockers, and review requests. Answers
   reuse correlation and causation and acknowledge the source message.
+- Team/Member controls expose the current Supervisor/reconnect state and typed
+  author → recipient route; a stale owner disables live control without hiding
+  durable mail.
 - Member Focus shows the derived Current Assignment, completion standard,
   owned paths, latest Steer, peer/Host thread, and native subagent activity.
 - Legacy direct-executor attempts remain visible in historical Missions with a

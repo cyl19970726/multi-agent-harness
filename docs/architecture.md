@@ -8,7 +8,7 @@ environment connected through an adapter.
 ```text
 Star Harness
   Mission intent / Host-plan Waves / team relations
-  Agent Team control plane
+  Agent Team control plane / durable Team Supervisor / typed mail
   Dynamic Workflow runtime
   Host-facing plugins, MCP tools, skills, CLI
   Provider-neutral execution substrate
@@ -102,6 +102,15 @@ Provider-pausing questions and approvals use `PendingInteraction`. The Host
 observes handoffs and explicitly sends dependent work; there is no conditional
 delivery graph.
 
+One latest-wins `TeamSupervisorLease` generation owns each active TeamRun's
+provider transports, delivery claims, and real Steer/Interrupt/Close controls.
+Typed actor and recipient references distinguish Host, Member, stable Agent,
+and external Operator provenance. The Supervisor verifies the provider
+transport before claiming queued mail, records a provider receipt before
+delivery, and fences every cross-process control by generation. An idle member
+keeps its native session and remains addressable; only explicit Close is
+terminal.
+
 ### `dynamic_workflow`
 
 Use Dynamic Workflow for a one-shot structured execution problem:
@@ -131,6 +140,7 @@ infrastructure contracts where possible.
 | Artifact references and explicit outcome summaries | all executor kinds |
 | Harness coordination stream + ephemeral native activity projection | Agent Team and Host-observable execution; Workflow keeps its own run/step truth |
 | Artifact references, outcome summaries, and Host Wave decisions | all execution kinds |
+| Durable Supervisor lease, typed actor routing, delivery claim/receipt/ACK | persistent Agent Team members only |
 
 Shared infrastructure does not collapse distinct product objects into one.
 Agent Team, Dynamic Workflow, and Host work stay distinct even when one Wave
@@ -190,7 +200,10 @@ Team runs as standing organizations.
 
 Native Mission/Wave authoring, Agent Team joins and attempts, explicit gates,
 Mission closeout, CLI/API/MCP calls, and the Mission-first Dashboard are
-implemented. Dynamic Workflow and Host retain their executor-specific truth;
+implemented. Persistent Codex app-server, Claude Agent SDK, and Kimi ACP
+members share the same durable Supervisor and typed mailbox contract; bounded
+provider exec paths remain Dynamic Workflow-only. Dynamic Workflow and Host
+retain their executor-specific truth;
 the UI must show an honest unavailable state where routed controls are not yet
 implemented. Residual names from the superseded stack are tracked as code
 removal debt, not compatibility commitments.

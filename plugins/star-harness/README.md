@@ -8,13 +8,22 @@ It installs experience adapters only:
 - optional Harness MCP registration over the same application services as CLI;
 - Mission/Team shortcuts and historical Kimi command aliases;
 - fail-open lifecycle telemetry, exact native Host binding, bounded
-  SessionStart/UserPromptSubmit Inbox context, and a one-shot Codex Stop
-  continuation for mail that arrived while the Host was busy; and
+  SessionStart/UserPromptSubmit Inbox context, and one-shot provider-reviewed
+  Stop continuation for Codex, Claude, and Kimi mail that arrived while the
+  Host was busy; and
 - Dashboard deep-link guidance.
 
 Product architecture, messages, Mission/Wave state, TeamRun lifecycle, and
 provider capability review remain in Harness. Provider transcripts, tool
 activity, and subagent history remain in provider-native sessions.
+
+Bound Member hooks pass an explicit provider identity, so Claude/Kimi events
+cannot be mislabeled as Codex. Hooks never ACK mail, impersonate a Host or
+Member, or persist provider transcript/thinking.
+
+The optional unbound MCP surface authors only as the Host, an Operator, or a
+Service. It cannot select `member_run` or `agent_member` by id; Member mail
+originates from that Member's bound persistent Provider runtime.
 
 The skill directories under `plugins/star-harness/skills/` are generated. Edit
 their canonical sources under `skills/`, then run:

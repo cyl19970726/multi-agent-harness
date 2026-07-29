@@ -56,6 +56,9 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
+| `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
+| `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
+| `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
@@ -80,10 +83,16 @@ remain readable but are read-only on new public writes. Members may send
 ordinary messages to the Host or direct peer
 messages to active members in the same TeamRun. Member-to-Host messages
 are delivered when appended because the control plane already received them.
-Messages addressed to a member remain queued until the adapter accepts them
-for the selected MemberRun and native session. The adapter must poll or
+Messages addressed to a member remain queued until the current Supervisor
+claims them and the adapter returns a provider-native acceptance receipt for
+the selected MemberRun and native session. The adapter must poll or
 subscribe independently of provider turn completion; busy modes that cannot
 inject safely keep mail visibly queued for the next turn.
+
+New writes carry typed actor provenance. An unbound MCP connection may author
+only as the Host, an Operator, or a Service; it cannot select `member_run` or
+`agent_member` by id. Member-originated messages come from that Member's bound
+Provider runtime.
 
 The member Inbox is a latest-row projection over messages addressed to that
 MemberRun. Its default view contains actionable queued/delivered coordination;
@@ -93,8 +102,9 @@ does not read or copy provider-native chat.
 `PendingInteraction` is reserved for a provider turn actually paused on a
 question or approval. It is not a replacement for ordinary peer or Host chat,
 including planning discussion. Steer, interrupt, and resume must reflect the real selected execution
-mode: unsupported live steer degrades to a clearly labeled queued next-round
-message, never a fake current-turn ACK.
+mode: unsupported live Steer fails. The caller may separately choose an
+ordinary queued next-round Message; Harness never silently converts it or emits
+a fake current-turn ACK.
 
 ## Provider Interfaces
 
@@ -183,13 +193,18 @@ not deliverable work.
 Delivery correctness also requires a claim/lease before provider side effects.
 Starting a runtime, creating a provider thread, or sending provider input can
 change external state. A provider implementation must not perform those effects
-until it has atomically claimed the latest queued message or recorded an
-equivalent recoverable lease. The claim must be visible to later dispatchers
-and to the Dashboard.
+until the current Supervisor has verified that the selected provider transport
+is live and atomically claimed the latest queued message. A successful provider
+acceptance creates a separate receipt; semantic reply and recipient ACK remain
+separate facts. The claim must be visible to later dispatchers and to the
+Dashboard. If transport health fails before claim, mail stays queued and the
+Supervisor must reconnect the recorded native session before retrying.
 
 Closed, closing, or retired members cannot be revived by delivery. A provider
 may expose an explicit reopen operation later, but normal message delivery and
-runtime start must fail visibly for those states.
+runtime start must fail visibly for those states. Close intent is durably
+latched before the process-local handle is released, so a lease/receiver race
+cannot silently resurrect the member.
 
 The delivered provider input must carry a stable Harness envelope containing
 the requesting Mission/Wave/run or WorkItem reference, sender, recipient,

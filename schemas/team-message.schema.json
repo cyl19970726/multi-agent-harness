@@ -9,7 +9,36 @@
     "id": { "type": "string", "minLength": 1 },
     "team_run_id": { "type": "string", "minLength": 1 },
     "origin_wave_id": { "type": ["string", "null"], "minLength": 1 },
+    "sender": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["host", "member_run", "agent_member", "operator", "service"]
+        },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
     "from_member_id": { "type": "string", "minLength": 1 },
+    "recipients": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["host", "member_run", "agent_member"]
+          },
+          "id": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "to_member_ids": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
@@ -35,8 +64,14 @@
         "properties": {
           "member_id": { "type": "string", "minLength": 1 },
           "policy": { "type": "string", "enum": ["queue", "inject", "interrupt", "manual_ack"] },
-          "status": { "type": "string", "enum": ["queued", "delivered", "acknowledged", "failed", "expired"] },
+          "status": { "type": "string", "enum": ["queued", "claimed", "delivered", "acknowledged", "failed", "expired"] },
           "attempt": { "type": "integer", "minimum": 0 },
+          "claim_id": { "type": ["string", "null"], "minLength": 1 },
+          "claimed_by_supervisor_id": { "type": ["string", "null"], "minLength": 1 },
+          "claimed_generation": { "type": ["integer", "null"], "minimum": 1 },
+          "claimed_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+          "claim_expires_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
+          "provider_receipt_id": { "type": ["string", "null"], "minLength": 1 },
           "updated_at": { "type": "string", "minLength": 1 }
         }
       }

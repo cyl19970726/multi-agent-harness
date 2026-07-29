@@ -46,7 +46,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["starting", "idle", "queued", "running", "waiting", "reviewing", "blocked", "completed", "failed", "stopped"]
+      "enum": ["starting", "idle", "queued", "running", "waiting", "disconnected", "reviewing", "blocked", "completed", "failed", "stopped"]
     },
     "native_session": {
       "type": ["object", "null"],

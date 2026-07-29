@@ -129,10 +129,10 @@ Provider
 | Provider | Doc | Status | Role |
 | --- | --- | --- | --- |
 | Host control | [host-agent-mcp.md](host-agent-mcp.md) | MCP implemented | Codex/Kimi/Claude-style Host contract; independent from the Team Member provider. |
-| Codex | [codex.md](codex.md) | Agent Team app-server implemented | `codex_app_server` is the only new Codex Team mode; bounded `codex_exec` belongs to Workflow and historical reads. |
+| Codex | [codex.md](codex.md) | adapter implemented; installed 0.145.0 current | `codex_app_server` is the only new Codex Team mode; bounded `codex_exec` belongs to Workflow and historical reads. |
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
-| Claude Code | [claude.md](claude.md) | Agent Team SDK streaming implemented | `claude_agent_sdk` is the only new Claude Team mode; `claude_cli` remains Workflow/historical only. |
-| Kimi (Moonshot) | [kimi.md](kimi.md) | Team Member start implemented through ACP | Current executable Agent Team member adapter. Other Kimi execution slices remain separately scoped. |
+| Claude Code | [claude.md](claude.md) | adapter implemented; locked SDK 0.3.220 reports Claude Code 2.1.220 current | `claude_agent_sdk` is the only new Claude Team mode and 2.1.220 is adapter-reviewed; `claude_cli` remains Workflow/historical only. |
+| Kimi (Moonshot) | [kimi.md](kimi.md) | adapter implemented; installed 0.29.1 requires review | `kimi_acp` is the Team mode. The reviewed set contains 0.27.0; 0.29.1 remains `review_required` until protocol regeneration and a proportional live canary. |
 | Provider live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted + blocked live evidence | Codex/Kimi historical acceptance plus 2026-07-28 persistent Codex/Claude lifecycle, Workspace propagation, SDK-native discovery, and an honestly blocked Kimi K2.5 attempt. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
@@ -168,6 +168,13 @@ README until they need their own file.
     continuation loop owns that same work.
 12. Provider-native continuation is optional. Absence of Goal mode degrades to
     `host_driven`; it does not make the provider an invalid Agent Team member.
+13. One latest-wins Team Supervisor generation owns a live TeamRun's provider
+    transports, delivery claims, reconnect, and real controls. The adapter must
+    verify transport health before claim and fence every routed operation.
+14. Team mail has typed actor provenance. Delivery claim, provider receipt,
+    recipient ACK, semantic response, and Host acceptance are distinct facts.
+15. Explicit Close is terminal and latched. Idle, Handoff, Wave/Team/Mission
+    completion, and service restart never imply Close or permit resurrection.
 
 The Host reads and resolves pending interactions with the
 `team_run_resolve_interaction` MCP tool (or the equivalent CLI/API route),

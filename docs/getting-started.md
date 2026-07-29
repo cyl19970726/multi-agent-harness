@@ -1,19 +1,23 @@
 # Getting started
 
-Two things to get going: **install the `star-workflow` skill** (so your agent
-knows how to write workflows) and **start the harness service** (so the workflows
-have somewhere to run). Then ask your agent to author and run one.
+Choose the execution surface first:
+
+- install **Star Harness** for Mission/Wave and persistent Agent Teams;
+- install **star-workflow** for bounded, one-shot Dynamic Workflow; and
+- start one Harness service plus the Workbench for shared state and controls.
+
+Agent Team and Dynamic Workflow deliberately use different provider modes.
 
 ## Prerequisites
 
 - **Rust** (stable) — builds the `harness` binary.
 - **Node + pnpm** — for the dashboard and the doc checks.
-- At least one provider CLI on `PATH`, authenticated:
-  - **Codex** (`codex`), **Claude Code** (`claude`), and/or **Kimi Code**
-    (`kimi`). Each workflow leaf runs as a one-shot worker — `codex exec`,
-    `claude -p`, or `kimi -p --output-format stream-json` respectively.
+- At least one provider on `PATH`, authenticated:
+  - Agent Team: Codex app-server, Claude Agent SDK streaming, or Kimi ACP.
+  - Dynamic Workflow: one-shot `codex exec`, `claude -p`, or
+    `kimi -p --output-format stream-json`.
 
-## 1. Install the skill
+## 1. Install an execution capability
 
 The skill ships in [`skills/star-workflow/`](../skills/star-workflow/). It is
 a plain [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md` +
@@ -65,11 +69,27 @@ The separate `star-workflow` plugin remains available for Dynamic Workflow:
 /plugin install star-workflow
 ```
 
-## 2. Build + start the harness service
+## 2. Initialize an Execution Space and Project Binding
 
 ```bash
-# build the CLI -> ./target/debug/harness
 cargo build -p harness-cli
+./target/debug/harness init
+./target/debug/harness space list
+./target/debug/harness project list
+```
+
+An **Execution Space** owns Mission/Wave, Agent Team, Workflow, and coordination
+state. A **Project Binding** independently selects provider cwd, project
+instructions, Skills, Git/worktree, and permission boundaries. Select them
+explicitly with `--space` / `HARNESS_SPACE` and
+`--project` / `HARNESS_PROJECT`, or `harness space switch` and
+`harness project switch`. Raw `--store` / `HARNESS_ROOT` and repo-local
+`.harness` discovery are compatibility paths, not the preferred model.
+
+## 3. Start the Harness service
+
+```bash
+# build output: ./target/debug/harness
 
 # start the API + store (the dashboard and the run-script journal read this)
 ./target/debug/harness serve --addr 127.0.0.1:8787
@@ -79,21 +99,44 @@ pnpm install
 pnpm dashboard:dev          # then open the printed URL and click "Load live"
 ```
 
-`serve` hosts the snapshot API on `127.0.0.1:8787`; the dashboard reads it (and
-the live SSE stream) to show each workflow run's per-step progress, tokens, cost,
-and drill-in.
+`serve` hosts the snapshot and control API on `127.0.0.1:8787`; the Workbench
+reads it and the live SSE stream. Start CLI/MCP/service commands with the same
+Execution Space selection. Project selection may differ per TeamRun when the
+Host deliberately targets another Project Binding.
 
-> **`serve` and `run-script` must point at the SAME store.** Each resolves the
-> store root as: `--store <path>` → `HARNESS_ROOT` env → the nearest existing
-> `.harness` walking up from the cwd → `./.harness`. So a `serve` and a
-> `run-script` started anywhere inside the same project tree (which already has a
-> `.harness`) converge automatically. If you run them from unrelated directories,
-> pass the same explicit path to both, e.g. `--store /abs/path/.harness` — otherwise
-> the run journals to one store while the dashboard reads another and shows
-> **nothing**. Both commands print the absolute store path they resolved on
-> startup, so you can compare them at a glance.
+For a live TeamRun, the service that starts it acquires the durable Supervisor
+generation and keeps Member provider connections alive across idle periods.
+Other Dashboard/MCP/CLI processes route Steer, Interrupt, Close, and queued
+mail to that owner. A Wave or TeamRun completing does not close a Member.
 
-## 3. Author + run a workflow
+## 4. Create a Mission and persistent Agent Team
+
+```bash
+./target/debug/harness mission create \
+  --title "Dogfood Agent Team" \
+  --objective "Prove persistent multi-member collaboration" \
+  --context "## Context\nUse native provider sessions and explicit handoffs."
+./target/debug/harness member register \
+  --id builder-codex --name Builder --role builder --provider codex
+./target/debug/harness mission create-team \
+  --id <mission-id> --name builders --description "Persistent builders" \
+  --lead host --member builder-codex
+./target/debug/harness wave create \
+  --mission-id <mission-id> --title "Wave 1" \
+  --objective "Run and inspect the team" \
+  --context "## Host plan\nAssign disjoint lanes and review handoffs."
+./target/debug/harness team-run create \
+  --mission-id <mission-id> --agent-team-id <team-id> \
+  --objective "Complete the current Host plan"
+./target/debug/harness team-run start --id <team-run-id>
+```
+
+Use `team-run send`, `inbox`, `host-inbox`, `status`, and `events` for durable
+coordination. Ordinary Message queues for the next safe provider cycle; Steer
+is a distinct real same-turn control where supported. Only explicit
+`close-member` ends the native runtime.
+
+## 5. Author + run a Dynamic Workflow
 
 With the skill installed, ask your agent (Codex or Claude Code) to author a
 workflow — it will write a Starlark `.star` program and run it. A minimal one by
@@ -118,7 +161,8 @@ Run it through the harness:
 ```bash
 ./target/debug/harness workflow run-script hello.star
 # bounded + safe options:
-#   --store <path>          write to a specific store (match your `serve`'s)
+#   --space <id>            select the Execution Space used by `serve`
+#   --store <path>          deprecated raw compatibility override
 #   --timeout-ms 300000     per-worker wall-clock ceiling
 #   --max-budget-usd 2.00   per-run spend ceiling (short-circuits when reached)
 #   --resume <prior_run_id> reuse a crashed run's succeeded leaves (no re-spend)
@@ -128,8 +172,8 @@ The run journals one `WorkflowRun` + one `WorkflowStep` per leaf. Read it back:
 
 - in the **dashboard** (Workflows surface — shape, per-step status, tokens, cost,
   drill-in), or
-- from the **store**: `.harness/workflow_runs.jsonl` and
-  `.harness/workflow_steps.jsonl`, or the snapshot API
+- from the selected **Execution Space** store's `workflow_runs.jsonl` and
+  `workflow_steps.jsonl`, or the snapshot API
   `curl -s http://127.0.0.1:8787/v1/snapshot`.
 
 To get a text-producing workflow's **full deliverable** back (each leaf's complete

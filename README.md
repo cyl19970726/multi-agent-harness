@@ -31,6 +31,11 @@ are not the top-level product information architecture.
 The provider-neutral execution foundation is substantially implemented.
 Mission is durable intent, ordered Waves preserve the Host's evolving plan and
 judgment, and independent Agent Teams can remain active across multiple Waves.
+Every live TeamRun has one durable Supervisor generation that owns provider
+connections, delivery claims, and real controls. Members keep their
+provider-native sessions while idle; typed Host, Member, Agent, and Operator
+mail remains durable across service restarts, and only an explicit Host Close
+ends a member runtime.
 The Company OS product contracts, document system, mixed human/Agent
 organization, WorkItem/Approval model, and new frontend information
 architecture are the current product-development focus.
@@ -61,6 +66,8 @@ Execution tools:
 
 - Missions and ordered Host-plan Waves;
 - independent Agent Teams, Mission-scoped TeamRuns, and MemberRuns;
+- durable Team Supervisors, typed mailboxes, delivery receipts, and native
+  session lifecycle;
 - Dynamic Workflows;
 - provider sessions, plugins, MCP, artifacts, and events.
 
@@ -97,6 +104,8 @@ and [getting started](docs/getting-started.md).
 - [Governance](docs/company-os/governance.md)
 - [Execution foundation](docs/company-os/execution-foundation.md)
 - [Mission/Wave Host-plan product contract](docs/product/mission-wave-host-plan.md)
+- [Agent Team control foundation](docs/product/agent-team-foundation-closure-plan.md)
+- [Durable Team supervision and typed mail](docs/decisions/0044-durable-team-supervision-and-typed-mail.md)
 - [Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
 - [Product requirements](docs/prd.md)
 - [Architecture map](docs/architecture-map.md)

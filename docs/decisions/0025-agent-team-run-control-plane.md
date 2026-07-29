@@ -11,6 +11,14 @@ This ADR remains historical context and canonical only for retained MemberRun,
 TeamMessage, PendingInteraction, correlation, and control-plane boundaries.
 
 Superseded in part by ADR
+[0044](0044-durable-team-supervision-and-typed-mail.md): typed actor
+provenance, latest-wins Team Supervisor generations, delivery
+claim/provider-receipt/ACK, stable Agent routing, cross-process live controls,
+reconnect, and explicit Close replace the v0 lifecycle and delivery details
+below. The remainder of this document must be read as historical design
+context, not current operational guidance.
+
+Superseded in part by ADR
 [0026](0026-mission-wave-architecture.md) for top-level product hierarchy,
 Mission/Wave terminology, and thinking policy. This ADR remains canonical for
 the v0 Agent Team object set, delegation guardrails, and host/tooling split.

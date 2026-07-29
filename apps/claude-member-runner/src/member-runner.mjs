@@ -112,6 +112,11 @@ export function createMemberRunner({ sdk, config, emit }) {
     return sdk.query({
       prompt: mailbox.stream((message) => {
         consumedMessageIds.push(message.id);
+        emit("consumed", {
+          id: message.id,
+          kind: message.kind,
+          sessionId: state.sessionId,
+        });
         return renderTeamMessage(message);
       }),
       options: {

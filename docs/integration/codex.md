@@ -49,11 +49,19 @@ Close are different:
   native thread under the TeamRun supervisor. It does not replay an already
   delivered Assignment.
 
-Live controls are currently process-local. The Dashboard/MCP service can
-control app-server children it started in that same Harness process. A
-foreground `team-run start` child cannot yet be controlled by a second CLI
-process. Re-running start after a Host restart reattaches every unclosed Member
-to its recorded thread, but live controls must target that new supervisor.
+Physical app-server handles remain process-local, but a durable Team Supervisor
+lease is the cross-process authority and publishes the owning service's
+loopback locator. Dashboard/MCP/CLI clients route controls to that service,
+which fences the generation again before `turn/steer`, `turn/interrupt`, or
+Close. Another process cannot attach or claim mail while that lease is live.
+Re-running start after expiry or release acquires a new generation and
+reattaches every unclosed Member to its recorded thread.
+
+The owner verifies that the app-server transport is live before claiming
+queued mail. If that probe fails, the message remains queued and the owner
+reattaches the recorded thread first. Close intent is durably latched before
+process teardown, so losing the loopback receiver during a close/reattach race
+cannot revive the Member.
 
 ## Mailbox Delivery
 
@@ -62,16 +70,16 @@ app-server adapter accepts eligible envelopes:
 
 ```text
 TeamMessage(to=<member>, delivery=queued)
-  -> same-process adapter selects latest eligible row
-  -> delivery receipt reserves that message
+  -> current Supervisor atomically claims latest eligible row
   -> turn/start on the bound thread
+  -> provider turn id records native acceptance
   -> provider-native turn/session remains execution truth
   -> durable delivery/control acknowledgement in Harness
 ```
 
 Ordinary Host/peer messages queued while a turn is busy wait for the next
 eligible round. They do not interrupt the current turn. `delivered` means the
-adapter accepted the envelope for that MemberRun and native session; semantic
+adapter recorded a native provider receipt for that envelope; semantic
 understanding requires an explicit reply or Handoff.
 
 When a turn or Handoff completes, the Member returns to `idle` and the adapter
@@ -237,6 +245,11 @@ An unreviewed Codex version is `review_required`, not silently compatible.
 Never install, upgrade, downgrade, or switch Codex without explicit Human
 confirmation naming the candidate version. No provider version is changed by
 this integration contract.
+
+Current local probe at this documentation closure: Codex `0.145.0`,
+compatibility `current`, adapter contract `codex-app-server-v1`, reviewed on
+2026-07-28. This is a point-in-time execution fact; always rerun the provider
+audit instead of assuming it remains current.
 
 ## Acceptance
 

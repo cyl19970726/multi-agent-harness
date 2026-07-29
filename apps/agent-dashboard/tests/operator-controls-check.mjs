@@ -182,15 +182,17 @@ async function main() {
   );
   check(
     memberSource.includes('messageKind === "steer"')
-      && memberSource.includes('kind: messageKind === "steer" ? "control" : messageKind')
       && memberSource.includes("Injects only this explicit Steer")
-      && memberSource.includes("queues control guidance for the next provider round")
+      && memberSource.includes("Steer is available only while this Codex member has an active turn.")
       && memberSource.includes('execution_mode === "codex_app_server"')
+      && memberSource.includes('disabled={!supportsLiveSteer}')
+      && memberSource.includes('if (messageKind === "steer" && !canLiveSteer) return')
+      && !memberSource.includes("queues control guidance for the next provider round")
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
       && memberSource.includes("closeTeamMember(")
       && memberSource.includes("supports_cancel"),
-    "Member Focus invokes same-turn steer only for an explicit Steer action and otherwise queues Host coordination",
+    "Member Focus exposes Steer only for a real active Codex app-server turn and never disguises queued mail as Steer",
   );
   check(
     memberSource.includes("claudeDesktopSessionUri")

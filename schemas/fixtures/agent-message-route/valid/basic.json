@@ -1,0 +1,9 @@
+{
+  "id": "agent-message-route-1",
+  "agent_message_id": "message-1",
+  "agent_member_id": "agent-1",
+  "team_run_id": "team-run-1",
+  "member_run_id": "member-run-1",
+  "team_message_id": "team-message-1",
+  "routed_at": "unix-ms:1000"
+}

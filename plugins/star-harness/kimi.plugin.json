@@ -31,6 +31,12 @@
       "timeout": 10
     },
     {
+      "event": "UserPromptSubmit",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "timeout": 10
+    },
+    {
       "event": "Stop",
       "matcher": "*",
       "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
