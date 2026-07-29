@@ -132,10 +132,12 @@ failed run appear accepted.
 Adapter-generated Handoffs are an outcome boundary, not a transcript mirror.
 When a provider emits ordinary assistant narration before its terminal
 structured report, Harness stores only the final `## RESULT` report (or the
-trimmed final assistant text for legacy output). A Member-authored correlated
-Handoff remains authoritative and suppresses that fallback for the same
-provider round. One Handoff for each genuinely triggered follow-up round is
-valid; duplicated or narration-polluted Handoffs are defects.
+trimmed final assistant text for legacy output). The last case-insensitive
+marker wins even if provider chunk concatenation leaves no newline before it.
+A Member-authored correlated Handoff remains authoritative and suppresses that
+fallback for the same provider round. One Handoff for each genuinely triggered
+follow-up round is valid; duplicated or narration-polluted Handoffs are
+defects.
 
 Delivery and terminal state must be supported by the active provider cycle:
 

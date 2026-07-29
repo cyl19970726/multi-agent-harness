@@ -16588,16 +16588,7 @@ fn parse_round_result(final_text: &str) -> MemberRoundResult {
 /// interim assistant prose or more than one report. Reports that predate the
 /// `## RESULT` contract remain readable as their original trimmed text.
 fn canonical_member_report_text(text: &str) -> &str {
-    let mut offset = 0usize;
-    let mut last_result = None;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.to_ascii_uppercase().starts_with("## RESULT") {
-            let leading = line.len().saturating_sub(trimmed.len());
-            last_result = Some(offset + leading);
-        }
-        offset += line.len();
-    }
+    let last_result = text.to_ascii_uppercase().rfind("## RESULT");
     last_result
         .map(|start| text[start..].trim())
         .unwrap_or_else(|| text.trim())
@@ -34980,6 +34971,53 @@ mod tests {
             extract_report_section(text, "SUMMARY").as_deref(),
             Some("accepted attempt")
         );
+    }
+
+    #[test]
+    fn member_handoff_last_result_marker_is_case_insensitive_and_need_not_start_a_line() {
+        let text = "## RESULT\nblocked\n## SUMMARY\nfirst attempt\n\
+                    ACP appended the terminal chunk without a newline:## rEsUlT\n\
+                    done\n\
+                    ## SUMMARY\n\
+                    accepted concatenated attempt\n";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## rEsUlT\ndone\n## SUMMARY\naccepted concatenated attempt"
+        );
+        assert_eq!(parse_round_result(text), MemberRoundResult::Done);
+        assert_eq!(
+            extract_report_section(text, "SUMMARY").as_deref(),
+            Some("accepted concatenated attempt")
+        );
+    }
+
+    #[test]
+    fn member_handoff_accepts_acp_message_chunk_shape() {
+        let chunks = [
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": "ordinary assistant narration"}
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": "## RESULT\ndone\n"}
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"text": "## SUMMARY\nchunk-shaped terminal report"}
+            }),
+        ];
+        let accumulated = chunks
+            .iter()
+            .filter_map(|chunk| chunk["content"]["text"].as_str())
+            .collect::<String>();
+
+        assert_eq!(
+            canonical_member_report_text(&accumulated),
+            "## RESULT\ndone\n## SUMMARY\nchunk-shaped terminal report"
+        );
+        assert_eq!(parse_round_result(&accumulated), MemberRoundResult::Done);
     }
 
     #[test]

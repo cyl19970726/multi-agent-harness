@@ -128,9 +128,11 @@ honest.
 
 Provider output and Harness outcome are also distinct. An automatically
 generated round Handoff contains only the final structured `## RESULT` report;
-interim assistant narration remains in the provider-native session. If the
-Member already authored a valid Handoff during that round, it is authoritative
-and the adapter does not create another.
+the last case-insensitive marker wins even when adjacent provider chunks leave
+it concatenated directly to preceding narration. Interim assistant narration
+remains in the provider-native session. If the Member already authored a valid
+Handoff during that round, it is authoritative and the adapter does not create
+another.
 
 ## Interaction routing
 
