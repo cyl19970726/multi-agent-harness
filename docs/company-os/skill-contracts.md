@@ -108,10 +108,12 @@ and governed maintenance for `document create|rename|move|archive`,
 `typed-record append|update|validate`, `view create|update`, and
 `relation link|unlink|relink|repair-missing`.
 
-External software source sync is project-routed:
+External software source sync is Company Store-routed and observes an external
+Git worktree. `--company` selects where Company OS truth is written;
+`--repo-path` selects the software source being observed.
 
 ```bash
-harness --project <company-os-project-selector> company docs source sync \
+harness --company <company-store-id> company docs source sync \
   --definition <custom-page-definition-id> \
   --module <business-module-id> \
   --source-document <document-id> \
@@ -163,9 +165,9 @@ headings, and source class. The command treats GitHub/webhook delivery as a
 transport, not authority: it does not create WorkItems, approve spending,
 change Organization, mutate Finance, overwrite commercial truth, execute
 GitHub actions, or claim software delivery completion. Use the top-level
-`--project` option to select the Company OS Store and command-level
-`--project-id` to name the external software source; these are intentionally
-different identifiers.
+`--company` option to select the Company Store and command-level `--project-id`
+to name the external software source; these are intentionally different
+identifiers.
 `docs health` remains the broader read-only structural audit over the current
 Company OS projection.
 `docs document rename`, `docs document move`, and `docs document archive` are
@@ -193,6 +195,11 @@ Finance, Organization, or Execution effects. `docs module create` may also
 preserve explicit BusinessModule relation rules such as Document →
 TypedRecord `source_for`; this declares a policy but does not create any
 TypedRecord or Relation by itself.
+`docs document create --root` is the CLI bootstrap for a new DocumentSpace or
+top-level operating area inside the selected Company Store. It requires a Human
+admin authority and writes only a root Document; module, PageDefinition,
+TypedRecord, Relation, Work, Finance, and Organization records remain separate
+governed commands.
 `docs template create` constructs an explicit reusable
 `Document(kind=template)` instead of mutating an existing page's identity. With
 `--from-document`, it copies the source Document's ordered native Blocks into
@@ -317,6 +324,48 @@ The skill is complete only when the relevant native rows and invariants can be
 verified. For example, a Block append is incomplete if the Block row exists but
 the owning Document's `block_ids` does not reference it. A visual page or
 fixture is not sufficient evidence by itself.
+
+## `company-work-operator`
+
+### Job
+
+Use this skill when an Agent needs to inspect, create, assign, transition, or
+close native WorkItems and Milestones through the governed CLI/API path. Work
+owns durable commitments, accountability, lifecycle, assignment, approval
+links, execution refs, result provenance, and WorkItem detail fields. It does
+not own Docs structure, Organization membership, Finance state, or
+Mission/Wave execution lifecycle.
+
+### Required input
+
+| Input | Requirement |
+| --- | --- |
+| Source context | Source Document or TypedRecord that explains why the WorkItem exists. |
+| Work detail | Title, objective, description when needed, acceptance criteria, context refs, WorkType, business line, and Milestone when known. |
+| Responsibility | Submitter, requester when known, accountable owner, assignees, contributors, reviewer, and approver as distinct ActorRefs. |
+| Side-effect boundary | Whether the work is direct, execution-linked, finance-linked, approval-gated, external, or mixed. |
+
+### Required output
+
+The skill reports the created or updated native Work refs, assignment refs,
+source/result refs, approval refs, finance refs if any, execution refs if any,
+and remaining gaps. New WorkItems should preserve enough machine-operable
+detail for an Agent to execute without scraping prose:
+
+```text
+description
+acceptance_criteria
+context_refs
+deliverable_refs
+```
+
+### Completion rule
+
+The skill is complete only when `harness company work query` and/or
+`harness company work list` can reconstruct the WorkItem, its role chain,
+detail fields, source/result provenance, and linked assignment/approval
+context. A document paragraph, chat message, fixture, or visual page alone is
+not a completed WorkItem.
 
 ## `company-module-designer`
 

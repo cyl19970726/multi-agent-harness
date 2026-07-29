@@ -45,6 +45,11 @@ export interface OrganizationUnitView extends RelatedLink {
 export interface WorkItemView {
   id: string;
   title: string;
+  objective?: string;
+  description?: string;
+  acceptanceCriteria?: string[];
+  contextRefs?: RelatedLink[];
+  deliverableRefs?: RelatedLink[];
   status: "waiting_for_approval" | "in_progress" | "in_review" | "completed" | "blocked";
   sourceDocument: RelatedLink;
   requestedBy: ActorSummary;

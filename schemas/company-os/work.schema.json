@@ -29,6 +29,11 @@
         "id": { "$ref": "#/$defs/string" }
       }
     },
+    "entityRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/entityRef" }
+    },
     "executionRef": {
       "type": "object", "additionalProperties": false,
       "required": ["kind", "reference", "role_in_execution", "status", "started_at", "ended_at"],
@@ -95,6 +100,10 @@
         "id": { "$ref": "#/$defs/string" },
         "title": { "$ref": "#/$defs/string" },
         "objective": { "$ref": "#/$defs/string" },
+        "description": { "type": ["string", "null"], "minLength": 1 },
+        "acceptance_criteria": { "$ref": "#/$defs/refs" },
+        "context_refs": { "$ref": "#/$defs/entityRefs" },
+        "deliverable_refs": { "$ref": "#/$defs/entityRefs" },
         "status": { "enum": ["draft", "submitted", "triaged", "accepted", "in_progress", "waiting_for_approval", "blocked", "in_review", "completed", "cancelled", "archived"] },
         "source_document_ref": { "$ref": "#/$defs/string" },
         "source_record_refs": { "$ref": "#/$defs/refs" },

@@ -236,6 +236,22 @@ FinancialRecords, and Actors.
 Use explicit structure commands instead of creating duplicate pages:
 
 ```bash
+harness company docs document create \
+  --root \
+  --id <root-document-id> \
+  --space <document-space-id> \
+  --title <root-title> \
+  --actor <human-or-agent-id> \
+  --authority <human-admin-id>
+
+harness company docs document create \
+  --definition <custom-page-definition-id> \
+  --parent-document <document-id> \
+  --id <child-document-id> \
+  --space <document-space-id> \
+  --title <child-title> \
+  --actor <human-or-agent-id>
+
 harness company docs document rename \
   --definition <custom-page-definition-id> \
   --document <document-id> \
@@ -265,6 +281,13 @@ dry-run. These commands must preserve `Document.id`, `space_id`, `kind`,
 `reference_refs`; move must not create a parent cycle. They do not create
 WorkItems, Approvals, Finance records, Organization changes, or execution
 records.
+
+`document create --root` is a bootstrap escape hatch for a new DocumentSpace or
+top-level operating area inside an existing Company Store. It requires a Human
+admin `--authority` and appends only a root `Document`; it does not create a
+BusinessModule, PageDefinition, WorkItem, Relation, Finance row, Organization
+row, or source sync record. After creating the root, create the module, fallback
+View, PageDefinition, and any TypedRecords/Relations through their own commands.
 
 ## Block content maintenance
 
@@ -372,6 +395,25 @@ harness company docs document create \
   --instantiate-template \
   --actor <human-or-agent-id>
 ```
+
+New DocumentSpace roots use an explicit administrative bootstrap path rather
+than borrowing another module's PageDefinition:
+
+```bash
+harness company docs document create \
+  --root \
+  --authority <human-admin-id> \
+  --id <root-document-id> \
+  --space <space-id> \
+  --title "AgentOS / Star Harness" \
+  --actor <human-or-agent-id>
+```
+
+This creates only a root `Document` with `parent_document_id=null`. It does not
+create a `BusinessModule`, page definition, WorkItem, Approval, Finance record,
+Organization member, execution space, or Project Binding. Create the module
+and page definition as separate governed/admin operations after the root
+exists.
 
 Without `--instantiate-template`, this records `Document.template_ref` only.
 With `--instantiate-template`, it copies the template Document's ordered native

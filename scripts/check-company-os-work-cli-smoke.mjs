@@ -190,6 +190,10 @@ async function main() {
     "--module", "module-work-cli",
     "--title", "Run Work CLI smoke",
     "--objective", "Prove native Work CLI can create and transition a WorkItem.",
+    "--description", "Create, assign, transition, and close one native WorkItem while preserving detail fields.",
+    "--acceptance-criterion", "The WorkItem keeps a human-readable description.",
+    "--acceptance-criterion", "The WorkItem records acceptance and context references.",
+    "--context-ref-json", '{"kind":"document","id":"document-work-root"}',
     "--submitted-by", "agent-work-governance",
     "--accountable-owner", "agent-work-governance",
     "--assignee", "agent-work-governance",
@@ -228,6 +232,7 @@ async function main() {
     "--actor", "agent-work-governance",
     "--result-document", "document-work-root",
     "--evidence", "evidence-work-cli-smoke",
+    "--deliverable-ref-json", '{"kind":"evidence","id":"evidence-work-cli-smoke"}',
     "--outcome-summary", "Work CLI smoke produced durable evidence.",
   ], env);
   check(inReview.ok === true && inReview.result?.record?.status === "in_review", "work transition requires result/evidence/outcome before in_review");
@@ -242,6 +247,13 @@ async function main() {
 
   const queried = run(["company", "work", "query", "--work-item", "workitem-cli-smoke"], env);
   check(queried.ok === true && queried.result?.assignments?.length === 1 && queried.result?.work_item?.status === "completed", "work query returns WorkItem plus native Assignment context");
+  check(
+    queried.result?.work_item?.description?.includes("Create, assign")
+      && queried.result?.work_item?.acceptance_criteria?.length === 2
+      && queried.result?.work_item?.context_refs?.[0]?.id === "document-work-root"
+      && queried.result?.work_item?.deliverable_refs?.[0]?.id === "evidence-work-cli-smoke",
+    "work query preserves WorkItem description, acceptance criteria, context refs, and deliverable refs",
+  );
 
   const listed = run(["company", "work", "list", "--status", "completed", "--module", "module-work-cli"], env);
   check(listed.ok === true && listed.result?.summary?.completed === 1 && listed.result?.board?.completed?.includes("workitem-cli-smoke"), "work list returns filtered native Work projection");

@@ -54,6 +54,9 @@ WorkItem
 - id
 - title
 - objective
+- description?                         # human/agent readable scope and constraints
+- acceptance_criteria[]                # checklist for closure/review
+- context_refs[]                       # typed links needed to understand the work
 - status = draft | submitted | triaged | accepted | in_progress |
            waiting_for_approval | blocked | in_review | completed |
            cancelled | archived
@@ -77,9 +80,33 @@ WorkItem
 - execution_refs[]                    # stable references to actual execution
 - approval_refs[]
 - evidence_refs[] / artifact_refs[]
+- deliverable_refs[]                  # typed links to returned documents, evidence, records, PRs, etc.
 - due_at? / priority? / risk_level?
 - created_at / updated_at / completed_at?
 ```
+
+`objective` is the compact intended outcome. `description` is the richer task
+brief that explains scope, constraints, and non-goals. It must still be concise
+and operational; long rationale belongs in the source Document. A WorkItem
+without `description` remains valid for historical rows, but new operational
+Work should provide one when the title/objective alone cannot guide an Agent.
+
+`acceptance_criteria` are the review checklist for the WorkItem. They do not
+replace Milestone acceptance criteria and they do not authorize sensitive
+actions. They answer what must be true before review or closure can be
+considered.
+
+`context_refs` are typed links to Documents, TypedRecords, actors, modules,
+Milestones, WorkItems, Approvals, Finance records, evidence, or execution
+records needed to understand the assignment. They prevent the WorkItem from
+becoming a copied mini-document while still giving an Agent enough navigation
+context.
+
+`deliverable_refs` are typed links to returned durable outputs. Transitions may
+append deliverables; they must not remove prior deliverables. Result
+Document/record refs, evidence refs, artifact refs, and deliverable refs can
+overlap, but the UI should label their role clearly rather than hiding the
+source/result/evidence distinction.
 
 The role fields are intentional and must not be collapsed into one assignee:
 
@@ -122,8 +149,13 @@ Operational state changes use the governed `work_item.transition` Action rather
 than broad record authoring. Its implemented V1 state graph, responsibility
 rules, immutable fields, Approval completion gate, and browser evidence are
 canonicalized in [WorkItem lifecycle actions](work-item-lifecycle-actions.md).
-Reassignment, cancellation, archive, and reopening remain separate future
-commands so this transition cannot silently expand its authority.
+Reassignment, owner/reviewer/approver correction, cancellation, archive, and
+reopening remain separate future commands so this transition cannot silently
+expand its authority. An `Assignment` delivery record may prove that someone
+was asked to act, but it does not rewrite `WorkItem.assignees` or repair a
+misrouted WorkItem. A dedicated reassignment Action must preserve source,
+objective, detail, existing result/evidence provenance, and audit the previous
+and next role refs.
 
 ## Execution references and assignments
 
