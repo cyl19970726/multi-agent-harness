@@ -33751,6 +33751,18 @@ mod tests {
         let first = &created.member_runs[0];
         let second = &created.member_runs[1];
         let assignment = &created.assignment_messages[0];
+        let mut delivered_assignment = assignment.clone();
+        let first_delivery = delivered_assignment
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == first.id)
+            .expect("first member assignment delivery");
+        first_delivery.status = TeamDeliveryStatus::Delivered;
+        first_delivery.attempt = 1;
+        first_delivery.updated_at = now_string();
+        store
+            .append_team_message(&delivered_assignment)
+            .expect("deliver first member assignment");
 
         send_team_message(
             &store,
