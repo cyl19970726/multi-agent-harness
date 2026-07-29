@@ -111,6 +111,27 @@ reattach the same native session after lease rollover, and latch explicit Close
 before teardown. An uncertain claim remains visible until reconciled; it is
 never replayed merely because a process restarted.
 
+Provider acceptance is mode-specific but must identify the active cycle:
+
+- Codex: the `turn/start` response; only an explicit `turn/started` event may
+  move the active turn scope. Item or terminal frames from an older interrupted
+  turn are ignored for the new cycle.
+- Claude: the Agent SDK's delivery receipt.
+- Kimi: the first frame for the active ACP `session/prompt` (session update,
+  provider request, or terminal response), identified by the prompt request id.
+  ACP does not expose a separate prompt-start acknowledgement.
+
+The adapter marks mail delivered at that boundary, not when the whole turn
+finishes. This lets a bound Member send a correlation-valid question, peer
+message, or Handoff during a long-running turn while keeping crash recovery
+honest.
+
+Provider output and Harness outcome are also distinct. An automatically
+generated round Handoff contains only the final structured `## RESULT` report;
+interim assistant narration remains in the provider-native session. If the
+Member already authored a valid Handoff during that round, it is authoritative
+and the adapter does not create another.
+
 ## Interaction routing
 
 Provider questions and permission requests cross a governance boundary and are

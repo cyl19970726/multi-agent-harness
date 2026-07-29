@@ -352,6 +352,95 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
 }
 
 #[test]
+fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
+    let home = TempHome::new("team-run-kimi-live-handoff");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let marker = home.base().join("kimi-live-handoff.txt");
+    let (run_id, member_ids) = create_two_member_run(&home, &fake_bin, &project_id);
+    let member_id = &member_ids[0];
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+            "--max-concurrency",
+            "1",
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_HANDOFF_DURING_TURN", "1")
+        .env("FAKE_KIMI_HANDOFF_MARKER", &marker)
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .output()
+        .expect("start fake kimi team");
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&marker)
+            .expect("handoff command marker")
+            .trim()
+            .starts_with("tmsg-"),
+        "member-authored handoff must succeed during the ACP turn"
+    );
+
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let assignment = messages
+        .iter()
+        .find(|message| {
+            message["kind"] == "assignment"
+                && message["deliveries"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|row| row["member_id"] == *member_id))
+        })
+        .expect("member assignment");
+    let delivery = assignment["deliveries"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["member_id"] == *member_id))
+        .expect("assignment delivery");
+    assert_eq!(delivery["status"], "delivered");
+    assert!(
+        delivery["provider_receipt_id"]
+            .as_str()
+            .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")),
+        "delivery must be backed by the active ACP prompt: {delivery:?}"
+    );
+
+    let handoffs = messages
+        .iter()
+        .filter(|message| message["kind"] == "handoff" && message["from_member_id"] == *member_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        handoffs.len(),
+        1,
+        "explicit handoff must suppress the adapter fallback: {handoffs:?}"
+    );
+    assert!(
+        handoffs[0]["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("explicit handoff during active ACP turn")),
+        "the member-authored handoff is authoritative: {handoffs:?}"
+    );
+}
+
+#[test]
 fn kimi_member_explicitly_resumes_provider_native_session() {
     let home = TempHome::new("team-run-kimi-native-resume");
     let project_id = init_project(&home, "alpha");

@@ -155,6 +155,20 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ "${FAKE_KIMI_HANDOFF_DURING_TURN:-0}" = "1" ]; then
+        # Give the Harness reader a deterministic chance to consume the first
+        # ACP frame and publish its provider receipt before this bound member
+        # authors a correlation-checked Handoff from inside the active turn.
+        sleep 0.1
+        "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run send \
+          --id "$HARNESS_TEAM_RUN_ID" \
+          --from "$HARNESS_MEMBER_RUN_ID" \
+          --to host \
+          --kind handoff \
+          --body "## RESULT\ncompleted\n## SUMMARY\nexplicit handoff during active ACP turn" \
+          --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+          > "${FAKE_KIMI_HANDOFF_MARKER:?}" 2>&1
+      fi
       if [ "$ask" = "1" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"12:ask-user","title":"AskUserQuestion","kind":"other","status":"in_progress"}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","id":700,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"q0_opt_0","name":"Use native contract","kind":"allow_once"},{"optionId":"q0_skip","name":"Skip","kind":"reject_once"}],"toolCall":{"toolCallId":"12:ask-user","title":"AskUserQuestion","content":[{"type":"content","content":{"type":"text","text":"Which implementation should be used?"}}]}}}\n' "$session_id"

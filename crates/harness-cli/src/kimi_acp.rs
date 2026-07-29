@@ -346,6 +346,7 @@ impl KimiAcpClient {
         &mut self,
         text: &str,
         idle_timeout: Duration,
+        mut on_accepted: impl FnMut(&str) -> CliResult<()>,
         mut on_update: impl FnMut(&serde_json::Value),
         mut on_request: impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
         mut should_cancel: impl FnMut() -> CliResult<bool>,
@@ -366,6 +367,8 @@ impl KimiAcpClient {
         } else {
             idle_timeout
         };
+        let provider_receipt_id = format!("kimi-acp-prompt:{prompt_id}");
+        let mut accepted = false;
 
         let mut last_activity = Instant::now();
         let mut cancelled_at: Option<Instant> = None;
@@ -380,6 +383,9 @@ impl KimiAcpClient {
             // completed turn for a dead session.
             match response.try_recv() {
                 Ok(frame) => {
+                    if !accepted {
+                        on_accepted(&provider_receipt_id)?;
+                    }
                     // ...but the reader dispatched every update that preceded
                     // the response on the wire BEFORE enqueueing it, so a full
                     // drain here replays the tail of the stream in order.
@@ -395,6 +401,16 @@ impl KimiAcpClient {
             }
             match self.updates.try_recv() {
                 Ok(frame) => {
+                    if !accepted {
+                        // ACP has no separate prompt-start acknowledgement.
+                        // Its first session update or provider request is the
+                        // earliest honest evidence that the prompt was
+                        // accepted. Publish that receipt before handling the
+                        // frame so tools invoked by this turn may immediately
+                        // send a correlation-valid handoff or peer message.
+                        on_accepted(&provider_receipt_id)?;
+                        accepted = true;
+                    }
                     last_activity = Instant::now();
                     self.handle_incoming(&frame, &mut on_update, &mut on_request)?;
                     continue;

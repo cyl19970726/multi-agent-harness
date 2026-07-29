@@ -129,6 +129,25 @@ Every finding records:
 Never copy a Provider transcript into Harness or edit JSONL evidence to make a
 failed run appear accepted.
 
+Adapter-generated Handoffs are an outcome boundary, not a transcript mirror.
+When a provider emits ordinary assistant narration before its terminal
+structured report, Harness stores only the final `## RESULT` report (or the
+trimmed final assistant text for legacy output). A Member-authored correlated
+Handoff remains authoritative and suppresses that fallback for the same
+provider round. One Handoff for each genuinely triggered follow-up round is
+valid; duplicated or narration-polluted Handoffs are defects.
+
+Delivery and terminal state must be supported by the active provider cycle:
+
+- Codex uses the `turn/start` response and fences terminal notifications to
+  that turn; stale frames from an interrupted turn must not strand the next
+  MemberRun as `running`.
+- Claude uses the Agent SDK delivery receipt.
+- Kimi ACP has no separate prompt-start ACK, so the first update, provider
+  request, or terminal response for that prompt is the earliest honest
+  delivery receipt. It must be published before a tool in that turn attempts
+  Member-to-Host or peer communication.
+
 ### 4. Let the Host decide
 
 The Host classifies each finding:

@@ -111,9 +111,15 @@ id; after a Host or peer follow-up it is that follow-up's id. The persistent
 Member handoff is stricter than ordinary peer coordination: its
 `correlation_id` must identify an Assignment addressed and delivered to this
 exact MemberRun. Never reuse a peer's Assignment correlation.
-provider adapters apply the same rule to their automatic round Handoffs. Send
+Provider adapters apply the same rule to their automatic round Handoffs. Send
 one explicit Handoff when the lane is ready; the Adapter treats it as
 authoritative and does not add a duplicate final-reply Handoff.
+
+Ordinary assistant narration and progress stay in the provider-native Session.
+If you do not send an explicit Handoff, the Adapter persists only your final
+structured `## RESULT` report as the round Handoff (or the trimmed final text
+for legacy output). A later Host or peer message may legitimately trigger
+another round and another Handoff; that is not a duplicate.
 
 Use `message` for questions, answers, progress, blockers, planning, review, and
 peer coordination. State the intent in the first sentence. Use `handoff` only
@@ -165,6 +171,12 @@ Message delivery is also explicit: `queued` means available to the Supervisor,
 `delivered` requires a provider-native receipt, and `acknowledged` means your
 working context accepted it. After a crash, never replay `claimed` mail without
 explicit reconciliation.
+
+You may send Team messages as soon as your Assignment is `delivered`, including
+while your provider turn is still running. Codex uses its started turn, Claude
+uses the Agent SDK delivery receipt, and Kimi uses the first accepted ACP prompt
+frame. If a Handoff is rejected as not owning a delivered Assignment, report
+the exact message id and delivery state rather than changing correlations.
 
 After a Steer, restate the changed constraint in progress or handoff when it
 affects acceptance.

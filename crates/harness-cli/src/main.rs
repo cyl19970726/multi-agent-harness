@@ -13994,11 +13994,13 @@ fn run_codex_app_server_turn(
     for message in accepted_messages {
         mark_message_delivered(ledger, message, &member.id, &member.name, &turn_id)?;
     }
-    // The start response is the preferred active id. Codex 0.146 can,
-    // however, surface Goal/Plan work under a follow-up provider turn id.
-    // Bind to the first scoped non-terminal activity for this request, then
-    // require every later scoped frame (especially turn/completed) to match.
-    let mut observed_turn_id: Option<String> = None;
+    // The turn/start response is authoritative. A prior interrupted turn may
+    // still flush item activity after the next turn has started; rebinding on
+    // that stale item would make the real turn/completed look foreign and
+    // strand the MemberRun as running. Provider-native Goal/Plan continuation
+    // may move work to another turn, but only an explicit turn/started frame
+    // is allowed to change this active scope.
+    let mut active_turn_id = turn_id.clone();
     let mut final_text = String::new();
     let mut last_activity = Instant::now();
     let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
@@ -14084,27 +14086,18 @@ fn run_codex_app_server_turn(
                 let method = frame.get("method").and_then(|value| value.as_str());
                 let params = frame.get("params").unwrap_or(&frame);
                 // app-server may emit notifications for another turn on the
-                // same thread (for example a native Goal update finishing
-                // while the next Plan revision is already active). Never let
-                // a stale turn/completed, plan delta, or provider request
-                // terminate or contaminate the turn we actually started.
+                // same thread (for example an interrupted turn flushing its
+                // last item while the follow-up turn is already active).
+                // Never let stale item/terminal frames change the active turn.
                 let frame_turn_id = params
                     .get("turnId")
                     .and_then(|value| value.as_str())
                     .or_else(|| params.pointer("/turn/id").and_then(|value| value.as_str()));
-                let is_turn_activity = method == Some("turn/plan/updated")
-                    || method.is_some_and(|method| method.starts_with("item/"));
-                if observed_turn_id.is_none() && is_turn_activity {
-                    if let Some(frame_turn_id) = frame_turn_id {
-                        observed_turn_id = Some(frame_turn_id.to_string());
-                        turn_id = frame_turn_id.to_string();
-                    }
+                if !codex_frame_matches_active_turn(&mut active_turn_id, method, frame_turn_id) {
+                    continue;
                 }
-                if let Some(frame_turn_id) = frame_turn_id {
-                    let active_turn_id = observed_turn_id.as_deref().unwrap_or(&turn_id);
-                    if frame_turn_id != active_turn_id {
-                        continue;
-                    }
+                if method == Some("turn/started") {
+                    turn_id = active_turn_id.clone();
                 }
                 match method {
                     Some("turn/plan/updated") | Some("item/plan/delta") => {}
@@ -14203,6 +14196,22 @@ fn run_codex_app_server_turn(
             }
         }
     }
+}
+
+/// Fence app-server notifications to the turn that Harness actually started.
+/// Only an explicit turn/started notification may move the active scope; item
+/// activity from a prior interrupted turn is never authoritative.
+fn codex_frame_matches_active_turn(
+    active_turn_id: &mut String,
+    method: Option<&str>,
+    frame_turn_id: Option<&str>,
+) -> bool {
+    if method == Some("turn/started") {
+        if let Some(frame_turn_id) = frame_turn_id {
+            *active_turn_id = frame_turn_id.to_string();
+        }
+    }
+    frame_turn_id.is_none_or(|frame_turn_id| frame_turn_id == active_turn_id.as_str())
 }
 
 /// Drive one Claude Code Team Member without mirroring its stream-json output.
@@ -15070,7 +15079,10 @@ fn record_round_handoff(
         recipients: vec![compatibility_team_recipient("host")],
         to_member_ids: vec!["host".to_string()],
         kind: TeamMessageKind::Handoff,
-        body: record.final_text.to_string(),
+        // Provider streams may contain several ordinary assistant messages
+        // before the terminal structured report. Harness owns the explicit
+        // outcome, not a mirror of that provider narration.
+        body: canonical_member_report_text(record.final_text).to_string(),
         correlation_id,
         causation_id,
         evidence_refs: record.evidence_refs.to_vec(),
@@ -15471,6 +15483,12 @@ fn run_kimi_member(
             client.prompt(
                 &prompt_text,
                 idle_timeout,
+                |receipt| {
+                    for message in &accepted_messages {
+                        mark_message_delivered(ledger, message, &member.id, &member.name, receipt)?;
+                    }
+                    Ok(())
+                },
                 |update| mapper.handle(update),
                 |request| handle_kimi_provider_request(ledger, &member_row, request),
                 || {
@@ -15527,13 +15545,6 @@ fn run_kimi_member(
             )?
         };
         let round_trigger = accepted_messages.last().cloned();
-        for message in &accepted_messages {
-            let receipt = client
-                .session_id()
-                .map(|session_id| format!("kimi-acp-session:{session_id}"))
-                .unwrap_or_else(|| format!("kimi-acp-message:{}", message.id));
-            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
-        }
         accepted_messages.clear();
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
@@ -16573,9 +16584,29 @@ fn parse_round_result(final_text: &str) -> MemberRoundResult {
     }
 }
 
+/// Return the final structured member report when a provider stream contains
+/// interim assistant prose or more than one report. Reports that predate the
+/// `## RESULT` contract remain readable as their original trimmed text.
+fn canonical_member_report_text(text: &str) -> &str {
+    let mut offset = 0usize;
+    let mut last_result = None;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.to_ascii_uppercase().starts_with("## RESULT") {
+            let leading = line.len().saturating_sub(trimmed.len());
+            last_result = Some(offset + leading);
+        }
+        offset += line.len();
+    }
+    last_result
+        .map(|start| text[start..].trim())
+        .unwrap_or_else(|| text.trim())
+}
+
 /// Loose `## <NAME>` section extractor: the trimmed body between the heading
 /// (matched case-insensitively) and the next `## ` heading or EOF.
 fn extract_report_section(text: &str, name: &str) -> Option<String> {
+    let text = canonical_member_report_text(text);
     let marker = format!("## {name}").to_uppercase();
     let mut in_section = false;
     let mut body = Vec::new();
@@ -34871,6 +34902,92 @@ mod tests {
             "malformed body must be a Usage error, got: {error:?}"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_turn_scope_ignores_stale_item_activity() {
+        let mut active = "turn-current".to_string();
+
+        assert!(!codex_frame_matches_active_turn(
+            &mut active,
+            Some("item/completed"),
+            Some("turn-interrupted"),
+        ));
+        assert_eq!(active, "turn-current");
+        assert!(codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/completed"),
+            Some("turn-current"),
+        ));
+    }
+
+    #[test]
+    fn codex_turn_scope_moves_only_on_explicit_turn_started() {
+        let mut active = "turn-start-response".to_string();
+
+        assert!(codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/started"),
+            Some("turn-provider-continuation"),
+        ));
+        assert_eq!(active, "turn-provider-continuation");
+        assert!(!codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/completed"),
+            Some("turn-start-response"),
+        ));
+        assert!(codex_frame_matches_active_turn(
+            &mut active,
+            Some("turn/completed"),
+            Some("turn-provider-continuation"),
+        ));
+    }
+
+    #[test]
+    fn member_handoff_uses_final_structured_report() {
+        let text = "I will inspect the inbox first.\n\
+                    Progress update before the result.\n\
+                    ## RESULT\n\
+                    done\n\
+                    ## SUMMARY\n\
+                    final evidence only\n";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## RESULT\ndone\n## SUMMARY\nfinal evidence only"
+        );
+        assert_eq!(
+            extract_report_section(text, "SUMMARY").as_deref(),
+            Some("final evidence only")
+        );
+    }
+
+    #[test]
+    fn member_handoff_last_structured_report_wins() {
+        let text = "## RESULT\nblocked\n## SUMMARY\nfirst attempt\n\
+                    Retrying after Host feedback.\n\
+                    ## RESULT\n\
+                    done\n\
+                    ## SUMMARY\n\
+                    accepted attempt\n";
+
+        assert_eq!(
+            canonical_member_report_text(text),
+            "## RESULT\ndone\n## SUMMARY\naccepted attempt"
+        );
+        assert_eq!(parse_round_result(text), MemberRoundResult::Done);
+        assert_eq!(
+            extract_report_section(text, "SUMMARY").as_deref(),
+            Some("accepted attempt")
+        );
+    }
+
+    #[test]
+    fn member_handoff_without_result_heading_is_backward_compatible() {
+        assert_eq!(
+            canonical_member_report_text("  legacy free-form report  "),
+            "legacy free-form report"
+        );
     }
 }
 
