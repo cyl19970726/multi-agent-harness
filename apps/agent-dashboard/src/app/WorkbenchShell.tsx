@@ -1039,7 +1039,7 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
     case "docs":
       if (selection.documentId === "document-brand-a-content-operating-plan") return "Brand A content operating plan";
       if (selection.moduleId === "module-trademark-management") return "Trademark Management";
-      return selection.documentId ?? selection.moduleId ?? "Company knowledge";
+      return selection.documentId ?? selection.moduleId ?? "Operating knowledge";
     case "debug":
       return "Diagnostics";
     default:

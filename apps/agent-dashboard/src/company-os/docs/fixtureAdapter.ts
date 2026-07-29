@@ -76,6 +76,10 @@ function record(records: JsonRecord[], id: unknown): JsonRecord | undefined {
   return resolved ? records.find((entry) => entry.id === resolved) : undefined;
 }
 
+function isArchived(entry: JsonRecord | undefined): boolean {
+  return text(entry?.lifecycle_status, text(entry?.status)).toLowerCase() === "archived";
+}
+
 function refs(root: JsonRecord, page: string): string[] {
   const slices = root.page_slices;
   if (!slices || typeof slices !== "object") return [];
@@ -631,12 +635,19 @@ function buildDocumentHealthData({
 export function adaptCompanyOsDocsProjection(input: unknown, selected: { documentId?: string; moduleId?: string } = {}): Projection {
   const root = (input && typeof input === "object" ? input : {}) as JsonRecord;
   const actors = items(root.actors);
-  const documents = items(root.documents);
+  const allDocuments = items(root.documents);
+  const documents = allDocuments.filter((entry) => !isArchived(entry));
+  const activeDocumentIds = new Set(documents.map((entry) => text(entry.id)).filter(Boolean));
   const typedRecords = items(root.typed_records);
   const workItems = items(root.work_items);
   const financialRecords = items(root.financial_records);
   const approvals = items(root.approvals);
-  const modules = items(root.business_modules);
+  const allModules = items(root.business_modules);
+  const modules = allModules.filter((entry) => {
+    if (isArchived(entry)) return false;
+    const rootDocumentRef = text(entry.root_document_ref, text(entry.root_document_id));
+    return !rootDocumentRef || activeDocumentIds.size === 0 || activeDocumentIds.has(rootDocumentRef);
+  });
   const relations = items(root.relations);
   const blocks = items(root.blocks);
   const views = items(root.views);
@@ -1098,7 +1109,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   return {
     workspace: {
       fixtureId,
-      title: "Company workspace",
+      title: "Operating workspace",
       description: documents.length ? "Documents, typed records, and connected operating context." : "No company documents are supplied by this projection.",
       rootSelected: true,
       tree: workspaceTree,
