@@ -62,6 +62,8 @@ writing durable company records:
 harness company current
 harness company init --id <company-id> --name <display-name>
 harness company migrate-from-project --from-project <project-id|path> --id <company-id> --name <display-name>
+harness company migrate-from-project --from-project <project-id|path> --id <company-id> --verify-only
+harness --company <company-id> company migrations
 harness --company <company-id> company docs query --document <doc-id>
 HARNESS_COMPANY=<company-id> harness company work list
 ```
@@ -71,7 +73,11 @@ project-derived compatibility Store. That fallback is allowed for legacy reads
 and migration work, but new dogfood/company operations should prefer an
 explicit Company Store. `migrate-from-project` copies only `company_os_*.jsonl`
 ledgers and must not be treated as Execution Space, Project Binding, provider
-session, prompt, or runtime migration.
+session, prompt, or runtime migration. A successful copy or `--verify-only`
+run proves every exact source row remains present in the destination, appends
+an audit record to `company_store_migrations.jsonl`, and writes an advisory
+source marker. The marker recommends read-only audit use but does not falsely
+claim filesystem write enforcement.
 
 Docs are **Agent-operated and Human-reviewed**. Skills and CLI/API are the main
 Agent interface for reading, editing, governing, and verifying document truth.
@@ -100,7 +106,7 @@ skill. The surface includes read/query commands (`query`, `search`,
 and governed maintenance for `document create|rename|move|archive`,
 `template create|status`, `block append|update|archive|remove|reorder`,
 `typed-record append|update|validate`, `view create|update`, and
-`relation link|unlink|relink`.
+`relation link|unlink|relink|repair-missing`.
 
 External software source sync is project-routed:
 
@@ -135,6 +141,10 @@ harness company docs relation unlink \
   --relation <relation-id> \
   --actor <human-or-agent-id> \
   (--dry-run | --confirm)
+harness company docs relation repair-missing \
+  --definition <custom-page-definition-id> \
+  --actor <human-or-agent-id> \
+  (--dry-run | --confirm)
 ```
 
 `docs query` is the first read command Agents should run before mutation. It is
@@ -147,7 +157,8 @@ records, Organization changes, execution runs, or UI-only state.
 `docs source sync` is the first external software product-source mapping
 command. It reads a local Git worktree and writes Docs `TypedRecord` rows for
 `external_project`, `product_doc_source`, `product_doc_snapshot`, and
-`source_sync_run`, preserving repo, branch, commit, path, content hash,
+`source_sync_run`, plus an idempotent `Document → source_for → TypedRecord`
+Relation for each row, preserving repo, branch, commit, path, content hash,
 headings, and source class. The command treats GitHub/webhook delivery as a
 transport, not authority: it does not create WorkItems, approve spending,
 change Organization, mutate Finance, overwrite commercial truth, execute

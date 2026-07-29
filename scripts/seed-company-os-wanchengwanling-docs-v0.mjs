@@ -341,6 +341,7 @@ async function main() {
     const existingDocs = (preflight.documents ?? []).filter((entry) => entry.space_id === "wanchengwanling");
     const existingModules = (preflight.business_modules ?? []).filter((entry) => entry.id.startsWith("module-wcw-"));
     const existingTyped = preflight.typed_records ?? [];
+    const existingRelations = preflight.relations ?? [];
     const existingPageDefinitions = preflight.custom_page_definitions ?? [];
     const requiredCustomPageIds = [
       "page-wcw-command-center",
@@ -353,6 +354,12 @@ async function main() {
       existingDocs.length >= 12 &&
       existingModules.length >= modules.length &&
       requiredCustomPageIds.every((id) => existingPageDefinitions.some((entry) => entry.id === id)) &&
+      typedRecords.every(([moduleKey, , recordKey]) =>
+        existingRelations.some((relation) =>
+          relation.lifecycle_status !== "archived" &&
+          relation.relation_type === "source_for" &&
+          relation.from_ref?.id === `document-wcw-${moduleKey}` &&
+          relation.to_ref?.id === `record-wcw-${recordKey}`)) &&
       existingTyped.some((entry) => entry.id === "record-wcw-bracelet-physical-nfc" && entry.fields?.price_cny === 30 && entry.fields?.merchant_share_cny === 10) &&
       existingTyped.some((entry) => entry.id === "record-wcw-rule-8-checkins-ar-magnet" && entry.fields?.required_checkin_count === 8) &&
       existingTyped.some((entry) => entry.id === "record-wcw-rule-12-checkins-lottery" && entry.fields?.required_checkin_count === 12);
@@ -522,12 +529,22 @@ async function main() {
         "--actor", "agent-wcw-docs-governance",
       ]);
       if (record.ok !== true) throw new Error(`typed-record append failed for ${recordKey}: ${JSON.stringify(record)}`);
+      const relation = run([
+        "company", "docs", "relation", "link",
+        "--definition", definitionByKey.get(moduleKey),
+        "--from-document", `document-wcw-${moduleKey}`,
+        "--to-record", `record-wcw-${recordKey}`,
+        "--relation-id", `relation-wcw-${moduleKey}-${recordKey}`,
+        "--actor", "agent-wcw-docs-governance",
+      ]);
+      if (relation.ok !== true) throw new Error(`source_for relation append failed for ${recordKey}: ${JSON.stringify(relation)}`);
     }
 
     const snapshot = await get(base, "/v1/company-os/snapshot");
     const documents = snapshot.documents ?? [];
     const businessModules = snapshot.business_modules ?? [];
     const typed = snapshot.typed_records ?? [];
+    const relations = snapshot.relations ?? [];
     const pageDefinitions = snapshot.custom_page_definitions ?? [];
     const customPageIds = [
       "page-wcw-command-center",
@@ -555,6 +572,15 @@ async function main() {
     }
     if (!typed.some((entry) => entry.id === "record-wcw-rule-12-checkins-lottery" && entry.fields?.required_checkin_count === 12)) {
       throw new Error("missing 12-checkin lottery eligibility record");
+    }
+    const missingSourceRelations = typedRecords
+      .map(([, , recordKey]) => `record-wcw-${recordKey}`)
+      .filter((recordId) => !relations.some((relation) =>
+        relation.lifecycle_status !== "archived" &&
+        relation.relation_type === "source_for" &&
+        relation.to_ref?.id === recordId));
+    if (missingSourceRelations.length) {
+      throw new Error(`missing Document source_for relations: ${missingSourceRelations.join(", ")}`);
     }
     if ((snapshot.work_items ?? []).length || (snapshot.approvals ?? []).length || (snapshot.financial_records ?? []).length) {
       throw new Error("Docs seed created Work, Approval, or Finance side effects");

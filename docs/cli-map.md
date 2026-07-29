@@ -47,7 +47,7 @@ Store identity introduced by ADR 0040.
 | --- | --- | --- | --- |
 | Registry | `company init --id <company-id> [--name <name>]`, `company list`, `company current`, `company show [company-id]`, `company switch <company-id>` | Implemented | Stores live under `<HARNESS_HOME>/companies/<id>/`; `ACTIVE_COMPANY` and `companies/registry.json` track the current Company. |
 | Company OS routing | `harness --company <id> company ...`, `HARNESS_COMPANY=<id> harness company ...`, or active Company from `company switch/init` | Implemented | Applies only to `harness company ...`; Mission/Wave, Agent Team, Workflow, provider cwd, and Project selection remain separate. |
-| Migration from project-derived stores | `company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]` | Implemented | Copies only `company_os_*.jsonl` into the Company Store and makes that Company current. It does not copy Mission/Wave, Agent Team, Workflow, provider sessions, prompts or runtimes. |
+| Migration from project-derived stores | `company migrate-from-project --from-project <project-id\|path> --id <company-id> [--name <name>] [--force]`, `company migrate-from-project ... --verify-only`, `company migrations` | Implemented | Copies only `company_os_*.jsonl`, verifies every exact source row exists in the destination, appends a Company Store migration record, and writes an advisory source marker. `--verify-only` rechecks an existing destination without copying. The source remains audit evidence; no Mission/Wave, Agent Team, Workflow, provider session, prompt, or runtime ledger is copied. |
 
 ### Docs
 
@@ -56,7 +56,7 @@ Store identity introduced by ADR 0040.
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
 | Read/projection | `query`, `search`, `traverse`, `refs`, `related`, `snapshot`, `diff`, `change-report`, `health` | Implemented | Agent-readable and human-readable projections over native Docs records. |
-| Source sync | `source sync` | Implemented | Syncs external source state into Docs records with explicit boundaries. GitHub webhook transport is still a separate future adapter. |
+| Source sync | `source sync` | Implemented | Syncs external source state into Docs TypedRecords and idempotent `Document → source_for → TypedRecord` Relations with explicit boundaries. GitHub webhook transport is still a separate future adapter. |
 | Module setup | `module create` | Implemented | Creates BusinessModule plus default/fallback View through governed API path. |
 | Custom page metadata | `page-definition create`, `page scaffold`, `page verify`, `page publish` | Partial | Defines/scaffolds/verifies/publishes custom-page records and refs. It does not yet generate a complete production page from an arbitrary business brief. |
 | Document lifecycle | `document create`, `document rename`, `document move`, `document archive` | Implemented | Structure maintenance exists. Archive requires confirmation; no physical delete. |
@@ -64,7 +64,7 @@ Store identity introduced by ADR 0040.
 | Blocks | `block append`, `block update`, `block archive`, `block remove`, `block reorder` | Implemented | Agent-first document editing primitives. Drag/drop editor is not the priority path. |
 | Typed records | `typed-record append`, `typed-record update`, `typed-record validate` | Implemented | Core structured memory primitive. |
 | Views | `view create`, `view update` | Partial | Basic view records exist. Advanced view editing, calendar/chart views and complex field configuration are still missing. |
-| Relations | `relation link`, `relation unlink`, `relation relink` | Implemented | Native relation maintenance across Docs and adjacent systems. |
+| Relations | `relation link`, `relation unlink`, `relation relink`, `relation repair-missing` | Implemented | Native relation maintenance across Docs and adjacent systems. `repair-missing` is definition/module-scoped, dry-run-first, confirmation-gated, and idempotent. |
 
 ### Work
 

@@ -1014,7 +1014,7 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company init|list|current|switch|show|migrate-from-project | company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ...")?;
+    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ...")?;
     match args[0].as_str() {
         "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
         "list" => company_store_list_command(),
@@ -1024,13 +1024,14 @@ fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "migrate-from-project" => {
             company_store_migrate_from_project_command(args.get(1..).unwrap_or(&[]))
         }
+        "migrations" => company_store_migrations_command(store),
         "docs" => company_docs_command(store, &args[1..]),
         "work" => company_work_command(store, &args[1..]),
         "org" => company_org_command(store, &args[1..]),
         "approval" => company_approval_command(store, &args[1..]),
         "finance" => company_finance_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company init|list|current|switch|show|migrate-from-project | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ..."
+            "unknown company command: {other}; usage: harness company <init|list|current|switch|show|migrate-from-project|migrations> | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ..."
         ))),
     }
 }
@@ -1107,6 +1108,7 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
     let id = required(args, "--id")?;
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
     let force = has_flag(args, "--force");
+    let verify_only = has_flag(args, "--verify-only");
     let harness_home = company_store::harness_home().map_err(company_store_err)?;
     let source_project =
         resolve_project_selector(&harness_home, &from_project).ok_or_else(|| {
@@ -1114,31 +1116,102 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
                 "unknown source project: {from_project}; pass a registered project id or path"
             ))
         })?;
-    let ctx = company_store::register_and_activate(&harness_home, &id, &name, &now_string())
-        .map_err(company_store_err)?;
-    let outcome = copy_company_os_ledgers(&source_project.store_root, &ctx.store_root, force)
-        .map_err(|err| {
-            CliError::Usage(format!(
-                "Company Store migration refused from {} to {}: {err}",
-                source_project.store_root.display(),
-                ctx.store_root.display()
-            ))
-        })?;
+    let ctx = if verify_only {
+        company_store::context_for_id(&harness_home, &id)
+            .map_err(company_store_err)?
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "Company Store {id} does not exist; run migrate-from-project without --verify-only first"
+                ))
+            })?
+    } else {
+        company_store::register_and_activate(&harness_home, &id, &name, &now_string())
+            .map_err(company_store_err)?
+    };
+    let outcome = if verify_only {
+        CompanyLedgerCopyOutcome::default()
+    } else {
+        copy_company_os_ledgers(&source_project.store_root, &ctx.store_root, force).map_err(
+            |err| {
+                CliError::Usage(format!(
+                    "Company Store migration refused from {} to {}: {err}",
+                    source_project.store_root.display(),
+                    ctx.store_root.display()
+                ))
+            },
+        )?
+    };
     HarnessStore::new(ctx.store_root.clone()).init()?;
+    let verified_at = now_string();
+    let verification =
+        verify_company_os_ledger_migration(&source_project.store_root, &ctx.store_root).map_err(
+            |err| {
+                CliError::Usage(format!(
+                    "Company Store migration verification failed from {} to {}: {err}",
+                    source_project.store_root.display(),
+                    ctx.store_root.display()
+                ))
+            },
+        )?;
+    let migration_record = serde_json::json!({
+        "id": generated_id("company-store-migration"),
+        "company_id": ctx.id,
+        "source_project_id": source_project.id,
+        "source_store_root": source_project.store_root.display().to_string(),
+        "target_store_root": ctx.store_root.display().to_string(),
+        "mode": if verify_only { "verify_only" } else { "copy_and_verify" },
+        "verified_at": verified_at,
+        "verification": verification,
+        "boundary": {
+            "copied": "company_os_*.jsonl only",
+            "execution_space_migration": false,
+            "project_binding_migration": false,
+            "dual_write": false,
+            "destructive_delete": false,
+            "source_access": "read_only_audit_recommended",
+            "source_read_only_enforced": false
+        }
+    });
+    append_jsonl_value(
+        &ctx.store_root.join("company_store_migrations.jsonl"),
+        &migration_record,
+    )?;
+    let source_marker = serde_json::json!({
+        "company_id": ctx.id,
+        "target_store_root": ctx.store_root.display().to_string(),
+        "source_project_id": source_project.id,
+        "verified_at": verified_at,
+        "status": "migrated_and_verified",
+        "recommended_access": "read_only_audit",
+        "read_only_enforced": false,
+        "destructive_delete": false,
+        "dual_write": false
+    });
+    fs::write(
+        source_project
+            .store_root
+            .join("COMPANY_OS_MIGRATED_TO_COMPANY.json"),
+        serde_json::to_string_pretty(&source_marker)?,
+    )?;
     print_json(&serde_json::json!({
         "ok": true,
         "command": "harness company migrate-from-project",
+        "mode": if verify_only { "verify_only" } else { "copy_and_verify" },
         "company": company_context_json(&ctx, &ctx.id),
         "source_project": project_context_json(&source_project, ""),
         "copied_files": outcome.copied_files,
         "copied_records": outcome.copied_records,
         "skipped_identical_files": outcome.skipped_identical_files,
+        "verification": migration_record["verification"],
+        "migration_record": migration_record,
+        "source_marker": source_marker,
         "boundary": {
             "copied": "company_os_*.jsonl only",
             "not_copied": ["missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
             "execution_space_migration": false,
             "project_binding_migration": false,
-            "dual_write": false
+            "dual_write": false,
+            "destructive_delete": false
         },
         "next_commands": [
             format!("harness --company {} company docs health", ctx.id),
@@ -1148,11 +1221,132 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
     }))
 }
 
+fn company_store_migrations_command(store: &HarnessStore) -> CliResult<()> {
+    let path = store.root().join("company_store_migrations.jsonl");
+    let records = match fs::read_to_string(path) {
+        Ok(text) => text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<serde_json::Value>, _>>()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(CliError::Io(error)),
+    };
+    print_json(&serde_json::json!({
+        "command": "harness company migrations",
+        "records": records
+    }))
+}
+
 #[derive(Debug, Clone, Default)]
 struct CompanyLedgerCopyOutcome {
     copied_files: u64,
     copied_records: u64,
     skipped_identical_files: u64,
+}
+
+fn verify_company_os_ledger_migration(src: &Path, dst: &Path) -> Result<serde_json::Value, String> {
+    let mut source_ledgers = fs::read_dir(src)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("company_os_") && name.ends_with(".jsonl"))
+        })
+        .collect::<Vec<_>>();
+    source_ledgers.sort();
+    if source_ledgers.is_empty() {
+        return Err(format!(
+            "source store has no company_os_*.jsonl ledgers: {}",
+            src.display()
+        ));
+    }
+    let forbidden_execution_files = [
+        "missions.jsonl",
+        "waves.jsonl",
+        "agent_teams.jsonl",
+        "team_runs.jsonl",
+        "member_runs.jsonl",
+        "team_messages.jsonl",
+        "provider_sessions.jsonl",
+    ];
+    let leaked_execution_files = forbidden_execution_files
+        .iter()
+        .filter(|file| dst.join(file).exists())
+        .copied()
+        .collect::<Vec<_>>();
+    if !leaked_execution_files.is_empty() {
+        return Err(format!(
+            "target Company Store contains execution ledgers: {}",
+            leaked_execution_files.join(", ")
+        ));
+    }
+    let mut file_results = Vec::new();
+    let mut source_records = 0_u64;
+    let mut target_records = 0_u64;
+    for source_path in source_ledgers {
+        let file_name = source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "source ledger has a non-UTF-8 filename".to_string())?;
+        let target_path = dst.join(file_name);
+        if !target_path.is_file() {
+            return Err(format!(
+                "target ledger is missing: {}",
+                target_path.display()
+            ));
+        }
+        let source_text = fs::read_to_string(&source_path).map_err(|error| error.to_string())?;
+        let target_text = fs::read_to_string(&target_path).map_err(|error| error.to_string())?;
+        let source_lines = source_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        let target_lines = target_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<HashSet<_>>();
+        let missing_source_records = source_lines
+            .iter()
+            .filter(|line| !target_lines.contains(**line))
+            .count();
+        if missing_source_records > 0 {
+            return Err(format!(
+                "target ledger {file_name} is missing {missing_source_records} exact source record(s)"
+            ));
+        }
+        source_records += source_lines.len() as u64;
+        target_records += target_lines.len() as u64;
+        file_results.push(serde_json::json!({
+            "file": file_name,
+            "source_records": source_lines.len(),
+            "target_records": target_lines.len(),
+            "missing_source_records": 0,
+            "source_content_hash": content_hash_hex16(&source_text)
+        }));
+    }
+    Ok(serde_json::json!({
+        "status": "verified",
+        "verified_files": file_results.len(),
+        "source_records": source_records,
+        "target_records": target_records,
+        "missing_source_records": 0,
+        "execution_ledgers_in_target": [],
+        "files": file_results
+    }))
+}
+
+fn append_jsonl_value(path: &Path, value: &serde_json::Value) -> CliResult<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, value)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
 }
 
 fn copy_company_os_ledgers(
@@ -3014,13 +3208,19 @@ fn company_docs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> 
             }
         }
         "relation" => {
-            require_subcommand(&args[1..], "company docs relation link|unlink|relink")?;
+            require_subcommand(
+                &args[1..],
+                "company docs relation link|unlink|relink|repair-missing",
+            )?;
             match args[1].as_str() {
                 "link" => company_docs_relation_link_command(store, &args[2..]),
                 "unlink" => company_docs_relation_unlink_command(store, &args[2..]),
                 "relink" => company_docs_relation_relink_command(store, &args[2..]),
+                "repair-missing" => {
+                    company_docs_relation_repair_missing_command(store, &args[2..])
+                }
                 other => Err(CliError::Usage(format!(
-                    "unknown company docs relation command: {other}; usage: harness company docs relation link|unlink|relink"
+                    "unknown company docs relation command: {other}; usage: harness company docs relation link|unlink|relink|repair-missing"
                 ))),
             }
         }
@@ -3666,18 +3866,52 @@ fn company_docs_source_sync_command(store: &HarnessStore, args: &[String]) -> Cl
         &now,
     )?);
 
+    let existing_relations = store
+        .latest_relations()?
+        .into_iter()
+        .filter(|relation| relation.lifecycle_status.as_deref() != Some("archived"))
+        .map(|relation| {
+            (
+                relation.from_ref.id,
+                relation.to_ref.id,
+                relation.relation_type,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let planned_relations = planned_records
+        .iter()
+        .filter_map(|record| {
+            let record_id = json_str(record, "id")?;
+            let relation_key = (
+                source_document.clone(),
+                record_id.clone(),
+                "source_for".to_string(),
+            );
+            if existing_relations.contains(&relation_key) {
+                return None;
+            }
+            Some(serde_json::json!({
+                "relation_id": company_docs_relation_id(&source_document, &record_id),
+                "from_document": source_document,
+                "to_record": record_id,
+                "relation_type": "source_for"
+            }))
+        })
+        .collect::<Vec<_>>();
+
     if dry_run {
         return print_json(&serde_json::json!({
             "ok": true,
             "dry_run": true,
             "command": "harness company docs source sync",
-            "effect": "typed_record.append",
+            "effects": ["typed_record.append", "relation.append"],
             "records": planned_records,
+            "relations": planned_relations,
             "boundaries": company_docs_source_sync_boundaries()
         }));
     }
 
-    let mut results = Vec::new();
+    let mut record_results = Vec::new();
     for record in planned_records {
         let record_id = json_str(&record, "id").unwrap_or_else(|| "<unknown>".to_string());
         let subject_ref = if store
@@ -3700,15 +3934,40 @@ fn company_docs_source_sync_command(store: &HarnessStore, args: &[String]) -> Cl
             record,
             now_string(),
         );
-        results.push(dispatch_company_docs_action_value(store, &body)?);
+        record_results.push(dispatch_company_docs_action_value(store, &body)?);
+    }
+
+    let relation_policy = value(args, "--relation-policy")
+        .unwrap_or_else(|| format!("{definition_id}:relation.append"));
+    let mut relation_results = Vec::new();
+    for plan in &planned_relations {
+        let document_id = json_str(plan, "from_document").unwrap_or_default();
+        let record_id = json_str(plan, "to_record").unwrap_or_default();
+        let relation_id = json_str(plan, "relation_id").unwrap_or_default();
+        let command_id = generated_id("action-cli-docs-source-sync-relation");
+        let relation_now = now_string();
+        let body = company_docs_relation_append_body(
+            &definition_id,
+            &document_id,
+            &record_id,
+            actor_ref.clone(),
+            "source_for",
+            &command_id,
+            &relation_id,
+            relation_policy.clone(),
+            &relation_now,
+        );
+        relation_results.push(dispatch_company_docs_action_value(store, &body)?);
     }
 
     print_json(&serde_json::json!({
         "ok": true,
         "command": "harness company docs source sync",
-        "effect": "typed_record.append",
-        "records_written": results.len(),
-        "results": results,
+        "effects": ["typed_record.append", "relation.append"],
+        "records_written": record_results.len(),
+        "relations_written": relation_results.len(),
+        "record_results": record_results,
+        "relation_results": relation_results,
         "boundaries": company_docs_source_sync_boundaries()
     }))
 }
@@ -5687,15 +5946,36 @@ fn company_docs_relation_link_command(store: &HarnessStore, args: &[String]) -> 
     let relation_type = value(args, "--relation-type").unwrap_or_else(|| "source_for".to_string());
     let command_id =
         value(args, "--id").unwrap_or_else(|| generated_id("action-cli-docs-relation"));
-    let relation_id = value(args, "--relation-id").unwrap_or_else(|| {
-        format!(
-            "relation-cli-docs-{}-{}",
-            relation_slug(&from_document),
-            relation_slug(&to_record)
-        )
-    });
+    let relation_id = value(args, "--relation-id")
+        .unwrap_or_else(|| company_docs_relation_id(&from_document, &to_record));
     let now = now_string();
     let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let body = company_docs_relation_append_body(
+        &definition_id,
+        &from_document,
+        &to_record,
+        actor_ref,
+        &relation_type,
+        &command_id,
+        &relation_id,
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        &now,
+    );
+    dispatch_company_docs_action(store, &body)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn company_docs_relation_append_body(
+    definition_id: &str,
+    from_document: &str,
+    to_record: &str,
+    actor_ref: serde_json::Value,
+    relation_type: &str,
+    command_id: &str,
+    relation_id: &str,
+    policy_ref: String,
+    now: &str,
+) -> serde_json::Value {
     let record = serde_json::json!({
         "id": relation_id,
         "from_ref": {"kind": "document", "id": from_document},
@@ -5706,7 +5986,7 @@ fn company_docs_relation_link_command(store: &HarnessStore, args: &[String]) -> 
         "created_by": actor_ref,
         "created_at": now
     });
-    let body = serde_json::json!({
+    serde_json::json!({
         "id": command_id,
         "command_name": "relation.append",
         "subject_ref": {"kind": "document", "id": from_document},
@@ -5716,7 +5996,7 @@ fn company_docs_relation_link_command(store: &HarnessStore, args: &[String]) -> 
             "record": record
         },
         "required_permission": "company.records.write",
-        "policy_ref": value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append")),
+        "policy_ref": policy_ref,
         "risk_tier": "r1",
         "requires_human_approval": false,
         "approval_refs": [],
@@ -5724,8 +6004,121 @@ fn company_docs_relation_link_command(store: &HarnessStore, args: &[String]) -> 
         "audit_event_refs": [format!("{command_id}:policy-authorized")],
         "requested_at": now,
         "completed_at": null
+    })
+}
+
+fn company_docs_relation_repair_missing_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = docs_actor_kind(args)?;
+    let dry_run = has_flag(args, "--dry-run");
+    if !dry_run && !has_flag(args, "--confirm") {
+        return Err(CliError::Usage(
+            "relation repair-missing requires --confirm unless --dry-run is supplied".into(),
+        ));
+    }
+    let definition = store
+        .latest_custom_page_definitions()?
+        .into_iter()
+        .find(|definition| definition.id == definition_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "CustomPageDefinition:{definition_id} not found for relation repair"
+            ))
+        })?;
+    let snapshot = company_os_api::snapshot(store)?;
+    let document_ids = json_array(&snapshot, "documents")
+        .iter()
+        .filter_map(|document| json_str(document, "id"))
+        .collect::<BTreeSet<_>>();
+    let relations = json_array(&snapshot, "relations");
+    let actor_ref = serde_json::json!({"actor_type": actor_kind, "actor_id": actor_id});
+    let relation_type = "source_for".to_string();
+    let policy_ref =
+        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:relation.append"));
+    let mut plans = json_array(&snapshot, "typed_records")
+        .iter()
+        .filter(|record| {
+            json_str(record, "module_id").as_deref() == Some(definition.module_id.as_str())
+        })
+        .filter_map(|record| {
+            let record_id = json_str(record, "id")?;
+            let document_id = json_str(record, "source_document_ref")
+                .or_else(|| json_field_str(record, "source_document_ref"))?;
+            if !document_ids.contains(&document_id)
+                || json_has_relation_between(relations, &document_id, &record_id)
+            {
+                return None;
+            }
+            let relation_id = company_docs_relation_id(&document_id, &record_id);
+            Some(serde_json::json!({
+                "relation_id": relation_id,
+                "from_document": document_id,
+                "to_record": record_id,
+                "relation_type": relation_type
+            }))
+        })
+        .collect::<Vec<_>>();
+    plans.sort_by(|left, right| {
+        json_str(left, "relation_id")
+            .unwrap_or_default()
+            .cmp(&json_str(right, "relation_id").unwrap_or_default())
     });
-    dispatch_company_docs_action(store, &body)
+    if dry_run {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "command": "harness company docs relation repair-missing",
+            "definition_id": definition_id,
+            "module_id": definition.module_id,
+            "planned_count": plans.len(),
+            "planned_relations": plans,
+            "boundaries": {
+                "relation_type": relation_type,
+                "physical_delete": false,
+                "work_side_effects": false,
+                "finance_side_effects": false,
+                "organization_side_effects": false,
+                "execution_side_effects": false
+            }
+        }));
+    }
+    let mut results = Vec::new();
+    for plan in &plans {
+        let document_id = json_str(plan, "from_document").unwrap_or_default();
+        let record_id = json_str(plan, "to_record").unwrap_or_default();
+        let relation_id = json_str(plan, "relation_id").unwrap_or_default();
+        let command_id = generated_id("action-cli-docs-relation-repair");
+        let now = now_string();
+        let body = company_docs_relation_append_body(
+            &definition_id,
+            &document_id,
+            &record_id,
+            actor_ref.clone(),
+            &relation_type,
+            &command_id,
+            &relation_id,
+            policy_ref.clone(),
+            &now,
+        );
+        results.push(dispatch_company_docs_action_value(store, &body)?);
+    }
+    print_json(&serde_json::json!({
+        "ok": true,
+        "dry_run": false,
+        "command": "harness company docs relation repair-missing",
+        "definition_id": definition_id,
+        "module_id": definition.module_id,
+        "repaired_count": results.len(),
+        "relation_ids": plans
+            .iter()
+            .filter_map(|plan| json_str(plan, "relation_id"))
+            .collect::<Vec<_>>(),
+        "results": results
+    }))
 }
 
 fn company_docs_relation_unlink_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -5893,13 +6286,8 @@ fn company_docs_relation_relink_command(store: &HarnessStore, args: &[String]) -
         archived_record,
         now.clone(),
     );
-    let replacement_relation_id = value(args, "--new-relation-id").unwrap_or_else(|| {
-        format!(
-            "relation-cli-docs-{}-{}",
-            relation_slug(&from_document),
-            relation_slug(&to_record)
-        )
-    });
+    let replacement_relation_id = value(args, "--new-relation-id")
+        .unwrap_or_else(|| company_docs_relation_id(&from_document, &to_record));
     let link_record = serde_json::json!({
         "id": replacement_relation_id,
         "from_ref": {"kind": "document", "id": from_document.clone()},
@@ -7023,6 +7411,19 @@ fn relation_slug(value: &str) -> String {
     } else {
         slug.chars().take(48).collect()
     }
+}
+
+fn company_docs_relation_id(from_document: &str, to_record: &str) -> String {
+    let from_slug = relation_slug(from_document)
+        .chars()
+        .take(24)
+        .collect::<String>();
+    let to_slug = relation_slug(to_record)
+        .chars()
+        .take(24)
+        .collect::<String>();
+    let endpoint_hash = content_hash_hex16(&format!("{from_document}\0{to_record}"));
+    format!("relation-cli-docs-{from_slug}-{to_slug}-{endpoint_hash}")
 }
 
 /// Read-only export/verification boundary for the retired Goal/Task ledgers.

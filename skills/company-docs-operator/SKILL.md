@@ -84,7 +84,8 @@ Use the smallest command that preserves the source of truth. Current commands:
 `harness company docs typed-record validate`,
 `harness company docs view create`, `harness company docs view update`,
 `harness company docs relation link`, `harness company docs relation unlink`,
-`harness company docs relation relink`, `harness company docs diff`,
+`harness company docs relation relink`,
+`harness company docs relation repair-missing`, `harness company docs diff`,
 `harness company docs snapshot`, and
 `harness company docs change-report`.
 
@@ -189,9 +190,10 @@ harness company docs source sync \
 ```
 
 The command writes `TypedRecord` rows for `external_project`,
-`product_doc_source`, `product_doc_snapshot`, and `source_sync_run`. In v0 this
-is the native Docs substrate for external PRD mapping; later dedicated schema
-or SQL read models must remain rebuildable from these Company OS records.
+`product_doc_source`, `product_doc_snapshot`, and `source_sync_run`, and links
+each row to its source Document with an idempotent `source_for` Relation. In v0
+this is the native Docs substrate for external PRD mapping; later dedicated
+schema or SQL read models must remain rebuildable from these Company OS records.
 
 `source sync` observes software product truth. It does not overwrite Company OS
 commercial truth, create WorkItems, approve spending, update Finance, mutate
@@ -289,7 +291,8 @@ hide structured changes inside prose Blocks.
 
 Commands: `harness company docs typed-record update`,
 `harness company docs relation unlink`,
-`harness company docs relation relink`, and
+`harness company docs relation relink`,
+`harness company docs relation repair-missing`, and
 `harness company docs typed-record validate`.
 
 `typed-record update` dispatches a governed `typed_record.append` update for an
@@ -310,6 +313,13 @@ new active relation is linked.
 governed `relation.append` Actions: archive the existing Relation latest row,
 then create a replacement active Relation. It never physically deletes relation
 history.
+
+`relation repair-missing` inspects one CustomPageDefinition's module and plans
+only missing active `Document → source_for → TypedRecord` Relations for records
+whose source Document still exists. Use `--dry-run` first; dispatch requires
+`--confirm`. Repeating it after a successful repair plans zero writes. It does
+not repair unrelated modules or create Work, Finance, Organization, Approval,
+or Execution state.
 
 `typed-record validate` is read-only. It checks an explicit schema JSON against
 the current `TypedRecord.fields` for required fields and simple field types.
