@@ -105,6 +105,60 @@ an unstructured peer-to-peer channel graph. Lead is the company escalation
 path; Org/HR is the organizational manager for Business Agents; WorkItem roles
 remain the source of execution responsibility.
 
+## Current core loop: Docs + WorkItem + Organization
+
+The current implementation priority is intentionally narrower than the full
+four-system model:
+
+```text
+Docs holds context and receives durable results
+  -> WorkItem holds the commitment and lifecycle
+  -> Organization holds who exists, reports, and may act
+  -> Execution performs the work through the appropriate substrate
+  -> Docs and Work receive the accepted outcome and evidence
+```
+
+Finance is not in the default loop. It enters only when a WorkItem asks for a
+monetary effect. That keeps normal document maintenance, development, merchant
+follow-up, content planning, and org-capability work lightweight while still
+preserving a clean escalation path for purchases, invoices, payouts, refunds,
+and budgets.
+
+The key autonomous pattern is:
+
+1. an Agent reads Docs, typed records, Work views, Org state, or a gateway
+   observation;
+2. it identifies a gap, blocker, outdated record, missing capability, or next
+   action;
+3. it creates or routes a WorkItem with source context, role assignments,
+   acceptance criteria, and relevant refs;
+4. the responsible Actor performs the work directly or through Mission/Wave,
+   Agent Team, Workflow, host execution, external work, human work, or a
+   provider-native subagent;
+5. only the promoted outcome updates Docs, Work, Org proposals, or related
+   typed records.
+
+For example, a Docs Governance Agent may inspect a module, find that merchant
+FAQ and reward redemption policy are inconsistent, create a docs-maintenance
+WorkItem, perform it itself, or ask a lower Docs Agent / temporary subagent to
+draft the patch. The durable company facts remain the WorkItem, source and
+result Documents, explicit ActorRefs, and evidence refs.
+
+## Standard documents, module views, and custom pages
+
+Company OS should not require a heavy Notion-style editor to make progress.
+The baseline surface is standard Document rendering with Blocks, TypedRecords,
+Relations, Views, and related-module panels. This is the default for most
+company memory because Agents primarily edit through CLI/API and humans mostly
+read, review, and supervise.
+
+Custom pages are reserved for high-value operating surfaces where standard
+Documents and Views are insufficient: a launch command center, Work board,
+merchant network control page, Agent profile workspace, GitHub delivery page,
+or visual acceptance report. A custom page is presentation over native Store
+records; it must keep a standard Document/View fallback so Agents can still
+operate through CLI and future UIs can reconstruct the same truth.
+
 ## Creating organizational capability
 
 Org/HR evaluates temporary execution capacity versus a durable company role,

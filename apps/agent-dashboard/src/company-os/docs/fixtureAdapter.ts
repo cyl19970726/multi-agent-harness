@@ -310,7 +310,7 @@ function projectedDocumentBlocks(document: JsonRecord | undefined, blocks: JsonR
         id,
         type: "table" as const,
         table: {
-          caption: text(content.caption) || undefined,
+          caption: text(content.caption, text(content.title)) || undefined,
           columns: columns.length ? columns : ["Value"],
           rows: rawRows.map((row) => Array.isArray(row) ? row.map((cell) => text(cell)) : [text(row)]),
         },

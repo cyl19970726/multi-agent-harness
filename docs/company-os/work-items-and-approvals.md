@@ -185,6 +185,42 @@ but neither assignment nor WorkItem is inferred from ordinary chat. If work
 must be split, create related WorkItems or an executor-native plan with explicit
 links while keeping executor-internal planning outside the Company OS record.
 
+## Agent-owned WorkItem routing
+
+The normal autonomous-company path is that Agents turn observed gaps into
+WorkItems instead of leaving them as private reasoning, chat notes, or custom
+page text.
+
+```text
+Document / TypedRecord / Gateway event / Git provider observation
+  -> Agent detects a gap or next action
+  -> WorkItem with source context, owner, assignees, and acceptance criteria
+  -> Organization validates that assigned Actors exist and may act
+  -> execution happens directly or through Mission/Wave, Agent Team, Workflow,
+     host work, external work, or human work
+  -> result, evidence, and durable summaries return to Docs and Work
+```
+
+Common routing examples:
+
+| Discovery | WorkItem owner/assignee pattern | Boundary |
+| --- | --- | --- |
+| Docs Governance Agent finds outdated or missing company memory | accountable owner can be Docs Governance; assignee can be Docs Governance, a lower Docs Agent, or a one-time executor | The source Document remains the context; the WorkItem is the commitment. |
+| Development Agent finds a codebase improvement | accountable owner can be Development Agent; delivery refs may include Git Issue, branch, PR, checks, and preview | Git does not replace the WorkItem and PR merge does not prove business acceptance. |
+| Work Governance Agent sees untriaged work | Work Governance may route or create WorkItems, but assignment must target existing Organization Actors | Reassignment requires an explicit Work action, not a chat mention. |
+| Lower Standing Agent needs more capacity | current WorkItem can use temporary execution; recurring gaps become an Org/HR capability proposal | Provider subagents and MemberRuns are not durable Organization actors. |
+| Gateway message requires follow-up | gateway service may submit a WorkItem with evidence refs; accountable owner must be a Human, Standing Agent, external participant, or service allowed by policy | Incoming messages are intake evidence, not completed work. |
+
+An Agent may complete a WorkItem itself when the role, permissions, and
+acceptance criteria fit. It may also route to an existing lower Standing Agent
+or use a temporary subagent inside its execution. Durable delegation is always
+expressed by WorkItem roles and Organization records; executor-internal
+planning remains separate.
+
+Finance is not part of this core path unless the WorkItem declares a monetary
+effect. If the work involves purchase, payout, refund, budget, commitment, or
+invoice state, Work records the request and Finance owns the monetary record.
+
 ## Approval contract
 
 An `Approval` is an auditable authorization request associated with a WorkItem

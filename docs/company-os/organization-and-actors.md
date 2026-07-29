@@ -225,6 +225,42 @@ policy, creation rationale, and the approvals required by organization policy.
 Low-risk creation may be delegated to the Lead; financial, legal, credential,
 external-access, or organization-wide authority changes require Human approval.
 
+## Cascading Standing Agent delegation
+
+Organization supports a deliberately nested agent hierarchy. An upper Standing
+Agent may drive lower Standing Agents when all of the following are explicit:
+
+- the reporting or delegation relation exists in Organization;
+- the lower Agent has a role charter, capability scope, tool/skill refs, and
+  permission boundary compatible with the delegated WorkItem;
+- the WorkItem names the accountable owner and assignees through `ActorRef`;
+- the source Document or business record explains why the work exists; and
+- result updates return through Docs, Work, or the owning module rather than an
+  unstructured chat transcript.
+
+This lets a Lead Agent coordinate Governance Agents, a Docs Governance Agent
+maintain company memory, or a Development Agent route code work without turning
+every execution into a manually managed flat team.
+
+The same cascade can create new capability, but creation is governed. If a
+Docs Agent, Development Agent, Merchant Ops Agent, or any other Standing Agent
+finds recurring work that does not fit the current organization, it may draft a
+capability-gap record and ask Org/HR to reuse an existing Actor, use temporary
+execution, engage an external collaborator, or create a new lower Standing
+Agent. A new Standing Agent is not created merely because a provider spawned a
+subagent or because an Agent said it would be useful.
+
+Temporary provider-native subagents and Agent Team `MemberRun`s are execution
+implementation details. They may help a Standing Agent perform one WorkItem,
+and optional hooks may record honest execution attribution, but they do not own
+Organization authority, cannot appear as durable reports, and cannot receive
+WorkItems unless Org/HR promotes them into explicit Standing Agents.
+
+For the current Company OS implementation focus, the core loop is Docs + Work
++ Organization. Finance remains conditional: it is invoked only when the
+WorkItem requests a monetary effect such as a budget, commitment, purchase,
+refund, invoice, or payment.
+
 ## Governance
 
 Organization changes are governed company actions, not an editable roster.
