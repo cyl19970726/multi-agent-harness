@@ -508,6 +508,23 @@ function WcwNarrativeSections({ blocks }: { blocks: CompanyOsDocumentBlock[] }) 
   );
 }
 
+function WcwTableFirstDocumentBody({ blocks }: { blocks: CompanyOsDocumentBlock[] }) {
+  return (
+    <section
+      className="rounded-3xl border border-border bg-card/82 px-5 py-4 shadow-sm sm:px-7 sm:py-6"
+      data-wcw-table-first-document="true"
+    >
+      <div className="space-y-5">
+        {blocks.map((block) => (
+          <div key={block.id} data-company-os-ref={block.id} className={block.type === "table" ? "not-prose" : undefined}>
+            <Block block={block} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function WanchengwanlingDocumentPage({
   document,
   actionEnabled,
@@ -527,6 +544,8 @@ function WanchengwanlingDocumentPage({
   const tableBlocks = document.blocks.filter((block): block is Extract<CompanyOsDocumentBlock, { type: "table" }> => block.type === "table");
   const narrativeBlocks = document.blocks.filter((block) => block.type !== "table");
   const relatedLinks = [...(document.resultLinks ?? []), ...(document.connectedRecords ?? [])].slice(0, 8);
+  const documentKind = wcwDocumentKind(document);
+  const tableFirst = documentKind === "business";
 
   return (
     <main
@@ -545,7 +564,7 @@ function WanchengwanlingDocumentPage({
               <div className="min-w-0">
                 <div className="flex items-center gap-3">
                   <ObjectEmblem kind="module" className="size-12 rounded-2xl" />
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">{wcwDocumentKind(document) === "agentos" ? "AgentOS dogfood operating document" : "Wanchengwanling operating document"}</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">{documentKind === "agentos" ? "AgentOS dogfood operating document" : "Wanchengwanling operating document"}</p>
                 </div>
                 <EditorialTitle className="mt-5 max-w-4xl text-4xl sm:text-5xl">{document.title}</EditorialTitle>
                 <p className="mt-4 max-w-4xl text-sm leading-6 text-muted-foreground">{paragraphText || document.description}</p>
@@ -558,32 +577,36 @@ function WanchengwanlingDocumentPage({
             </div>
           </header>
 
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <WcwMetrics document={document} tableBlocks={tableBlocks} />
-          </section>
+          {tableFirst ? <WcwTableFirstDocumentBody blocks={document.blocks} /> : (
+            <>
+              <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <WcwMetrics document={document} tableBlocks={tableBlocks} />
+              </section>
 
-          {journeySteps.length ? (
-            <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm">
-              <div className="flex items-center gap-2">
-                <Route className="size-4 text-primary" />
-                <h2 className="text-lg font-semibold tracking-tight">MVP journey and business loop</h2>
-              </div>
-              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {journeySteps.map((step, index) => (
-                  <div key={`${step}:${index}`} className="rounded-xl border border-border bg-background/70 p-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Step {index + 1}</p>
-                    <p className="mt-2 text-sm leading-5 text-foreground">{step}</p>
+              {journeySteps.length ? (
+                <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <Route className="size-4 text-primary" />
+                    <h2 className="text-lg font-semibold tracking-tight">MVP journey and business loop</h2>
                   </div>
-                ))}
+                  <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {journeySteps.map((step, index) => (
+                      <div key={`${step}:${index}`} className="rounded-xl border border-border bg-background/70 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Step {index + 1}</p>
+                        <p className="mt-2 text-sm leading-5 text-foreground">{step}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              <WcwNarrativeSections blocks={narrativeBlocks} />
+
+              <div className="space-y-5">
+                {tableBlocks.map((block) => <WcwTableCards key={block.id} block={block} />)}
               </div>
-            </section>
-          ) : null}
-
-          <WcwNarrativeSections blocks={narrativeBlocks} />
-
-          <div className="space-y-5">
-            {tableBlocks.map((block) => <WcwTableCards key={block.id} block={block} />)}
-          </div>
+            </>
+          )}
 
           {document.updatedLabel && <p className="text-xs text-muted-foreground">{document.updatedLabel}</p>}
         </div>

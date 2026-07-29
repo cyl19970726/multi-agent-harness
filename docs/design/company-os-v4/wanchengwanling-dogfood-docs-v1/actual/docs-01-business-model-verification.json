@@ -1,0 +1,15 @@
+{
+  "capturedAt": "2026-07-29T05:22:11.012Z",
+  "url": "http://127.0.0.1:5173/?api=.&project=multi-agent-harness&company=agent-company&surface=docs&document=document-wcw-business-model",
+  "required": [
+    "收入与产品模型",
+    "用户价值与验证指标",
+    "商家能力标签，不做互斥分类",
+    "资金事件与系统边界",
+    "MVP 商业路线图",
+    "当前需要 Human 确认的问题"
+  ],
+  "missing": [],
+  "events": [],
+  "tableFirstSelector": true
+}
