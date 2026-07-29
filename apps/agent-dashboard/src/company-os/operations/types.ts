@@ -27,6 +27,7 @@ export interface ActorSummary {
   acceptedWorkTypeRefs?: string[];
   permissionPolicyRefs?: string[];
   escalationPolicyRef?: string;
+  executionAgentMemberRef?: string;
 }
 
 export interface RelatedLink {
@@ -83,8 +84,8 @@ export interface AssignmentView {
 export interface StandingExecutionAssignment {
   id: string;
   agentMemberId: string;
-  sourceKind: "mission_wave" | "direct_assignment";
-  sourceRef: string;
+  sourceKind: "agent_team_assignment" | "agent_team_participation";
+  sourceRef?: string;
   missionId?: string;
   waveId?: string;
   teamRunId: string;
@@ -94,7 +95,7 @@ export interface StandingExecutionAssignment {
   status: string;
   assignedAt: string;
   lastActivityAt?: string;
-  correlationId: string;
+  correlationId?: string;
   nativeSession?: {
     provider?: string;
     execution_mode?: string;

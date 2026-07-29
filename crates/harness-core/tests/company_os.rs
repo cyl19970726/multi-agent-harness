@@ -77,6 +77,7 @@ fn actor_types_remain_distinct_on_the_wire() {
         id: "agent-trademark".into(),
         display_name: "Trademark Agent".into(),
         role: "trademark_operations".into(),
+        execution_agent_member_ref: Some("execution-agent-trademark".into()),
         status: MemberStatus::Active,
         availability: harness_core::DeclaredAvailability::Available,
         assignment_capacity: Some(3),

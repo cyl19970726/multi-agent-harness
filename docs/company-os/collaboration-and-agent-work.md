@@ -24,13 +24,13 @@ Human Owner
 ```
 
 A Standing Agent may explicitly participate in a TeamRun through a MemberRun.
-The link is `StandingAgent -> participates_as -> MemberRun`; the MemberRun does
-not become a new organization member, and its completion does not retire the
-Standing Agent.
+The link is `StandingAgent.execution_agent_member_ref -> AgentMember.id ->
+MemberRun.agent_member_id`; the MemberRun does not become a new organization
+member, and its completion does not mutate or retire the Standing Agent.
 
 The two records remain in their native stores. Company snapshots build this
-read-only relation by joining the Company Store's explicit Standing Agent id
-with the selected Execution Space's `MemberRun.agent_member_id`, assignment
+read-only relation by joining the Company Store's explicit execution ref with
+the selected Execution Space's `MemberRun.agent_member_id`, assignment
 correlation, and TeamRun. They do not copy MemberRuns or provider sessions into
 Company storage.
 

@@ -303,18 +303,19 @@ Start a long-lived Mission-scoped run from the linked team definition:
 
 ```bash
 harness team-run create --mission-id <mission-id> \
-  --agent-team-id <team-id> --objective "<team objective>" --json
+  --agent-team-id <team-id> --objective "<team objective>" \
+  --member-owned-path <member-name>:crates --json
 harness team-run start --id <team-run-id>
 ```
 
 When a reusable team contains durable `AgentMember` identifiers, creating its
-TeamRun preserves each identifier as `MemberRun.agent_member_id`. If a Company
-OS `StandingAgent` intentionally uses the same stable ID, the Organization
-projection may show that participation and deep-link to the MemberRun. This is
-an explicit identity join only: never infer a Standing Agent from a display
-name, role, provider, model, or running process, and never treat runtime status
-as organization authority. Use an ad-hoc member for temporary execution that
-must not appear as standing organization work.
+TeamRun preserves each identifier as `MemberRun.agent_member_id`. A Company OS
+`StandingAgent` may join that execution only by setting
+`execution_agent_member_ref` to the `AgentMember.id`; equal ids do not bind the
+objects. Never infer a Standing Agent from a display name, role, provider,
+model, or running process, and never treat runtime status as organization
+authority. Use an ad-hoc member for temporary execution that must not appear as
+standing organization work.
 
 Assign and evolve work:
 

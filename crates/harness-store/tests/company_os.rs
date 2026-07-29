@@ -72,6 +72,7 @@ fn standing_agent(id: &str) -> StandingAgent {
         id: id.into(),
         display_name: "Trademark Agent".into(),
         role: "trademark_agent".into(),
+        execution_agent_member_ref: None,
         status: MemberStatus::Active,
         availability: DeclaredAvailability::Available,
         assignment_capacity: Some(2),
@@ -91,6 +92,22 @@ fn standing_agent(id: &str) -> StandingAgent {
         created_at: NOW.into(),
         updated_at: NOW.into(),
     }
+}
+
+#[test]
+fn standing_agent_execution_identity_is_one_to_one() {
+    let store = TestStore::new("standing-agent-execution-identity");
+    let mut first = standing_agent("agent-one");
+    first.execution_agent_member_ref = Some("execution-member".into());
+    store.store.append_standing_agent(&first).unwrap();
+
+    let mut duplicate = standing_agent("agent-two");
+    duplicate.execution_agent_member_ref = Some("execution-member".into());
+    let error = store
+        .store
+        .append_standing_agent(&duplicate)
+        .expect_err("duplicate execution identity must fail");
+    assert!(error.to_string().contains("relation must be one-to-one"));
 }
 
 fn document(id: &str, owner: &ActorRef) -> Document {

@@ -365,6 +365,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       acceptedWorkTypeRefs: stringArray(actor.accepted_work_type_refs),
       permissionPolicyRefs: stringArray(actor.permission_policy_refs),
       escalationPolicyRef: text(actor.escalation_policy_ref) || undefined,
+      executionAgentMemberRef: text(actor.execution_agent_member_ref) || undefined,
     };
   }
   const actor = (id: unknown): ActorSummary => actorById[refId(id)] ?? {
@@ -388,8 +389,10 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const standingAssignments: StandingExecutionAssignment[] = standingAssignmentRecords.map((record): StandingExecutionAssignment => ({
     id: text(record.id),
     agentMemberId: text(record.agent_member_id),
-    sourceKind: text(record.source_kind) === "mission_wave" ? "mission_wave" : "direct_assignment",
-    sourceRef: text(record.source_ref),
+    sourceKind: text(record.source_kind) === "agent_team_participation"
+      ? "agent_team_participation"
+      : "agent_team_assignment",
+    sourceRef: text(record.source_ref) || undefined,
     missionId: text(record.mission_id) || undefined,
     waveId: text(record.wave_id) || undefined,
     teamRunId: text(record.team_run_id),
@@ -399,7 +402,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     status: text(record.status, "unknown"),
     assignedAt: text(record.assigned_at),
     lastActivityAt: text(record.last_activity_at) || undefined,
-    correlationId: text(record.correlation_id),
+    correlationId: text(record.correlation_id) || undefined,
     nativeSession: record.native_session && typeof record.native_session === "object"
       ? record.native_session as StandingExecutionAssignment["nativeSession"]
       : undefined,

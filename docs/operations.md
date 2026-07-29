@@ -133,7 +133,9 @@ cargo run -p harness-cli -- init
 cargo run -p harness-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
 cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
 cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
-cargo run -p harness-cli -- team-run create --mission-id <mission-id> --agent-team-id <team-id> --objective <objective>
+cargo run -p harness-cli -- team-run create --mission-id <mission-id> \
+  --agent-team-id <team-id> --objective <objective> \
+  --member-owned-path <member-name>:crates
 cargo run -p harness-cli -- team-run start --id <team-run-id>
 cargo run -p harness-cli -- wave advance --id <wave-id> --outcome "<host-decision>" --advanced-by host
 cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <next-title> --objective <next-objective> --context "<next-wave-markdown>"

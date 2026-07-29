@@ -12,7 +12,7 @@
     "agent_member_id": {
       "type": ["string", "null"],
       "minLength": 1,
-      "description": "Explicit stable link to a durable AgentMember / StandingAgent identity. Never inferred from name, role, provider, model, or time."
+      "description": "Explicit stable link to a durable AgentMember execution identity. Company OS may join a StandingAgent only through StandingAgent.execution_agent_member_ref; never infer from matching ids, name, role, provider, model, or time."
     },
     "name": { "type": "string", "minLength": 1 },
     "role": { "type": "string", "minLength": 1 },

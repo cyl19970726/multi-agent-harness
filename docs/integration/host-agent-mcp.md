@@ -100,7 +100,8 @@ member `worktree_ref`,
 TeamRun `execution_root`, then selected Workspace `project_root`; the Host cwd
 is only the creation default for an unrouted legacy raw-store invocation.
 `team_run_create` exposes `execution_root` and `members[].worktree_ref` through
-CLI (`--execution-root`, `--member-worktree name:path`), HTTP, and MCP. An
+CLI (`--execution-root`, `--member-worktree name:path`,
+`--member-owned-path name:path`), HTTP, and MCP. An
 override must be the selected project root or a Git worktree sharing its Git
 common directory, including external Codex worktrees.
 

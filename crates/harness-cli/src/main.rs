@@ -2257,6 +2257,7 @@ fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> Cl
             "id": id,
             "display_name": required(args, "--display-name")?,
             "role": required(args, "--role")?,
+            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
             "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
             "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
             "assignment_capacity": capacity,
@@ -3324,6 +3325,7 @@ fn company_org_actor_create_agent_command(store: &HarnessStore, args: &[String])
             "id": id,
             "display_name": required(args, "--display-name")?,
             "role": required(args, "--role")?,
+            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
             "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
             "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
             "assignment_capacity": value(args, "--assignment-capacity").map(|v| v.parse::<u32>()).transpose().map_err(|_| CliError::Usage("--assignment-capacity must be a positive integer".into()))?,
@@ -8330,6 +8332,12 @@ fn agent_command(
                 ));
             }
             let mut member = build_member_from_args(args, AgentMemberStatus::Creating)?;
+            if latest_members(store)?.contains_key(&member.id) {
+                return Err(CliError::Usage(format!(
+                    "AgentMember already exists: {}",
+                    member.id
+                )));
+            }
             let prompt_ref = ensure_agent_prompt(store, &member, args)?;
             member.prompt_ref = Some(prompt_ref);
             if has_flag(args, "--start") {
@@ -11390,6 +11398,23 @@ fn team_run_command(
                         CliError::Usage(format!("--member-worktree names unknown member {name}"))
                     })?;
                 member.worktree_ref = Some(worktree_ref.to_string());
+            }
+            for override_spec in many(args, "--member-owned-path") {
+                let (name, owned_path) = override_spec.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--member-owned-path expects name:path".to_string())
+                })?;
+                if owned_path.trim().is_empty() {
+                    return Err(CliError::Usage(
+                        "--member-owned-path path must not be empty".to_string(),
+                    ));
+                }
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--member-owned-path names unknown member {name}"))
+                    })?;
+                member.owned_paths.push(owned_path.to_string());
             }
             let budget_limit_usd = value(args, "--budget-usd")
                 .map(|raw| {
@@ -19124,12 +19149,43 @@ fn create_message_value(
 
 /// Persist a freshly-built team. Mirrors the `team create` CLI arm.
 fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
+    if latest_teams(store)?.contains_key(&team.id) {
+        return Err(CliError::Usage(format!(
+            "AgentTeam already exists: {}",
+            team.id
+        )));
+    }
+    let members = latest_members(store)?;
+    let mut unique = BTreeSet::new();
+    for member_id in &team.member_ids {
+        if member_id.trim().is_empty() {
+            return Err(CliError::Usage(
+                "AgentTeam member id must not be empty".to_string(),
+            ));
+        }
+        if !unique.insert(member_id) {
+            return Err(CliError::Usage(format!(
+                "AgentTeam contains duplicate member id: {member_id}"
+            )));
+        }
+        if !members.contains_key(member_id) {
+            return Err(CliError::Usage(format!(
+                "AgentTeam references missing AgentMember: {member_id}"
+            )));
+        }
+    }
     store.append_team(team)?;
     Ok(())
 }
 
 /// Persist a freshly-built goal. Mirrors the `goal create` CLI arm.
 fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
+    if latest_members(store)?.contains_key(&member.id) {
+        return Err(CliError::Usage(format!(
+            "AgentMember already exists: {}",
+            member.id
+        )));
+    }
     store.append_member(member)?;
     append_agent_event(
         store,
@@ -25071,6 +25127,11 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let member_cards: Vec<_> = members
         .values()
         .map(|member| {
+            let derived_team_ids = teams
+                .values()
+                .filter(|team| team.member_ids.iter().any(|id| id == &member.id))
+                .map(|team| team.id.clone())
+                .collect::<Vec<_>>();
             let runtime = member
                 .provider_runtime_id
                 .as_ref()
@@ -25116,7 +25177,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "model": member.model,
                 "profile": member.profile,
                 "provider_config": member.provider_config,
-                "team_ids": member.team_ids,
+                // Reverse membership is derived from the latest reusable Team
+                // definitions. AgentMember.team_ids is compatibility input,
+                // never authoritative read-model state.
+                "team_ids": derived_team_ids,
                 "created_at": member.created_at,
                 "last_seen_at": member.last_seen_at,
                 "inbox_count": inbox_count,
@@ -34609,6 +34673,18 @@ mod tests {
     #[test]
     fn create_team_value_persists_team_and_appears_in_snapshot() {
         let (store, root) = temp_store("wp-ii-team");
+        for (id, name) in [("worker-1", "Worker One"), ("worker-2", "Worker Two")] {
+            create_agent_value(
+                &store,
+                &serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "role": "worker",
+                    "provider": "codex"
+                }),
+            )
+            .expect("member create succeeds");
+        }
         let body = serde_json::json!({
             "name": "Platform Squad",
             "description": "Owns the dashboard",
@@ -34657,6 +34733,59 @@ mod tests {
             matches!(error, CliError::Usage(_)),
             "malformed body must be a Usage error, got: {error:?}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_team_rejects_missing_and_duplicate_member_ids() {
+        let (store, root) = temp_store("team-member-integrity");
+        let missing = serde_json::json!({
+            "id": "team-missing",
+            "name": "Invalid",
+            "description": "References a missing member",
+            "lead_agent_id": "host",
+            "member": ["missing"]
+        });
+        let error = create_team_value(&store, &missing).expect_err("missing member must fail");
+        assert!(error.to_string().contains("missing AgentMember"));
+
+        let member = build_member_from_args(
+            &[
+                "--id".into(),
+                "member-1".into(),
+                "--name".into(),
+                "Member".into(),
+                "--role".into(),
+                "builder".into(),
+            ],
+            AgentMemberStatus::Idle,
+        )
+        .expect("member");
+        finalize_member_creation(&store, &member).expect("member create");
+        let duplicate = serde_json::json!({
+            "id": "team-duplicate",
+            "name": "Invalid",
+            "description": "Duplicates a member",
+            "lead_agent_id": "host",
+            "member": ["member-1", "member-1"]
+        });
+        let error = create_team_value(&store, &duplicate).expect_err("duplicate must fail");
+        assert!(error.to_string().contains("duplicate member id"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_agent_rejects_duplicate_identity() {
+        let (store, root) = temp_store("duplicate-agent-member");
+        let body = serde_json::json!({
+            "id": "member-1",
+            "name": "Worker",
+            "role": "builder",
+            "provider": "codex"
+        });
+        create_agent_value(&store, &body).expect("first create");
+        let error = create_agent_value(&store, &body).expect_err("duplicate must fail");
+        assert!(error.to_string().contains("AgentMember already exists"));
         let _ = std::fs::remove_dir_all(root);
     }
 

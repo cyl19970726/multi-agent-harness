@@ -91,10 +91,12 @@ async function main() {
   check(!emptyTruth.includes("CN-2026-018") && !emptyTruth.includes("¥3,000") && !emptyTruth.includes("Brand Owner"), "an explicit empty authoritative projection never falls back to prototype trademark facts");
   const canonicalProjection = adapterModule.adaptTrademarkOperationsProjection(fixture);
   const linkedExecutionProjection = structuredClone(fixture);
+  const linkedActor = linkedExecutionProjection.actors.find((actor) => actor.id === "actor-agent-trademark");
+  linkedActor.execution_agent_member_ref = "execution-agent-trademark";
   linkedExecutionProjection.standing_assignments = [{
     id: "standing-assignment-member-build-corr-build",
-    agent_member_id: "actor-agent-trademark",
-    source_kind: "mission_wave",
+    agent_member_id: "execution-agent-trademark",
+    source_kind: "agent_team_assignment",
     source_ref: "message-build",
     mission_id: "mission-build",
     wave_id: null,
@@ -110,7 +112,13 @@ async function main() {
     navigation_target: "?surface=team&team=team-run-build&memberRun=member-run-build",
   }];
   const linkedExecution = adapterModule.adaptTrademarkOperationsProjection(linkedExecutionProjection);
-  check(linkedExecution.standingAssignments?.length === 1 && linkedExecution.standingAssignments[0].memberRunId === "member-run-build" && linkedExecution.standingAssignments[0].agentMemberId === "actor-agent-trademark", "adapter preserves an explicit StandingAgent-to-MemberRun link without inference");
+  check(linkedExecution.actors["actor-agent-trademark"]?.executionAgentMemberRef === "execution-agent-trademark"
+    && linkedExecution.standingAssignments?.length === 1
+    && linkedExecution.standingAssignments[0].memberRunId === "member-run-build"
+    && linkedExecution.standingAssignments[0].agentMemberId === "execution-agent-trademark",
+  "adapter preserves the explicit Company-owned StandingAgent-to-AgentMember link");
+  check(pages.includes("actor.executionAgentMemberRef") && !pages.includes("assignment.agentMemberId === actor.id"),
+    "Standing Agent focus never binds execution by same-string actor id");
   const brandUnit = canonicalProjection.organization.units.find((unit) => unit.id === "org-brand-ip");
   check(brandUnit?.actorIds.length === 4 && canonicalProjection.governanceProposal.proposedById === "actor-agent-document-architecture", "adapter retains the actual Brand & IP membership branch and governance proposal author");
   check(brandUnit?.agentLeadActorId === "actor-agent-ip-lead" && pages.includes("leadUnit.actorIds") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "Lead direct reports come from the governed organization unit instead of actor ordering");
@@ -129,6 +137,10 @@ async function main() {
   check(pages.includes("MemberRun explicitly links this durable identity") && pages.includes("assignment.memberRunId") && pages.includes("assignment.correlationId"), "Standing Agent focus shows exact MemberRun/correlation evidence and an honest unlinked empty state");
   check(pages.includes('surface: "team"') && pages.includes("teamId: assignment.teamRunId") && pages.includes("memberRunId: assignment.memberRunId"), "Standing Agent participation deep-links to the native Team/Member surface");
   check(pages.includes('!["completed", "failed", "stopped"].includes(assignment.status)') && pages.includes("Completed participation remains in Activity"), "terminal MemberRuns remain historical activity instead of active Standing Agent work");
+  check(pages.includes('assignment.sourceKind === "agent_team_assignment"')
+    && pages.includes("Boolean(assignment.correlationId)")
+    && pages.includes("assignment.correlationId!"),
+  "assignment-less Agent Team participation stays out of current work and current cards require a real correlation");
   check(pages.includes("onOpen={onSelectionChange") && router.includes("onSelectionChange={onSelectionChange}"), "Organization actor cards route through the shared selection state");
   check(pages.includes("authoredProposal") && pages.includes("proposal-${authoredProposal.id}") && pages.includes('title="Maintained Docs"'), "Standing Agent distinguishes authored proposal activity from related durable Docs");
   check(pages.includes('title="Prompt, tools & skills"') && pages.includes('title="Permissions"') && pages.includes('title="Work routing"'), "Standing Agent composes native configuration and authority modules in the context rail");

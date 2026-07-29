@@ -68,6 +68,12 @@ Organization does not own:
 A Standing Agent is a durable company actor. An Agent Team MemberRun is a
 one-off execution participant bound to an AgentTeamRun and provider-native
 session. They may share UI components, but they are not the same product object.
+Link them only with the optional Company-owned
+`StandingAgent.execution_agent_member_ref -> AgentMember.id`; never infer a
+link from equal ids, names, roles, or providers. Author the link with
+`--execution-agent-member-ref <agent-member-id>`. An absent link means the
+Standing Agent has no reusable execution identity, while an unlinked MemberRun
+remains ad-hoc execution.
 
 ## Docs page integration
 
@@ -129,6 +135,7 @@ harness company org create-agent \
   --role <role> \
   --responsibility <summary> \
   --authority <human-admin-id> \
+  [--execution-agent-member-ref <agent-member-id>] \
   [--skill <skill-id> --tool <tool-id> --permission <policy> --capability <capability>]
 harness company org create-unit \
   --id <org-unit-id> \

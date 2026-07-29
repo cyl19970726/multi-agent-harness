@@ -285,7 +285,20 @@ impl HarnessStore {
     }
 
     pub fn append_standing_agent(&self, value: &StandingAgent) -> StoreResult<()> {
-        self.append_company_row(STANDING_AGENTS, value, |_| Ok(()))
+        self.append_company_row(STANDING_AGENTS, value, |store| {
+            if let Some(member_ref) = value.execution_agent_member_ref.as_deref() {
+                if let Some(existing) = store.latest_standing_agents()?.into_iter().find(|agent| {
+                    agent.id != value.id
+                        && agent.execution_agent_member_ref.as_deref() == Some(member_ref)
+                }) {
+                    return Err(StoreError::Conflict(format!(
+                        "StandingAgent {} already owns execution_agent_member_ref {member_ref}; relation must be one-to-one",
+                        existing.id
+                    )));
+                }
+            }
+            Ok(())
+        })
     }
 
     pub fn append_external_participant(&self, value: &ExternalParticipant) -> StoreResult<()> {

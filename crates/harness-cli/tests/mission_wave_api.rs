@@ -125,11 +125,33 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--authority",
             "human-owner",
             "--id",
+            "agent-review",
+            "--name",
+            "Reviewer",
+            "--role",
+            "reviewer",
+            "--responsibility",
+            "Same-id collision must remain unlinked",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "org",
+            "actor",
+            "create-agent",
+            "--authority",
+            "human-owner",
+            "--id",
             "agent-build",
             "--name",
             "PrimaryBuilder",
             "--role",
             "primary builder",
+            "--execution-agent-member-ref",
+            "agent-build",
             "--responsibility",
             "Own persistent implementation work",
         ],
@@ -226,6 +248,10 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "mission-host-plan",
             "--resume-member",
             "PrimaryBuilder:codex-session-1",
+            "--member-owned-path",
+            "PrimaryBuilder:crates",
+            "--member-owned-path",
+            "PrimaryBuilder:apps",
             "--json",
         ],
     );
@@ -242,6 +268,11 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         Some("agent-build")
     );
     assert_eq!(
+        created["member_runs"][0]["owned_paths"],
+        serde_json::json!(["crates", "apps"]),
+        "reusable team identity survives member-owned-path overrides"
+    );
+    assert_eq!(
         created["member_runs"][1]["agent_member_id"].as_str(),
         Some("agent-review")
     );
@@ -252,7 +283,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         standing_assignments.len(),
         1,
-        "only a MemberRun explicitly linked to an existing StandingAgent may appear"
+        "only a MemberRun explicitly linked by execution_agent_member_ref may appear"
     );
     assert_eq!(
         standing_assignments[0]["agent_member_id"].as_str(),
@@ -265,6 +296,11 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         standing_assignments[0]["correlation_id"].as_str(),
         created["assignment_messages"][0]["correlation_id"].as_str()
+    );
+    assert_eq!(
+        standing_assignments[0]["standing_agent_id"].as_str(),
+        Some("agent-build"),
+        "projection carries the explicit StandingAgent backlink"
     );
     assert!(created["team_run"]["wave_id"].is_null());
     let team_run_id = created["team_run"]["id"].as_str().unwrap();

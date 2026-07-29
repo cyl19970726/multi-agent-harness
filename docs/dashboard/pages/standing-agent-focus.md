@@ -3,8 +3,8 @@
 ```text
 status: partial implementation — explicit Agent Team participation projection is implemented
 owner_role: product-design
-canonical_for: one durable AgentMember across assignments and provider sessions
-route_or_surface: Agents -> AgentMember
+canonical_for: one durable StandingAgent organization identity with explicitly linked execution history
+route_or_surface: Organization -> StandingAgent
 ```
 
 ## Product question
@@ -13,17 +13,17 @@ The operator opens a long-lived teammate to answer: is this Agent available,
 which explicit contexts is it serving, what has it done across those contexts,
 and can I safely message it now?
 
-This is not a `MemberRun` page. A standing `AgentMember` retains identity across
-provider restarts and may participate in multiple Missions or Workflows. A
-`MemberRun` remains one participation in one `AgentTeamRun` attempt.
+This is not a `MemberRun` or AgentMember page. A `StandingAgent` retains Company
+identity and authority independently of provider execution. A `MemberRun`
+remains one participation in one `AgentTeamRun` attempt.
 
-The first implemented slice uses the same explicit stable identifier across the
-Organization `StandingAgent`, the independent Agent Team `AgentMember`
-definition, and `MemberRun.agent_member_id`. Creating a TeamRun from an
-AgentTeam definition preserves that identifier on each MemberRun. Ad-hoc
-members may supply the link explicitly only when the referenced AgentMember
-exists. The Company OS snapshot then derives `standing_assignments` from latest
-native rows; it never creates another assignment ledger.
+The implemented slice uses the Company-owned relation
+`StandingAgent.execution_agent_member_ref -> AgentMember.id ->
+MemberRun.agent_member_id`. Creating a TeamRun from an AgentTeam definition
+preserves the AgentMember identifier on each MemberRun. Equal ids never bind,
+and ad-hoc unlinked members remain execution-only. The Company OS snapshot
+derives `standing_assignments` from latest native rows; it never creates
+another assignment ledger or writes execution lifecycle back to Organization.
 
 ## Object boundary
 
@@ -67,7 +67,7 @@ and not a new universal executor:
 ```text
 id
 agent_member_id
-source_kind = mission_wave | workflow_participation | direct_assignment
+source_kind = agent_team_assignment | agent_team_participation
 source_ref
 mission_id? / wave_id?
 team_run_id? / member_run_id?

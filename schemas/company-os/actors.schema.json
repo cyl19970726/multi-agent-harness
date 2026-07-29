@@ -75,6 +75,7 @@
         "id": { "$ref": "#/$defs/nonEmptyString" },
         "display_name": { "$ref": "#/$defs/nonEmptyString" },
         "role": { "$ref": "#/$defs/nonEmptyString" },
+        "execution_agent_member_ref": { "type": ["string", "null"], "minLength": 1 },
         "status": { "$ref": "#/$defs/memberStatus" },
         "availability": { "$ref": "#/$defs/availability" },
         "assignment_capacity": { "type": ["integer", "null"], "minimum": 1 },

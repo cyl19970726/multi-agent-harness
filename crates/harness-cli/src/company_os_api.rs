@@ -11,8 +11,9 @@ use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
-    MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, Relation, RiskTier,
-    TeamMessageKind, TypedRecord, ValidateCompanyOs, View, WorkItem, WorkItemStatus, WorkQuery,
+    MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, PendingInteractionStatus,
+    Relation, RiskTier, TeamMessageKind, TypedRecord, ValidateCompanyOs, View, WorkItem,
+    WorkItemStatus, WorkQuery,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -286,11 +287,18 @@ fn standing_assignment_projection(
     company_store: &HarnessStore,
     execution_store: &HarnessStore,
 ) -> Result<Vec<Value>, StoreError> {
-    let standing_agent_ids = company_store
-        .latest_standing_agents()?
-        .into_iter()
-        .map(|agent| agent.id)
-        .collect::<BTreeSet<_>>();
+    let mut standing_agent_links = BTreeMap::new();
+    for agent in company_store.latest_standing_agents()? {
+        let Some(member_id) = agent.execution_agent_member_ref else {
+            continue;
+        };
+        if let Some(existing) = standing_agent_links.insert(member_id.clone(), agent.id.clone()) {
+            return Err(StoreError::Conflict(format!(
+                "duplicate StandingAgent execution_agent_member_ref {member_id}: {existing} and {}; relation must be one-to-one",
+                agent.id
+            )));
+        }
+    }
     let member_runs =
         execution_store
             .member_runs()?
@@ -307,64 +315,126 @@ fn standing_assignment_projection(
                 latest.insert(run.id.clone(), run);
                 latest
             });
-    let messages = execution_store.team_messages()?.into_iter().fold(
-        BTreeMap::new(),
-        |mut latest, message| {
-            latest.insert(message.id.clone(), message);
-            latest
-        },
-    );
-    let mut assignment_by_member = BTreeMap::new();
-    for message in messages.values() {
-        if message.kind != TeamMessageKind::Assignment {
-            continue;
-        }
-        for recipient in &message.to_member_ids {
-            assignment_by_member.insert(recipient.clone(), message);
-        }
-    }
+    let messages = execution_store.team_messages()?;
+    let pending_interactions = execution_store.pending_interactions()?;
+    let supervisor_leases = execution_store.team_supervisor_leases()?;
+    let close_requests = execution_store.team_member_close_requests()?;
+    let member_actions = execution_store.member_actions()?;
 
     let mut projection = Vec::new();
     for member in member_runs.values() {
         let Some(agent_member_id) = member.agent_member_id.as_deref() else {
             continue;
         };
-        if !standing_agent_ids.contains(agent_member_id) {
+        let Some(standing_agent_id) = standing_agent_links.get(agent_member_id) else {
             continue;
-        }
+        };
         let Some(team_run) = team_runs.get(&member.team_run_id) else {
             continue;
         };
-        let Some(assignment) = assignment_by_member.get(&member.id) else {
-            continue;
-        };
-        let source_kind = if team_run.mission_id.is_some() {
-            "mission_wave"
+        let assignments = messages
+            .iter()
+            .filter(|message| {
+                message.kind == TeamMessageKind::Assignment
+                    && message.to_member_ids.iter().any(|id| id == &member.id)
+            })
+            .collect::<Vec<_>>();
+        let inbox_count = messages
+            .iter()
+            .filter(|message| message.to_member_ids.iter().any(|id| id == &member.id))
+            .count();
+        let pending_count = pending_interactions
+            .iter()
+            .filter(|interaction| {
+                interaction.member_run_id == member.id
+                    && interaction.status == PendingInteractionStatus::Pending
+            })
+            .count();
+        let mut evidence_refs = messages
+            .iter()
+            .filter(|message| {
+                message.to_member_ids.iter().any(|id| id == &member.id)
+                    || message.from_member_id == member.id
+            })
+            .flat_map(|message| message.evidence_refs.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        for action in member_actions
+            .iter()
+            .filter(|action| action.member_run_id == member.id)
+        {
+            evidence_refs.extend(action.evidence_refs.iter().cloned());
+        }
+        let evidence_refs = evidence_refs.into_iter().collect::<Vec<_>>();
+        let supervisor = supervisor_leases
+            .iter()
+            .rev()
+            .find(|lease| lease.team_run_id == member.team_run_id);
+        let close = close_requests
+            .iter()
+            .rev()
+            .find(|request| request.member_run_id == member.id);
+        let lifecycle = json!({
+            "mailbox_message_count": inbox_count,
+            "pending_interaction_count": pending_count,
+            "supervisor_lease": supervisor,
+            "close_request": close,
+        });
+        let navigation_target =
+            format!("?surface=team&team={}&memberRun={}", team_run.id, member.id);
+        if assignments.is_empty() {
+            projection.push(json!({
+                "id": format!("standing-participation:{}", member.id),
+                "standing_agent_id": standing_agent_id,
+                "agent_member_id": agent_member_id,
+                "source_kind": "agent_team_participation",
+                "source_ref": null,
+                "mission_id": team_run.mission_id,
+                "wave_id": team_run.wave_id,
+                "team_run_id": team_run.id,
+                "member_run_id": member.id,
+                "title": format!("{} Agent Team participation", member.name),
+                "role": member.role,
+                "status": member.status,
+                "assigned_at": member.started_at,
+                "last_activity_at": member.last_event_at,
+                "correlation_id": null,
+                "native_session": member.native_session,
+                "evidence_refs": evidence_refs,
+                "lifecycle": lifecycle,
+                "navigation_target": navigation_target,
+            }));
         } else {
-            "direct_assignment"
-        };
-        projection.push(json!({
-            "id": format!("standing-assignment:{}:{}", member.id, assignment.correlation_id),
-            "agent_member_id": agent_member_id,
-            "source_kind": source_kind,
-            "source_ref": assignment.id,
-            "mission_id": team_run.mission_id,
-            "wave_id": team_run.wave_id,
-            "team_run_id": team_run.id,
-            "member_run_id": member.id,
-            "title": assignment.body,
-            "role": member.role,
-            "status": member.status,
-            "assigned_at": assignment.created_at,
-            "last_activity_at": member.last_event_at,
-            "correlation_id": assignment.correlation_id,
-            "native_session": member.native_session,
-            "navigation_target": format!(
-                "?surface=team&team={}&memberRun={}",
-                team_run.id, member.id
-            ),
-        }));
+            for assignment in assignments {
+                projection.push(json!({
+                    "id": format!("standing-assignment:{}:{}", member.id, assignment.id),
+                    "standing_agent_id": standing_agent_id,
+                    "agent_member_id": agent_member_id,
+                    "source_kind": "agent_team_assignment",
+                    "source_ref": assignment.id,
+                    "mission_id": team_run.mission_id,
+                    "wave_id": team_run.wave_id,
+                    "team_run_id": team_run.id,
+                    "member_run_id": member.id,
+                    "title": assignment.body,
+                    "role": member.role,
+                    "status": member.status,
+                    "assigned_at": assignment.created_at,
+                    "last_activity_at": member.last_event_at,
+                    "correlation_id": assignment.correlation_id,
+                    "evidence_refs": evidence_refs,
+                    "native_session": member.native_session,
+                    "lifecycle": lifecycle,
+                    "navigation_target": navigation_target,
+                }));
+            }
+        }
     }
+    projection.sort_by(|left, right| {
+        left["assigned_at"]
+            .as_str()
+            .cmp(&right["assigned_at"].as_str())
+            .then(left["id"].as_str().cmp(&right["id"].as_str()))
+    });
     Ok(projection)
 }
 
@@ -405,6 +475,92 @@ fn display_money(amount: &str, currency: &str) -> String {
         "CNY" => format!("¥{}", amount),
         "USD" => format!("{}{}", "$", amount),
         _ => format!("{} {}", amount, currency),
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use harness_core::{AgentTeamRun, MemberRun, StandingAgent, TeamMessage};
+
+    fn standing(id: &str, execution_ref: Option<&str>) -> StandingAgent {
+        serde_json::from_value(json!({
+            "id": id, "display_name": id, "role": "builder",
+            "execution_agent_member_ref": execution_ref,
+            "status": "active", "availability": "available",
+            "assignment_capacity": 1, "exclusive_assignment_ref": null,
+            "membership_refs": [], "responsibility_summary": "Build",
+            "capability_refs": [], "system_prompt_ref": null, "tool_refs": [],
+            "skill_refs": [], "maintained_document_refs": [],
+            "accepted_work_type_refs": [], "escalation_policy_ref": null,
+            "permission_policy_refs": [], "runtime_refs": [],
+            "native_session_refs": [], "created_at": "1", "updated_at": "1"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn explicit_projection_is_lossless_and_never_same_id_binds() {
+        let root = std::env::temp_dir().join(format!(
+            "company-projection-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().unwrap();
+        store
+            .append_standing_agent(&standing("standing-linked", Some("member-linked")))
+            .unwrap();
+        store
+            .append_standing_agent(&standing("member-collision", None))
+            .unwrap();
+        let run: AgentTeamRun = serde_json::from_value(json!({
+            "id": "run", "host_surface": "test", "objective": "projection",
+            "status": "running", "member_run_ids": ["run-linked", "run-collision"],
+            "created_at": "1", "updated_at": "1"
+        }))
+        .unwrap();
+        store.append_team_run(&run).unwrap();
+        for (id, agent_member_id) in [
+            ("run-linked", "member-linked"),
+            ("run-collision", "member-collision"),
+        ] {
+            let member: MemberRun = serde_json::from_value(json!({
+                "id": id, "team_run_id": "run", "agent_member_id": agent_member_id,
+                "name": id, "role": "builder", "provider": "codex",
+                "status": "idle", "owned_paths": [], "started_at": "1"
+            }))
+            .unwrap();
+            store.append_member_run(&member).unwrap();
+        }
+        let initial = standing_assignment_projection(&store, &store).unwrap();
+        assert_eq!(initial.len(), 1, "same-id collision must not bind");
+        assert_eq!(initial[0]["source_kind"], "agent_team_participation");
+        assert_eq!(initial[0]["standing_agent_id"], "standing-linked");
+
+        for (id, created_at) in [("assignment-1", "2"), ("assignment-2", "3")] {
+            let message: TeamMessage = serde_json::from_value(json!({
+                "id": id, "team_run_id": "run", "from_member_id": "host",
+                "to_member_ids": ["run-linked"], "kind": "assignment",
+                "body": id, "correlation_id": "corr", "evidence_refs": [format!("evidence-{id}")],
+                "created_at": created_at
+            }))
+            .unwrap();
+            store.append_team_message(&message).unwrap();
+        }
+        let assigned = standing_assignment_projection(&store, &store).unwrap();
+        assert_eq!(assigned.len(), 2);
+        assert_eq!(assigned[0]["source_ref"], "assignment-1");
+        assert_eq!(assigned[1]["source_ref"], "assignment-2");
+        assert_eq!(assigned[0]["standing_agent_id"], "standing-linked");
+        assert_eq!(
+            assigned[1]["evidence_refs"],
+            json!(["evidence-assignment-1", "evidence-assignment-2"])
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
