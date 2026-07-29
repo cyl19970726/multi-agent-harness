@@ -30,6 +30,60 @@ The gateway may read scoped Docs and submit governed Actions. It must not write
 ledgers directly, approve its own requests, or treat a chat message as a
 payment, org permission, or completed WorkItem.
 
+## Social Content Gateway v0
+
+The social-content gateway covers platform accounts and publishing operations
+for channels such as Xiaohongshu, WeChat Channels, Douyin, Kuaishou, and future
+content platforms. It is an operating bridge for content work, not a marketing
+database and not a license to publish without policy.
+
+```text
+Content strategy Document
+  -> campaign / post plan TypedRecords
+  -> WorkItem: draft, produce, review, publish, collect metrics
+  -> Organization resolves Content Agent, Creator Agent, Human Owner, service
+  -> platform adapter opens API/mobile/browser automation when allowed
+  -> evidence refs: draft, screenshot, published URL/id, metrics snapshot
+  -> result summary returns to Docs and Work
+```
+
+| Object | Responsibility | Boundary |
+| --- | --- | --- |
+| Social Gateway adapter | Normalizes platform, account, post, draft, publication, metric, and screenshot/evidence refs. | It is transport and observation. It does not own campaign truth or approval. |
+| Content Growth Agent | Plans owned-channel content, prepares briefs/scripts/assets, routes publication WorkItems, reviews metrics, and updates retrospectives. | Cannot invent platform credentials, bypass review, or publish high-risk content outside policy. |
+| Creator Outreach Agent | Tracks external creator leads, deliverables, collaboration status, and creator-published evidence. | Does not become the external creator and cannot accept paid terms without approval. |
+| Docs | Holds content strategy, account guidelines, campaign calendar, creative briefs, publication records, metrics, and retrospectives. | Does not store private platform cookies, raw personal messages, or unbounded scrape archives. |
+| Work | Holds concrete commitments: write script, create asset, schedule/publish, collect metrics, contact creator, verify publication. | A social post idea is not done until the WorkItem has result/evidence refs. |
+| Organization | Holds who may operate each account, which Agent has tools, and where Human gates apply. | A logged-in phone/app session does not grant Company OS authority by itself. |
+
+Publication is a policy-gated action. The system may automate drafting,
+previewing, screenshot capture, metric collection, and low-risk scheduled
+publishing only when the account, content class, platform, and responsible
+Actor are allowed by Organization policy. Otherwise the WorkItem reaches a
+`waiting_for_approval` or `human_action` state with a clear preview and
+evidence bundle.
+
+The minimum v0 native records are:
+
+- `social_platform_account`: platform, handle/display name, login state,
+  credential boundary, responsible Actor, allowed automation level, Human gate
+  policy, and maintained Docs;
+- `content_campaign`: thesis, audience, offer/route tie-in, target channels,
+  assets, cadence, and success metrics;
+- `social_post_plan`: platform, account, topic, hook, copy brief, asset refs,
+  desired publish window, status, approval requirement, source WorkItem;
+- `social_post_publication`: platform post id/URL when available, published
+  timestamp, publisher Actor/service, screenshot/evidence refs, and source
+  WorkItem;
+- `social_metric_snapshot`: views, likes, comments, shares, saves, follows,
+  click/conversion signals, collection timestamp, evidence, and linked
+  campaign/post.
+
+These records are ordinary Docs `TypedRecord`s in the relevant business module
+until a dedicated schema is implemented. They must remain reconstructable from
+the Company Store and visible from the Content Growth / Creator Outreach
+Documents and Work views.
+
 ## WeCom v0
 
 The first planned gateway is Enterprise WeChat / WeCom for Wanchengwanling
@@ -84,6 +138,10 @@ adapter pattern instead of becoming separate operating models.
 | --- | --- |
 | Docs/Work/Org/Finance operating substrate | partial, with dedicated CLI and Store-live projections |
 | GitHub/local repo source sync into Docs records | implemented for local worktree observation |
+| Social content gateway contract | product contract; Store-backed TypedRecords/WorkItems are dogfood-ready |
+| Xiaohongshu phone readiness check | local device can be inspected through ADB/scrcpy when the Human authorizes the session |
+| Douyin phone readiness check | local device can be inspected through ADB/scrcpy when the Human authorizes the session |
+| WeChat Channels readiness check | planned; requires WeChat/Channels account state and policy review |
 | WeCom gateway schema/API/CLI | planned |
 | Service actor modeling for gateways | planned; current Org CLI v1 covers human/agent/unit/membership admin authoring |
 | Gateway event inbox in Agent detail workspace | planned |

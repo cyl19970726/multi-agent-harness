@@ -1459,7 +1459,7 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ...")?;
+    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
     match args[0].as_str() {
         "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
         "list" => company_store_list_command(),
@@ -1475,10 +1475,207 @@ fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "org" => company_org_command(store, &args[1..]),
         "approval" => company_approval_command(store, &args[1..]),
         "finance" => company_finance_command(store, &args[1..]),
+        "gateway" => company_gateway_command(&args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company command: {other}; usage: harness company <init|list|current|switch|show|migrate-from-project|migrations> | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ..."
+            "unknown company command: {other}; usage: harness company <init|list|current|switch|show|migrate-from-project|migrations> | harness company docs ... | harness company work ... | harness company org ... | harness company approval ... | harness company finance ... | harness company gateway ..."
         ))),
     }
+}
+
+fn company_gateway_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "company gateway social readiness")?;
+    match args[0].as_str() {
+        "social" => {
+            require_subcommand(&args[1..], "company gateway social readiness")?;
+            match args[1].as_str() {
+                "readiness" => company_gateway_social_readiness_command(&args[2..]),
+                other => Err(CliError::Usage(format!(
+                    "unknown company gateway social command: {other}; usage: harness company gateway social readiness"
+                ))),
+            }
+        }
+        other => Err(CliError::Usage(format!(
+            "unknown company gateway command: {other}; usage: harness company gateway social readiness"
+        ))),
+    }
+}
+
+fn company_gateway_social_readiness_command(args: &[String]) -> CliResult<()> {
+    let requested = many(args, "--platform");
+    let platforms = if requested.is_empty() {
+        vec![
+            "xiaohongshu".to_string(),
+            "douyin".to_string(),
+            "wechat_channels".to_string(),
+        ]
+    } else {
+        requested
+    };
+    let adb = value(args, "--adb").unwrap_or_else(|| "adb".to_string());
+    let device = value(args, "--device");
+    let mut base_args: Vec<String> = Vec::new();
+    if let Some(device) = &device {
+        base_args.push("-s".to_string());
+        base_args.push(device.clone());
+    }
+
+    let devices = match run_command_text(&adb, &["devices".to_string(), "-l".to_string()]) {
+        Ok(output) => output,
+        Err(error) => {
+            return print_json(&serde_json::json!({
+                "ok": true,
+                "command": "harness company gateway social readiness",
+                "gateway": "social_content",
+                "status": "adb_unavailable",
+                "error": error.to_string(),
+                "boundaries": social_gateway_readiness_boundaries(),
+                "platforms": platform_readiness_without_device(&platforms),
+            }));
+        }
+    };
+    let has_device = devices
+        .lines()
+        .any(|line| line.contains("\tdevice") && !line.starts_with("List of devices"));
+    if !has_device {
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "command": "harness company gateway social readiness",
+            "gateway": "social_content",
+            "status": "no_authorized_android_device",
+            "adb_devices": devices,
+            "boundaries": social_gateway_readiness_boundaries(),
+            "platforms": platform_readiness_without_device(&platforms),
+        }));
+    }
+
+    let mut pm_args = base_args.clone();
+    pm_args.extend([
+        "shell".to_string(),
+        "pm".to_string(),
+        "list".to_string(),
+        "packages".to_string(),
+    ]);
+    let packages = run_command_text(&adb, &pm_args)?;
+    let mut focus_args = base_args;
+    focus_args.extend([
+        "shell".to_string(),
+        "dumpsys".to_string(),
+        "window".to_string(),
+    ]);
+    let focus = run_command_text(&adb, &focus_args).unwrap_or_default();
+    let results: Vec<serde_json::Value> = platforms
+        .iter()
+        .map(|platform| social_platform_readiness(platform, &packages, &focus))
+        .collect();
+
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company gateway social readiness",
+        "gateway": "social_content",
+        "status": "observed",
+        "device_selector": device,
+        "boundaries": social_gateway_readiness_boundaries(),
+        "platforms": results,
+    }))
+}
+
+fn run_command_text(program: &str, args: &[String]) -> CliResult<String> {
+    let output = Command::new(program).args(args).output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    if text.trim().is_empty() && !output.stderr.is_empty() {
+        text = String::from_utf8_lossy(&output.stderr).to_string();
+    }
+    if !output.status.success() {
+        return Err(CliError::Usage(format!(
+            "{program} {} failed: {}",
+            args.join(" "),
+            text.trim()
+        )));
+    }
+    Ok(text)
+}
+
+fn platform_readiness_without_device(platforms: &[String]) -> Vec<serde_json::Value> {
+    platforms
+        .iter()
+        .map(|platform| {
+            let (canonical, package, display) = social_platform_package(platform);
+            serde_json::json!({
+                "platform": canonical,
+                "display_name": display,
+                "package": package,
+                "readiness_state": "unknown_no_device",
+                "installed": false,
+                "focused": false,
+            })
+        })
+        .collect()
+}
+
+fn social_platform_readiness(platform: &str, packages: &str, focus: &str) -> serde_json::Value {
+    let (canonical, package, display) = social_platform_package(platform);
+    let known = !package.is_empty();
+    let installed = known
+        && packages
+            .lines()
+            .any(|line| line.trim() == format!("package:{package}"));
+    let focused = known && focus.contains(package);
+    let readiness_state = if !known {
+        "unknown_platform"
+    } else if installed && focused {
+        "installed_currently_focused"
+    } else if installed {
+        "installed_not_focused"
+    } else {
+        "not_installed_or_not_detected"
+    };
+    serde_json::json!({
+        "platform": canonical,
+        "display_name": display,
+        "package": package,
+        "installed": installed,
+        "focused": focused,
+        "readiness_state": readiness_state,
+        "recommended_record_type": "social_platform_account",
+        "recommended_human_gates": [
+            "login",
+            "publish",
+            "delete",
+            "paid_promotion",
+            "account_settings",
+            "private_message_export"
+        ],
+        "recommended_allowed_automation": [
+            "open_app",
+            "screenshot",
+            "draft_preparation",
+            "visible_metric_read"
+        ]
+    })
+}
+
+fn social_platform_package(platform: &str) -> (&'static str, &'static str, &'static str) {
+    match platform {
+        "xhs" | "xiaohongshu" | "rednote" => ("xiaohongshu", "com.xingin.xhs", "Xiaohongshu"),
+        "douyin" | "aweme" => ("douyin", "com.ss.android.ugc.aweme", "Douyin"),
+        "wechat" | "wechat_channels" | "channels" | "shipinhao" => {
+            ("wechat_channels", "com.tencent.mm", "WeChat Channels")
+        }
+        _ => ("unknown", "", "Unknown platform"),
+    }
+}
+
+fn social_gateway_readiness_boundaries() -> serde_json::Value {
+    serde_json::json!({
+        "read_only": true,
+        "store_side_effects": false,
+        "publishing_side_effects": false,
+        "login_side_effects": false,
+        "payment_side_effects": false,
+        "deletion_side_effects": false,
+        "credential_export": false,
+        "output_role": "observation_for_social_platform_account_typed_records_and_WorkItems"
+    })
 }
 
 fn company_store_init_command(args: &[String]) -> CliResult<()> {
@@ -28173,6 +28370,7 @@ fn print_help() {
   company org actor list|show|create-human|create-agent|update-status
   company org unit list|show|create|update-status
   company org membership list|assign|update-status
+  company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]
   company approval list|show|request|decide
   agent create|list|show|start|health|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers

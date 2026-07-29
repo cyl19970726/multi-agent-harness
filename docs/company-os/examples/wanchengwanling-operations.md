@@ -398,6 +398,37 @@ Metrics such as views, likes, comments, shares, conversion, store visits, and
 redemption usage should be `MetricObservation` records linked to campaign
 documents and WorkItems, not manually copied into many pages.
 
+For the MVP, Wanchengwanling's social loop starts from AR animation releases:
+
+```text
+AR animation / spot story
+  -> content campaign
+  -> Xiaohongshu / WeChat Channels / Douyin post plans
+  -> WorkItems for script, asset, review, publish, metric collection
+  -> platform publication evidence
+  -> daily retrospective and next-post decision
+```
+
+The first content motion is owned-channel growth, not paid KOL dependency:
+publish high-quality AR effects, explain why the project upgrades physical
+check-in into AR check-in, show user photo/video moments, and use the 8/12
+reward thresholds to pull users into the route. Platform accounts and posts are
+modeled as Social Content Gateway records:
+
+| Record | Required fields | Return path |
+| --- | --- | --- |
+| `social_platform_account` | platform, handle, login/readiness state, responsible Actor, allowed automation, Human gate policy | Content Growth document and Agent profile |
+| `content_campaign` | thesis, audience, spot/route tie-in, target platforms, asset refs, cadence, success metrics | Campaign calendar and daily retrospective |
+| `social_post_plan` | platform, account, hook, copy brief, asset refs, target time, approval state, source WorkItem | Work board and content page |
+| `social_post_publication` | platform post id/URL, screenshot/evidence, publisher, published time, source WorkItem | Source post plan and campaign |
+| `social_metric_snapshot` | views, likes, comments, shares, saves, follows, conversion signals, collected time | Daily review and next WorkItems |
+
+Human-approved platform sessions may be operated by the Agent through API,
+browser, or phone automation. Login, posting, deleting, buying promotion,
+account setting changes, and private-message export remain governed actions
+with explicit WorkItem context and evidence. A logged-in phone is execution
+access; it is not Organization authority.
+
 ## Agent operating structure
 
 The starting Organization can stay shallow:

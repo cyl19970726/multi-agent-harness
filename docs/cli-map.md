@@ -99,6 +99,15 @@ Store identity introduced by ADR 0042.
 | Approval-linked spend | `company approval ...` + `company finance ...` | Implemented | Approval request/decision can be linked to Commitment and Payment commands. |
 | Budget/invoice/refund/reporting | docs/skill contract only | Missing / next | Need first-class finance CLI and acceptance tests. |
 
+### External gateways
+
+| Capability | Current surface | Status | Notes |
+| --- | --- | --- | --- |
+| Social platform readiness | `company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]` | Implemented / read-only | Observes Android package/focus readiness for Xiaohongshu, Douyin, and WeChat Channels slots. It returns data suitable for `social_platform_account` records but does not write Store truth, log in, publish, delete, pay, or export messages. |
+| GitHub source observation | `company docs source sync` | Implemented for local worktree observation | Writes external software source TypedRecords; GitHub webhook/API delivery remains next. |
+| WeCom merchant gateway | docs/WorkItems only | Planned | Needs schema/API/CLI/Agent inbox implementation. |
+| Social publication / metric evidence | Docs TypedRecords + WorkItems now; dedicated connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, and metric snapshots. Dedicated publish/metrics commands must remain policy-gated. |
+
 ### Company OS API resources with no equivalent dedicated CLI
 
 The local API can read/write more resources than the CLI exposes directly:

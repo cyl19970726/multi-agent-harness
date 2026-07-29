@@ -82,6 +82,11 @@ async function main() {
   const root = await mkdtemp(join(tmpdir(), "company-os-operator-cli-smoke-"));
   const env = { ...process.env, HARNESS_ROOT: join(root, "store"), HARNESS_COMPANY_OS_TOKEN: token };
 
+  const socialReadiness = run(["company", "gateway", "social", "readiness"], env);
+  check(socialReadiness.ok === true && socialReadiness.gateway === "social_content", "company gateway social readiness returns a social-content observation");
+  check(socialReadiness.boundaries?.read_only === true && socialReadiness.boundaries?.store_side_effects === false && socialReadiness.boundaries?.publishing_side_effects === false, "social readiness command is read-only and cannot publish or write Store truth");
+  check(["xiaohongshu", "douyin", "wechat_channels"].every((platform) => socialReadiness.platforms?.some((item) => item.platform === platform)), "social readiness reports Xiaohongshu, Douyin, and WeChat Channels slots");
+
   const human = run([
     "company", "org", "actor", "create-human",
     "--id", "human-admin",
