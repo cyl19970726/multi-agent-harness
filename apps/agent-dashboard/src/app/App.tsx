@@ -178,7 +178,7 @@ export function App() {
   // empty (not-connected) workspace. The user-facing chip label is derived below.
   const [source, setSource] = useState<typeof liveSource | "offline">("offline");
   const [sourceError, setSourceError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   // Manual opt-in interval poll (FE-WP5). Independent of the automatic polling
   // fallback that kicks in whenever the SSE stream is down.
   const [pollEnabled, setPollEnabled] = useState(false);
@@ -288,6 +288,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      setIsLoading(true);
       try {
         const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
         if (!result) return;
@@ -307,6 +308,8 @@ export function App() {
         }
       } catch {
         // Stay offline/empty; the auto-retry effect below keeps trying.
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
     })();
     return () => {
@@ -463,6 +466,7 @@ export function App() {
 
       snapshotFrames.current.reset();
       const request = beginMutationSnapshotRequest();
+      setIsLoading(true);
       setSnapshot(emptySnapshot);
       void (async () => {
         try {
@@ -477,6 +481,7 @@ export function App() {
           setSourceError(error instanceof Error ? error.message : String(error));
         } finally {
           finishMutationSnapshotRequest(request);
+          setIsLoading(false);
         }
       })();
     },
@@ -498,9 +503,11 @@ export function App() {
       snapshotFrames.current.reset();
       const request = beginMutationSnapshotRequest();
       setSelectedCompanyId(companyId);
+      setIsLoading(true);
       setSnapshot(emptySnapshot);
       if (source !== liveSource) {
         finishMutationSnapshotRequest(request);
+        setIsLoading(false);
         return;
       }
       void (async () => {
@@ -515,6 +522,7 @@ export function App() {
           setSourceError(error instanceof Error ? error.message : String(error));
         } finally {
           finishMutationSnapshotRequest(request);
+          setIsLoading(false);
         }
       })();
     },
@@ -537,9 +545,11 @@ export function App() {
       const request = beginMutationSnapshotRequest();
       selectedStreamRef.current = spaceId;
       setSelectedSpaceId(spaceId);
+      setIsLoading(true);
       setSnapshot(emptySnapshot);
       if (source !== liveSource) {
         finishMutationSnapshotRequest(request);
+        setIsLoading(false);
         return;
       }
       void (async () => {
@@ -558,6 +568,7 @@ export function App() {
           setSourceError(error instanceof Error ? error.message : String(error));
         } finally {
           finishMutationSnapshotRequest(request);
+          setIsLoading(false);
         }
       })();
     },

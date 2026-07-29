@@ -931,7 +931,8 @@ function SurfaceSwitch({
     executionSpaceId,
   };
   if (isCompanyOsSurface(selection.surface)) {
-    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} onSelectionChange={onSelectionChange} />;
+    const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
+    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} onAction={onAction} onSelectionChange={onSelectionChange} />;
   }
   switch (selection.surface) {
     case "missions":
