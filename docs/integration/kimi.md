@@ -48,10 +48,10 @@ execution and must not be used to infer Team capability.
 
 Current compatibility is explicit: the installed Kimi Code probe reports
 `0.29.1`, while `kimi-acp-v1` is reviewed only for `0.27.0`. The adapter
-therefore reports `review_required`. Do not promote 0.29.1, change versions, or
-infer support from the existing hot path without explicit Human confirmation,
-protocol/schema regeneration, deterministic checks, and a proportional live
-canary.
+therefore reports `review_required`. Do not promote 0.29.1 or infer support
+from the existing hot path without protocol/schema regeneration, deterministic
+checks, and a proportional live canary. Any Kimi change follows ADR 0031's
+Agent-managed, one-Provider-at-a-time update and rollback loop.
 
 The Agent Team runtime is:
 

@@ -28,7 +28,7 @@
       "name": "star-harness",
       "displayName": "Star Harness",
       "description": "Mission/Wave orchestration and autonomous Agent Team collaboration for Codex, Claude Code, and Kimi.",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "category": "orchestration",
       "keywords": [
         "agent-team",

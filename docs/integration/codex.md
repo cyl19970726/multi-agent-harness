@@ -242,9 +242,9 @@ harness member providers --fail-on-review
 ```
 
 An unreviewed Codex version is `review_required`, not silently compatible.
-Never install, upgrade, downgrade, or switch Codex without explicit Human
-confirmation naming the candidate version. No provider version is changed by
-this integration contract.
+Provider maintenance follows ADR 0031's Agent-managed, one-Provider-at-a-time
+update loop. It must not hot-replace an active MemberRun/native session and
+must retain a rollback path until deterministic and live acceptance pass.
 
 Current local probe at this documentation closure: Codex `0.145.0`,
 compatibility `current`, adapter contract `codex-app-server-v1`, reviewed on

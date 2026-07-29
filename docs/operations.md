@@ -39,6 +39,19 @@ claim/provider receipt/ACK, cross-process control routing, reconnect, and
 explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
 Workflow and are never Agent Team fallbacks.
 
+Real self-hosting follows the canonical
+[Agent Team Dogfood Loop](product/agent-team-dogfood-loop.md). A failed live
+scenario becomes a Host-triaged Repair Wave or tracked issue, then the original
+scenario is rerun before the matrix expands. Finding a bug is evidence, not
+Mission closeout.
+
+When a live Member appears stuck, inspect MemberRun/Supervisor health, Inbox
+delivery and PendingInteraction first, then use bounded provider-native session
+forensics through its `NativeSessionRef`. Compare tool/process evidence with the
+Member narrative; never read an entire large JSONL into the Host context or
+copy the transcript into Harness. The output is a diagnosis and next control
+action, not a replacement execution history.
+
 Use focused Rust tests while iterating on one slice:
 
 ```bash
@@ -52,6 +65,47 @@ Mission-scoped TeamRun, MemberRuns, provider-native session ids, assignment
 correlations (including `origin_wave_id` when useful), handoffs, artifacts, and
 Host judgment from the live run. Do not present deterministic provider-shim
 tests as live proof.
+
+## Harness And Provider Update Windows
+
+Validate the repository's unified Harness/Plugin source and compare it with the
+local installation:
+
+```bash
+pnpm star-harness:install:check
+```
+
+After the source commit is accepted and published in the repository
+marketplace, install it with:
+
+```bash
+pnpm star-harness:install
+```
+
+This builds a versioned Harness binary, updates the stable binary link,
+converges Codex and Claude on the Git marketplace copy, removes the duplicate
+Codex personal copy, and records the installation under
+`~/.local/state/star-harness/installations/`. Start new Codex and Claude
+sessions after applying it. Existing sessions keep the Plugin and Provider
+runtime they already loaded.
+
+Provider binary maintenance is separate and follows ADR 0031. The operating
+window is:
+
+1. discover releases at most once that day;
+2. select one Provider and record current version, candidate, install channel
+   and exact rollback;
+3. leave active MemberRuns/native sessions on the current runtime;
+4. install the candidate for new sessions and run
+   `harness member providers --fail-on-review`;
+5. run the mode-specific deterministic acceptance and one proportional live
+   canary;
+6. promote the reviewed version only after green evidence, otherwise roll back
+   and retain the failed attempt.
+
+Agent-managed maintenance removes the per-version confirmation prompt. It does
+not bypass authentication, payment, license, credential or permission policy,
+and it never upgrades several Providers in one review window.
 
 For Kimi ACP members, `--member name:role:kimi:<model-alias>` is applied with
 ACP `session/set_config_option` before the first prompt. The alias must exist in
