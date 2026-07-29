@@ -943,6 +943,14 @@ pub struct WorkItem {
     pub id: String,
     pub title: String,
     pub objective: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub context_refs: Vec<EntityRef>,
+    #[serde(default)]
+    pub deliverable_refs: Vec<EntityRef>,
     pub status: WorkItemStatus,
     pub source_document_ref: String,
     pub source_record_refs: Vec<String>,
@@ -983,6 +991,16 @@ impl ValidateCompanyOs for WorkItem {
         required(&self.id, "WorkItem.id")?;
         required(&self.title, "WorkItem.title")?;
         required(&self.objective, "WorkItem.objective")?;
+        if let Some(description) = &self.description {
+            required(description, "WorkItem.description")?;
+        }
+        required_strings(&self.acceptance_criteria, "WorkItem.acceptance_criteria")?;
+        for reference in &self.context_refs {
+            reference.validate()?;
+        }
+        for reference in &self.deliverable_refs {
+            reference.validate()?;
+        }
         required(&self.source_document_ref, "WorkItem.source_document_ref")?;
         if let Some(reference) = &self.milestone_ref {
             required(reference, "WorkItem.milestone_ref")?;

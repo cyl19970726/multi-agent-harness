@@ -137,6 +137,12 @@ fn work_item(id: &str, document_id: &str, human: &ActorRef, agent: &ActorRef) ->
         id: id.into(),
         title: "Trademark filing for Brand A".into(),
         objective: "Prepare and submit a governed filing package".into(),
+        description: Some(
+            "Prepare the package, preserve approval context, and return evidence.".into(),
+        ),
+        acceptance_criteria: vec!["Filing evidence is linked".into()],
+        context_refs: vec![],
+        deliverable_refs: vec![],
         status: WorkItemStatus::Submitted,
         source_document_ref: document_id.into(),
         source_record_refs: vec![],

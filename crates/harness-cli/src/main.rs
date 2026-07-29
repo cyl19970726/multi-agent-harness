@@ -2674,6 +2674,10 @@ fn company_work_create_command(store: &HarnessStore, args: &[String]) -> CliResu
         "id": work_item_id,
         "title": title,
         "objective": objective,
+        "description": value(args, "--description"),
+        "acceptance_criteria": many(args, "--acceptance-criterion"),
+        "context_refs": many_json(args, "--context-ref-json")?,
+        "deliverable_refs": many_json(args, "--deliverable-ref-json")?,
         "status": status,
         "source_document_ref": source_document,
         "source_record_refs": many(args, "--source-record"),
@@ -5016,8 +5020,24 @@ fn company_docs_page_publish_command(store: &HarnessStore, args: &[String]) -> C
 }
 
 fn company_docs_document_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let parent_document = required(args, "--parent-document")?;
+    let root_document = has_flag(args, "--root");
+    let definition_id = value(args, "--definition");
+    let parent_document = value(args, "--parent-document");
+    if root_document && parent_document.is_some() {
+        return Err(CliError::Usage(
+            "document create cannot combine --root and --parent-document".into(),
+        ));
+    }
+    if !root_document && parent_document.is_none() {
+        return Err(CliError::Usage(
+            "usage: harness company docs document create --definition <id> --parent-document <doc-id> --title <title> --actor <actor-id>; root bootstrap uses --root --authority <human-id>".into(),
+        ));
+    }
+    if !root_document && definition_id.is_none() {
+        return Err(CliError::Usage(
+            "document create with --parent-document requires --definition <custom-page-definition-id>".into(),
+        ));
+    }
     let title = required(args, "--title")?;
     let actor_id = required(args, "--actor")?;
     let actor_kind = docs_actor_kind(args)?;
@@ -5045,26 +5065,46 @@ fn company_docs_document_create_command(store: &HarnessStore, args: &[String]) -
         "created_at": now,
         "updated_at": now
     });
-    let body = docs_action_body(
-        &definition_id,
-        value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-document")),
-        "document.append",
-        serde_json::json!({"kind": "document", "id": parent_document}),
-        actor_ref.clone(),
-        record,
-        now,
-    );
-    let document_result = dispatch_company_docs_action_value(store, &body)?;
+    let document_result = if root_document {
+        if instantiate_template {
+            return Err(CliError::Usage(
+                "root document bootstrap cannot instantiate a template".into(),
+            ));
+        }
+        let authority = required(args, "--authority")?;
+        dispatch_company_docs_admin_append_value(
+            store,
+            "/v1/company-os/documents",
+            company_actor_ref_json("human", &authority)?,
+            record,
+        )?
+    } else {
+        let definition_id = definition_id.as_deref().unwrap();
+        let parent_document = parent_document.as_deref().unwrap();
+        let body = docs_action_body(
+            definition_id,
+            value(args, "--policy").unwrap_or_else(|| format!("{definition_id}:document.append")),
+            value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-docs-document")),
+            "document.append",
+            serde_json::json!({"kind": "document", "id": parent_document}),
+            actor_ref.clone(),
+            record,
+            now,
+        );
+        dispatch_company_docs_action_value(store, &body)?
+    };
     let template_result = if instantiate_template {
         let template_id = template_ref.as_deref().ok_or_else(|| {
             CliError::Usage(
                 "--instantiate-template requires --template <template-document-id>".into(),
             )
         })?;
+        let definition_id = definition_id.as_deref().ok_or_else(|| {
+            CliError::Usage("--instantiate-template requires --definition".into())
+        })?;
         Some(company_docs_instantiate_template_blocks(
             store,
-            &definition_id,
+            definition_id,
             &document_id,
             template_id,
             actor_ref,
@@ -7181,6 +7221,11 @@ fn company_work_apply_transition_fields(
     append_string_values(record, "result_record_refs", many(args, "--result-record"));
     append_string_values(record, "evidence_refs", many(args, "--evidence"));
     append_string_values(record, "artifact_refs", many(args, "--artifact"));
+    append_json_values(
+        record,
+        "deliverable_refs",
+        many_json(args, "--deliverable-ref-json")?,
+    );
     append_json_values(
         record,
         "execution_refs",

@@ -248,7 +248,9 @@ boundaries; `harness company docs module create` creates a governance-scoped
 BusinessModule with a fallback View and optional explicit relation rules such
 as Document → TypedRecord `source_for`, `harness company docs page-definition
 create` installs a CustomPageDefinition, package, server ActionPolicyDefinition
-bundle, and module reference, `harness company docs document create` creates a
+bundle, and module reference, `harness company docs document create --root`
+bootstraps a new top-level Document/DocumentSpace entry with Human admin
+authority, `harness company docs document create --parent-document` creates a
 scoped child Document, `harness company docs document rename|move|archive`
 perform governed structure maintenance by updating the latest Document row
 through `document.append` while preserving identity, existing Blocks and

@@ -1793,6 +1793,9 @@ fn validate_work_item_transition(
     }
     let immutable_changed = previous.title != target.title
         || previous.objective != target.objective
+        || previous.description != target.description
+        || previous.acceptance_criteria != target.acceptance_criteria
+        || previous.context_refs != target.context_refs
         || previous.source_document_ref != target.source_document_ref
         || previous.source_record_refs != target.source_record_refs
         || previous.milestone_ref != target.milestone_ref
@@ -1823,6 +1826,10 @@ fn validate_work_item_transition(
         || !preserves(&previous.approval_refs, &target.approval_refs)
         || !preserves(&previous.evidence_refs, &target.evidence_refs)
         || !preserves(&previous.artifact_refs, &target.artifact_refs)
+        || !previous
+            .deliverable_refs
+            .iter()
+            .all(|item| target.deliverable_refs.contains(item))
         || !target.execution_refs.starts_with(&previous.execution_refs)
     {
         return Err(ApiError::conflict(

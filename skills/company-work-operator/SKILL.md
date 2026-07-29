@@ -128,6 +128,9 @@ harness company work create \
   --module <business-module-id> \
   --title <title> \
   --objective <objective> \
+  --description <scope-and-constraints> \
+  [--acceptance-criterion <criterion> ...] \
+  [--context-ref-json '{"kind":"document","id":"..."}' ...] \
   --submitted-by <actor-id> \
   --accountable-owner <actor-id> \
   [--assignee <actor-id> ...]
@@ -141,6 +144,7 @@ harness company work transition \
   --work-item <work-item-id> \
   --status <in_progress|blocked|waiting_for_approval|in_review|completed> \
   --actor <actor-id>
+  [--deliverable-ref-json '{"kind":"evidence","id":"..."}' ...]
 harness company work close \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
@@ -165,8 +169,10 @@ policy for `work_item.append`, `assignment.append`, or
 `work assign` appends a native `Assignment` delivery record. It does not
 rewrite `WorkItem.assignees` in v1 because current `work_item.transition`
 correctly forbids changing responsibility fields. Set initial assignees during
-`work create`; add a later explicit assignment-update Action if the product
-needs reassignment to affect the Work projection.
+`work create`; add a later explicit WorkItem reassignment Action if the product
+needs accountable owner, assignee, reviewer, or approver correction to affect
+the Work projection. Do not use a direct ledger edit or an `Assignment` row to
+pretend the WorkItem responsibility chain changed.
 
 ## Safe workflow
 
@@ -196,7 +202,10 @@ needs reassignment to affect the Work projection.
 
 - The source Document or TypedRecord exists.
 - The WorkItem has a clear title, WorkType, lifecycle status, owner, assignee
-  or routing state, and source refs.
+  or routing state, source refs, and enough detail for an Agent to execute:
+  description when title/objective are insufficient, acceptance criteria for
+  review, context refs for navigation, and deliverable refs for returned
+  outputs.
 - Milestone is used only as a work grouping/lifecycle planning object.
 - Any assigned actor exists in Organization and has a compatible role.
 - Any financial effect has a linked Finance Commitment, not just text in the

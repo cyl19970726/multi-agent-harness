@@ -60,6 +60,16 @@ function canonicalEntityRef(value: unknown): CanonicalEntityRef | undefined {
   return id && kind ? { id, kind } : undefined;
 }
 
+function relatedEntityLinks(value: unknown): RelatedLink[] {
+  return Array.isArray(value)
+    ? value
+        .flatMap((entry) => {
+          const ref = canonicalEntityRef(entry);
+          return ref ? [{ id: ref.id, label: ref.id, detail: ref.kind }] : [];
+        })
+    : [];
+}
+
 function field(record: JsonRecord | undefined, key: string): unknown {
   if (!record) return undefined;
   if (record[key] !== undefined) return record[key];
@@ -202,6 +212,11 @@ export const trademarkSource = {
 export const trademarkWorkItem: WorkItemView = {
   id: "workitem-trademark-filing-brand-a",
   title: "Trademark filing for Brand A",
+  objective: "Prepare the CN trademark filing package and stop for Human approval before legal or financial effect.",
+  description: "Collect source materials, legal review, filing evidence, and finance context into one governed WorkItem.",
+  acceptanceCriteria: ["Filing package reviewed", "Human approval recorded", "Filing receipt or blocker evidence linked"],
+  contextRefs: [trademarkSource],
+  deliverableRefs: [{ id: "evidence-filing-package", label: "Filing package evidence", detail: "evidence" }],
   status: "waiting_for_approval",
   sourceDocument: trademarkSource,
   requestedBy: companyOsActors.brandOwner,
@@ -218,6 +233,10 @@ export const trademarkWorkItem: WorkItemView = {
 export const documentArchitectureWorkItem: WorkItemView = {
   id: "workitem-organize-trademark-knowledge",
   title: "Organize trademark filing knowledge",
+  objective: "Keep trademark source documents, records, and views navigable for agents and human reviewers.",
+  acceptanceCriteria: ["Source document linked", "Structured record relation visible"],
+  contextRefs: [trademarkSource],
+  deliverableRefs: [],
   status: "in_progress",
   sourceDocument: trademarkSource,
   requestedBy: companyOsActors.ipLead,
@@ -412,6 +431,11 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const workItem: WorkItemView = {
     id: text(workRecord.id, "unresolved-work-item"),
     title: text(workRecord.title, "Unresolved work"),
+    objective: text(workRecord.objective) || undefined,
+    description: text(workRecord.description) || undefined,
+    acceptanceCriteria: stringArray(workRecord.acceptance_criteria),
+    contextRefs: relatedEntityLinks(workRecord.context_refs),
+    deliverableRefs: relatedEntityLinks(workRecord.deliverable_refs),
     status: workStatus(workRecord.status),
     sourceDocument: source,
     requestedBy: actor(workRecord.requested_by_ref ?? workRecord.requested_by),
@@ -433,6 +457,11 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     return {
       id: text(record.id, "unresolved-work-item"),
       title: text(record.title, "Unresolved work"),
+      objective: text(record.objective) || undefined,
+      description: text(record.description) || undefined,
+      acceptanceCriteria: stringArray(record.acceptance_criteria),
+      contextRefs: relatedEntityLinks(record.context_refs),
+      deliverableRefs: relatedEntityLinks(record.deliverable_refs),
       status: workStatus(record.status),
       sourceDocument: asRef(recordSource?.id ?? record.source_document_ref, recordSource?.title ?? record.source_document_ref, recordSource?.space ?? recordSource?.space_id),
       requestedBy: actor(record.requested_by_ref ?? record.requested_by),

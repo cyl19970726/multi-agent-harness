@@ -276,6 +276,15 @@ fn trademark_work_item() -> WorkItem {
         id: "work-trademark-filing".into(),
         title: "Trademark filing for Brand A".into(),
         objective: "Prepare and submit application CN-2026-018 after approval.".into(),
+        description: Some(
+            "Coordinate legal preparation, approval, and durable filing evidence.".into(),
+        ),
+        acceptance_criteria: vec![
+            "Human approval is recorded before filing.".into(),
+            "Filing evidence is linked to the source document.".into(),
+        ],
+        context_refs: vec![],
+        deliverable_refs: vec![],
         status: WorkItemStatus::WaitingForApproval,
         source_document_ref: "doc-trademark-cn-2026-018".into(),
         source_record_refs: vec!["record-cn-2026-018".into()],

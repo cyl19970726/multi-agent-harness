@@ -125,6 +125,22 @@ The table must support unassigned and no-Milestone rows honestly. It does not
 hide completed items by default; operators can choose an active-only saved
 view.
 
+The WorkItem row and detail surfaces must expose the native detail fields when
+present:
+
+```text
+description
+acceptance_criteria
+context_refs
+deliverable_refs
+```
+
+These fields are not document-local decoration. `description` and
+`acceptance_criteria` help Agents understand and verify the commitment;
+`context_refs` and `deliverable_refs` keep the WorkItem connected to Docs,
+Org, Finance, execution, evidence, or source/delivery records without copying
+their facts into the task row.
+
 ## Milestones and workload
 
 A Milestone view shows outcome, accountable owner, target date, acceptance
@@ -140,7 +156,8 @@ be unknown. An unassigned lane is always visible when applicable.
 ## WorkItem focus
 
 The detail page preserves the full accountability chain and durable context:
-source and result, submitter, requester, accountable owner, assignees,
+description, acceptance criteria, source and result, context refs, deliverable
+refs, submitter, requester, accountable owner, assignees,
 contributors, reviewer, approver, Milestone, business line, lifecycle history,
 Approval, artifacts, evidence, finance relations, and typed execution/delivery
 references. Activity may explain what happened but cannot establish ownership

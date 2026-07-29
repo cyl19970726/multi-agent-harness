@@ -31,10 +31,19 @@ interface ActorRow {
   role: string;
 }
 
+interface EntityLink {
+  kind: string;
+  id: string;
+}
+
 interface WorkRow {
   id: string;
   title: string;
   objective: string;
+  description?: string;
+  acceptanceCriteria: string[];
+  contextRefs: EntityLink[];
+  deliverableRefs: EntityLink[];
   status: string;
   workType: string;
   businessLineId?: string;
@@ -105,6 +114,13 @@ function refId(value: unknown): string {
   return text(ref.actor_id) || text(ref.id);
 }
 
+function entityLinks(value: unknown): EntityLink[] {
+  return objects(value).map((entry) => ({
+    kind: text(entry.kind, "record"),
+    id: text(entry.id),
+  })).filter((entry) => entry.id);
+}
+
 function humanize(value: string): string {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -173,6 +189,10 @@ function buildModel(source: unknown): WorkModel {
       id: text(record.id, "unresolved-work"),
       title: text(record.title, "Untitled WorkItem"),
       objective: text(record.objective),
+      description: text(record.description) || undefined,
+      acceptanceCriteria: Array.isArray(record.acceptance_criteria) ? record.acceptance_criteria.map((value) => text(value)).filter(Boolean) : [],
+      contextRefs: entityLinks(record.context_refs),
+      deliverableRefs: entityLinks(record.deliverable_refs),
       status: text(record.status, "submitted"),
       workType: text(record.work_type, "general"),
       businessLineId,
@@ -240,7 +260,7 @@ export function WorkOperatingPage({ source }: { source: unknown }) {
   const model = useMemo(() => buildModel(source), [source]);
   const [activeView, setActiveView] = useState<WorkView>("overview");
   const [query, setQuery] = useState("");
-  const visible = model.items.filter((item) => `${item.title} ${item.businessLine} ${item.workType} ${item.milestone}`.toLowerCase().includes(query.toLowerCase()));
+  const visible = model.items.filter((item) => `${item.title} ${item.objective} ${item.description ?? ""} ${item.acceptanceCriteria.join(" ")} ${item.businessLine} ${item.workType} ${item.milestone}`.toLowerCase().includes(query.toLowerCase()));
   return (
     <main className="h-full w-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_78%_-5%,hsl(var(--primary)/0.09),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--muted)/0.24))]" data-work-operating-system="v1" data-work-view={activeView}>
       <header className="sticky top-0 z-20 w-full min-w-0 max-w-full overflow-hidden border-b border-border/80 bg-background/90 px-4 py-4 backdrop-blur-xl sm:px-7">
@@ -303,7 +323,7 @@ function SectionTitle({ eyebrow, title, detail }: { eyebrow: string; title: stri
 }
 
 function WorkListRow({ item }: { item: WorkRow }) {
-  return <article className="group grid gap-4 p-5 transition hover:bg-muted/30 sm:grid-cols-[minmax(0,1fr)_auto]" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Status status={item.status} /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{humanize(item.workType)}</span><span className="text-[10px] text-muted-foreground">· {item.businessLine}</span>{item.approvalId && <span data-company-os-ref={item.approvalId} className="text-[10px] text-status-warn">· {item.approval === "requested" ? "Human approval" : humanize(item.approval)}</span>}</div><h3 className="mt-2 truncate font-semibold">{item.title}</h3><p className="mt-1 truncate text-xs text-muted-foreground">{item.milestone} · {item.source}</p></div><div className="flex items-center gap-4"><ActorStack actors={[item.accountable, ...item.assignees, ...item.contributors, item.reviewer]} /><div className="hidden text-right sm:block"><p className="text-xs font-medium">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.approval === "requested" ? "Human approval" : humanize(item.execution)}</p></div><ArrowUpRight className="size-4 text-muted-foreground transition group-hover:text-primary" /></div></article>;
+  return <article className="group grid gap-4 p-5 transition hover:bg-muted/30 sm:grid-cols-[minmax(0,1fr)_auto]" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Status status={item.status} /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{humanize(item.workType)}</span><span className="text-[10px] text-muted-foreground">· {item.businessLine}</span>{item.acceptanceCriteria.length > 0 && <span className="text-[10px] text-status-good">· {item.acceptanceCriteria.length} acceptance</span>}{item.approvalId && <span data-company-os-ref={item.approvalId} className="text-[10px] text-status-warn">· {item.approval === "requested" ? "Human approval" : humanize(item.approval)}</span>}</div><h3 className="mt-2 truncate font-semibold">{item.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.description || item.objective || `${item.milestone} · ${item.source}`}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.milestone} · {item.source}{item.contextRefs.length > 0 ? ` · ${item.contextRefs.length} context refs` : ""}{item.deliverableRefs.length > 0 ? ` · ${item.deliverableRefs.length} deliverables` : ""}</p></div><div className="flex items-center gap-4"><ActorStack actors={[item.accountable, ...item.assignees, ...item.contributors, item.reviewer]} /><div className="hidden text-right sm:block"><p className="text-xs font-medium">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.approval === "requested" ? "Human approval" : humanize(item.execution)}</p></div><ArrowUpRight className="size-4 text-muted-foreground transition group-hover:text-primary" /></div></article>;
 }
 
 function Board({ items }: { items: WorkRow[] }) {
@@ -313,11 +333,11 @@ function Board({ items }: { items: WorkRow[] }) {
 }
 
 function WorkCard({ item }: { item: WorkRow }) {
-  return <article className="rounded-lg border border-border bg-card p-3 shadow-[0_1px_2px_hsl(var(--foreground)/0.04)] transition hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="flex items-center justify-between gap-2"><span className="rounded-md border border-primary/15 bg-primary/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-primary">{humanize(item.workType)}</span>{item.priority && <span className="text-[9px] text-muted-foreground">{humanize(item.priority)}</span>}</div><h3 className="mt-2.5 text-[13px] font-semibold leading-[1.35]">{item.title}</h3><p className="mt-2 text-[10px] text-muted-foreground">{item.businessLine}</p><div className="mt-3 border-t border-border/70 pt-3"><p className="text-[9px] uppercase tracking-wide text-muted-foreground">Accountable</p><div className="mt-1.5 flex items-center justify-between gap-2"><ActorStack actors={[item.accountable, ...item.assignees]} /><span className="max-w-20 truncate text-[9px] text-muted-foreground">{item.accountable?.name ?? "Unassigned"}</span></div><div className="mt-2 space-y-1 text-[9px] text-muted-foreground"><p className="truncate">⚑ {item.milestone}</p><p>□ {dateLabel(item.dueAt)}</p>{item.approvalId && <p data-company-os-ref={item.approvalId} className="text-status-warn">Human approval</p>}</div></div></article>;
+  return <article className="rounded-lg border border-border bg-card p-3 shadow-[0_1px_2px_hsl(var(--foreground)/0.04)] transition hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="flex items-center justify-between gap-2"><span className="rounded-md border border-primary/15 bg-primary/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-primary">{humanize(item.workType)}</span>{item.priority && <span className="text-[9px] text-muted-foreground">{humanize(item.priority)}</span>}</div><h3 className="mt-2.5 text-[13px] font-semibold leading-[1.35]">{item.title}</h3><p className="mt-2 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{item.description || item.objective || item.businessLine}</p><div className="mt-3 border-t border-border/70 pt-3"><p className="text-[9px] uppercase tracking-wide text-muted-foreground">Accountable</p><div className="mt-1.5 flex items-center justify-between gap-2"><ActorStack actors={[item.accountable, ...item.assignees]} /><span className="max-w-20 truncate text-[9px] text-muted-foreground">{item.accountable?.name ?? "Unassigned"}</span></div><div className="mt-2 space-y-1 text-[9px] text-muted-foreground"><p className="truncate">⚑ {item.milestone}</p><p>□ {dateLabel(item.dueAt)}</p>{item.acceptanceCriteria.length > 0 && <p>{item.acceptanceCriteria.length} acceptance criteria</p>}{item.approvalId && <p data-company-os-ref={item.approvalId} className="text-status-warn">Human approval</p>}</div></div></article>;
 }
 
 function AllWork({ items }: { items: WorkRow[] }) {
-  return <section className="overflow-hidden rounded-2xl border border-border bg-card/90 shadow-sm"><SectionTitle eyebrow="Canonical ledger" title="All WorkItems" detail={`${items.length} records · sortable projection`} /><div className="overflow-x-auto"><table className="min-w-[1200px] w-full text-left text-xs"><thead className="bg-muted/45 text-[10px] uppercase tracking-wider text-muted-foreground"><tr>{["WorkItem", "Type", "Business line", "Milestone", "Status", "Accountable", "Assignees", "Approval", "Due", "Execution"].map((label) => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead><tbody className="divide-y divide-border">{items.map((item) => <tr key={item.id} className="hover:bg-muted/25" data-company-os-ref={item.id}><td className="max-w-xs px-4 py-4"><p className="font-semibold text-foreground">{item.title}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.source}</p></td><td className="px-4 py-4">{humanize(item.workType)}</td><td className="px-4 py-4">{item.businessLine}</td><td className="px-4 py-4">{item.milestone}</td><td className="px-4 py-4"><Status status={item.status} /></td><td className="px-4 py-4">{item.accountable?.name ?? "Unassigned"}</td><td className="px-4 py-4">{item.assignees.map((actor) => actor.name).join(", ") || "Unassigned"}</td><td className="px-4 py-4">{humanize(item.approval)}</td><td className="px-4 py-4">{dateLabel(item.dueAt)}</td><td className="px-4 py-4">{humanize(item.execution)}</td></tr>)}</tbody></table></div></section>;
+  return <section className="overflow-hidden rounded-2xl border border-border bg-card/90 shadow-sm"><SectionTitle eyebrow="Canonical ledger" title="All WorkItems" detail={`${items.length} records · sortable projection`} /><div className="overflow-x-auto"><table className="min-w-[1380px] w-full text-left text-xs"><thead className="bg-muted/45 text-[10px] uppercase tracking-wider text-muted-foreground"><tr>{["WorkItem", "Detail", "Type", "Business line", "Milestone", "Status", "Accountable", "Assignees", "Acceptance", "Refs", "Due", "Execution"].map((label) => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead><tbody className="divide-y divide-border">{items.map((item) => <tr key={item.id} className="hover:bg-muted/25" data-company-os-ref={item.id}><td className="max-w-xs px-4 py-4"><p className="font-semibold text-foreground">{item.title}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.source}</p></td><td className="max-w-sm px-4 py-4 text-muted-foreground"><p className="line-clamp-2">{item.description || item.objective || "No detail supplied"}</p></td><td className="px-4 py-4">{humanize(item.workType)}</td><td className="px-4 py-4">{item.businessLine}</td><td className="px-4 py-4">{item.milestone}</td><td className="px-4 py-4"><Status status={item.status} /></td><td className="px-4 py-4">{item.accountable?.name ?? "Unassigned"}</td><td className="px-4 py-4">{item.assignees.map((actor) => actor.name).join(", ") || "Unassigned"}</td><td className="px-4 py-4">{item.acceptanceCriteria.length || "—"}</td><td className="px-4 py-4">{item.contextRefs.length || item.deliverableRefs.length ? `${item.contextRefs.length} context / ${item.deliverableRefs.length} deliverable` : "—"}</td><td className="px-4 py-4">{dateLabel(item.dueAt)}</td><td className="px-4 py-4">{humanize(item.execution)}</td></tr>)}</tbody></table></div></section>;
 }
 
 function Milestones({ milestones, items }: { milestones: MilestoneRow[]; items: WorkRow[] }) {
