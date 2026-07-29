@@ -304,13 +304,98 @@ fn migrate_from_project_copies_only_company_os_ledgers() {
         migrated["copied_records"].as_u64().unwrap() >= 1,
         "migration should copy Company OS rows: {migrated}"
     );
+    assert_eq!(migrated["verification"]["status"], "verified");
+    assert_eq!(migrated["verification"]["missing_source_records"], 0);
 
     let company_store = company_store_root(&home, "main-company");
     assert!(company_store
         .join("company_os_human_members.jsonl")
         .is_file());
+    assert!(company_store
+        .join("company_store_migrations.jsonl")
+        .is_file());
+    assert!(project_store
+        .join("COMPANY_OS_MIGRATED_TO_COMPANY.json")
+        .is_file());
     assert!(
         !company_store.join("missions.jsonl").exists(),
         "migration must not copy Mission/Wave execution ledgers into Company Store"
+    );
+
+    let marker: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(project_store.join("COMPANY_OS_MIGRATED_TO_COMPANY.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker["status"], "migrated_and_verified");
+    assert_eq!(marker["recommended_access"], "read_only_audit");
+    assert_eq!(marker["read_only_enforced"], false);
+
+    let migrations = json_out(&run_harness(
+        &home,
+        &repo,
+        &["--company", "main-company", "company", "migrations"],
+    ));
+    assert_eq!(migrations["records"].as_array().unwrap().len(), 1);
+
+    let target_ledger = company_store.join("company_os_human_members.jsonl");
+    let mut target_text = std::fs::read_to_string(&target_ledger).unwrap();
+    target_text.push_str("{\"id\":\"target-newer-record\"}\n");
+    std::fs::write(&target_ledger, target_text).unwrap();
+    let verify_only = run_harness(
+        &home,
+        &repo,
+        &[
+            "company",
+            "migrate-from-project",
+            "--from-project",
+            "multi-agent-harness",
+            "--id",
+            "main-company",
+            "--verify-only",
+        ],
+    );
+    assert!(
+        verify_only.status.success(),
+        "verify-only should accept a destination superset: {verify_only:?}"
+    );
+    let verified = json_out(&verify_only);
+    assert_eq!(verified["mode"], "verify_only");
+    assert_eq!(verified["copied_records"], 0);
+    assert_eq!(verified["verification"]["status"], "verified");
+    assert!(
+        verified["verification"]["target_records"].as_u64().unwrap()
+            > verified["verification"]["source_records"].as_u64().unwrap()
+    );
+
+    let migrations = json_out(&run_harness(
+        &home,
+        &repo,
+        &["--company", "main-company", "company", "migrations"],
+    ));
+    assert_eq!(migrations["records"].as_array().unwrap().len(), 2);
+
+    std::fs::write(&target_ledger, "{\"id\":\"target-only\"}\n").unwrap();
+    let failed_verify = run_harness(
+        &home,
+        &repo,
+        &[
+            "company",
+            "migrate-from-project",
+            "--from-project",
+            "multi-agent-harness",
+            "--id",
+            "main-company",
+            "--verify-only",
+        ],
+    );
+    assert!(
+        !failed_verify.status.success(),
+        "verify-only must fail when exact source rows are missing"
+    );
+    assert!(
+        String::from_utf8_lossy(&failed_verify.stderr).contains("missing 1 exact source record"),
+        "unexpected verification error: {}",
+        String::from_utf8_lossy(&failed_verify.stderr)
     );
 }

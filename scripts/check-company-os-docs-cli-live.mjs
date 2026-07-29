@@ -423,7 +423,7 @@ async function main() {
       "--path", "docs/prd",
       "--dry-run",
     ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
-    if (sourceSyncDryRun.ok !== true || sourceSyncDryRun.dry_run !== true || sourceSyncDryRun.boundaries?.github_webhook_is_transport_not_authority !== true || !sourceSyncDryRun.records?.some((record) => record.record_type === "product_doc_snapshot")) {
+    if (sourceSyncDryRun.ok !== true || sourceSyncDryRun.dry_run !== true || sourceSyncDryRun.boundaries?.github_webhook_is_transport_not_authority !== true || !sourceSyncDryRun.records?.some((record) => record.record_type === "product_doc_snapshot") || sourceSyncDryRun.relations?.length !== 4 || new Set(sourceSyncDryRun.relations.map((relation) => relation.relation_id)).size !== sourceSyncDryRun.relations.length) {
       throw new Error(`source sync dry-run did not preserve source mapping boundaries: ${JSON.stringify(sourceSyncDryRun)}`);
     }
 
@@ -439,8 +439,8 @@ async function main() {
       "--project-id", "external-product",
       "--path", "docs/prd",
     ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
-    if (sourceSync.ok !== true || sourceSync.records_written !== 4 || sourceSync.boundaries?.work_side_effects !== false) {
-      throw new Error(`source sync did not write the expected source TypedRecords: ${JSON.stringify(sourceSync)}`);
+    if (sourceSync.ok !== true || sourceSync.records_written !== 4 || sourceSync.relations_written !== 4 || sourceSync.boundaries?.work_side_effects !== false) {
+      throw new Error(`source sync did not write the expected source TypedRecords and Relations: ${JSON.stringify(sourceSync)}`);
     }
 
     const relation = JSON.parse(execFileSync(harness, [
@@ -822,6 +822,56 @@ async function main() {
     }
     if (!unlinkedDocumentQuery.health_findings?.some((entry) => entry.kind === "missing_document_record_relation" && entry.subject?.id === "typed-record-cli-child-1")) {
       throw new Error(`docs query did not surface missing relation health finding after unlink: ${JSON.stringify(unlinkedDocumentQuery.health_findings)}`);
+    }
+
+    const relationRepairDryRun = JSON.parse(execFileSync(harness, [
+      "company", "docs", "relation", "repair-missing",
+      "--definition", "page-docs-cli",
+      "--actor", "agent-docs-governance",
+      "--dry-run",
+    ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
+    if (relationRepairDryRun.ok !== true || relationRepairDryRun.planned_count !== 1 || relationRepairDryRun.planned_relations?.[0]?.to_record !== "typed-record-cli-child-1") {
+      throw new Error(`relation repair dry-run did not plan the missing source_for relation: ${JSON.stringify(relationRepairDryRun)}`);
+    }
+
+    let relationRepairWithoutConfirmFailed = false;
+    try {
+      execFileSync(harness, [
+        "company", "docs", "relation", "repair-missing",
+        "--definition", "page-docs-cli",
+        "--actor", "agent-docs-governance",
+      ], { cwd: repoRoot, env: cliEnv, stdio: "pipe" });
+    } catch {
+      relationRepairWithoutConfirmFailed = true;
+    }
+    if (!relationRepairWithoutConfirmFailed) throw new Error("relation repair-missing succeeded without --confirm");
+
+    const relationRepair = JSON.parse(execFileSync(harness, [
+      "company", "docs", "relation", "repair-missing",
+      "--definition", "page-docs-cli",
+      "--actor", "agent-docs-governance",
+      "--confirm",
+    ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
+    if (relationRepair.ok !== true || relationRepair.repaired_count !== 1) {
+      throw new Error(`relation repair-missing did not repair the missing source_for relation: ${JSON.stringify(relationRepair)}`);
+    }
+
+    const relationRepairRepeat = JSON.parse(execFileSync(harness, [
+      "company", "docs", "relation", "repair-missing",
+      "--definition", "page-docs-cli",
+      "--actor", "agent-docs-governance",
+      "--dry-run",
+    ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
+    if (relationRepairRepeat.ok !== true || relationRepairRepeat.planned_count !== 0) {
+      throw new Error(`relation repair-missing was not idempotent: ${JSON.stringify(relationRepairRepeat)}`);
+    }
+
+    const repairedDocumentQuery = JSON.parse(execFileSync(harness, [
+      "company", "docs", "query",
+      "--document", "document-cli-child",
+    ], { cwd: repoRoot, env: cliEnv, encoding: "utf8" }));
+    if (repairedDocumentQuery.health_findings?.some((entry) => entry.kind === "missing_document_record_relation" && entry.subject?.id === "typed-record-cli-child-1")) {
+      throw new Error(`docs query still reported the repaired source_for relation as missing: ${JSON.stringify(repairedDocumentQuery.health_findings)}`);
     }
 
     const moduleQuery = JSON.parse(execFileSync(harness, [
