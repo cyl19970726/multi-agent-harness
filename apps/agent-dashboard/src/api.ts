@@ -108,6 +108,21 @@ export async function fetchSnapshot(
   return (await response.json()) as DashboardSnapshot;
 }
 
+export async function fetchTeamRunSnapshot(
+  baseUrl: string,
+  teamRunId: string,
+  project?: string | null,
+  company?: string | null,
+  space?: string | null,
+): Promise<DashboardSnapshot> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const path = `/v1/team-runs/${encodeURIComponent(teamRunId)}/snapshot`;
+  const response = await fetch(`${normalized}${withProjectAndCompany(path, project, company, space)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as DashboardSnapshot;
+}
+
 /** Read a display-only projection directly from the provider's native session.
  * The backend does not copy these items into Harness storage. */
 export async function fetchNativeMemberActivity(

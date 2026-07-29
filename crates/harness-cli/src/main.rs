@@ -19,8 +19,8 @@ use harness_core::{
     HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
     MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, PendingInteraction,
-    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
+    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
     ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
     ProviderFeatureMode, ProviderIntegrationProfile, ProviderInteractionMode, SenderKind,
@@ -9188,6 +9188,7 @@ fn team_member_provider_profile_for_mode(
                     .to_string(),
             ),
             interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
             plan_mode: ProviderFeatureMode::Emulated,
             goal_mode: ProviderFeatureMode::Emulated,
             tool_event_fidelity: ProviderEventFidelity::Structured,
@@ -9219,6 +9220,7 @@ fn team_member_provider_profile_for_mode(
                     .to_string(),
             ),
             interaction_mode: ProviderInteractionMode::PauseAndResume,
+            ordinary_message_boundary: OrdinaryMessageBoundary::NextRound,
             plan_mode: ProviderFeatureMode::Native,
             goal_mode: ProviderFeatureMode::Native,
             tool_event_fidelity: ProviderEventFidelity::Structured,
@@ -9242,6 +9244,7 @@ fn team_member_provider_profile_for_mode(
             adapter_reviewed_at: Some("2026-07-21".to_string()),
             compatibility_note: Some("Version is checked again after the ACP initialize handshake.".to_string()),
             interaction_mode: ProviderInteractionMode::PauseAndResume,
+            ordinary_message_boundary: OrdinaryMessageBoundary::NextRoundBatched,
             plan_mode: ProviderFeatureMode::Native,
             goal_mode: ProviderFeatureMode::Emulated,
             tool_event_fidelity: ProviderEventFidelity::Structured,
@@ -9266,6 +9269,7 @@ fn team_member_provider_profile_for_mode(
             // follow-up contract must first turn an end-of-round blocker into
             // a PendingInteraction; do not claim it before that exists.
             interaction_mode: ProviderInteractionMode::Unsupported,
+            ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
             plan_mode: ProviderFeatureMode::Unsupported,
             goal_mode: ProviderFeatureMode::Unsupported,
             tool_event_fidelity: ProviderEventFidelity::Structured,
@@ -9290,6 +9294,7 @@ fn team_member_provider_profile_for_mode(
                     .to_string(),
             ),
             interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
             plan_mode: ProviderFeatureMode::Emulated,
             goal_mode: ProviderFeatureMode::Emulated,
             tool_event_fidelity: ProviderEventFidelity::Structured,
@@ -9311,6 +9316,7 @@ fn team_member_provider_profile_for_mode(
             adapter_reviewed_at: None,
             compatibility_note: Some("No Agent Team Member adapter contract is registered.".to_string()),
             interaction_mode: ProviderInteractionMode::Unsupported,
+            ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
             plan_mode: ProviderFeatureMode::Unsupported,
             goal_mode: ProviderFeatureMode::Unsupported,
             tool_event_fidelity: ProviderEventFidelity::None,
@@ -9329,6 +9335,13 @@ fn apply_provider_version(
     provider_version: Option<String>,
 ) {
     profile.provider_version = provider_version;
+    // Kimi Code 0.29.1 accepts the ACP initialize/session handshake but does
+    // not implement `session/cancel` (the live server returns JSON-RPC
+    // Method not found). Capability claims are version-specific: fail closed
+    // before an operator can receive a false `cancel_requested` acknowledgement.
+    if profile.provider == "kimi" && profile.provider_version.as_deref() == Some("0.29.1") {
+        profile.supports_cancel = false;
+    }
     profile.compatibility_status = match profile.provider_version.as_deref() {
         None => ProviderCompatibilityStatus::Unavailable,
         Some(version)
@@ -10418,6 +10431,28 @@ fn send_team_message_as(
     }
     let (correlation_id, causation_id) =
         resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
+    if kind == TeamMessageKind::Handoff && sender.kind == TeamActorKind::MemberRun {
+        let owns_delivered_assignment = latest_team_messages_in_append_order(store)?
+            .iter()
+            .filter(|message| {
+                message.team_run_id == team_run_id
+                    && message.kind == TeamMessageKind::Assignment
+                    && message.correlation_id == correlation_id
+            })
+            .flat_map(|message| message.deliveries.iter())
+            .any(|delivery| {
+                delivery.member_id == from_member_id
+                    && matches!(
+                        delivery.status,
+                        TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged
+                    )
+            });
+        if !owns_delivered_assignment {
+            return Err(CliError::Usage(format!(
+                "handoff correlation_id `{correlation_id}` is not an Assignment delivered to MemberRun {from_member_id}"
+            )));
+        }
+    }
     let message = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
@@ -13395,9 +13430,10 @@ fn run_codex_member(
                 );
                 for message in &messages {
                     prompt_text.push_str(&format!(
-                        "--- {} ({}) ---\n{}\n\n",
+                        "--- {} ({}, correlation_id={}) ---\n{}\n\n",
                         message.from_member_id,
                         team_message_kind_label(&message.kind),
+                        message.correlation_id,
                         message.body
                     ));
                 }
@@ -13561,9 +13597,10 @@ fn run_codex_member(
                 );
                 for message in &messages {
                     prompt_text.push_str(&format!(
-                        "--- {} ({}) ---\n{}\n\n",
+                        "--- {} ({}, correlation_id={}) ---\n{}\n\n",
                         message.from_member_id,
                         team_message_kind_label(&message.kind),
+                        message.correlation_id,
                         message.body
                     ));
                 }
@@ -17363,6 +17400,18 @@ fn handle_http_connection(
         }
         if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
             let parts = rest.split('/').collect::<Vec<_>>();
+            if let [team_run_id, "snapshot"] = parts.as_slice() {
+                match dashboard_team_run_snapshot(store, team_run_id) {
+                    Ok(snapshot) => write_http_json(&mut stream, "200 OK", &snapshot)?,
+                    Err(CliError::Usage(detail)) => write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "team_run_not_found", "detail": detail}),
+                    )?,
+                    Err(error) => return Err(error),
+                }
+                return Ok(());
+            }
             if let [team_run_id, "members", member_run_id, "inbox"] = parts.as_slice() {
                 let include_all = query_param(&path, "all")
                     .as_deref()
@@ -17655,47 +17704,25 @@ fn handle_http_connection(
     if let Some(response) =
         company_os_api::handle_post(store, &path_only, &body_json, company_os_token.as_deref())
     {
-        let mut response_body = response.body;
-        if response.status.starts_with('2') {
-            if let Some(object) = response_body.as_object_mut() {
-                object.insert(
-                    "snapshot".to_string(),
-                    dashboard_snapshot_with_company(
-                        &store_owned,
-                        company_store_owned
-                            .as_ref()
-                            .map(|(_, company_store)| company_store),
-                    )?,
-                );
-            }
-        }
-        write_http_json(&mut stream, response.status, &response_body)?;
+        write_http_json(&mut stream, response.status, &response.body)?;
         return Ok(());
     }
     // POST /v1/projects/switch — flip the active project in the registry +
     // `ACTIVE_PROJECT` marker so CLI-spawned workers and a live serve converge on
     // the same central store (multi-project P6 #89 invariant). This is a serve-level
     // routing action (not a store mutation), so it is handled before the generic
-    // store-action dispatch. The response's snapshot is the NEW active project's.
+    // store-action dispatch. The Dashboard follows the bounded response with a
+    // GET snapshot for the newly selected Project Binding.
     if path_only == "/v1/projects/switch" {
         match handle_project_switch(projects, &body_json) {
-            Ok((id, _compatibility_store)) => {
-                let active_company_store = projects.company_store_for(None, Some(&id))?;
-                write_http_json(
-                    &mut stream,
-                    "200 OK",
-                    &serde_json::json!({
-                        "ok": true,
-                        "result": {"current": id},
-                        "snapshot": dashboard_snapshot_with_company(
-                            &store_owned,
-                            active_company_store
-                                .as_ref()
-                                .map(|(_, company_store)| company_store),
-                        )?,
-                    }),
-                )?
-            }
+            Ok((id, _compatibility_store)) => write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({
+                    "ok": true,
+                    "result": {"current": id},
+                }),
+            )?,
             Err(error) => write_http_json(
                 &mut stream,
                 "400 Bad Request",
@@ -17707,24 +17734,14 @@ fn handle_http_connection(
 
     if path_only == "/v1/spaces/switch" {
         match handle_space_switch(projects, &body_json) {
-            Ok((id, switch_store)) => {
-                let active_company_store =
-                    projects.company_store_for(None, project_param.as_deref())?;
-                write_http_json(
-                    &mut stream,
-                    "200 OK",
-                    &serde_json::json!({
-                        "ok": true,
-                        "result": {"current": id},
-                        "snapshot": dashboard_snapshot_with_company(
-                            &switch_store,
-                            active_company_store
-                                .as_ref()
-                                .map(|(_, company_store)| company_store),
-                        )?,
-                    }),
-                )?
-            }
+            Ok((id, _switch_store)) => write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({
+                    "ok": true,
+                    "result": {"current": id},
+                }),
+            )?,
             Err(error) => write_http_json(
                 &mut stream,
                 "400 Bad Request",
@@ -17904,7 +17921,6 @@ fn handle_http_connection(
                     &serde_json::json!({
                         "ok": true,
                         "result": {"id": accepted_run_id, "status": accepted_status},
-                        "snapshot": dashboard_snapshot(store)?,
                     }),
                 )?;
             }
@@ -17927,7 +17943,7 @@ fn handle_http_connection(
         Ok(response) => write_http_json(
             &mut stream,
             "200 OK",
-            &serde_json::json!({"ok": true, "result": response, "snapshot": dashboard_snapshot(store)?}),
+            &serde_json::json!({"ok": true, "result": response}),
         )?,
         Err(error) => write_http_json(
             &mut stream,
@@ -18370,6 +18386,7 @@ fn interrupt_team_member_value(
         optional_json_string(body, "requested_by")?.unwrap_or_else(|| "operator".to_string());
     let reason = optional_json_string(body, "reason")?
         .unwrap_or_else(|| "operator requested interruption".to_string());
+    require_member_interrupt_capability(store, team_run_id, member_run_id)?;
     cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
     dispatch_live_member_control(
         store,
@@ -18380,6 +18397,35 @@ fn interrupt_team_member_value(
             requested_by,
         },
     )
+}
+
+fn require_member_interrupt_capability(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+) -> CliResult<()> {
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let profile = member.provider_profile.as_ref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "member run {member_run_id} has no provider capability snapshot"
+        ))
+    })?;
+    if !profile.supports_cancel {
+        let version = profile.provider_version.as_deref().unwrap_or("unknown");
+        return Err(CliError::Usage(format!(
+            "Interrupt unavailable: {} {} in {} does not support provider-native cancellation",
+            profile.provider, version, profile.execution_mode
+        )));
+    }
+    Ok(())
 }
 
 fn cancel_pending_member_interactions(
@@ -24879,6 +24925,133 @@ fn dashboard_snapshot_with_company(
         }
     }
     Ok(snapshot)
+}
+
+/// A bounded canonical projection for a Team deep link. It contains only
+/// Harness coordination state belonging to the selected TeamRun plus its
+/// Mission, Team, members, and Waves. Provider-native transcript/activity is
+/// deliberately absent and remains available only through native-session
+/// projection routes.
+fn dashboard_team_run_snapshot(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<serde_json::Value> {
+    let mut snapshot = dashboard_snapshot(store)?;
+    let selected = snapshot["team_runs"]
+        .as_array()
+        .and_then(|runs| {
+            runs.iter()
+                .find(|run| run.get("id").and_then(|value| value.as_str()) == Some(team_run_id))
+        })
+        .cloned()
+        .ok_or_else(|| CliError::Usage(format!("TeamRun not found: {team_run_id}")))?;
+    let mission_id = selected
+        .get("mission_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
+    let team_id = selected
+        .get("agent_team_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
+
+    let member_run_ids = snapshot["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| json_field_eq(row, "team_run_id", team_run_id))
+        .filter_map(|row| {
+            row.get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .collect::<HashSet<_>>();
+    let agent_member_ids = snapshot["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| json_field_eq(row, "team_run_id", team_run_id))
+        .filter_map(|row| {
+            row.get("agent_member_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .collect::<HashSet<_>>();
+
+    retain_json_rows(&mut snapshot, "team_runs", |row| {
+        json_field_eq(row, "id", team_run_id)
+    });
+    for key in [
+        "member_runs",
+        "team_messages",
+        "team_supervisor_leases",
+        "team_member_close_requests",
+        "member_actions",
+        "pending_interactions",
+        "delegation_runs",
+        "team_run_events",
+    ] {
+        retain_json_rows(&mut snapshot, key, |row| {
+            json_field_eq(row, "team_run_id", team_run_id)
+        });
+    }
+    retain_json_rows(&mut snapshot, "members", |row| {
+        row.get("id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|id| agent_member_ids.contains(id))
+    });
+    retain_json_rows(&mut snapshot, "teams", |row| {
+        team_id
+            .as_deref()
+            .is_some_and(|id| json_field_eq(row, "id", id))
+    });
+    retain_json_rows(&mut snapshot, "missions", |row| {
+        mission_id
+            .as_deref()
+            .is_some_and(|id| json_field_eq(row, "id", id))
+    });
+    retain_json_rows(&mut snapshot, "waves", |row| {
+        mission_id
+            .as_deref()
+            .is_some_and(|id| json_field_eq(row, "mission_id", id))
+    });
+    retain_json_rows(&mut snapshot, "agent_message_routes", |row| {
+        row.get("member_run_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|id| member_run_ids.contains(id))
+    });
+    for key in [
+        "messages",
+        "events",
+        "evidence",
+        "provider_child_threads",
+        "workflow_runs",
+        "workflow_steps",
+        "workflow_patches",
+        "workflow_artifact_manifests",
+    ] {
+        retain_json_rows(&mut snapshot, key, |_| false);
+    }
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("company_os".to_string(), serde_json::json!({}));
+    }
+    Ok(snapshot)
+}
+
+fn json_field_eq(row: &serde_json::Value, field: &str, expected: &str) -> bool {
+    row.get(field).and_then(|value| value.as_str()) == Some(expected)
+}
+
+fn retain_json_rows(
+    snapshot: &mut serde_json::Value,
+    key: &str,
+    mut keep: impl FnMut(&serde_json::Value) -> bool,
+) {
+    if let Some(rows) = snapshot
+        .get_mut(key)
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        rows.retain(|row| keep(row));
+    }
 }
 
 fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<AgentMember> {
@@ -32193,6 +32366,25 @@ mod tests {
             .is_some_and(|note| note.contains("regenerate protocol schemas")));
     }
 
+    #[test]
+    fn kimi_cancel_capability_is_version_specific() {
+        let mut reviewed = team_member_provider_profile("kimi");
+        apply_provider_version(&mut reviewed, Some("0.27.0".to_string()));
+        assert!(reviewed.supports_cancel);
+        assert_eq!(
+            reviewed.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut method_missing = team_member_provider_profile("kimi");
+        apply_provider_version(&mut method_missing, Some("0.29.1".to_string()));
+        assert!(!method_missing.supports_cancel);
+        assert_eq!(
+            method_missing.compatibility_status,
+            ProviderCompatibilityStatus::ReviewRequired
+        );
+    }
+
     fn make_member(id: &str) -> AgentMember {
         AgentMember {
             id: id.into(),
@@ -33850,6 +34042,10 @@ mod tests {
         assert_eq!(codex_app.plan_mode, ProviderFeatureMode::Native);
         assert_eq!(codex_app.goal_mode, ProviderFeatureMode::Native);
         assert_eq!(
+            codex_app.ordinary_message_boundary,
+            OrdinaryMessageBoundary::NextRound
+        );
+        assert_eq!(
             team_member_provider_profile("codex").execution_mode,
             "codex_app_server"
         );
@@ -33857,6 +34053,15 @@ mod tests {
         let kimi = team_member_provider_profile_for_mode("kimi", Some("kimi_acp"));
         assert_eq!(kimi.plan_mode, ProviderFeatureMode::Native);
         assert_eq!(kimi.goal_mode, ProviderFeatureMode::Emulated);
+        assert_eq!(
+            kimi.ordinary_message_boundary,
+            OrdinaryMessageBoundary::NextRoundBatched
+        );
+        assert_eq!(
+            team_member_provider_profile_for_mode("claude", Some("claude_agent_sdk"))
+                .ordinary_message_boundary,
+            OrdinaryMessageBoundary::InTurn
+        );
 
         // Historical records remain projectable even though new TeamRuns reject
         // codex_exec; Workflow continues to own that one-shot substrate.

@@ -379,8 +379,16 @@ function MemberHeroHeader({
             </a>
           </Button>
         )}
-        {context.member.status === "running" && context.member.provider_profile?.supports_cancel && (
-          <Button size="sm" variant="outline" disabled={!actionsEnabled} onClick={() => dispatch(onAction, interruptTeamMember(context.run.id, context.member.id))}>
+        {context.member.status === "running" && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!actionsEnabled || !context.member.provider_profile?.supports_cancel}
+            title={context.member.provider_profile?.supports_cancel
+              ? "Interrupt the active provider turn"
+              : interruptUnavailableReason(context.member)}
+            onClick={() => dispatch(onAction, interruptTeamMember(context.run.id, context.member.id))}
+          >
             <Square className="size-3 fill-current" /> Interrupt
           </Button>
         )}
@@ -398,6 +406,13 @@ function MemberHeroHeader({
       </div>
     </header>
   );
+}
+
+function interruptUnavailableReason(member: MemberRunContext["member"]): string {
+  const profile = member.provider_profile;
+  if (!profile) return "Interrupt unavailable: provider capabilities were not captured.";
+  const version = profile.provider_version ?? "unknown version";
+  return `Interrupt unavailable: ${profile.provider} ${version} in ${profile.execution_mode} does not support provider-native cancellation.`;
 }
 
 function MemberRunNotFound({
@@ -694,6 +709,7 @@ function MemberContextRail({
         <div className="space-y-1.5 text-[12px]">
           <RailKeyValue label="Provider" value={context.member.provider ?? "Not recorded"} />
           <RailKeyValue label="Execution mode" value={context.member.provider_profile?.execution_mode ?? "Not recorded"} />
+          <RailKeyValue label="Ordinary mail" value={context.member.provider_profile?.ordinary_message_boundary ?? "unknown"} />
           <RailKeyValue label="Compatibility" value={context.member.provider_profile?.compatibility_status ?? "unknown"} />
           <RailKeyValue label="Model" value={context.member.model ?? "Not recorded"} />
           <RailKeyValue label="Native session" value={context.member.native_session?.native_session_id ?? "Unavailable"} mono />

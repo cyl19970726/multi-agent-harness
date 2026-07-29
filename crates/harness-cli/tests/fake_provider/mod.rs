@@ -105,6 +105,7 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
 ask="${FAKE_KIMI_ASK:-0}"
+version="${FAKE_KIMI_VERSION:-0.0.0}"
 if [ -n "${FAKE_KIMI_ENV_MARKER:-}" ]; then
   env | grep '^HARNESS_' | sort > "$FAKE_KIMI_ENV_MARKER"
 fi
@@ -118,7 +119,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"0.0.0"}}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"%s"}}}\n' "$id" "$version"
       ;;
     *'"method":"session/new"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[]}}\n' "$id" "$session_id"
@@ -178,6 +179,13 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
       ;;
     *'"method":"session/cancel"'*)
+      if [ -n "${FAKE_KIMI_CANCEL_MARKER:-}" ]; then
+        printf '%s\n' "$line" >> "$FAKE_KIMI_CANCEL_MARKER"
+      fi
+      if [ "$version" = "0.29.1" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+        continue
+      fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
       if [ -n "${prompt_id:-}" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt_id"

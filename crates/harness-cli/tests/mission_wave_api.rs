@@ -851,11 +851,9 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["index"].as_u64(), Some(1));
-    assert_eq!(
-        body["snapshot"]["missions"].as_array().map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(body["snapshot"]["waves"].as_array().map(Vec::len), Some(1));
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["waves"].as_array().map(Vec::len), Some(1));
 
     // CLI list returns native Mission rows and carries ordered Wave membership.
     let missions = run_json(&home, &project_id, &["mission", "list"]);
@@ -1101,8 +1099,9 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         .as_str()
         .unwrap()
         .to_string();
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(
-        body["snapshot"]["waves"]
+        snapshot["waves"]
             .as_array()
             .unwrap()
             .iter()

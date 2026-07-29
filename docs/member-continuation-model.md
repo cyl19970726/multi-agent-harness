@@ -147,6 +147,18 @@ Harness remains the communication authority in both driver modes:
 | Native continuation satisfies its condition | Record/project the provider fact, then await Handoff/Host acceptance as required. |
 | Host explicitly closes Member | Latch terminal Close before teardown; no driver, delivery, or later Supervisor may revive it. |
 
+Ordinary message visibility is an explicit execution-mode capability, not a
+uniform mailbox promise:
+
+| Team execution mode | `ordinary_message_boundary` | Host expectation |
+| --- | --- | --- |
+| Claude `claude_agent_sdk` | `in_turn` | Streaming input may reach the active provider turn. |
+| Codex `codex_app_server` | `next_round` | Mail remains queued until the next native round. |
+| Kimi `kimi_acp` | `next_round_batched` | Mail is claimed and rendered together at the next round boundary. |
+
+This field describes delivery timing only. Provider-native transcripts remain
+the sole turn/execution record and are never copied into TeamMessage storage.
+
 Self-activation is allowed only when observable. If a Member activates native
 continuation through natural language or a provider command, the Adapter must
 observe the provider-native state transition before treating the execution

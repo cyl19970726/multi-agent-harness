@@ -118,10 +118,12 @@ async function main() {
     "Host close ends one Member runtime through an explicit action",
   );
 
-  const [teamSource, missionSource, memberSource] = await Promise.all([
+  const [teamSource, missionSource, memberSource, appSource, apiSource] = await Promise.all([
     readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/MemberRuns.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/app/App.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/api.ts"), "utf8"),
   ]);
   check(
     teamSource.includes('delivery.member_id === "host" && delivery.status === "delivered"')
@@ -191,8 +193,10 @@ async function main() {
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
       && memberSource.includes("closeTeamMember(")
-      && memberSource.includes("supports_cancel"),
-    "Member Focus exposes Steer only for a real active Codex app-server turn and never disguises queued mail as Steer",
+      && memberSource.includes("supports_cancel")
+      && memberSource.includes("interruptUnavailableReason(context.member)")
+      && memberSource.includes("does not support provider-native cancellation"),
+    "Member Focus exposes real capability-gated controls and explains unavailable provider-native Interrupt",
   );
   check(
     memberSource.includes("claudeDesktopSessionUri")
@@ -223,6 +227,15 @@ async function main() {
       && !memberSource.includes("selectMemberPlanNegotiation")
       && memberSource.includes("Current Assignment · Member Goal"),
     "Member Focus keeps planning inside the Assignment conversation instead of a separate product panel",
+  );
+  check(
+    memberSource.includes('label="Ordinary mail"'),
+    "Member Focus exposes the provider ordinary-message boundary",
+  );
+  check(
+    appSource.includes("fetchTeamRunSnapshot")
+      && apiSource.includes("/v1/team-runs/${encodeURIComponent(teamRunId)}/snapshot"),
+    "Team deep links load through the bounded TeamRun snapshot route",
   );
 
   console.log(`\n   operator control checks: ${passed} pass, ${failed} fail`);

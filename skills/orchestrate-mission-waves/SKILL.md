@@ -104,6 +104,18 @@ interrupt/resume. Do not select `claude_cli` for a Team member; reserve
 `claude -p` for bounded Dynamic Workflow execution. Never silently fall back
 from either persistent Team mode to its one-shot counterpart.
 
+Do not assume ordinary TeamMessages reach every live provider at the same
+moment. Read the MemberRun provider profile:
+
+| execution mode | ordinary-message boundary |
+| --- | --- |
+| `claude_agent_sdk` | `in_turn` |
+| `codex_app_server` | `next_round` |
+| `kimi_acp` | `next_round_batched` |
+
+Queueing is canonical Harness coordination; the provider-native session remains
+the transcript and turn-lifecycle authority.
+
 Use separate Members for parallel feature modules that each need end-to-end
 design, implementation, and validation. Let each Member use its own subagents.
 Use another Reviewer Member when acceptance must be independent; a member's
