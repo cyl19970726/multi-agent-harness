@@ -22,7 +22,7 @@ The suite currently expands to:
 
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
-| [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software sources, and custom pages | procedural orchestration skill |
+| [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
 | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
 | [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/assign/transition/close plus `work milestone ...` baseline lifecycle |
 | [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence linked into Docs page contracts | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
@@ -52,6 +52,13 @@ compatibility/migration evidence, not the normal operating target. The
 Wanchengwanling GitHub `dev` branch is an external software product source;
 commercial operating truth must remain in Company OS records through Docs,
 Work, Organization, Finance, source-sync records, and custom page definitions.
+
+Social/content platforms follow the same rule. Xiaohongshu, WeChat Channels,
+Douyin, and future channels enter through gateway observations, platform-account
+TypedRecords, content campaign/post records, WorkItems, and evidence refs.
+`harness company gateway social readiness` is a read-only device/API readiness
+probe; it does not log in, publish, delete, pay for promotion, export private
+messages, or mutate Company Store truth by itself.
 
 ## Company Store selection
 

@@ -45,16 +45,16 @@ const slashCommands: Array<{ value: DocsBlockKind; label: string; hint: string; 
 function SimpleTable({ block }: { block: Extract<CompanyOsDocumentBlock, { type: "table" }> }) {
   const { columns, rows, caption } = block.table;
   return (
-    <div className="max-w-full overflow-x-auto rounded-md border border-border">
-      <table className="w-full min-w-[36rem] border-collapse text-left text-xs">
-        {caption && <caption className="border-b border-border bg-muted/40 px-3 py-2 text-left font-medium text-foreground">{caption}</caption>}
-        <thead className="bg-muted/40 text-muted-foreground">
-          <tr>{columns.map((column) => <th key={column} className="whitespace-nowrap border-b border-border px-3 py-2 font-medium">{column}</th>)}</tr>
+    <div className="max-w-full overflow-x-auto rounded-xl border border-border bg-card shadow-sm">
+      <table className="w-full min-w-[42rem] border-collapse text-left text-xs">
+        {caption && <caption className="border-b border-border bg-muted/35 px-3.5 py-2.5 text-left text-sm font-semibold text-foreground">{caption}</caption>}
+        <thead className="bg-muted/35 text-muted-foreground">
+          <tr>{columns.map((column) => <th key={column} className="whitespace-nowrap border-b border-border px-3.5 py-2.5 font-medium">{column}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, index) => (
-            <tr key={index} className="border-b border-border last:border-0">
-              {row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-2 text-foreground">{cell}</td>)}
+            <tr key={index} className="border-b border-border last:border-0 hover:bg-accent/25">
+              {row.map((cell, cellIndex) => <td key={cellIndex} className={cn("px-3.5 py-2.5 align-top leading-5 text-foreground", cellIndex === 0 && "min-w-36 font-medium")}>{cell}</td>)}
             </tr>
           ))}
         </tbody>
@@ -371,6 +371,7 @@ function WcwTableCards({ block }: { block: Extract<CompanyOsDocumentBlock, { typ
   const incentiveRules = /8\s*\/\s*12|激励规则/i.test(normalizedCaption);
   const economics = /收入|产品模型|价格|分成/i.test(normalizedCaption);
   const replication = /复制模型/i.test(normalizedCaption);
+  const dataTable = /gateway|platform|readiness|pipeline|post|campaign|account|metric|workitem|social|小红书|视频号|抖音|平台|账号|内容闭环|发布|指标/i.test(normalizedCaption);
 
   if (pageMap) {
     return (
@@ -461,24 +462,14 @@ function WcwTableCards({ block }: { block: Extract<CompanyOsDocumentBlock, { typ
     );
   }
 
+  if (dataTable) {
+    return <SimpleTable block={block} />;
+  }
+
   return (
     <section className="rounded-2xl border border-border bg-card/80 p-5 shadow-sm" data-company-os-ref={block.id}>
       <h2 className="text-lg font-semibold tracking-tight">{normalizedCaption}</h2>
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        {rows.map((row, index) => (
-          <article key={index} className="rounded-xl border border-border bg-background/70 p-3">
-            <p className="text-sm font-semibold">{nodeText(row[0])}</p>
-            <dl className="mt-2 space-y-1.5 text-xs leading-5 text-muted-foreground">
-              {row.slice(1).map((cell, cellIndex) => (
-                <div key={cellIndex}>
-                  <dt className="inline font-medium text-foreground">{columns[cellIndex + 1]}: </dt>
-                  <dd className="inline">{cell}</dd>
-                </div>
-              ))}
-            </dl>
-          </article>
-        ))}
-      </div>
+      <div className="mt-4"><SimpleTable block={{ ...block, table: { ...block.table, caption: undefined } }} /></div>
     </section>
   );
 }
