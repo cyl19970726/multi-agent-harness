@@ -52,7 +52,7 @@ const ACTION_AUDIT_RESERVATIONS: &str = "company_os_action_audit_reservations.js
 #[serde(tag = "actor_type", content = "actor", rename_all = "snake_case")]
 pub enum CompanyActor {
     Human(HumanMember),
-    Agent(StandingAgent),
+    Agent(Box<StandingAgent>),
     External(ExternalParticipant),
     Service(ServiceActor),
 }
@@ -237,7 +237,12 @@ impl HarnessStore {
     pub fn actors(&self) -> StoreResult<Vec<CompanyActor>> {
         let mut actors = Vec::new();
         actors.extend(self.human_members()?.into_iter().map(CompanyActor::Human));
-        actors.extend(self.standing_agents()?.into_iter().map(CompanyActor::Agent));
+        actors.extend(
+            self.standing_agents()?
+                .into_iter()
+                .map(Box::new)
+                .map(CompanyActor::Agent),
+        );
         actors.extend(
             self.external_participants()?
                 .into_iter()
@@ -952,6 +957,7 @@ impl HarnessStore {
         actors.extend(
             self.latest_standing_agents()?
                 .into_iter()
+                .map(Box::new)
                 .map(CompanyActor::Agent),
         );
         actors.extend(
@@ -975,6 +981,7 @@ impl HarnessStore {
                 .map(CompanyActor::Human),
             ActorType::Agent => self
                 .find_by_id::<StandingAgent>(STANDING_AGENTS, &reference.actor_id)?
+                .map(Box::new)
                 .map(CompanyActor::Agent),
             ActorType::External => self
                 .find_by_id::<ExternalParticipant>(EXTERNAL_PARTICIPANTS, &reference.actor_id)?
