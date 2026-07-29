@@ -66,24 +66,13 @@ for await (const line of rl) {{
   }} else if (command === "deliver") {{
     turns += 1;
     emit("delivered", {{ id: payload.id, kind: payload.kind }});
+    emit("consumed", {{
+      id: payload.id,
+      sessionId: "fake-native-session-0001",
+    }});
     emit("assistant_message", {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
-    if (FOLLOW_UP) {{
-      const handoff = spawnSync(process.env.HARNESS_BIN, [
-        "team-run", "send",
-        "--id", cfg.teamRunId,
-        "--from", cfg.memberRunId,
-        "--to", "host",
-        "--kind", "handoff",
-        "--body", `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}} explicit handoff`,
-        "--correlation-id", payload.correlation_id,
-        "--causation-id", payload.id,
-        "--json",
-      ], {{ encoding: "utf8" }});
-      if (handoff.status !== 0) throw new Error(handoff.stderr);
-      JSON.parse(handoff.stdout);
-    }}
     emit("turn_complete", {{
       subtype: "success",
       triggerMessageId: payload.id,
