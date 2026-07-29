@@ -46,6 +46,13 @@ Harness never silently falls back from ACP to one-shot print mode. The older
 `ProviderCapabilities::kimi_exec()` preset describes bounded Workflow
 execution and must not be used to infer Team capability.
 
+Current compatibility is explicit: the installed Kimi Code probe reports
+`0.29.1`, while `kimi-acp-v1` is reviewed only for `0.27.0`. The adapter
+therefore reports `review_required`. Do not promote 0.29.1, change versions, or
+infer support from the existing hot path without explicit Human confirmation,
+protocol/schema regeneration, deterministic checks, and a proportional live
+canary.
+
 The Agent Team runtime is:
 
 ```text
@@ -278,9 +285,12 @@ initialize -> session/new -> session/prompt (streaming notifications) -> session
   fails rather than being silently converted. Only explicit Member Close
   records `stopped`.
 - The current durable Team Supervisor generation atomically claims one queued
-  delivery before `session/prompt`; `delivered` is recorded only after ACP
-  returns its native request/session receipt. An uncertain post-crash claim
-  requires explicit reconciliation and is never blindly replayed.
+  delivery before `session/prompt`, but only after proving the ACP transport is
+  live; failed preflight leaves mail queued and reconnects the recorded
+  session. `delivered` is recorded only after ACP returns its native
+  request/session receipt. An uncertain post-crash claim requires explicit
+  reconciliation and is never blindly replayed. Explicit Close is durably
+  latched before process teardown.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.
 - Kimi-native Agent/AgentSwarm/background-task and hook events are not yet

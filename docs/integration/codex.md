@@ -57,6 +57,12 @@ Close. Another process cannot attach or claim mail while that lease is live.
 Re-running start after expiry or release acquires a new generation and
 reattaches every unclosed Member to its recorded thread.
 
+The owner verifies that the app-server transport is live before claiming
+queued mail. If that probe fails, the message remains queued and the owner
+reattaches the recorded thread first. Close intent is durably latched before
+process teardown, so losing the loopback receiver during a close/reattach race
+cannot revive the Member.
+
 ## Mailbox Delivery
 
 Codex does not poll Harness storage. Harness owns the Member mailbox and the
@@ -239,6 +245,11 @@ An unreviewed Codex version is `review_required`, not silently compatible.
 Never install, upgrade, downgrade, or switch Codex without explicit Human
 confirmation naming the candidate version. No provider version is changed by
 this integration contract.
+
+Current local probe at this documentation closure: Codex `0.145.0`,
+compatibility `current`, adapter contract `codex-app-server-v1`, reviewed on
+2026-07-28. This is a point-in-time execution fact; always rerun the provider
+audit instead of assuming it remains current.
 
 ## Acceptance
 

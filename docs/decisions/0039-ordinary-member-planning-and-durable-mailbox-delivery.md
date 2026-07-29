@@ -127,9 +127,11 @@ acted on the message. Semantic acknowledgement is an explicit reply, handoff,
 review, or control acknowledgement.
 
 The current Supervisor generation atomically claims a delivery before provider
-side effects. A crash between claim and receipt leaves explicit uncertainty;
-recovery must reconcile a native receipt or explicitly return the claim to
-`queued`, never blindly replay it.
+side effects, but only after verifying that the selected provider transport is
+live. Transport failure before claim leaves mail queued and reattaches the
+recorded native session first. A crash between claim and receipt leaves
+explicit uncertainty; recovery must reconcile a native receipt or explicitly
+return the claim to `queued`, never blindly replay it.
 
 ### Member lifetime is independent of a turn or TeamRun status
 
@@ -142,6 +144,8 @@ Interrupt stops only the current provider turn. After the provider acknowledges
 that interrupt, the Member returns to `idle` and may receive later mail. Close
 is the only ordinary operation that records the Member as `stopped`.
 Completing or advancing a Wave, TeamRun, or Mission never implies Close.
+Close intent is durably latched before process-local teardown; a racing lease,
+receiver, or reconnect cannot revive the Member after Host Close.
 
 The Harness process that starts a TeamRun supervises every unclosed Member.
 Unexpected provider transport loss records an explicit `disconnected` action,

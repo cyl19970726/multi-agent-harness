@@ -26,7 +26,8 @@ Non-goals:
 Canonical objects:
 
 - DashboardSnapshot;
-- raw Missions, Waves, AgentTeamRuns, MemberRuns, messages, actions, sessions,
+- raw Missions, Waves, AgentTeamRuns, MemberRuns, TeamSupervisorLeases,
+  typed messages, AgentMessageRoutes, actions, sessions,
   documents, actors, WorkItems, Approvals, finance records, and evidence;
 - source labels;
 - live/offline load state.

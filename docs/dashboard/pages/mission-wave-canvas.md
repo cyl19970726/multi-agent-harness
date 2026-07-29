@@ -6,7 +6,7 @@ owner_role: product-design
 canonical_for: Mission context, linked Agent Teams, ordered Host-plan Waves,
                Wave revision history, advance decisions, and closeout
 route_or_surface: Missions -> Mission -> selected Wave
-architecture: ADR 0034 + ADR 0037
+architecture: ADR 0034 + ADR 0037 + ADR 0044 linked-Team runtime status
 ```
 
 ## User Problem
@@ -37,7 +37,8 @@ Required projections:
 - ordered `Wave`: title, objective, Markdown context, revision, updated actor,
   advance outcome, artifacts, and history;
 - linked teams: stable identity, composition, latest Mission-scoped runs,
-  member/assignment status, and open-Team action;
+  current Supervisor/reconnect health, member/assignment status, and open-Team
+  action;
 - messages: assignment correlation and optional `origin_wave_id` for
   explanation/carry-over;
 - pending interactions and evidence that require Host or Human judgment.

@@ -11,15 +11,18 @@ outputs, adapters, and the Agent Dashboard.
 | `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
 | `AgentTeamRun` | One standalone or Mission-scoped use of an independent Agent Team |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
-| `TeamMessage` | Assignment, correlation/causation, optional origin Wave, handoff, review, and delivery state |
+| `TeamMessage` | Typed sender/recipients, assignment, correlation/causation, optional origin Wave, semantic kind, claim/provider-receipt/ACK delivery state |
+| `TeamSupervisorLease` | Latest-wins TeamRun control owner, generation fence, heartbeat, and loopback locator |
+| `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
 Dynamic Workflow and Host execution retain their distinct execution-specific
-objects. Existing Goal/Task/Evidence/Proposal/Decision schemas remain supported
-for compatibility and optional stricter governance; they are not required
-inside a native Wave.
+objects. Existing Goal/Task/Message/Evidence/Proposal/Decision schemas are
+historical compatibility or optional governance contracts. They are not the
+active Mission/Wave or Agent Team coordination model, and new Agent Team work
+must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 
 `Skill`, `ToolAdapter`, and `Dashboard` can start as configuration or views.
 
@@ -30,11 +33,13 @@ inside a native Wave.
 | `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
 | `Wave` | Rust + JSON schema + JSONL revisions + Host update/advance | yes |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
-| `Goal` | Rust + JSON schema | yes |
+| `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
+| `AgentMessageRoute` | Rust + JSON schema + JSONL idempotent routing store | yes |
+| `Goal` | historical compatibility schema; retired for new coordination | no for new work |
 | `AgentTeam` | Rust + JSON schema | yes |
 | `AgentMember` | Rust + JSON schema | yes |
-| `Task` | Rust + JSON schema | yes |
-| `Message` | Rust + JSON schema | yes |
+| `Task` | historical compatibility schema; retired for new coordination | no for new work |
+| `Message` | Standing Agent/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
 | `AgentRuntime` | Rust + JSON schema | yes |
 | `AgentEvent` | Rust + JSON schema | yes |
 | `ProviderChildThread` | Rust + JSON schema | yes |
@@ -62,6 +67,8 @@ schema contracts are checked with valid and invalid fixtures.
 | Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
+| Team Supervisor lease | [team-supervisor-lease.schema.json](../schemas/team-supervisor-lease.schema.json) |
+| Stable Agent message route | [agent-message-route.schema.json](../schemas/agent-message-route.schema.json) |
 | Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../schemas/delegation-run.schema.json) |

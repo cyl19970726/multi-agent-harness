@@ -57,6 +57,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
 | `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
 | `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
+| `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
@@ -191,13 +192,18 @@ not deliverable work.
 Delivery correctness also requires a claim/lease before provider side effects.
 Starting a runtime, creating a provider thread, or sending provider input can
 change external state. A provider implementation must not perform those effects
-until it has atomically claimed the latest queued message or recorded an
-equivalent recoverable lease. The claim must be visible to later dispatchers
-and to the Dashboard.
+until the current Supervisor has verified that the selected provider transport
+is live and atomically claimed the latest queued message. A successful provider
+acceptance creates a separate receipt; semantic reply and recipient ACK remain
+separate facts. The claim must be visible to later dispatchers and to the
+Dashboard. If transport health fails before claim, mail stays queued and the
+Supervisor must reconnect the recorded native session before retrying.
 
 Closed, closing, or retired members cannot be revived by delivery. A provider
 may expose an explicit reopen operation later, but normal message delivery and
-runtime start must fail visibly for those states.
+runtime start must fail visibly for those states. Close intent is durably
+latched before the process-local handle is released, so a lease/receiver race
+cannot silently resurrect the member.
 
 The delivered provider input must carry a stable Harness envelope containing
 the requesting Mission/Wave/run or WorkItem reference, sender, recipient,

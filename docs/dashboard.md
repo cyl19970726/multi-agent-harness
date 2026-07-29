@@ -32,6 +32,8 @@ part of active navigation or authoring.
 | What should happen next? | Ordered Wave list with full Host context, revision, carry-over, outcome, and next action. |
 | Which execution is active? | Mission-linked TeamRuns/Workflows/Host work with honest native status; Wave does not own them. |
 | Who owns Agent Team work? | Assignment-message id/correlation, member lane, delivery/ACK, handoff, and review state. |
+| Which service owns the live Team? | Current Supervisor generation, heartbeat, loopback locator, reconnect state, and fenced control availability. |
+| Who sent this message? | Typed Host, Member, stable Agent, Operator, or Service identity; UI never infers authorship from display text. |
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
 | What did the Host do directly? | Observable actions, artifacts, and outcome without invented child ownership. |
@@ -109,7 +111,9 @@ with omitted lineage as unanchored rather than fabricating ownership.
 | Executions | independent TeamRun/WorkflowRun ids, status, lineage, outcomes, and explicit Mission/context relations |
 | Team ownership | assignment message id and reusable correlation/causation inputs |
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
-| Delivery | per-recipient delivery/ACK state and retry/escalation |
+| Supervisor | current lease generation, owner/heartbeat, routed-control health, reconnect/close latch |
+| Delivery | typed sender/recipients, claim, provider receipt, per-recipient ACK, retry/reconciliation |
+| Stable Agent mail | explicit AgentMessageRoute to active MemberRun/TeamMessage |
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
 | Wave decision | Host outcome, actor/time, note, artifacts, and next-plan context |
@@ -136,6 +140,10 @@ display-only and cannot be used to reconstruct an attempt.
 | Missing assignment | Agent Team lane began without an assignment message. |
 | Broken correlation | Follow-up claims an assignment but lacks a structural or explicit fallback reference. |
 | Failed/unacknowledged delivery | Required delivery is failed or beyond ACK threshold. |
+| Delivery uncertain | A claim exists without a provider receipt and requires explicit reconciliation. |
+| Supervisor unavailable | No current owner can prove provider transport or execute live controls. |
+| Stale Supervisor generation | A client attempted delivery/control through a superseded lease. |
+| Closed member | New mail or start attempted after the Host's durable Close latch. |
 | Authorization required | Deploy, remote deletion, protected merge, payment, or comparable external change is pending. |
 | Stale member | No recent explicit action/heartbeat for an active member. |
 | Path/permission conflict | Member action exceeds owned paths or permission ceiling. |

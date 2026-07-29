@@ -29,6 +29,9 @@ Finance, and governance. Execution does not require a Company.
 5. Provider cwd is never a Company Store or Execution Space directory.
 6. Provider-native sessions remain the sole transcript/tool/turn truth and are
    referenced rather than copied.
+7. The latest Team Supervisor generation and typed mailbox route records live
+   in the Execution Space; Project Binding changes never transfer live control
+   ownership or message provenance.
 
 ## Physical layout
 
@@ -44,6 +47,8 @@ Finance, and governance. Execution does not require a Company.
 │       ├── team_runs.jsonl
 │       ├── member_runs.jsonl
 │       ├── team_messages.jsonl
+│       ├── team_supervisor_leases.jsonl
+│       ├── agent_message_routes.jsonl
 │       ├── workflow_runs.jsonl
 │       └── workflow_steps.jsonl
 ├── projects/

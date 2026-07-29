@@ -108,6 +108,11 @@ orphaned process. Starting the TeamRun after lease expiry or release acquires a
 higher generation, reattaches every unclosed Member to its recorded native
 session, and owns all subsequent claims and live controls.
 
+The owner verifies the runner/SDK stream before claiming queued mail. A failed
+probe leaves mail queued and reconnects the recorded session first. Close
+intent is latched durably before the runner is torn down, preventing a stale
+receiver or later lease generation from resurrecting the Member.
+
 ## Messages and interactions
 
 Ordinary collaboration uses `TeamMessage`:
@@ -243,6 +248,13 @@ approved change:
 2. run mode-specific deterministic tests;
 3. run a proportional live canary;
 4. update the reviewed-version set only when the evidence supports it.
+
+The adapter and reviewed 2.1.220 live evidence exist independently of local
+availability. With this repository's locked Agent SDK 0.3.220 dependencies
+restored, the current provider audit detects Claude Code `2.1.220` and reports
+`current`. A missing SDK package beside the configured runner must still report
+`unavailable`; an unrelated `claude` binary must never substitute for the SDK
+runtime probe.
 
 ## Validation
 

@@ -37,10 +37,17 @@ parts; they do not fork the core model.
   create or start Team members. Harness never silently falls back.
 - `team_run_start` reserves the run and returns immediately while members run
   in the background.
+- The service that starts a TeamRun acquires the latest durable Supervisor
+  generation and owns its live provider transports. Other CLI/MCP/Dashboard
+  processes route mail and real controls to that owner over its loopback
+  locator; the owner fences the generation again.
+- Team mail uses typed Host, Member, stable Agent, Operator, and Service actors.
+  An unbound MCP client may author as Host/Operator/Service but cannot claim to
+  be a Member or stable Agent by supplying an id.
 - Every create/start/status/cancel/ACK result includes an exact TeamRun URL on
   the UI origin (`127.0.0.1:5173`), with `api=.` so API and SSE requests use the
   UI's same-origin `/v1` proxy. When project identity is available it includes
-  `project=<workspace-id>`.
+  `project=<project-binding-id>`.
 - Temporary development policy gives every Agent Team member full execution
   permission. Codex app-server threads launch with `danger-full-access` and
   approval policy `never`; Kimi ACP tool approvals are resolved immediately by
@@ -61,7 +68,8 @@ cargo build -p harness-cli
 target/debug/harness init
 codex mcp add harness -- \
   /absolute/path/to/target/debug/harness \
-  --project <workspace-id> mcp
+  --space <execution-space-id> \
+  --project <project-binding-id> mcp
 codex mcp get harness
 ```
 
@@ -70,21 +78,25 @@ registered MCP tools appear. The API and Dashboard UI are separate long-running
 processes. Start the Vite UI with its same-origin proxy pointed at the API:
 
 ```bash
-target/debug/harness --project <workspace-id> serve --addr 127.0.0.1:8787
+target/debug/harness --space <execution-space-id> \
+  --project <project-binding-id> serve --addr 127.0.0.1:8787
 HARNESS_CAPTURE_API_PROXY=http://127.0.0.1:8787 npm run dashboard:dev
 ```
 
 The MCP URL opens `http://127.0.0.1:5173` and sets `api=.`. Port 8787 is an API
 origin, not a human Dashboard URL.
 
-`project_id` is the technical Harness Workspace identity. It routes the
-central store and repository execution root; it is not a Company OS Project
-business object. Product copy should say **Workspace**.
+`space_id` selects the technical Execution Space that owns Mission/Wave, Team,
+Workflow, and coordination state. `project_id` selects the Project Binding
+that owns provider cwd, instruction/Skill discovery, Git/worktree, and
+permission boundaries. Neither is a Company OS Project business object;
+product copy should say **Execution Space** and **Project**.
 
 ## Store root is not execution root
 
-`store_root` contains Harness JSONL coordination ledgers. Provider processes do
-not run there. Their cwd is selected in this order: member `worktree_ref`,
+The selected Execution Space store contains Harness JSONL coordination ledgers.
+Provider processes do not run there. Their cwd is selected in this order:
+member `worktree_ref`,
 TeamRun `execution_root`, then selected Workspace `project_root`; the Host cwd
 is only the creation default for an unrouted legacy raw-store invocation.
 `team_run_create` exposes `execution_root` and `members[].worktree_ref` through
@@ -115,7 +127,9 @@ path as an execution root is a routing defect.
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
    For a Mission-scoped long-lived TeamRun, the URL includes the Mission and
    the Host's current Wave as navigation context even though the run itself has
-   no Wave owner. Direct legacy Wave runs use their stored Wave id.
+   no Wave owner. Direct legacy Wave runs use their stored Wave id. The starting
+   service owns the new Supervisor generation; a later Host process inspects
+   that lease rather than assuming it owns provider handles.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
    receives durable Harness coordination plus transient/on-demand activity
    projected from provider-native sessions through SSE/API. Its compatibility
@@ -142,7 +156,8 @@ semantic response, and Host acceptance are different facts:
 
 ```text
 queued
-  -> delivered to Host surface or provider-native session
+  -> claimed by current Supervisor after provider transport preflight
+  -> provider-native receipt / delivered to exact Host surface
   -> acknowledged by that recipient
   -> causation-linked answer / review / handoff
   -> explicit Host resolution or outcome
@@ -155,6 +170,12 @@ Handoff, Wave advance, TeamRun completion, and Mission completion do not end
 that lifetime. After a Host process restart, starting the TeamRun reattaches
 unclosed Members to their recorded native sessions; it does not replay already
 delivered Assignments.
+
+If the transport is dead before claim, mail stays queued. If a crash occurs
+after claim but before provider receipt, the message remains explicitly
+uncertain until `reconcile-delivery`; it is never blindly replayed. Explicit
+Close is latched durably and prevents later start, delivery, or lease rollover
+from reviving that Member.
 
 Host-bound mail is scoped by the TeamRun's exact `host_surface +
 host_thread_id`. The Codex Plugin reads only that native task's aggregate
@@ -181,6 +202,11 @@ Codex and Claude do not own separate mailbox Skills. Both use the canonical
 `orchestrate-mission-waves` Host contract and
 `collaborate-as-agent-team-member` Member contract; app-server versus Agent SDK
 differences remain Adapter capabilities, not different team semantics.
+
+Stable external Agent mail uses `agent route-inbox` and an
+`AgentMessageRoute` to join one Agent Inbox record to one active MemberRun and
+TeamMessage. This is an explicit transport relation, not evidence that the
+AgentMember, StandingAgent, and MemberRun are one object.
 
 An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
 and not “the Host accepts the work.” A reviewer must receive the actual

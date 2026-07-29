@@ -175,6 +175,13 @@ while remaining the accountable owner. External access ending must revoke the
 external participant's effective permissions without deleting their historical
 attribution.
 
+When a Standing Agent participates in an Agent Team, an explicit stable id join
+links it to reusable `AgentMember` configuration and the current `MemberRun`.
+Organization authority remains on StandingAgent; Team participation,
+Supervisor generation, provider-native session, mailbox delivery, and Close
+remain in the Execution Space. Stable Agent Inbox mail reaches the Member only
+through an explicit `AgentMessageRoute`, never through identity inference.
+
 ## Hybrid teams and authority
 
 An `OrgUnit` can have both a human lead and an agent lead, with their scopes

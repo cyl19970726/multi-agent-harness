@@ -171,7 +171,7 @@ new binding records the parent native session id.
 | --- | --- | --- | --- | --- |
 | Codex `codex_exec` | real thread id captured | Codex rollout/state DB is native truth | `codex exec resume` remains available to bounded Workflow and legacy non-Team paths | workflow-only for new work; historical Team records remain readable but cannot start a new member |
 | Codex `codex_app_server` | real thread id captured | app-server thread APIs plus Codex native store | `thread/resume` wired through explicit member resume binding | live provider activity is transient; native history is read on demand |
-| Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | live provider activity is transient; native history is read on demand |
+| Kimi `kimi_acp` | real ACP session id captured | `~/.kimi-code/sessions/**/session_<id>/agents/main/wire.jsonl` | reviewed ACP 0.27.0 advertises `loadSession` and `sessionCapabilities.resume`; `session/load` is wired | installed 0.29.1 is `review_required`; live activity remains transient and native history is read on demand |
 | Claude `claude_agent_sdk` | real `system(init).session_id` captured | `~/.claude/projects/**/<session>.jsonl` | streaming mailbox, SDK interrupt/close, explicit resume binding, and SDK `listSessions` | Only Claude Team mode; `system(init).claude_code_version` owns the version claim; Desktop visibility is opt-in through `claude://resume?session=<id>`, and Desktop stays observation-only while Harness drives |
 | Claude `claude_cli` | historical/workflow session id | `~/.claude/projects/**/<session>.jsonl` | bounded `--resume` only | Dynamic Workflow and historical reads only; rejected for new Agent Team members |
 
@@ -182,6 +182,12 @@ execution mode is supported.
 
 “Provider supports” never means “adapter supports.” Each row needs deterministic
 and live acceptance against reviewed provider versions.
+
+For persistent Team modes, a service restart does not create a new execution
+truth. The next durable Team Supervisor generation reattaches the recorded
+native session before claiming queued mail. An uncertain claim is reconciled
+against a native receipt rather than replayed, and a latched Host Close forbids
+resume through ordinary Team delivery.
 
 ## Failure and lifecycle states
 

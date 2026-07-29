@@ -144,6 +144,10 @@ execution = Agent Team | Dynamic Workflow | Host work
   runtime container or barrier.
 - `AgentTeamRun/MemberRun` records temporary collaboration that may span
   several Waves while native sessions continue.
+- one durable Team Supervisor generation owns each live TeamRun's provider
+  transports, delivery claims, reconnect, and real controls;
+- typed Host/Member/Agent/Operator mail preserves provenance; claim, provider
+  receipt, recipient ACK, semantic reply, and acceptance remain distinct;
 - `DynamicWorkflow` runs a provider-neutral process for the bounded outcome.
 - provider sessions, plugins, MCP, and child work remain execution evidence.
 
@@ -165,8 +169,9 @@ record. Results return through the WorkItem relation.
 6. Finance provides typed, permissioned records linked to business origin.
 7. Governance handles new business domains, document growth, organization
    change, and missing capability.
-8. Execution pages retain Mission/Wave, Team, MemberRun, Workflow, and provider
-   observability as professional drill-ins.
+8. Execution pages retain Mission/Wave, Team, MemberRun, Supervisor, typed
+   Inbox/Outbox, Workflow, and provider observability as professional
+   drill-ins.
 
 ## Near-term acceptance scenario
 

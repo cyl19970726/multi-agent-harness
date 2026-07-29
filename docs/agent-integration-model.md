@@ -24,6 +24,8 @@ Pillar 3  Platform adaptation  AgentProvider + EventReducer + continuation caps
 ---------------------------------------------------------------------------
 Launch/control contract         start, deliver, inspect, interrupt, close and
                                 resume through one selected execution mode
+Team control contract           acquire Supervisor generation, type actors,
+                                claim/receipt/ACK mail, reconnect and fence
 ```
 
 The executor selects the transport. Agent Team requires a persistent,
@@ -43,7 +45,14 @@ interrupt a cycle, expose cycle boundaries, and preserve the intended
 permission scope. “Provider has Goal mode” is not an executable compatibility
 claim by itself.
 
-## Why Three Pillars
+Every persistent Team mode also participates in the provider-neutral durable
+Supervisor protocol. Only the latest `TeamSupervisorLease` generation may own
+the provider transport, claim delivery, or execute live controls. The adapter
+must verify transport health before claiming mail, record a provider-native
+receipt, preserve recipient ACK separately, reattach the recorded native
+session after lease rollover, and treat explicit Close as terminal and latched.
+Typed sender and recipient provenance is part of the envelope; an unbound
+external client cannot impersonate a Member.
 
 An `AgentMember` (see [agent-control-plane.md](company-os/execution-foundation.md)) is a
 durable identity. To make that identity *executable on a given platform* you
@@ -59,8 +68,6 @@ hands a single turn to whatever platform sits behind the member:
 The pillars are deliberately separable: changing the platform (Pillar 3) must
 not require rewriting the prompt stack (Pillar 1) or the workspace contract
 (Pillar 2). That separability is the whole point of ADR 0011.
-
----
 
 ## Pillar 1 — Base Configuration (prompt, skills, capabilities)
 
@@ -433,7 +440,11 @@ is the concrete "define X, Y, Z" deliverable.
    exec-stream. Implement `AgentProvider` (start / deliver / probe / ingest),
    write the `EventReducer` mapping, define the health-signal layers, map the
    neutral `permission` enum, and declare unsupported surfaces. Never silently
-   fall back from Team mode to bounded exec.
+   fall back from Team mode to bounded exec. Integrate Team mode with durable
+   Supervisor acquisition/heartbeat/release, generation-fenced cross-process
+   controls, provider-transport preflight, delivery
+   claim/provider-receipt/ACK, reconnect to the same native session, and
+   latched Close.
 4. **Map the launch spec.** Fill the platform's column of the launch-spec table:
    how each neutral field becomes a concrete CLI flag / SDK argument. Do not
    leak platform wire vocabulary back into the neutral spec.
@@ -458,8 +469,9 @@ is the concrete "define X, Y, Z" deliverable.
    `check:dashboard`) and so must `harness governance check` (the doc/skill
    gates: links, registry, size, skills). Live acceptance must prove one
    top-level execution driver, native-session resume, busy mailbox behavior,
-   interrupt/close, permission continuity, and separation of provider
-   satisfaction from Host acceptance.
+   interrupt/close, permission continuity, typed actor provenance,
+   cross-process routing, crash/reconnect, exactly-once delivery under
+   contention, and separation of provider satisfaction from Host acceptance.
 
 ## Open Gaps Flagged by This Model
 
@@ -468,7 +480,8 @@ is the concrete "define X, Y, Z" deliverable.
 | Skill contract (resolve / discover / inject) | WP-6: Implemented | Pillar 1, `skill_resolver` module |
 | MCP neutral config shape | WP-6: Implemented | Pillar 2, `LaunchMcp` / `LaunchMcpServer` on `AgentProviderConfig` |
 | Provider capability declaration | WP-6: Implemented | Pillar 3, `ProviderCapabilities` struct |
-| Operation-level continuation capability and execution lease | design contract in ADR 0041; code/schema pending | Member Continuation Model |
+| Operation-level continuation capability | design contract in ADR 0041; provider-driven promotion remains version-gated | Member Continuation Model |
+| Durable Team Supervisor and typed mail | implemented under ADR 0044 | Agent Runtime, provider integrations |
 | `AgentProviderConfig` leaks Codex vocabulary | documented; abstraction is additive future work | Launch Spec |
 
 The first three gaps are now closed. The `AgentProviderConfig` vocabulary

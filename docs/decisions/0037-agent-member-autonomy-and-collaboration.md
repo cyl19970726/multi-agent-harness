@@ -106,9 +106,11 @@ session is their sole truth and the only valid resume source.
 ### Steer and interruption must be honest
 
 Steer means injection into the real current provider turn only when the
-snapshotted provider mode supports and acknowledges that operation. Otherwise
-the product labels the input as a queued message for the next provider round.
-It must not display a synthetic steer acknowledgement.
+snapshotted provider mode supports and acknowledges that operation. Unsupported
+or unavailable Steer fails with the reason. The caller may separately choose
+an ordinary queued Message for the next provider round; Harness never silently
+converts one operation into the other or displays a synthetic steer
+acknowledgement.
 
 Interrupt and resume likewise require mode-specific terminal acknowledgement.
 Queued ordinary coordination never silently interrupts a busy member.

@@ -6,7 +6,7 @@ owner_role: product-design
 canonical_for: one standalone or Mission-scoped AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
 architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle +
-              ADR 0037 collaboration
+              ADR 0037 collaboration + ADR 0044 supervision/typed mail
 ```
 
 ## User Problem
@@ -27,8 +27,13 @@ Required data:
   previous run, host/runtime facts, and outcome;
 - `MemberRun` identity, role, provider/model, status, capability profile,
   worktree, and native-session binding;
-- assignment/message correlation, delivery, ACK, optional `origin_wave_id`,
-  pending interactions, controls, artifacts, and checks;
+- current `TeamSupervisorLease` generation, heartbeat, owner locator,
+  provider-transport/reconnect state, and Close latch;
+- typed assignment/message sender and recipients, correlation, claim,
+  provider receipt, ACK, optional `origin_wave_id`, pending interactions,
+  controls, artifacts, and checks;
+- `AgentMessageRoute` when stable Agent Inbox mail was explicitly routed to a
+  participating MemberRun;
 - provider-native activity read on demand, clearly labeled by source and
   availability.
 
@@ -72,6 +77,9 @@ records. It is a read-model projection, not a new stored mailbox object. The
 Host mailbox is visible even though Host is not a fabricated MemberRun. Mailbox
 selection filters sent/received conversation; Member portraits and names open
 Member Focus. A blocking details drawer is not a replacement for the full page.
+Every row renders typed author → recipient identity. A Dashboard Operator and
+the Host Lead remain visually and structurally distinct, and neither can
+impersonate a Member.
 
 Activity is one source-aware timeline:
 
@@ -100,7 +108,8 @@ renderer rather than displaying raw Markdown syntax.
 3. **SelectedMember** — identity, assignment, capability, message, steer,
    interrupt, resume, and open-member actions supported by the real adapter.
 4. **Runtime** — worktree, native session id, provider mode/version,
-   permission/budget, and honest availability.
+   permission/budget, current Supervisor generation, transport/reconnect
+   health, and honest control availability.
 5. **Artifacts** — explicit files/checks/evidence with open/download actions.
 
 The Host mailbox and conversation pressure rows together form the **Lead

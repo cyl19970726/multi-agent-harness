@@ -12,6 +12,8 @@ Star Harness must turn durable intent into:
 ```text
 Mission -> ordered Host-plan Wave
 Mission <-> AgentTeam -> Mission-scoped TeamRun -> MemberRun
+  -> TeamSupervisorLease generation
+  -> typed TeamMessage -> claim -> provider receipt -> recipient ACK
   -> explicit coordination/artifacts/outcome + provider-native session refs
   -> explicit Host advance -> next Wave or Mission closeout
 ```
@@ -32,6 +34,10 @@ provider-native sessions without duplicating those sessions.
 | Which execution happened? | Mission-linked TeamRuns, WorkflowRuns, Host outcomes, and their native records. |
 | How is Agent Team work assigned? | `TeamMessage(kind=assignment)` plus its `correlation_id`. |
 | Who is accountable inside a team attempt? | `MemberRun` role/identity plus assignment and handoff lineage. |
+| Who currently owns live Team control? | Latest active `TeamSupervisorLease` generation and its loopback owner locator. |
+| Who actually sent and receives a message? | Typed `TeamActorRef` sender/recipients; Member authorship requires a bound Member context. |
+| Was mail safely accepted? | Atomic delivery claim, provider receipt, and recipient ACK are distinct states. |
+| How does durable Agent mail reach a run? | `AgentMessageRoute` explicitly joins one stable Agent Inbox message to one active MemberRun and TeamMessage. |
 | What supports an outcome? | Explicit Harness outcome/check/artifact refs and handoffs, plus provider-native records for member-execution claims. |
 | What advances? | The Host's explicit Wave outcome; unrelated execution may continue. |
 | What is provider state? | A mode-aware native session binding; the provider-native store owns transcript, tools, turns, and resume state. |
@@ -50,7 +56,9 @@ provider-native sessions without duplicating those sessions.
 | Agent Team runs | `AgentTeamRun` rows linked by Mission/team ids | run cards |
 | Agent Team assignment | assignment `TeamMessage` plus correlation lineage | member current action, lane UI |
 | Agent Team identity | `MemberRun` inside one TeamRun | provider thread id, prompt file |
-| Runtime health | Harness lifecycle/control acknowledgement plus provider adapter availability | pid, socket, native provider status |
+| Team control ownership | latest active `TeamSupervisorLease` generation | process-local handle, pid, socket |
+| Runtime health | Harness lifecycle/control acknowledgement plus provider adapter availability and transport preflight | pid, socket, native provider status |
+| Stable Agent routing | `AgentMessageRoute` latest rows | Organization/Agent Inbox projection |
 | Provider execution | provider-native session selected by `NativeSessionRef` | ephemeral normalized Dashboard projection |
 | Provider interaction routing | Harness `PendingInteraction` | provider reverse-RPC frame in the native session |
 | Outcome support | explicit Harness outcome and artifact/check refs; provider-native session for execution claims | unaccepted chat summary |
@@ -72,6 +80,10 @@ flowchart TD
   Wave -. Host plan .-> HostRun[Host outcome reference]
   TeamRun --> TeamMsg[TeamMessage assignment + correlation]
   TeamRun --> Member[MemberRun]
+  TeamRun --> Supervisor[TeamSupervisorLease]
+  AgentInbox[Stable Agent Inbox] --> Route[AgentMessageRoute]
+  Route --> TeamMsg
+  Route --> Member
   Member --> Binding[NativeSessionRef]
   Binding --> Session[Provider-native session]
   TeamMsg --> Artifact[Artifacts/checks/outcome]
@@ -121,12 +133,19 @@ Native invariants:
    session.
 5. Explicit message lineage stays inside one TeamRun; assignment correlation is
    never fabricated from body text.
-6. New provider transcripts, tool/command/file event streams, and thinking are
+6. Only the current Supervisor generation may claim queued mail or execute live
+   controls. It verifies provider transport health before the claim and records
+   native receipt separately from semantic reply and recipient ACK.
+7. Typed sender/recipient identity is structural. Unbound API/MCP/UI callers
+   cannot author Member-originated messages.
+8. Explicit Close is terminal and latched; idle, Handoff, Wave advance, TeamRun
+   completion, or Mission closeout never implies Close.
+9. New provider transcripts, tool/command/file event streams, and thinking are
    never mirrored into durable Harness actions, snapshots, replay, evidence,
    or peer messages.
-7. Domain project facts and behavior enter through adapters, skills, and tool
+10. Domain project facts and behavior enter through adapters, skills, and tool
    descriptors, not generic core state.
-8. Parallel file-changing members need distinct workspaces, branches, or
+11. Parallel file-changing members need distinct workspaces, branches, or
    explicit owned-path coordination.
 
 Retired coordination flows have no separate active invariants. Archive records

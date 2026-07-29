@@ -32,13 +32,18 @@ npx pnpm@9.15.4 acceptance:mission-wave
 
 It covers native Mission/Wave HTTP and CLI contracts, Agent Team create/start,
 Mission closeout, Host-facing MCP transport, assignment correlations, the
-Dashboard read model and operator controls, plus deterministic Kimi ACP and
-Codex exec Team Member adapters (including one mixed-provider TeamRun).
+Dashboard read model and operator controls, plus deterministic persistent
+Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters. It also
+gates durable Supervisor generations, typed actor mail, atomic delivery
+claim/provider receipt/ACK, cross-process control routing, reconnect, and
+explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
+Workflow and are never Agent Team fallbacks.
 
 Use focused Rust tests while iterating on one slice:
 
 ```bash
 cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threads=1
+cargo test -p harness-cli --test team_supervisor_cross_service -- --test-threads=1
 ```
 
 There is currently no packaged live-provider command. When a claim depends on
@@ -86,14 +91,20 @@ as `MemberRun.agent_member_id`; an intentionally matching Company OS
 StandingAgent can then project the participation without inferring identity or
 authority.
 
-Set `HARNESS_ROOT` to point the file store somewhere other than `.harness`.
-The local store writes append-only Harness-owned coordination and product
-records. Provider transcripts, tool streams, command output, and turns remain
-in the provider's native store and are joined through `NativeSessionRef`.
+Select the Execution Space and Project Binding explicitly:
 
-The default `.harness` directory is local runtime state. Keep durable product
-contracts in docs, schemas, skills, and code; use evidence refs when a runtime
-store item needs to support a decision.
+```bash
+harness space switch <execution-space-id>
+harness project switch <project-binding-id>
+```
+
+`--space` / `HARNESS_SPACE` selects Mission/Wave, Agent Team, Workflow, and
+coordination storage. `--project` / `HARNESS_PROJECT` independently selects
+provider cwd, project instructions, Skills, Git/worktree, and permission
+boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned
+compatibility override. Provider transcripts, tool streams, command output,
+and turns remain in the provider's native store and are joined through
+`NativeSessionRef`.
 
 The local API serves the current file-store read model:
 
@@ -103,6 +114,9 @@ GET /v1/health
 GET /v1/snapshot
 GET /v1/dashboard/snapshot
 GET /v1/events
+GET /v1/team-runs/host-inbox
+GET /v1/team-runs/{id}/members/{member-run-id}/inbox
+GET /v1/member-runs/{id}/native-activity
 ```
 
 The local API also exposes safe control-plane actions used by the Agent
@@ -110,6 +124,15 @@ Dashboard:
 
 ```text
 POST /v1/messages
+POST /v1/team-runs
+POST /v1/team-runs/{id}/start
+POST /v1/team-runs/{id}/members
+POST /v1/team-runs/{id}/messages
+POST /v1/team-runs/{id}/messages/{message-id}/ack
+POST /v1/team-runs/{id}/messages/{message-id}/reconcile-delivery
+POST /v1/team-runs/{id}/members/{member-run-id}/steer
+POST /v1/team-runs/{id}/members/{member-run-id}/interrupt
+POST /v1/team-runs/{id}/members/{member-run-id}/close
 POST /v1/gateway/tick
 POST /v1/agents/{id}/deliver
 POST /v1/agents/{id}/retry-delivery
@@ -120,8 +143,11 @@ POST /v1/tasks/{id}/request-review
 
 The API is a read surface and an operator control plane for the Agent
 Dashboard. It does not replace review gates, provider-native execution truth,
-or decisions. Safe actions must call the same CLI value paths and append store
-records instead of mutating dashboard-only state.
+or decisions. Agent Team controls route through the current durable Supervisor
+generation; a service that does not own the live provider handle forwards over
+the lease's loopback locator and the owner fences the operation again. Safe
+actions must call the same application logic and append store records instead
+of mutating dashboard-only state.
 
 Bind the API to `127.0.0.1` for normal local use. It sends permissive CORS
 headers so a static Dashboard file can read it; do not bind it to a public
