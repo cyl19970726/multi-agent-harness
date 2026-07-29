@@ -114,8 +114,8 @@ harness company docs related --record <typed-record-id>
 
 Work records and Work projections exist through the Company OS Store/API and
 governed Action path. Dedicated `harness company work ...` commands are
-implemented for the first native operating slice: list, query, create, assign,
-transition, close, and baseline Milestone lifecycle.
+implemented for the first native operating slice: list, query, create, update,
+assign, transition, close, and baseline Milestone lifecycle.
 
 Use:
 
@@ -133,6 +133,18 @@ harness company work create \
   [--context-ref-json '{"kind":"document","id":"..."}' ...] \
   --submitted-by <actor-id> \
   --accountable-owner <actor-id> \
+  [--assignee <actor-id> ...]
+harness company work update \
+  --definition <custom-page-definition-id> \
+  --work-item <work-item-id> \
+  --actor <actor-id> \
+  [--description <scope-and-constraints>] \
+  [--acceptance-criterion <criterion> ...] \
+  [--context-ref-json '{"kind":"document","id":"..."}' ...] \
+  [--source-document <doc-id>] \
+  [--module <business-module-id>] \
+  [--work-type <type>] \
+  [--accountable-owner <actor-id>] \
   [--assignee <actor-id> ...]
 harness company work assign \
   --definition <custom-page-definition-id> \
@@ -163,16 +175,18 @@ harness company work milestone close --authority <human-admin-id> --milestone <m
 
 `list` and `query` are read-only. Writes require
 `HARNESS_COMPANY_OS_TOKEN`, a matching `CustomPageDefinition`, and an Action
-policy for `work_item.append`, `assignment.append`, or
+policy for `work_item.append`, `work_item.update`, `assignment.append`, or
 `work_item.transition`.
 
 `work assign` appends a native `Assignment` delivery record. It does not
-rewrite `WorkItem.assignees` in v1 because current `work_item.transition`
-correctly forbids changing responsibility fields. Set initial assignees during
-`work create`; add a later explicit WorkItem reassignment Action if the product
-needs accountable owner, assignee, reviewer, or approver correction to affect
-the Work projection. Do not use a direct ledger edit or an `Assignment` row to
-pretend the WorkItem responsibility chain changed.
+rewrite `WorkItem.assignees`; it proves routing/delivery. `work update` is the
+governed metadata/responsibility correction path for source Document, module,
+WorkType, description, acceptance criteria, context refs, accountable owner,
+assignees, contributors, reviewer, approver, priority, due date, and risk. It
+must not change lifecycle status, result, approval, evidence, artifact, or
+execution provenance; use `work transition` / `work close` for lifecycle
+movement. Do not use a direct ledger edit or an `Assignment` row to pretend the
+WorkItem responsibility chain changed.
 
 ## Safe workflow
 

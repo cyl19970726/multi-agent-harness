@@ -199,6 +199,7 @@ async function main() {
     "--authority", "human-admin",
     "--owner", "human-admin",
     "--action", "work_item.append",
+    "--action", "work_item.update",
     "--action", "work_item.transition",
     "--action", "approval.request",
     "--action", "approval.decide",
@@ -240,6 +241,21 @@ async function main() {
     "--actor", "agent-ops",
   ], env);
   check(work.ok === true && work.result?.record?.id === "workitem-operator-cli", "work create provides finance source WorkItem");
+
+  const workUpdate = run([
+    "company", "work", "update",
+    "--definition", "page-operator-cli",
+    "--work-item", "workitem-operator-cli",
+    "--description", "Updated WorkItem detail keeps business context, responsible Agent and acceptance visible before execution.",
+    "--acceptance-criterion", "WorkItem update preserves status and result/evidence provenance.",
+    "--accountable-owner", "agent-ops",
+    "--assignee", "agent-ops",
+    "--module", "module-operator-cli",
+    "--work-type", "procurement",
+    "--priority", "high",
+    "--actor", "agent-ops",
+  ], env);
+  check(workUpdate.ok === true && workUpdate.result?.record?.priority === "high", "work update rewrites governed WorkItem metadata without lifecycle transition");
 
   await post(base, "/v1/company-os/relations", admin({
     id: "relation-work-commitment-cli",
