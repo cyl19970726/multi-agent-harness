@@ -343,11 +343,55 @@ fn standing_assignment_projection(
                 latest.insert(run.id.clone(), run);
                 latest
             });
-    let messages = execution_store.team_messages()?;
-    let pending_interactions = execution_store.pending_interactions()?;
-    let supervisor_leases = execution_store.team_supervisor_leases()?;
-    let close_requests = execution_store.team_member_close_requests()?;
-    let member_actions = execution_store.member_actions()?;
+    // Execution ledgers are append-only revision streams. Company projections
+    // must join their latest object state, never every physical JSONL row.
+    // Otherwise a delivery claim/ACK revision duplicates one logical
+    // Assignment and can also resurrect stale pending/close state.
+    let messages = execution_store
+        .team_messages()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut latest, message| {
+            latest.insert(message.id.clone(), message);
+            latest
+        })
+        .into_values()
+        .collect::<Vec<_>>();
+    let pending_interactions = execution_store
+        .pending_interactions()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut latest, interaction| {
+            latest.insert(interaction.id.clone(), interaction);
+            latest
+        })
+        .into_values()
+        .collect::<Vec<_>>();
+    let supervisor_leases = execution_store
+        .team_supervisor_leases()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut latest, lease| {
+            latest.insert(lease.team_run_id.clone(), lease);
+            latest
+        })
+        .into_values()
+        .collect::<Vec<_>>();
+    let close_requests = execution_store
+        .team_member_close_requests()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut latest, request| {
+            latest.insert(request.member_run_id.clone(), request);
+            latest
+        })
+        .into_values()
+        .collect::<Vec<_>>();
+    let member_actions = execution_store
+        .member_actions()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut latest, action| {
+            latest.insert(action.id.clone(), action);
+            latest
+        })
+        .into_values()
+        .collect::<Vec<_>>();
 
     let mut projection = Vec::new();
     let mut affected_member_runs: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -630,6 +674,32 @@ mod projection_tests {
         assert!(
             projected.conflicts.is_empty(),
             "a healthy store must report an empty conflict list"
+        );
+
+        let mut revised = store
+            .team_messages()
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == "assignment-1")
+            .unwrap();
+        revised.body = "assignment-1 latest revision".to_string();
+        store.append_team_message(&revised).unwrap();
+        let latest = standing_assignment_projection(&store, &store)
+            .unwrap()
+            .assignments;
+        assert_eq!(
+            latest.len(),
+            2,
+            "append-only revisions must not duplicate one logical Assignment"
+        );
+        let revised_projection = latest
+            .iter()
+            .find(|assignment| assignment["source_ref"] == "assignment-1")
+            .unwrap();
+        assert_eq!(revised_projection["title"], "assignment-1 latest revision");
+        assert_eq!(
+            revised_projection["lifecycle"]["mailbox_message_count"], 2,
+            "mailbox count is logical messages, not physical JSONL revisions"
         );
         let _ = std::fs::remove_dir_all(root);
     }

@@ -248,11 +248,11 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
         ;;
       *'"method":"thread/start"'*)
-        printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol"}}}\n' "$id" "$thread_id"
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"%s"}}}\n' "$id" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
-        printf '{"id":%s,"result":{"thread":{"id":"%s","model":"gpt-5.6-sol","turns":[]}}}\n' "$id" "$thread_id"
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"%s","turns":[]}}}\n' "$id" "$thread_id"
         ;;
       *'"method":"thread/name/set"'*)
         if [ -n "${FAKE_CODEX_NAME_MARKER:-}" ]; then

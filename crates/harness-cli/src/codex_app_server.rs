@@ -53,6 +53,29 @@ fn thread_name_params(thread_id: &str, member_name: &str) -> serde_json::Value {
     })
 }
 
+fn effective_thread_model(
+    response: &serde_json::Value,
+    requested_model: Option<&str>,
+) -> Option<String> {
+    [
+        // Current app-server responses expose the effective model alongside
+        // `thread`, because it is resolved from the active provider/config.
+        response
+            .pointer("/result/model")
+            .and_then(|value| value.as_str()),
+        // Keep accepting the earlier nested response shape used by reviewed
+        // app-server versions and deterministic fixtures.
+        response
+            .pointer("/result/thread/model")
+            .and_then(|value| value.as_str()),
+        requested_model,
+    ]
+    .into_iter()
+    .flatten()
+    .find(|model| !model.trim().is_empty())
+    .map(str::to_string)
+}
+
 pub(crate) struct CodexAppServerClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
@@ -190,17 +213,12 @@ impl CodexAppServerClient {
                 CliError::Usage(format!("codex {method} omitted thread id: {response}"))
             })?
             .to_string();
-        client.model = response
-            .pointer("/result/thread/model")
-            .and_then(|value| value.as_str())
-            .or(model)
-            .filter(|model| !model.trim().is_empty())
+        client.model = effective_thread_model(&response, model)
             .ok_or_else(|| {
                 CliError::Usage(format!(
                     "codex {method} omitted the effective thread model required for collaborationMode: {response}"
                 ))
-            })?
-            .to_string();
+            })?;
         client.request_blocking(
             "thread/name/set",
             thread_name_params(&client.thread_id, member_name),
@@ -419,5 +437,40 @@ mod tests {
                 "name": "Agent Team · RuntimeFixer"
             })
         );
+    }
+
+    #[test]
+    fn effective_model_prefers_current_top_level_app_server_shape() {
+        let response = serde_json::json!({
+            "result": {
+                "model": "gpt-current",
+                "thread": {"id": "thread-123", "model": "gpt-legacy"}
+            }
+        });
+
+        assert_eq!(
+            effective_thread_model(&response, Some("gpt-requested")).as_deref(),
+            Some("gpt-current")
+        );
+    }
+
+    #[test]
+    fn effective_model_accepts_legacy_nested_and_requested_fallbacks() {
+        let legacy = serde_json::json!({
+            "result": {"thread": {"id": "thread-123", "model": "gpt-legacy"}}
+        });
+        let omitted = serde_json::json!({
+            "result": {"thread": {"id": "thread-123"}}
+        });
+
+        assert_eq!(
+            effective_thread_model(&legacy, Some("gpt-requested")).as_deref(),
+            Some("gpt-legacy")
+        );
+        assert_eq!(
+            effective_thread_model(&omitted, Some("gpt-requested")).as_deref(),
+            Some("gpt-requested")
+        );
+        assert_eq!(effective_thread_model(&omitted, Some("   ")), None);
     }
 }

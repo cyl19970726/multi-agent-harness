@@ -327,6 +327,13 @@ history. Ad-hoc or unlinked members remain execution-only. Organization cards
 route to Actor profiles, and explicitly linked Agent Team participation
 deep-links to the Team/Member execution page.
 
+Execution ledgers are append-only revision streams, so this cross-store read
+join always folds each logical TeamMessage, PendingInteraction, Supervisor
+lease, close request, and MemberAction to its latest row before projecting
+assignments or lifecycle counts. A delivery claim, receipt, or ACK revision
+must update one visible Assignment; it must never duplicate that Assignment or
+inflate mailbox counts merely because the JSONL contains another physical row.
+
 ### Governed link and unlink
 
 The first edge is authored by one explicit command per pair:
