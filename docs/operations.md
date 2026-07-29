@@ -56,7 +56,9 @@ Use focused Rust tests while iterating on one slice:
 
 ```bash
 cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threads=1
-cargo test -p harness-cli --test team_supervisor_cross_service -- --test-threads=1
+cargo test -p harness-cli --test team_run_api \
+  persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion \
+  -- --test-threads=1
 ```
 
 There is currently no packaged live-provider command. When a claim depends on

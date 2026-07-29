@@ -408,6 +408,7 @@ export interface ProviderIntegrationProfile {
   adapter_reviewed_at?: string | null;
   compatibility_note?: string | null;
   interaction_mode: "pause_and_resume" | "end_round_and_follow_up" | "unsupported" | string;
+  ordinary_message_boundary?: "in_turn" | "next_round" | "next_round_batched" | "unknown" | string;
   plan_mode?: "native" | "emulated" | "unsupported" | "unknown" | string;
   goal_mode?: "native" | "emulated" | "unsupported" | "unknown" | string;
   tool_event_fidelity: "none" | "summary" | "structured" | string;

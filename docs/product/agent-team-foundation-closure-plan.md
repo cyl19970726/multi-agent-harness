@@ -191,10 +191,12 @@ Host.” Operator surfaces must keep those labels separate.
 | --- | --- | --- | --- | --- | --- |
 | Codex `codex_app_server` | `turn/start` | `turn/steer` | `turn/interrupt` | `thread/resume` | Harness ends its owned app-server runtime |
 | Claude `claude_agent_sdk` | streaming input | unsupported until reviewed | `query.interrupt()` | SDK session resume | runner Close |
-| Kimi `kimi_acp` | `session/prompt` | unsupported | `session/cancel` | `session/load` / `session/resume` | ACP has no native session-close; Harness ends its client runtime |
+| Kimi `kimi_acp` | `session/prompt` | unsupported | version-reviewed only: historical 0.27.0 `session/cancel`; live 0.29.1 unsupported (`-32601 Method not found`, `supports_cancel=false`) | `session/load` / `session/resume` | ACP has no native session-close; Harness ends its client runtime |
 
 Provider release review remains version and mode specific. Unsupported
 capability is an honest disabled state, not fallback to one-shot execution.
+For Kimi 0.29.1, Interrupt rejects before any PendingInteraction mutation or
+false `cancel_requested` acknowledgement.
 
 ## Durable Team Supervisor
 

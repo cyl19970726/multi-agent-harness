@@ -2002,6 +2002,10 @@ pub struct ProviderIntegrationProfile {
     #[serde(default)]
     pub compatibility_note: Option<String>,
     pub interaction_mode: ProviderInteractionMode,
+    /// When ordinary queued TeamMessages become visible to this live mode.
+    /// Provider-native records remain the execution/transcript authority.
+    #[serde(default)]
+    pub ordinary_message_boundary: OrdinaryMessageBoundary,
     /// How this exact execution mode implements Member plan negotiation.
     #[serde(default)]
     pub plan_mode: ProviderFeatureMode,
@@ -2018,6 +2022,16 @@ pub struct ProviderIntegrationProfile {
     /// Product policy, not a provider claim. Thinking may only appear through
     /// the sanitized transient live channel and is never durable or replayed.
     pub thinking_transient_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrdinaryMessageBoundary {
+    InTurn,
+    NextRound,
+    NextRoundBatched,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

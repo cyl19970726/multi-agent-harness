@@ -238,8 +238,8 @@ export interface TeamRunMemberSpec {
 
 /**
  * Create a new Agent Team run with its member roster (POST /v1/team-runs). The
- * response carries the refreshed snapshot, which App's runAction adopts; the
- * new run then appears at the top of the Team list.
+ * the Dashboard performs a bounded mutation then refreshes the snapshot; the
+ * new run appears when that read completes.
  */
 export function createTeamRun(params: {
   objective: string;

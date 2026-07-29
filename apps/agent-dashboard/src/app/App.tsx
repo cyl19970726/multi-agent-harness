@@ -5,6 +5,7 @@ import {
   fetchProjects,
   fetchSpaces,
   fetchSnapshot,
+  fetchTeamRunSnapshot,
   fetchWorkflowDefs,
   matchesStreamProject,
   postAction,
@@ -229,13 +230,16 @@ export function App() {
       const request = beginReadSnapshotRequest();
       if (!request) return null;
       try {
-        return { request, snapshot: await fetchSnapshot(baseUrl, project, company, space) };
+        const next = selection.teamId
+          ? await fetchTeamRunSnapshot(baseUrl, selection.teamId, project, company, space)
+          : await fetchSnapshot(baseUrl, project, company, space);
+        return { request, snapshot: next };
       } catch (error) {
         discardSnapshotRequest(request);
         throw error;
       }
     },
-    [beginReadSnapshotRequest, discardSnapshotRequest],
+    [beginReadSnapshotRequest, discardSnapshotRequest, selection.teamId],
   );
 
   // Expiry is a data-lifecycle boundary, not merely a card-rendering choice.

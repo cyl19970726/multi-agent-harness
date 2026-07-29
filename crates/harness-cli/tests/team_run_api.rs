@@ -352,6 +352,10 @@ fn team_run_cli_create_list_status_send_events() {
     // Member-to-Host mail is actionable immediately; CLI ACK is the complete
     // control-plane path and removes it from the default Inbox without erasing
     // the latest historical projection.
+    assignments[1].deliveries[0].status = TeamDeliveryStatus::Delivered;
+    store
+        .append_team_message(&assignments[1])
+        .expect("restore delivered Assignment ownership before handoff");
     let host_message = team_run_json(
         &home,
         &project_id,
@@ -367,6 +371,10 @@ fn team_run_cli_create_list_status_send_events() {
             "handoff",
             "--body",
             "RESULT: ready for Host review",
+            "--correlation-id",
+            &assignments[1].correlation_id,
+            "--causation-id",
+            &assignments[1].id,
             "--json",
         ],
     );
@@ -487,6 +495,46 @@ fn team_run_cli_message_reuses_assignment_lineage_only_within_its_run() {
     let assignment_id = assignment["id"].as_str().unwrap();
     let correlation_id = assignment["correlation_id"].as_str().unwrap();
     let members = created["member_runs"].as_array().unwrap();
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let mut delivered_assignment = store
+        .team_messages()
+        .expect("assignment messages")
+        .into_iter()
+        .find(|message| message.id == assignment_id)
+        .expect("lead assignment");
+    delivered_assignment.deliveries[0].status = TeamDeliveryStatus::Delivered;
+    store
+        .append_team_message(&delivered_assignment)
+        .expect("deliver lead Assignment before handoff");
+    let wrong_owner = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            members[1]["id"].as_str().unwrap(),
+            "--to",
+            "host",
+            "--kind",
+            "handoff",
+            "--body",
+            "must not reuse another member's assignment",
+            "--correlation-id",
+            correlation_id,
+        ],
+    );
+    assert!(!wrong_owner.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong_owner.stderr)
+            .contains("is not an Assignment delivered to MemberRun"),
+        "stderr: {}",
+        String::from_utf8_lossy(&wrong_owner.stderr)
+    );
 
     let handoff = team_run_json(
         &home,
@@ -908,11 +956,10 @@ fn post_mission_wave_and_lightweight_gate() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["index"].as_u64(), Some(1));
-    assert_eq!(
-        body["snapshot"]["missions"].as_array().map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(body["snapshot"]["waves"].as_array().map(Vec::len), Some(1));
+    assert!(body.get("snapshot").is_none());
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["waves"].as_array().map(Vec::len), Some(1));
     let (status, body) = serve.post_json(
         "/v1/waves/wave-http/gate",
         &serde_json::json!({"status": "revise", "note": "clarify scope"}),
@@ -1106,7 +1153,7 @@ fn linked_team_run_rejects_previous_attempt_from_another_wave() {
 }
 
 #[test]
-fn post_team_run_creates_entities_and_snapshot() {
+fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     let home = TempHome::new("team-run-api");
     let project_id = init_project(&home, "alpha");
     let project_root =
@@ -1164,8 +1211,10 @@ fn post_team_run_creates_entities_and_snapshot() {
         .expect("run id")
         .to_string();
 
-    // snapshot: the six new projections carry the journaled rows.
-    let snapshot = &body["snapshot"];
+    // Mutations stay bounded; the follow-up GET carries the projections.
+    assert!(body.get("snapshot").is_none());
+    let (snapshot_status, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot_status, 200);
     let team_runs = snapshot["team_runs"].as_array().expect("team_runs");
     assert_eq!(team_runs.len(), 1, "team_runs: {team_runs:?}");
     assert_eq!(team_runs[0]["id"].as_str(), Some(run_id.as_str()));
@@ -1224,13 +1273,68 @@ fn post_team_run_creates_entities_and_snapshot() {
         "all events folded into the run: {events:?}"
     );
 
-    // The same rows are visible via the plain GET snapshot route.
-    let (get_status, get_snapshot) = serve.get_json("/v1/snapshot");
-    assert_eq!(get_status, 200);
+    assert_eq!(snapshot["team_runs"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot() {
+    let home = TempHome::new("bounded-mutation-response");
+    let _project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let large_context = "x".repeat(20_000);
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "remain reachable from a deep link",
+            "members": [{"name": "deep-link-member", "role": "auditor", "provider": "codex"}],
+        }),
+    );
+    assert_eq!(status, 200, "created: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+
+    for index in 0..80 {
+        let (status, body) = serve.post_json(
+            "/v1/missions",
+            &serde_json::json!({
+                "id": format!("mission-large-{index}"),
+                "title": format!("Large mission {index}"),
+                "objective": "inflate the durable read projection",
+                "context": large_context,
+            }),
+        );
+        assert_eq!(status, 200, "body: {body}");
+        assert!(
+            body.get("snapshot").is_none(),
+            "mutation response leaked a full snapshot"
+        );
+        assert!(
+            serde_json::to_vec(&body).unwrap().len() < 64 * 1024,
+            "mutation response exceeded the bounded envelope"
+        );
+    }
+
+    let (status, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(status, 200, "snapshot: {snapshot}");
     assert_eq!(
-        get_snapshot["team_runs"].as_array().map(Vec::len),
-        Some(1),
-        "GET /v1/snapshot team_runs"
+        snapshot["missions"].as_array().map(Vec::len),
+        Some(80),
+        "the Dashboard refresh GET must still expose every mutation"
+    );
+    assert!(
+        serde_json::to_vec(&snapshot).unwrap().len() > 1_000_000,
+        "fixture did not prove the POST response was bounded against a multi-megabyte projection"
+    );
+    let (status, scoped) = serve.get_json(&format!("/v1/team-runs/{run_id}/snapshot"));
+    assert_eq!(status, 200, "scoped: {scoped}");
+    assert_eq!(scoped["team_runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(scoped["member_runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(scoped["missions"].as_array().map(Vec::len), Some(0));
+    assert!(
+        serde_json::to_vec(&scoped).unwrap().len() < 64 * 1024,
+        "Team deep-link projection must remain bounded despite a large historical store"
     );
 }
 
@@ -1313,12 +1417,10 @@ fn post_team_run_message_and_start_async() {
         Some("queued")
     );
     // 2 assignment messages + this one; the send folded one more event (6 total).
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot["team_messages"].as_array().map(Vec::len), Some(3));
     assert_eq!(
-        body["snapshot"]["team_messages"].as_array().map(Vec::len),
-        Some(3)
-    );
-    assert_eq!(
-        body["snapshot"]["team_run_events"].as_array().map(Vec::len),
+        snapshot["team_run_events"].as_array().map(Vec::len),
         Some(6)
     );
 
@@ -1391,7 +1493,8 @@ fn post_team_run_message_and_start_async() {
         body["result"]["deliveries"][0]["status"].as_str(),
         Some("acknowledged")
     );
-    let ack_event_count = body["snapshot"]["team_run_events"]
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let ack_event_count = snapshot["team_run_events"]
         .as_array()
         .expect("team run events")
         .iter()
@@ -1410,7 +1513,8 @@ fn post_team_run_message_and_start_async() {
         &serde_json::json!({"member_id": "host"}),
     );
     assert_eq!(status, 200, "body: {body}");
-    let repeated_ack_event_count = body["snapshot"]["team_run_events"]
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let repeated_ack_event_count = snapshot["team_run_events"]
         .as_array()
         .expect("team run events")
         .iter()
@@ -2445,6 +2549,112 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
 }
 
 #[test]
+fn kimi_0291_interrupt_fails_before_false_cancel_ack_or_interaction_mutation() {
+    let home = TempHome::new("team-run-kimi-0291-no-cancel");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let cancel_marker = home.base().join("kimi-cancel-marker.log");
+    let cancel_marker_value = cancel_marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.29.1"),
+            ("FAKE_KIMI_ASK", "1"),
+            ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Prove unsupported Kimi cancellation fails closed",
+            "members": [{"name": "kimi-0291", "role": "observer", "provider": "kimi", "model": "k2.5"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut waiting_snapshot = serde_json::Value::Null;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let waiting = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("waiting")
+                    && member["provider_profile"]["provider_version"].as_str() == Some("0.29.1")
+                    && member["provider_profile"]["supports_cancel"].as_bool() == Some(false)
+            });
+        if waiting {
+            waiting_snapshot = snapshot;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(
+        waiting_snapshot,
+        serde_json::Value::Null,
+        "Kimi 0.29.1 never exposed its fail-closed capability profile"
+    );
+
+    let (status, interrupted) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
+        &serde_json::json!({"reason": "must fail closed", "requested_by": "operator"}),
+    );
+    assert_eq!(status, 400, "body: {interrupted}");
+    assert!(
+        interrupted["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("does not support provider-native cancellation")),
+        "body: {interrupted}"
+    );
+
+    let (_, after) = serve.get_json("/v1/snapshot");
+    assert!(
+        after["pending_interactions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|interaction| {
+                interaction["member_run_id"].as_str() == Some(member_id.as_str())
+                    && interaction["status"].as_str() == Some("pending")
+            }),
+        "unsupported Interrupt mutated the pending interaction: {after}"
+    );
+    assert!(
+        !after["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("interrupt_requested")
+            }),
+        "unsupported Interrupt recorded a false cancel request: {after}"
+    );
+    assert!(
+        !cancel_marker.exists(),
+        "unsupported Interrupt reached ACP session/cancel"
+    );
+}
+
+#[test]
 fn post_team_run_transition_and_compatibility_lineage() {
     let home = TempHome::new("team-run-transition");
     let project_id = init_project(&home, "alpha");
@@ -2476,7 +2686,8 @@ fn post_team_run_transition_and_compatibility_lineage() {
         }),
     );
     assert_eq!(status, 200, "body: {body}");
-    let runs = body["snapshot"]["team_runs"].as_array().expect("team_runs");
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let runs = snapshot["team_runs"].as_array().expect("team_runs");
     assert_eq!(
         runs.iter()
             .find(|run| run["objective"].as_str() == Some("Compatibility attempt two"))
@@ -2519,7 +2730,8 @@ fn post_team_run_transition_and_compatibility_lineage() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["status"].as_str(), Some("cancelled"));
-    let runs = body["snapshot"]["team_runs"].as_array().expect("team_runs");
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let runs = snapshot["team_runs"].as_array().expect("team_runs");
     assert_eq!(
         runs.iter()
             .find(|run| run["id"].as_str() == Some(wave1_id.as_str()))
@@ -2527,7 +2739,7 @@ fn post_team_run_transition_and_compatibility_lineage() {
         Some("cancelled"),
         "latest-wins projection shows the cancellation: {runs:?}"
     );
-    let events = body["snapshot"]["team_run_events"]
+    let events = snapshot["team_run_events"]
         .as_array()
         .expect("team_run_events");
     assert!(
@@ -2588,7 +2800,8 @@ fn post_team_run_transition_and_compatibility_lineage() {
         body["result"]["completed_at"].as_str().is_some(),
         "completed_at stamped on attempt completion: {body:?}"
     );
-    let events = body["snapshot"]["team_run_events"]
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let events = snapshot["team_run_events"]
         .as_array()
         .expect("team_run_events");
     assert!(

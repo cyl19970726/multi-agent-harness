@@ -33,6 +33,7 @@
         "adapter_reviewed_at": { "type": ["string", "null"], "minLength": 1 },
         "compatibility_note": { "type": ["string", "null"], "minLength": 1 },
         "interaction_mode": { "type": "string", "enum": ["pause_and_resume", "end_round_and_follow_up", "unsupported"] },
+        "ordinary_message_boundary": { "type": "string", "enum": ["in_turn", "next_round", "next_round_batched", "unknown"] },
         "plan_mode": { "type": "string", "enum": ["native", "emulated", "unsupported", "unknown"] },
         "goal_mode": { "type": "string", "enum": ["native", "emulated", "unsupported", "unknown"] },
         "tool_event_fidelity": { "type": "string", "enum": ["none", "summary", "structured"] },

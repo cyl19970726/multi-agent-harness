@@ -20,6 +20,7 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile=false
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm check
   rust:
     runs-on: ubuntu-latest
