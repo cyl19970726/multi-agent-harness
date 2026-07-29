@@ -94,6 +94,35 @@ not Host acceptance; `inbox --all` visibility is not delivery; and an API
 `interrupt_requested` result must be paired with the provider-native terminal
 event before it is accepted as an interrupt.
 
+### Post-clippy representation canary
+
+Repair Wave `wave-1785351218971-p10701-0` removed the final
+`clippy::large-enum-variant` release blocker by boxing only the
+`CompanyActor::Agent(StandingAgent)` payload. It did not add an allow-list
+exception or change the serialized Standing Agent contract. Focused Store,
+Company execution-link, CLI, Dashboard, documentation-governance and Plugin
+parity checks passed, followed by the complete CLI suite, `pnpm check`,
+`acceptance:mission-wave`, and `cargo clippy --all-targets -- -D warnings`.
+
+A fresh read-only three-provider canary then ran on integration HEAD
+`d4dc461554ef18a2b4c7fca9e02ef42e3634aa2b`:
+
+| TeamRun / MemberRun | Provider mode | Native session |
+| --- | --- | --- |
+| `team-run-1785351412922-p21722-0` / `member-run-1785351412922-p21722-1` | Codex `codex_app_server` | `019faf3c-f5ba-7d80-aeb9-8ede919f907f` |
+| `team-run-1785351412922-p21722-0` / `member-run-1785351412922-p21722-2` | Claude `claude_agent_sdk` | `d9dbb6b0-0b58-489f-b1d0-3d3325a4ef16` |
+| `team-run-1785351412922-p21722-0` / `member-run-1785351412922-p21722-3` | Kimi `kimi_acp` | `session_86a1fdf0-565c-4a70-b3cd-3202338733a2` |
+
+Each Member sent correlated Host progress, a Peer message, and a terminal
+Handoff. Terminal provider receipts proved the Peer ring in all directions;
+store visibility alone was not counted as delivery. The linked
+`agent-wcw-development` actor retained its `execution_agent_member_ref`, role,
+capabilities, permissions, membership and compact Organization projection.
+The projection contained exactly one Standing Assignment, three distinct
+addressed messages and no identity conflict. The Host acknowledged all eight
+Host-bound messages, explicitly closed each idle runtime, observed all three
+MemberRuns reach `stopped`, and only then completed the TeamRun.
+
 ## 2026-07-28 persistent lifecycle and Workspace addendum
 
 Mission `mission-1785227648994-p85779-0` revalidated the current persistent
