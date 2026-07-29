@@ -2062,7 +2062,7 @@ fn company_context_json(ctx: &company_store::CompanyContext, current: &str) -> s
 fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions",
+        "company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution",
     )?;
     match args[0].as_str() {
         "actor" => company_org_actor_command(store, &args[1..]),
@@ -2076,8 +2076,10 @@ fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "add-membership" => company_org_add_membership_command(store, &args[1..]),
         "transition-actor" => company_org_transition_actor_command(store, &args[1..]),
         "update-permissions" => company_org_update_permissions_command(store, &args[1..]),
+        "link-execution" => company_org_link_execution_command(store, &args[1..]),
+        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions"
+            "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution"
         ))),
     }
 }
@@ -2393,6 +2395,181 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     )
 }
 
+/// Require an active Human `company_os.admin` authority without writing a row.
+///
+/// The relation commands are idempotent, so some invocations append nothing.
+/// Those still have to prove authority up front: otherwise an unknown or
+/// non-admin `--authority` would appear to succeed whenever the relation
+/// already had the requested shape.
+fn company_org_require_admin_authority(store: &HarnessStore, authority: &str) -> CliResult<()> {
+    let authority_ref = company_actor_ref_json("human", authority)?;
+    company_os_api::authorize_administrative_actor_write(store, &authority_ref)
+        .map_err(CliError::Usage)
+}
+
+/// Open the Execution Space that owns AgentMember truth for a Company OS link.
+///
+/// `harness company ...` resolves its store from the Company Store registry and
+/// returns from [`resolve_store`] *before* the global `--space` selector is
+/// consumed, so a Company CLI command never holds an execution store. Per ADR
+/// 0042 the Company Store does not own AgentMember truth and a Project Binding
+/// only describes cwd, so the relation command names its Execution Space
+/// explicitly and this function is the single read-only bridge across the
+/// boundary. It deliberately has no fallback to the active space or to a
+/// Project Binding: a link validated against an unnamed store is not governed.
+fn company_execution_space_store(
+    space_id: &str,
+) -> CliResult<(harness_core::ExecutionSpace, HarnessStore)> {
+    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
+    let space = execution_space::context_for_id(&harness_home, space_id)
+        .map_err(execution_space_err)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "unknown execution space: {space_id}; list them with `harness space list`"
+            ))
+        })?;
+    let store = HarnessStore::new(space.store_root.clone());
+    Ok((space, store))
+}
+
+/// Link an EXISTING StandingAgent to an EXISTING AgentMember.
+///
+/// Both ids are explicit and neither is ever inferred from the other: equal ids
+/// must be typed twice. The StandingAgent is read latest-row-wins and re-appended
+/// with only `execution_agent_member_ref` and `updated_at` changed, so every other
+/// actor field round-trips. The write goes through the administrative governance
+/// envelope, never through a raw JSONL edit.
+fn company_org_link_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let actor_id = required(args, "--actor")?;
+    let agent_member_id = required(args, "--agent-member")?;
+    let space_id = required(args, "--execution-space")?;
+    let replace = has_flag(args, "--replace");
+    // Authorize every invocation, including the ones that turn out to change
+    // nothing: an idempotent no-op must not become an authorization bypass.
+    company_org_require_admin_authority(store, &authority)?;
+
+    let (space, execution_store) = company_execution_space_store(&space_id)?;
+    let members = latest_members(&execution_store)?;
+    let member = members.get(&agent_member_id).ok_or_else(|| {
+        CliError::Usage(format!(
+            "AgentMember not found in execution space {}: {agent_member_id} (store {})",
+            space.id,
+            space.store_root.display()
+        ))
+    })?;
+
+    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
+    let previous = actor["actor"]["execution_agent_member_ref"]
+        .as_str()
+        .map(str::to_string);
+    let validated_against = serde_json::json!({
+        "execution_space_id": space.id,
+        "execution_store_root": space.store_root.to_string_lossy(),
+        "agent_member_id": member.id,
+        "agent_member_name": member.name,
+        "agent_member_provider": member.provider,
+    });
+    if previous.as_deref() == Some(agent_member_id.as_str()) {
+        // Idempotent: a re-run of the same explicit pair appends no row.
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "command": "harness company org actor link-execution",
+            "result": {
+                "relation": "standing_agent_execution_member",
+                "changed": false,
+                "reason": "already_linked",
+                "standing_agent_id": actor_id,
+                "agent_member_id": agent_member_id,
+                "validated_against": validated_against,
+                "boundaries": company_org_boundaries()
+            }
+        }));
+    }
+    if let Some(previous_ref) = previous.as_deref() {
+        if !replace {
+            return Err(CliError::Usage(format!(
+                "StandingAgent {actor_id} already links execution AgentMember {previous_ref}; pass --replace to repoint it to {agent_member_id}"
+            )));
+        }
+    }
+    actor["actor"]["execution_agent_member_ref"] = serde_json::json!(agent_member_id);
+    actor["actor"]["updated_at"] = serde_json::json!(now_string());
+    company_org_admin_append_detail(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_standing_agent_execution_link_append",
+        serde_json::json!({
+            "relation": "standing_agent_execution_member",
+            "changed": true,
+            "standing_agent_id": actor_id,
+            "agent_member_id": agent_member_id,
+            "previous_agent_member_ref": previous,
+            "validated_against": validated_against,
+            "inference": "none_explicit_ids_only",
+            "execution_space_persistence": "write_time_assertion_not_persisted_on_standing_agent",
+        }),
+    )
+}
+
+/// Unlink an EXISTING StandingAgent from its execution AgentMember.
+///
+/// No Execution Space is required because clearing a reference validates
+/// nothing in the execution store. `--expect-agent-member` is an optional
+/// optimistic guard for scripted relink flows.
+fn company_org_unlink_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
+    let actor_id = required(args, "--actor")?;
+    let expected = value(args, "--expect-agent-member");
+    // Authorize every invocation, including the ones that turn out to change
+    // nothing: an idempotent no-op must not become an authorization bypass.
+    company_org_require_admin_authority(store, &authority)?;
+
+    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
+    let previous = actor["actor"]["execution_agent_member_ref"]
+        .as_str()
+        .map(str::to_string);
+    let Some(previous_ref) = previous else {
+        // Idempotent: unlinking an unlinked Standing Agent appends no row.
+        return print_json(&serde_json::json!({
+            "ok": true,
+            "command": "harness company org actor unlink-execution",
+            "result": {
+                "relation": "standing_agent_execution_member",
+                "changed": false,
+                "reason": "already_unlinked",
+                "standing_agent_id": actor_id,
+                "boundaries": company_org_boundaries()
+            }
+        }));
+    };
+    if let Some(expected) = expected.as_deref() {
+        if expected != previous_ref {
+            return Err(CliError::Usage(format!(
+                "StandingAgent {actor_id} links execution AgentMember {previous_ref}, not {expected}; refusing to unlink"
+            )));
+        }
+    }
+    actor["actor"]["execution_agent_member_ref"] = serde_json::Value::Null;
+    actor["actor"]["updated_at"] = serde_json::json!(now_string());
+    company_org_admin_append_detail(
+        store,
+        "/v1/company-os/actors",
+        &authority,
+        actor,
+        "administrative_standing_agent_execution_unlink_append",
+        serde_json::json!({
+            "relation": "standing_agent_execution_member",
+            "changed": true,
+            "standing_agent_id": actor_id,
+            "agent_member_id": serde_json::Value::Null,
+            "previous_agent_member_ref": previous_ref,
+        }),
+    )
+}
+
 fn company_org_admin_append(
     store: &HarnessStore,
     path: &str,
@@ -2400,20 +2577,44 @@ fn company_org_admin_append(
     record: serde_json::Value,
     write_path: &str,
 ) -> CliResult<()> {
+    company_org_admin_append_detail(
+        store,
+        path,
+        authority,
+        record,
+        write_path,
+        serde_json::Value::Null,
+    )
+}
+
+fn company_org_admin_append_detail(
+    store: &HarnessStore,
+    path: &str,
+    authority: &str,
+    record: serde_json::Value,
+    write_path: &str,
+    detail: serde_json::Value,
+) -> CliResult<()> {
     let result = dispatch_company_docs_admin_append_value(
         store,
         path,
         company_actor_ref_json("human", authority)?,
         record,
     )?;
+    let mut payload = serde_json::json!({
+        "record": result,
+        "write_path": write_path,
+        "boundaries": company_org_boundaries()
+    });
+    if let (Some(target), Some(detail)) = (payload.as_object_mut(), detail.as_object()) {
+        for (key, value) in detail {
+            target.insert(key.clone(), value.clone());
+        }
+    }
     print_json(&serde_json::json!({
         "ok": true,
         "command": "harness company org",
-        "result": {
-            "record": result,
-            "write_path": write_path,
-            "boundaries": company_org_boundaries()
-        }
+        "result": payload
     }))
 }
 
@@ -3165,7 +3366,7 @@ fn company_work_milestone_close_command(store: &HarnessStore, args: &[String]) -
 fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "company org actor list|show|create-human|create-agent|update-status",
+        "company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -3221,8 +3422,10 @@ fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult
             }
             company_org_transition_actor_command(store, &forwarded)
         }
+        "link-execution" => company_org_link_execution_command(store, &args[1..]),
+        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status"
+            "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution"
         ))),
     }
 }
@@ -28465,7 +28668,9 @@ fn print_help() {
   company finance commitment list|show|propose|transition
   company finance payment list|show|record
   company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions
-  company org actor list|show|create-human|create-agent|update-status
+  company org link-execution --authority <human> --actor <standing-agent> --agent-member <id> --execution-space <id> [--replace]
+  company org unlink-execution --authority <human> --actor <standing-agent> [--expect-agent-member <id>]
+  company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution
   company org unit list|show|create|update-status
   company org membership list|assign|update-status
   company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]

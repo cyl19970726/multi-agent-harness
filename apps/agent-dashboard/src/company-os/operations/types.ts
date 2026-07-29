@@ -104,6 +104,23 @@ export interface StandingExecutionAssignment {
   };
 }
 
+/**
+ * A Company OS integrity signal, not an execution record: two or more
+ * StandingAgents declared the same execution_agent_member_ref, so the
+ * affected participation is withheld from standingAssignments until a human
+ * unlinks one of the competing actors.
+ */
+export interface StandingLinkConflict {
+  id: string;
+  kind: string;
+  severity: string;
+  agentMemberId: string;
+  standingAgentIds: string[];
+  affectedMemberRunIds: string[];
+  detail: string;
+  resolutionHint?: string;
+}
+
 export type WorkItemTransitionStatus = "in_progress" | "blocked" | "in_review" | "completed";
 
 export interface WorkItemTransitionContext {
@@ -225,6 +242,8 @@ export interface TrademarkOperationsProjection {
   workItems?: WorkItemView[];
   assignments?: AssignmentView[];
   standingAssignments?: StandingExecutionAssignment[];
+  /** Empty/absent means no conflict; a healthy snapshot renders nothing extra. */
+  standingAssignmentConflicts?: StandingLinkConflict[];
   commitment: FinancialRecordView;
   approval: ApprovalView;
   evidence: RelatedLink[];

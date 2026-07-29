@@ -119,6 +119,49 @@ async function main() {
   "adapter preserves the explicit Company-owned StandingAgent-to-AgentMember link");
   check(pages.includes("actor.executionAgentMemberRef") && !pages.includes("assignment.agentMemberId === actor.id"),
     "Standing Agent focus never binds execution by same-string actor id");
+  check((canonicalProjection.standingAssignmentConflicts ?? []).length === 0, "a healthy snapshot with no standing_assignment_conflicts adapts to an empty list");
+  const conflictProjection = structuredClone(fixture);
+  conflictProjection.standing_assignment_conflicts = [
+    {
+      id: "standing-link-conflict:member-shared",
+      kind: "duplicate_execution_agent_member_ref",
+      severity: "error",
+      agent_member_id: "member-shared",
+      standing_agent_ids: ["standing-dup-a", "standing-dup-b"],
+      affected_member_run_ids: ["run-shared"],
+      detail: "duplicate StandingAgent execution_agent_member_ref member-shared: standing-dup-a, standing-dup-b; relation must be one-to-one",
+      resolution_hint: "harness company org actor unlink-execution --authority <human-id> --actor <one of: standing-dup-a, standing-dup-b>",
+    },
+    { id: "", kind: "duplicate_execution_agent_member_ref", severity: "error", agent_member_id: "member-missing-id", standing_agent_ids: ["standing-x"] },
+    { id: "standing-link-conflict:no-agents", kind: "duplicate_execution_agent_member_ref", severity: "error", agent_member_id: "member-orphan", standing_agent_ids: [] },
+  ];
+  const conflictAdapted = adapterModule.adaptTrademarkOperationsProjection(conflictProjection);
+  check(conflictAdapted.standingAssignmentConflicts?.length === 1
+    && conflictAdapted.standingAssignmentConflicts[0].agentMemberId === "member-shared"
+    && conflictAdapted.standingAssignmentConflicts[0].standingAgentIds.join(",") === "standing-dup-a,standing-dup-b"
+    && conflictAdapted.standingAssignmentConflicts[0].affectedMemberRunIds.join(",") === "run-shared"
+    && conflictAdapted.standingAssignmentConflicts[0].resolutionHint?.includes("unlink-execution"),
+  "adapter parses a duplicate execution_agent_member_ref conflict naming both competing Standing Agents and drops incomplete conflict records");
+  const manyConflictsProjection = structuredClone(fixture);
+  manyConflictsProjection.standing_assignment_conflicts = Array.from({ length: 8 }, (_unused, index) => ({
+    id: `standing-link-conflict:member-${index}`,
+    kind: "duplicate_execution_agent_member_ref",
+    severity: "error",
+    agent_member_id: `member-${index}`,
+    standing_agent_ids: [`standing-${index}-a`, `standing-${index}-b`],
+    affected_member_run_ids: [`run-${index}`],
+    detail: `duplicate link ${index}`,
+    resolution_hint: `resolve ${index}`,
+  }));
+  const manyConflictsAdapted = adapterModule.adaptTrademarkOperationsProjection(manyConflictsProjection);
+  check(manyConflictsAdapted.standingAssignmentConflicts?.length === 8, "adapter preserves every conflict record; bounding rendered entries is a page concern, not a data-loss concern");
+  check(pages.includes("const STANDING_LINK_CONFLICT_VISIBLE_CAP = 5;")
+    && pages.includes("conflicts.slice(0, STANDING_LINK_CONFLICT_VISIBLE_CAP)")
+    && pages.includes("{hiddenCount} more"),
+  "Standing Agent link conflict banner caps rendered entries at 5 and shows a '+N more' indicator instead of rendering every conflict");
+  check(pages.includes("if (conflicts.length === 0) return null;"), "Standing Agent link conflict banner renders nothing extra on a healthy, conflict-free snapshot");
+  check(pages.includes("<StandingLinkConflictBanner conflicts={standingLinkConflicts} />") && pages.includes("<StandingLinkConflictBanner conflicts={actorLinkConflicts} />"),
+    "both the Organization overview and the Standing Agent focus surface the withheld-participation conflict banner");
   const brandUnit = canonicalProjection.organization.units.find((unit) => unit.id === "org-brand-ip");
   check(brandUnit?.actorIds.length === 4 && canonicalProjection.governanceProposal.proposedById === "actor-agent-document-architecture", "adapter retains the actual Brand & IP membership branch and governance proposal author");
   check(brandUnit?.agentLeadActorId === "actor-agent-ip-lead" && pages.includes("leadUnit.actorIds") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "Lead direct reports come from the governed organization unit instead of actor ordering");

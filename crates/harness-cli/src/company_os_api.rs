@@ -210,7 +210,10 @@ pub fn snapshot_with_execution(
     execution_store: &HarnessStore,
 ) -> Result<Value, StoreError> {
     let actors = normalized_actors(store.latest_actors()?);
-    let standing_assignments = standing_assignment_projection(store, execution_store)?;
+    let StandingAssignmentProjection {
+        assignments: standing_assignments,
+        conflicts: standing_assignment_conflicts,
+    } = standing_assignment_projection(store, execution_store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -250,6 +253,7 @@ pub fn snapshot_with_execution(
         "work": store.work_projection(&WorkQuery::default())?,
         "assignments": store.latest_assignments()?,
         "standing_assignments": standing_assignments,
+        "standing_assignment_conflicts": standing_assignment_conflicts,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
         "commitments": commitments,
@@ -280,23 +284,47 @@ pub fn snapshot_with_execution(
     Ok(projection)
 }
 
+/// Standing Agent participation join plus any locally degraded link conflicts.
+///
+/// A duplicate link is a data defect in one Company OS row pair. It must not
+/// take down the whole Dashboard snapshot, so it is reported as a visible
+/// conflict entry instead of an error.
+pub(crate) struct StandingAssignmentProjection {
+    pub(crate) assignments: Vec<Value>,
+    pub(crate) conflicts: Vec<Value>,
+}
+
 /// Read-only join from durable Organization identity to explicitly linked
 /// Agent Team participation. It is intentionally rebuilt from latest rows and
 /// never infers identity from display names, roles, providers, or timestamps.
+///
+/// The write path (`append_standing_agent`) still rejects a new duplicate
+/// `execution_agent_member_ref`. This read path additionally tolerates a store
+/// that already contains one: the affected `agent_member_id` is withheld from
+/// the join and surfaced in `conflicts`, while every other Standing Agent still
+/// projects normally.
 fn standing_assignment_projection(
     company_store: &HarnessStore,
     execution_store: &HarnessStore,
-) -> Result<Vec<Value>, StoreError> {
-    let mut standing_agent_links = BTreeMap::new();
+) -> Result<StandingAssignmentProjection, StoreError> {
+    // Collect every claimant per member id first so a duplicate is scoped to
+    // the ids that actually collide instead of aborting the projection.
+    let mut claims: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for agent in company_store.latest_standing_agents()? {
         let Some(member_id) = agent.execution_agent_member_ref else {
             continue;
         };
-        if let Some(existing) = standing_agent_links.insert(member_id.clone(), agent.id.clone()) {
-            return Err(StoreError::Conflict(format!(
-                "duplicate StandingAgent execution_agent_member_ref {member_id}: {existing} and {}; relation must be one-to-one",
-                agent.id
-            )));
+        claims.entry(member_id).or_default().push(agent.id);
+    }
+    let mut standing_agent_links = BTreeMap::new();
+    let mut conflicted_links: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (member_id, mut standing_agent_ids) in claims {
+        if standing_agent_ids.len() == 1 {
+            standing_agent_links.insert(member_id, standing_agent_ids.remove(0));
+        } else {
+            // Ambiguous ownership: refuse to guess a winner.
+            standing_agent_ids.sort();
+            conflicted_links.insert(member_id, standing_agent_ids);
         }
     }
     let member_runs =
@@ -322,10 +350,20 @@ fn standing_assignment_projection(
     let member_actions = execution_store.member_actions()?;
 
     let mut projection = Vec::new();
+    let mut affected_member_runs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for member in member_runs.values() {
         let Some(agent_member_id) = member.agent_member_id.as_deref() else {
             continue;
         };
+        if conflicted_links.contains_key(agent_member_id) {
+            // Withheld from the join, but never silently dropped: the member run
+            // is named in the conflict entry so the loss stays visible.
+            affected_member_runs
+                .entry(agent_member_id.to_string())
+                .or_default()
+                .push(member.id.clone());
+            continue;
+        }
         let Some(standing_agent_id) = standing_agent_links.get(agent_member_id) else {
             continue;
         };
@@ -435,7 +473,33 @@ fn standing_assignment_projection(
             .cmp(&right["assigned_at"].as_str())
             .then(left["id"].as_str().cmp(&right["id"].as_str()))
     });
-    Ok(projection)
+    let conflicts = conflicted_links
+        .into_iter()
+        .map(|(member_id, standing_agent_ids)| {
+            let joined = standing_agent_ids.join(", ");
+            json!({
+                "id": format!("standing-link-conflict:{member_id}"),
+                "kind": "duplicate_execution_agent_member_ref",
+                "severity": "error",
+                "agent_member_id": member_id,
+                "standing_agent_ids": standing_agent_ids,
+                "affected_member_run_ids": affected_member_runs
+                    .get(&member_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                "detail": format!(
+                    "duplicate StandingAgent execution_agent_member_ref {member_id}: {joined}; relation must be one-to-one"
+                ),
+                "resolution_hint": format!(
+                    "harness company org actor unlink-execution --authority <human-id> --actor <one of: {joined}>"
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(StandingAssignmentProjection {
+        assignments: projection,
+        conflicts,
+    })
 }
 
 fn projection_revision(value: &Value) -> Result<String, StoreError> {
@@ -536,7 +600,9 @@ mod projection_tests {
             .unwrap();
             store.append_member_run(&member).unwrap();
         }
-        let initial = standing_assignment_projection(&store, &store).unwrap();
+        let initial = standing_assignment_projection(&store, &store)
+            .unwrap()
+            .assignments;
         assert_eq!(initial.len(), 1, "same-id collision must not bind");
         assert_eq!(initial[0]["source_kind"], "agent_team_participation");
         assert_eq!(initial[0]["standing_agent_id"], "standing-linked");
@@ -551,7 +617,8 @@ mod projection_tests {
             .unwrap();
             store.append_team_message(&message).unwrap();
         }
-        let assigned = standing_assignment_projection(&store, &store).unwrap();
+        let projected = standing_assignment_projection(&store, &store).unwrap();
+        let assigned = projected.assignments;
         assert_eq!(assigned.len(), 2);
         assert_eq!(assigned[0]["source_ref"], "assignment-1");
         assert_eq!(assigned[1]["source_ref"], "assignment-2");
@@ -559,6 +626,119 @@ mod projection_tests {
         assert_eq!(
             assigned[1]["evidence_refs"],
             json!(["evidence-assignment-1", "evidence-assignment-2"])
+        );
+        assert!(
+            projected.conflicts.is_empty(),
+            "a healthy store must report an empty conflict list"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Test-only: append a row the governed write path refuses, so the read
+    /// path can be exercised against a store that already carries the defect
+    /// (legacy import, hand edit, or a racing writer).
+    fn force_duplicate_link_row(store: &HarnessStore, agent: &StandingAgent) {
+        use std::io::Write as _;
+
+        let path = store.root().join("company_os_standing_agents.jsonl");
+        let mut ledger = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open standing agent ledger");
+        writeln!(ledger, "{}", serde_json::to_string(agent).unwrap())
+            .expect("append duplicate standing agent row");
+    }
+
+    #[test]
+    fn duplicate_execution_link_degrades_locally_instead_of_failing_the_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "company-duplicate-link-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().unwrap();
+        // The write path refuses to create this state, so reproduce the defect
+        // the way a real store reaches it: an already-persisted duplicate pair.
+        store
+            .append_standing_agent(&standing("standing-healthy", Some("member-healthy")))
+            .unwrap();
+        store
+            .append_standing_agent(&standing("standing-dup-a", Some("member-shared")))
+            .unwrap();
+        let rejected =
+            store.append_standing_agent(&standing("standing-dup-b", Some("member-shared")));
+        assert!(
+            rejected.is_err(),
+            "write path must still reject a new duplicate link"
+        );
+        force_duplicate_link_row(&store, &standing("standing-dup-b", Some("member-shared")));
+
+        let run: AgentTeamRun = serde_json::from_value(json!({
+            "id": "run", "host_surface": "test", "objective": "degrade",
+            "status": "running", "member_run_ids": ["run-healthy", "run-shared"],
+            "created_at": "1", "updated_at": "1"
+        }))
+        .unwrap();
+        store.append_team_run(&run).unwrap();
+        for (id, agent_member_id) in [
+            ("run-healthy", "member-healthy"),
+            ("run-shared", "member-shared"),
+        ] {
+            let member: MemberRun = serde_json::from_value(json!({
+                "id": id, "team_run_id": "run", "agent_member_id": agent_member_id,
+                "name": id, "role": "builder", "provider": "codex",
+                "status": "idle", "owned_paths": [], "started_at": "1"
+            }))
+            .unwrap();
+            store.append_member_run(&member).unwrap();
+        }
+
+        let projected = standing_assignment_projection(&store, &store)
+            .expect("duplicate link must not fail the projection");
+        assert_eq!(
+            projected.assignments.len(),
+            1,
+            "the healthy Standing Agent must still project"
+        );
+        assert_eq!(
+            projected.assignments[0]["standing_agent_id"],
+            "standing-healthy"
+        );
+        assert_eq!(projected.conflicts.len(), 1);
+        let conflict = &projected.conflicts[0];
+        assert_eq!(conflict["kind"], "duplicate_execution_agent_member_ref");
+        assert_eq!(conflict["agent_member_id"], "member-shared");
+        assert_eq!(
+            conflict["standing_agent_ids"],
+            json!(["standing-dup-a", "standing-dup-b"]),
+            "both claimants must be named; no winner is guessed"
+        );
+        assert_eq!(
+            conflict["affected_member_run_ids"],
+            json!(["run-shared"]),
+            "withheld participation must stay visible"
+        );
+
+        // The whole Company OS snapshot must still succeed.
+        let snapshot = snapshot_with_execution(&store, &store)
+            .expect("snapshot must survive a duplicate link");
+        assert_eq!(
+            snapshot["standing_assignment_conflicts"],
+            json!(projected.conflicts)
+        );
+        assert_eq!(
+            snapshot["standing_assignments"],
+            json!(projected.assignments)
+        );
+        let response = handle_get(&store, Some(&store), "/v1/company-os/snapshot").unwrap();
+        assert_eq!(
+            response.status, "200 OK",
+            "a duplicate link must not 409 the entire snapshot endpoint"
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -636,6 +816,36 @@ enum AppendMode {
 }
 
 const COMPANY_OS_ADMIN_PERMISSION: &str = "company_os.admin";
+
+/// Prove that `authority` may perform an administrative Company OS actor write,
+/// without appending anything.
+///
+/// A relation command that finds nothing to change must still authorize:
+/// "no row was written" is a valid success only for an operator who was
+/// entitled to attempt the write. Returns the same failure detail a rejected
+/// append would surface, so callers report one consistent reason.
+pub fn authorize_administrative_actor_write(
+    store: &HarnessStore,
+    authority: &Value,
+) -> Result<(), String> {
+    administrative_actor_write_authority(store, authority).map_err(|error| error.detail)
+}
+
+fn administrative_actor_write_authority(
+    store: &HarnessStore,
+    authority: &Value,
+) -> Result<(), ApiError> {
+    let authority: ActorRef = serde_json::from_value(authority.clone())
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if authority.actor_type != ActorType::Human {
+        return Err(ApiError::forbidden(
+            "sensitive append authority must be a Human",
+        ));
+    }
+    require_active_actor(store, &authority)?;
+    require_permission(store, &authority, COMPANY_OS_ADMIN_PERMISSION)?;
+    Ok(())
+}
 
 fn authorize_direct_append<'a>(
     store: &HarnessStore,

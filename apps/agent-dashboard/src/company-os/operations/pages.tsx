@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, FileText, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, Send, ShieldCheck, Sparkles, Tag, Users, Wrench } from "lucide-react";
+import { AlertTriangle, Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, FileText, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, Send, ShieldCheck, Sparkles, Tag, Users, Wrench } from "lucide-react";
 
 import {
   ActorPill, ContextRail, DecisionNotice,
@@ -8,7 +8,7 @@ import {
 import { prototypeTrademarkOperationsProjection } from "./fixture";
 import { buildApprovalDecisionCommand } from "./approvalAction";
 import { buildWorkItemTransitionCommand } from "./workItemAction";
-import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, RelatedLink, TrademarkOperationsProjection, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
+import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, RelatedLink, StandingLinkConflict, TrademarkOperationsProjection, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
 import { ActorAvatar, ObjectEmblem } from "../visuals";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail as WorkbenchContextRail } from "@/components/workbench/context/ContextRail";
@@ -67,8 +67,38 @@ function displayTimestamp(value: string): string {
 
 const commandUnavailable = "No approved action transport is connected to this read-only projection.";
 
+/** Bounds how many conflict entries render inline so a pathological store cannot blow up the page. */
+const STANDING_LINK_CONFLICT_VISIBLE_CAP = 5;
+
+/**
+ * Withheld-participation warning: two or more StandingAgents declared the
+ * same execution_agent_member_ref, so the Company OS snapshot withholds that
+ * agent_member_id from standingAssignments rather than guessing an owner. An
+ * empty/absent list renders nothing so the healthy dashboard is unchanged.
+ */
+function StandingLinkConflictBanner({ conflicts }: { conflicts: StandingLinkConflict[] }) {
+  if (conflicts.length === 0) return null;
+  const visible = conflicts.slice(0, STANDING_LINK_CONFLICT_VISIBLE_CAP);
+  const hiddenCount = conflicts.length - visible.length;
+  return (
+    <div role="alert" data-standing-link-conflicts data-standing-link-conflict-count={conflicts.length} className="mb-4 space-y-3 rounded-lg border border-status-bad/30 bg-status-bad/[0.05] p-4">
+      <div className="flex items-center gap-2 text-sm font-semibold text-status-bad"><AlertTriangle className="size-4 shrink-0" />Standing Agent link conflicts ({conflicts.length})</div>
+      <p className="text-xs leading-5 text-muted-foreground">These execution_agent_member_ref links are claimed by more than one Standing Agent. Affected participation is withheld from Agent Team participation until a human resolves the conflict.</p>
+      <ul className="space-y-2">
+        {visible.map((conflict) => <li key={conflict.id} data-company-os-ref={conflict.id} className="rounded-md border border-status-bad/20 bg-background/70 p-3 text-xs leading-5">
+          <p><span className="font-medium text-foreground">{conflict.agentMemberId}</span> is claimed by <span className="font-medium text-foreground">{conflict.standingAgentIds.join(", ")}</span></p>
+          {conflict.affectedMemberRunIds.length > 0 && <p className="mt-1 text-muted-foreground">Affected MemberRuns: {conflict.affectedMemberRunIds.join(", ")}</p>}
+          {conflict.resolutionHint && <code className="mt-1 block break-words font-mono text-[10px] text-muted-foreground">{conflict.resolutionHint}</code>}
+        </li>)}
+      </ul>
+      {hiddenCount > 0 && <p className="text-xs font-medium text-status-bad">+{hiddenCount} more</p>}
+    </div>
+  );
+}
+
 export function OrganizationPage({ data, onSelectionChange }: OperationsPageProps & { onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const view = projection(data);
+  const standingLinkConflicts = view.standingAssignmentConflicts ?? [];
   const brandUnit = view.organization.units.find((unit) => unit.id === view.organization.brandUnit.id) ?? {
     ...view.organization.brandUnit, actorIds: [],
   };
@@ -85,6 +115,7 @@ export function OrganizationPage({ data, onSelectionChange }: OperationsPageProp
   const secondaryUnits = view.organization.units.filter((unit) => unit.id !== view.organization.company.id && unit.id !== brandUnit.id);
 
   return <PageFrame dense eyebrow="Organization" title="Company OS" description="Responsibility, authority, and capability across Humans, Standing Agents, and external collaborators." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Company lead context"><PolicyNote>Organization changes are proposed and reviewed. This view cannot grant authority, legal access, or financial permissions.</PolicyNote>{humanOwner && <Panel title="Ultimate authority"><ActorPill actor={humanOwner} /></Panel>}<Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Standing Agents may own and coordinate WorkItems within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel><LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} /></ContextRail>}>
+    <StandingLinkConflictBanner conflicts={standingLinkConflicts} />
     <section aria-label="Organization tree" className="relative overflow-hidden rounded-2xl border border-border bg-card/70 p-4 shadow-sm sm:p-6" data-company-os-ref={view.organization.company.id}>
       <div className="pointer-events-none absolute -left-24 -top-24 size-72 rounded-full border border-primary/15" /><div className="pointer-events-none absolute -left-10 -top-10 size-44 rounded-full border border-primary/20" />
       <div className="relative mx-auto max-w-5xl">
@@ -182,6 +213,7 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
     && Boolean(assignment.correlationId)
     && !["completed", "failed", "stopped"].includes(assignment.status));
   const assignedWork = assignedItems.length > 0 || activeExecutionAssignments.length > 0;
+  const actorLinkConflicts = (view.standingAssignmentConflicts ?? []).filter((conflict) => conflict.standingAgentIds.includes(actor.id));
   const maintainedDocuments = (actor.maintainedDocumentRefs ?? []).map((recordRef) => {
     if (recordRef === view.sourceDocument.id) return view.sourceDocument;
     if (recordRef === view.contentPlanDocument.id) return view.contentPlanDocument;
@@ -289,6 +321,7 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
       composer={<form aria-label="Message Standing Agent" className="mx-auto flex w-full max-w-[1080px] items-end gap-2"><div className="min-w-0 flex-1"><label className="sr-only" htmlFor="standing-agent-message">Message {actor.name}</label><textarea id="standing-agent-message" disabled rows={2} placeholder={`Message ${actor.name}…`} aria-describedby="standing-agent-message-reason" className="min-h-14 w-full resize-none rounded-xl border border-input bg-muted/65 px-3 py-2 text-sm text-muted-foreground" /><p id="standing-agent-message-reason" className="mt-1 text-[10px] text-muted-foreground">{commandUnavailable}</p></div><button type="submit" disabled title={commandUnavailable} aria-label={`Send message. Unavailable: ${commandUnavailable}`} className="grid size-11 shrink-0 cursor-not-allowed place-items-center rounded-xl bg-muted text-muted-foreground"><Send className="size-4" /></button></form>}
     >
       <div className="mx-auto w-full max-w-[1080px] space-y-5 px-5 py-6 sm:px-8">
+        <StandingLinkConflictBanner conflicts={actorLinkConflicts} />
         <section aria-labelledby="standing-agent-current-work" className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm">
           <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><BriefcaseBusiness className="size-4" /></span><div><h2 id="standing-agent-current-work" className="text-lg font-semibold tracking-tight">Current work</h2><p className="text-xs text-muted-foreground">Native WorkItems linked through accountable actor references</p></div></div>
           {assignedWork ? <div className="mt-4 space-y-3">{activeExecutionAssignments.map((assignment) => <button key={assignment.id} type="button" onClick={onSelectionChange ? () => onSelectionChange({ surface: "team", teamId: assignment.teamRunId, memberRunId: assignment.memberRunId, missionId: assignment.missionId, waveId: assignment.waveId }) : undefined} className="block w-full rounded-xl border border-status-good/25 bg-status-good/[0.035] p-4 text-left transition hover:border-status-good/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="text-[10px] font-semibold uppercase tracking-wider text-status-good">Agent Team · {humanReadable(assignment.status, assignment.status)}</span><span className="mt-1 block font-semibold">{assignment.title}</span><span className="mt-1 block text-xs text-muted-foreground">{assignment.role} · correlation {assignment.correlationId!}</span></button>)}{assignedItems.map((workItem) => <div key={workItem.id} className="rounded-xl border border-primary/20 bg-primary/[0.035] p-4" data-company-os-ref={workItem.id}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-wider text-primary">{workItem.status.replace(/_/g, " ")}</p>{onSelectionChange ? <button type="button" onClick={() => onSelectionChange({ surface: "work", workItemId: workItem.id })} className="mt-1 text-left font-semibold underline-offset-4 hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{workItem.title}</button> : <h3 className="mt-1 font-semibold">{workItem.title}</h3>}{workItem.outcomeSummary && <p className="mt-1 text-xs leading-5 text-muted-foreground">{workItem.outcomeSummary}</p>}</div><StatusTag status={workItem.status} /></div><div className="mt-3"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Source Document" onClick={onSelectionChange ? () => onSelectionChange({ surface: "docs", documentId: workItem.sourceDocument.id }) : undefined} /></div></div>)}</div> : <p className="mt-4 rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No active WorkItem or Agent Team assignment is linked. Completed participation remains in Activity and the context rail.</p>}

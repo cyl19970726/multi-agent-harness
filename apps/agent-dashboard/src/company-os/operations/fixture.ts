@@ -9,6 +9,7 @@ import type {
   ApprovalView,
   FinancialRecordView,
   RelatedLink,
+  StandingLinkConflict,
   TrademarkOperationsProjection,
   WorkItemView,
 } from "./types";
@@ -407,6 +408,17 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       ? record.native_session as StandingExecutionAssignment["nativeSession"]
       : undefined,
   })).filter((assignment) => assignment.agentMemberId && assignment.teamRunId && assignment.memberRunId);
+  const standingAssignmentConflictRecords = records(root.standing_assignment_conflicts);
+  const standingAssignmentConflicts: StandingLinkConflict[] = standingAssignmentConflictRecords.map((record): StandingLinkConflict => ({
+    id: text(record.id),
+    kind: text(record.kind),
+    severity: text(record.severity, "error"),
+    agentMemberId: text(record.agent_member_id),
+    standingAgentIds: stringArray(record.standing_agent_ids),
+    affectedMemberRunIds: stringArray(record.affected_member_run_ids),
+    detail: text(record.detail),
+    resolutionHint: text(record.resolution_hint) || undefined,
+  })).filter((conflict) => conflict.id && conflict.agentMemberId && conflict.standingAgentIds.length > 0);
   const metrics = [
     ...records(root.explicit_metrics),
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
@@ -600,6 +612,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     actors: actorById,
     actorList: Object.values(actorById),
     standingAssignments,
+    standingAssignmentConflicts,
     organization: {
       company: asRef(companyUnit.id, field(companyUnit, "name")),
       brandUnit: asRef(brandUnit.id, field(brandUnit, "name")),

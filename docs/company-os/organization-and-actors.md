@@ -327,6 +327,77 @@ history. Ad-hoc or unlinked members remain execution-only. Organization cards
 route to Actor profiles, and explicitly linked Agent Team participation
 deep-links to the Team/Member execution page.
 
+### Governed link and unlink
+
+The first edge is authored by one explicit command per pair:
+
+```bash
+harness company org link-execution \
+  --authority human-wcw-owner \
+  --actor agent-wcw-ops \
+  --agent-member agent-wcw-ops \
+  --execution-space wcw-ops
+
+harness company org unlink-execution \
+  --authority human-wcw-owner \
+  --actor agent-wcw-ops \
+  --expect-agent-member agent-wcw-ops
+```
+
+Contract:
+
+- Both records must already exist. The command never creates a StandingAgent
+  and never registers an AgentMember.
+- `--agent-member` is required and never defaults to `--actor`. Equal ids are
+  allowed but must be typed twice, once per side.
+- The StandingAgent is read latest-row-wins and re-appended with only
+  `execution_agent_member_ref` and `updated_at` changed, so every other actor
+  field round-trips. The write goes through the Human administrative governance
+  envelope; no command edits raw JSONL.
+- `--authority` must be an active Human holding `company_os.admin` on **every**
+  invocation, including the ones that change nothing. An idempotent no-op is
+  never an authorization bypass: it authorizes first and then declines to write.
+- Re-running the same explicit pair appends no row and reports
+  `changed: false`, so a migration over many pairs is safely re-runnable. The
+  idempotent path still resolves `--execution-space` and revalidates the
+  AgentMember, so a re-run against a deleted or renamed space fails loudly even
+  though it would have changed nothing.
+- Repointing an already-linked StandingAgent to a different AgentMember requires
+  `--replace`. Stealing an AgentMember already owned by another StandingAgent is
+  rejected by the store's one-to-one guard regardless of `--replace`.
+- `unlink-execution` needs no Execution Space because clearing a reference
+  validates nothing in the execution store. `--expect-agent-member` is an
+  optional optimistic guard for scripted relink flows.
+
+### Cross-store validation boundary
+
+AgentMember truth lives in an Execution Space, not in the Company Store
+(ADR 0042). `harness company ...` resolves the Company Store and returns before
+the global `--space` selector is consumed, so a Company command holds no
+execution store. `link-execution` therefore requires an explicit
+`--execution-space <id>`, resolved through the Execution Space registry and
+opened read-only to confirm the AgentMember exists. There is deliberately no
+fallback to the active space and no fallback to a Project Binding: a Project
+Binding describes provider cwd, not identity, and a link validated against an
+unnamed store is not a governed link.
+
+The space id is a write-time assertion only. It is **not** persisted onto the
+StandingAgent, because storing execution-space truth in a Company OS row is
+exactly the coupling ADR 0042 and ADR 0045 remove. The consequence is explicit:
+the read projection resolves `execution_agent_member_ref` against whichever
+Execution Space the reader selects, so a Dashboard pointed at a different space
+shows an empty `standing_assignments` rather than an error. Operators must point
+the reader at the same space the link was validated against.
+
+### Duplicate links degrade locally
+
+The store rejects a new duplicate `execution_agent_member_ref`. A store that
+already carries one — from a legacy import, a hand edit, or a racing writer —
+must not take down the whole Dashboard. The read projection withholds only the
+ambiguous `agent_member_id` from the join, guesses no winner, and reports the
+defect in `standing_assignment_conflicts`, while every other Standing Agent
+projects normally and the snapshot still returns `200`.
+
 ## Non-goals
 
 - No universal employee object that erases human, agent, external, and service

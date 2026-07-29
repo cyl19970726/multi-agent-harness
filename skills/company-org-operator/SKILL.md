@@ -70,10 +70,32 @@ one-off execution participant bound to an AgentTeamRun and provider-native
 session. They may share UI components, but they are not the same product object.
 Link them only with the optional Company-owned
 `StandingAgent.execution_agent_member_ref -> AgentMember.id`; never infer a
-link from equal ids, names, roles, or providers. Author the link with
-`--execution-agent-member-ref <agent-member-id>`. An absent link means the
-Standing Agent has no reusable execution identity, while an unlinked MemberRun
-remains ad-hoc execution.
+link from equal ids, names, roles, or providers. At creation time author the
+link with `--execution-agent-member-ref <agent-member-id>`. For a Standing Agent
+that already exists, use the governed relation commands instead:
+
+```bash
+harness company org link-execution \
+  --authority <human-id> --actor <standing-agent-id> \
+  --agent-member <agent-member-id> --execution-space <space-id>
+
+harness company org unlink-execution \
+  --authority <human-id> --actor <standing-agent-id> \
+  [--expect-agent-member <agent-member-id>]
+```
+
+`--execution-space` is required and never defaults: AgentMember truth lives in
+an Execution Space, and `harness company ...` resolves the Company Store only
+(ADR 0042). The named space is opened read-only to confirm the AgentMember
+exists, so a typo fails loudly instead of persisting a dangling reference. Type
+both ids even when they are equal. Re-running the same pair changes nothing
+(`changed: false`); repointing an existing link requires `--replace`.
+
+An absent link means the Standing Agent has no reusable execution identity,
+while an unlinked MemberRun remains ad-hoc execution. If the Dashboard reports
+`standing_assignment_conflicts`, two Standing Agents claim the same AgentMember:
+resolve it with `unlink-execution` on the wrong claimant rather than by editing
+a ledger.
 
 ## Docs page integration
 

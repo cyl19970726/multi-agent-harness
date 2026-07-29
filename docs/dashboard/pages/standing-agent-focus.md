@@ -25,6 +25,40 @@ and ad-hoc unlinked members remain execution-only. The Company OS snapshot
 derives `standing_assignments` from latest native rows; it never creates
 another assignment ledger or writes execution lifecycle back to Organization.
 
+The first edge is authored only by `harness company org link-execution` /
+`unlink-execution`, which validate the AgentMember against an explicitly named
+Execution Space. See `docs/company-os/organization-and-actors.md` for the write
+contract and the cross-store boundary.
+
+### `standing_assignment_conflicts`
+
+The snapshot always carries `standing_assignment_conflicts` beside
+`standing_assignments`; it is an empty array in the healthy case. Consumers must
+read both keys: when two StandingAgents claim the same
+`execution_agent_member_ref`, the projection refuses to guess a winner and
+withholds that `agent_member_id` from `standing_assignments`, so reading
+assignments alone would show the participation as silently absent.
+
+Each entry names the ambiguity and the way out:
+
+```json
+{
+  "id": "standing-link-conflict:<agent_member_id>",
+  "kind": "duplicate_execution_agent_member_ref",
+  "severity": "error",
+  "agent_member_id": "<agent_member_id>",
+  "standing_agent_ids": ["<claimant>", "<claimant>"],
+  "affected_member_run_ids": ["<withheld member run>"],
+  "detail": "duplicate StandingAgent execution_agent_member_ref ...",
+  "resolution_hint": "harness company org actor unlink-execution ..."
+}
+```
+
+The page renders these as a bounded warning banner: at most five entries plus a
+`+N more` indicator, so a pathological store cannot flood the surface. An empty
+list renders nothing. A duplicate link is a local, visible defect — it must
+never fail the whole snapshot.
+
 ## Object boundary
 
 ```mermaid
