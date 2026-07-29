@@ -3252,12 +3252,14 @@
    "lifecycle": "stable",
    "canonicalFor": [
     "first native Codex and Kimi Agent Team live-provider acceptance",
-    "interrupted foreground TeamRun recovery evidence"
+    "interrupted foreground TeamRun recovery evidence",
+    "2026-07-30 consecutive persistent Codex, Claude, and Kimi release acceptance"
    ],
    "dependsOn": [
     "docs/company-os/execution-foundation.md",
     "docs/integration/codex.md",
     "docs/integration/kimi.md",
+    "docs/product/agent-team-dogfood-loop.md",
     "docs/decisions/0025-agent-team-run-control-plane.md",
     "docs/decisions/0026-mission-wave-architecture.md"
    ],
@@ -3269,7 +3271,9 @@
    "reviewAfter": "2026-08-21",
    "lastVerifiedWith": [
     "harness dashboard snapshot",
-    "cargo test -p harness-cli --test team_run_api"
+    "cargo test -p harness-cli --test team_run_api",
+    "harness team-run status|inbox|ack|close-member|complete",
+    "harness wave advance"
    ],
    "reorgTrigger": "Agent Team provider transport, interrupted-run recovery, thinking persistence, or acceptance evidence requirements change.",
   "authorityClass": "actual_evidence",
