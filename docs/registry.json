@@ -3116,7 +3116,7 @@
    "canonicalFor": [
     "mode-specific chat steer interrupt and stop semantics",
     "provider version drift review contract",
-    "daily provider release-check cadence and Human upgrade authorization",
+    "daily provider release-check cadence and Agent-managed staged updates",
     "Codex and Kimi interactive mode selection"
    ],
    "dependsOn": [
@@ -3133,7 +3133,7 @@
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
-   "reorgTrigger": "Provider control protocol, execution modes, update cadence, upgrade authorization, reviewed versions, or adapter compatibility policy changes.",
+   "reorgTrigger": "Provider control protocol, execution modes, update cadence, staged update authority, reviewed versions, or adapter compatibility policy changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "verified",
    "truthRefs": [
@@ -3802,6 +3802,50 @@
     {
      "kind": "decision",
      "ref": "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/product/agent-team-dogfood-loop.md",
+   "ownerRole": "execution-foundation",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Agent Team dogfood method and defect-to-repair loop",
+    "mixed-provider live evidence bundle and exit criteria",
+    "Organization execution-foundation dogfood boundary"
+   ],
+   "dependsOn": [
+    "docs/product/mission-wave-host-plan.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+    "docs/decisions/0041-provider-neutral-member-continuation.md",
+    "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-09-29",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 acceptance:mission-wave",
+    "npx pnpm@9.15.4 check:star-harness-plugin",
+    "harness governance check"
+   ],
+   "reorgTrigger": "Agent Team live acceptance, defect triage, Organization runtime projection, Provider update governance, or closeout criteria change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_start.rs"
     }
    ]
   },

@@ -35,6 +35,13 @@ If the Host can express an action clearly in an Assignment or message, prefer
 that over adding another Harness state machine. Planning, worktree creation,
 peer coordination, and waiting for review normally belong to this rule.
 
+Under the current trusted-development Team policy, all three Provider members
+receive full execution access. Do not make ordinary command/tool approval a
+Host scheduling step. Full access is not approval for protected external
+effects. Give the Member owned paths and conflict boundaries; let it decide
+whether to create its own same-repository worktree and report the actual Git
+facts.
+
 Never turn a Wave into a task graph, runtime container, synchronization barrier,
 or transcript store. A member may continue working while the Host advances to
 the next Wave. Never duplicate provider tool, command, chat, or thinking streams
@@ -135,6 +142,16 @@ When inspecting a Member, read three separate facts: Assignment ownership,
 native continuation state, and Host acceptance state. Do not collapse “Goal
 satisfied”, “provider turn completed”, “Handoff delivered”, and “Host accepted”
 into one status.
+
+When a Member looks stuck, inspect control-plane facts before sending more
+work: MemberRun/Supervisor health, Inbox delivery state and PendingInteraction.
+Then use bounded provider-native session forensics through its
+`NativeSessionRef` to distinguish active work, ordinary mailbox wait, protected
+authorization/input wait, dead runtime, completion without Handoff, and a
+repeated tool loop. Never load a whole rollout/transcript, copy it into Harness,
+or let a narrative summary override tool/process evidence. Forensics diagnoses;
+the Host still answers, steers, interrupts, resumes, reassigns, or opens a
+Repair Wave through normal controls.
 
 At every safe Host turn boundary—session start, after the user sends a new
 prompt, before re-planning, and before accepting a handoff—read the Lead Inbox.
@@ -421,10 +438,12 @@ lifecycle or make MCP installation a correctness requirement.
   next Wave without replacing its MemberRun or native session.
 - On conflict, make the Host own integration and record the decision in Wave
   context.
-- When isolation is useful, tell the Member in the Assignment to create and use
-  an independent Git worktree. The Member owns the Git mechanics and reports
-  the actual path, branch, commit/checks, and any shared-file conflicts; do not
-  create a Worktree scheduler or Task Graph.
+- When isolation is useful, let the Member create and use an independent
+  same-repository Git worktree without waiting for the Host to allocate it.
+  The Host may require isolation when conflict or policy demands it, but the
+  Member owns the Git mechanics and reports the actual path, branch,
+  commit/checks, and shared-file conflicts; do not create a Worktree scheduler
+  or Task Graph.
 - On retry, preserve prior attempts and native session references. Resume only
   through a verified provider-native session operation.
 - On sensitive external action, stop and obtain Human approval. A Wave advance

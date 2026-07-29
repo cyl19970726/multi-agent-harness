@@ -94,7 +94,7 @@ Dashboard exposes the same compatibility state on MemberRun. A later strict
 production policy may block `review_required`; default development mode warns
 so provider releases do not unexpectedly make local development unusable.
 
-### Update cadence and authorization
+### Agent-managed update cadence
 
 Provider discovery and provider installation are separate operations:
 
@@ -106,18 +106,27 @@ Provider discovery and provider installation are separate operations:
   unavailable`.
 - When several releases appear during one day, propose one selected candidate
   per provider rather than chasing every intermediate release.
-- Installing or changing the selected Codex, Claude Code, or Kimi version
-  requires explicit Human confirmation. The proposal must name current and
-  candidate versions, relevant adapter/mode risk, required acceptance, and a
-  rollback path.
-- Confirmation to upgrade one provider does not authorize upgrades to the
-  others, nor does it authorize future automatic upgrades.
-- After an approved installation, keep the adapter `review_required` until its
+- Provider maintenance is Agent-managed and does not require per-version Human
+  confirmation. Before changing one Provider, record its current and candidate
+  versions, installation channel, adapter/mode risk, acceptance commands and a
+  tested rollback path.
+- Change only one Provider at a time. Never hot-replace the runtime behind an
+  active MemberRun or native session; the accepted old runtime may finish, and
+  the candidate applies to newly started sessions.
+- Authentication, payment, license acceptance, new credentials, permission
+  expansion and other protected operations still require the appropriate
+  Human or policy approval.
+- After installation, keep the adapter `review_required` until its
   mode-specific deterministic checks and a proportional live canary pass. Only
   then may documentation and `reviewed_provider_versions` be updated.
+- Roll back on install failure, protocol/schema mismatch, deterministic
+  regression or failed live canary. Preserve the failed evidence and record the
+  candidate as unaccepted rather than repeatedly retrying it in active work.
 
-The normal operating target is therefore one reviewable provider update window
-per day, not continuous automatic upgrades.
+The normal operating target is therefore one reviewable Provider update window
+per day, not continuous or simultaneous upgrades. Agent-managed means the Host
+owns this loop and evidence; it does not mean bypassing Provider security
+prompts or treating an unreviewed binary as compatible.
 
 ## Consequences
 
@@ -127,7 +136,8 @@ per day, not continuous automatic upgrades.
 - Codex app-server is the only new Agent Team mode, not a selectable batch
   alternative or a hidden fallback from `codex_exec`.
 - Release monitoring becomes reproducible and suitable for scheduled checks.
-- Daily monitoring is read-only; provider binary changes remain Human-approved.
+- Daily monitoring is read-only; Provider binary changes use the staged,
+  Agent-managed review and rollback loop.
 - Provider protocol vocabulary alone never proves Harness lifecycle control.
 - Version review also covers native-store discovery/read/resume compatibility;
   a stream parser passing is not enough.

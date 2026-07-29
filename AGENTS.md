@@ -44,12 +44,16 @@ chat/steer/interrupt controls must be backed by the selected mode's real
 protocol and terminal acknowledgements.
 
 Provider release discovery is read-only and should run at most once per day by
-default. Never install, upgrade, downgrade, or switch Codex, Claude Code, Kimi,
-or another provider version without explicit Human confirmation naming that
-provider and candidate version. One approval does not authorize other
-providers or future upgrades. After an approved change, keep the adapter
-`review_required` until mode-specific deterministic checks and a proportional
-live canary justify updating the reviewed-version set.
+default. Provider version maintenance is Agent-managed: a per-version Human
+confirmation is not required. Change only one Provider at a time; record the
+current version, candidate, install channel and rollback path; never hot-replace
+the runtime of an active MemberRun or native session. After a change, keep the
+adapter `review_required` until mode-specific deterministic checks and a
+proportional live canary justify updating the reviewed-version set. Roll back
+when installation, protocol probing, deterministic acceptance or the live
+canary fails. Authentication, payment, license acceptance, new credentials and
+other protected actions still require the appropriate Human or policy
+approval.
 
 Standing Agents + Docs are the current product direction. Their Company OS
 contracts are additive and still being implemented; do not claim planned
@@ -94,6 +98,14 @@ actually pause a turn must be routed as PendingInteraction records. Ordinary
 Host/Member planning remains correlated TeamMessage conversation. A provider
 `completed` status is not by itself proof of semantic success, answer, or
 approval.
+
+The current trusted-development Team policy gives Codex, Claude, and Kimi
+members full execution access so unattended work is not blocked by ordinary
+tool authorization. This is a product policy, not a Provider capability and not
+approval for protected external effects. Members decide when isolation is
+useful and may create their own same-repository Git worktree; the Host declares
+owned/conflicting paths and acceptance boundaries, not Git mechanics. Members
+must report the actual worktree, branch, commit, checks, and conflicts.
 
 New Agent Team members use only their persistent bidirectional mode:
 `codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
@@ -164,8 +176,9 @@ The Lead Agent should use this sequence for non-trivial new work:
    the Host decided, which work carries forward, and why it can advance.
 4. For Agent Team work, create one Mission-scoped TeamRun and use Assignment
    messages and correlations for lane ownership. Give concurrent members
-   disjoint owned paths or worktrees and surface shared-file conflicts to the
-   Host. Do not pass a Wave id on the primary path.
+   disjoint owned paths or explicit conflict boundaries. Let each Member decide
+   whether to create its own same-repository worktree and surface shared-file
+   conflicts to the Host. Do not pass a Wave id on the primary path.
 5. Keep Harness-owned checks, artifact references, blockers, handoffs, reviews,
    control acknowledgements, and outcomes durable. Keep provider chat, tool,
    command, file, turn, and reasoning streams in the provider-native session;
@@ -178,6 +191,13 @@ The Lead Agent should use this sequence for non-trivial new work:
    the next Wave.
 8. Re-plan the next Wave from plan-vs-actual deviation and close the Mission
    with an explicit outcome summary. Closing never archives or deletes a team.
+
+When the work is a Harness dogfood run, follow
+`docs/product/agent-team-dogfood-loop.md`. A discovered defect is not the end of
+dogfood: the Host classifies it, opens a Repair Wave or tracked issue, fixes it
+on a clean lane, reruns the original scenario, and only then expands the
+pressure matrix. Do not weaken the scenario or manually edit store evidence to
+make a run appear green.
 
 ## Execution Space And Project Binding
 

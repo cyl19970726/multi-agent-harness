@@ -49,11 +49,20 @@ tool stream, or thinking. The Dashboard projects these fields directly.
 
 All new fields are optional on read so historical JSONL remains valid.
 
+The Host assigns responsibility and conflict boundaries, not mandatory Git
+mechanics. A trusted development Member may decide to create its own linked
+worktree inside the same Git common directory. It reports the resolved absolute
+path, branch, commit, checks and shared-file conflicts; Harness validates the
+workspace when it becomes a launch override but does not schedule worktree
+steps or create a Task Graph.
+
 ## Consequences
 
 - Moving the centralized store cannot change provider context.
 - External linked worktrees are supported without weakening repository
   identity validation.
+- Member-owned worktree creation avoids Host micromanagement while keeping
+  responsibility and conflict boundaries explicit.
 - Operators can compare requested and actual launch workspace facts.
 - Raw-store compatibility writes snapshot their creation cwd because no
   registered project identity exists; raw-store use remains deprecated.

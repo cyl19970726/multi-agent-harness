@@ -168,12 +168,18 @@ affects acceptance.
 
 ## Respect Permission And Workspace Boundaries
 
-Modify only owned paths. Coordinate shared-file changes with the Host or peer
-before editing. If the Assignment asks for isolation, create an appropriate Git
-worktree yourself, work there, and report its absolute path, branch, commit,
-checks, and shared-file conflicts. Do not wait for Harness to schedule Git
-steps. Do not deploy, merge protected branches, alter remote/shared
-state, spend money, submit legal actions, change permissions, or perform
+The current trusted-development Team profile grants full execution access so
+ordinary tool prompts do not block an unattended Member. Treat that as a
+capability ceiling, not a command to touch everything. Modify only owned paths
+and coordinate shared-file changes with the Host or peer before editing.
+
+Decide for yourself whether the Assignment benefits from isolation. You may
+create an appropriate same-repository Git worktree without waiting for the Host
+to allocate it; work there and report its absolute path, branch, commit, checks,
+and shared-file conflicts. Do not wait for Harness to schedule Git steps.
+
+Do not deploy, merge protected branches, alter remote/shared state, spend
+money, submit legal actions, change permissions, expose credentials, or perform
 destructive operations without the applicable explicit approval.
 
 Send an ordinary message stating `BLOCKER` with the exact action, blast radius, options, and your

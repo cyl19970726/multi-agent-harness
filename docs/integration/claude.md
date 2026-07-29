@@ -240,9 +240,9 @@ Member-to-Host handoff, same-session continuation, and explicit Host close.
 That session is enumerable by SDK `listSessions`; Desktop visibility requires
 the explicit provider-owned import described above.
 
-Never install, upgrade, downgrade, or switch Claude Code or the Agent SDK
-without explicit Human confirmation naming the candidate version. After an
-approved change:
+Claude Code and Agent SDK maintenance follows ADR 0031's Agent-managed,
+one-Provider-at-a-time update loop. Do not hot-replace an active
+MemberRun/native session. After a change:
 
 1. run `harness member providers --fail-on-review`;
 2. run mode-specific deterministic tests;
