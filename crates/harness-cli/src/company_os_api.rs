@@ -1150,6 +1150,9 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
     if command.command_name == "work_item.transition" {
         validate_work_item_transition(store, &command, &record)?;
     }
+    if command.command_name == "work_item.update" {
+        validate_work_item_update(store, &command, &record)?;
+    }
     if command.command_name == "work_item.append" {
         validate_work_item_create(store, &command, &record)?;
     }
@@ -1451,6 +1454,13 @@ fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError
             vec![ActorType::Human, ActorType::Agent],
             ActionEffect::CreateRecord,
         ),
+        "work_item.update" => (
+            "company.records.write",
+            RiskTier::R2,
+            false,
+            vec![ActorType::Human, ActorType::Agent],
+            ActionEffect::UpdateRecord,
+        ),
         "work_item.transition" => (
             "company.work.execute",
             RiskTier::R2,
@@ -1619,7 +1629,7 @@ fn validate_definition_scope(
                 .and_then(|value| serde_json::from_value::<harness_core::EntityRef>(value).ok())
                 .is_some_and(|reference| entity_in_module(store, definition, &reference, 0))
         }),
-        "work_item.append" | "work_item.transition" => {
+        "work_item.append" | "work_item.update" | "work_item.transition" => {
             serde_json::from_value::<WorkItem>(record.clone())
                 .ok()
                 .is_some_and(|item| {
@@ -1825,6 +1835,44 @@ fn validate_work_item_create(
     ) {
         return Err(ApiError::validation(
             "new WorkItem cannot start as in_progress, in_review, or completed",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_work_item_update(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    record: &Value,
+) -> Result<(), ApiError> {
+    let target: WorkItem = parse(record)?;
+    if command.subject_ref.kind != EntityKind::WorkItem || command.subject_ref.id != target.id {
+        return Err(ApiError::forbidden(
+            "work_item.update subject must be the WorkItem being updated",
+        ));
+    }
+    let previous = store
+        .latest_work_items()?
+        .into_iter()
+        .find(|candidate| candidate.id == target.id)
+        .ok_or_else(|| ApiError::not_found(format!("WorkItem:{}", target.id)))?;
+    if previous.status != target.status {
+        return Err(ApiError::conflict(
+            "work_item.update cannot change lifecycle status; use work_item.transition",
+        ));
+    }
+    if previous.created_at != target.created_at
+        || previous.completed_at != target.completed_at
+        || previous.result_document_ref != target.result_document_ref
+        || previous.result_record_refs != target.result_record_refs
+        || previous.approval_refs != target.approval_refs
+        || previous.evidence_refs != target.evidence_refs
+        || previous.artifact_refs != target.artifact_refs
+        || previous.outcome_summary != target.outcome_summary
+        || previous.execution_refs != target.execution_refs
+    {
+        return Err(ApiError::conflict(
+            "work_item.update cannot change lifecycle result, approval, evidence, artifact, or execution provenance",
         ));
     }
     Ok(())
@@ -2332,7 +2380,7 @@ fn dispatch_declared_record(
         "actor.append" => "actors",
         "org_unit.append" => "org-units",
         "membership.append" => "memberships",
-        "work_item.append" | "work_item.transition" => "work-items",
+        "work_item.append" | "work_item.update" | "work_item.transition" => "work-items",
         "assignment.append" => "assignments",
         "approval.request" | "approval.decide" => "approvals",
         "commitment.propose" | "commitment.append" => "commitments",

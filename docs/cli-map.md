@@ -74,10 +74,11 @@ Store identity introduced by ADR 0042.
 | --- | --- | --- | --- |
 | Work read | `work list`, `work query` | Implemented | Supports filtered WorkItem projections. |
 | Intake | `work create` | Implemented | Creates WorkItem through governed Action dispatch. Requires source document, definition, owner, submitter and objective. |
-| Assignment | `work assign` | Implemented | Appends Assignment delivery record. In v1 it does not rewrite `WorkItem.assignees`. |
+| Metadata / responsibility correction | `work update` | Implemented | Governed `work_item.update` for description, acceptance, context, source, module/business line, WorkType, owner, assignees, reviewer/approver, priority, due date and risk. It cannot change lifecycle status or result/evidence/execution provenance. |
+| Assignment delivery | `work assign` | Implemented | Appends Assignment delivery record. It proves routing/delivery but does not rewrite `WorkItem.assignees`; use `work update` when the Work projection itself must show a changed responsibility chain. |
 | Lifecycle | `work transition`, `work close` | Implemented | Updates WorkItem status/provenance through governed Action dispatch. |
 | Milestone management | `work milestone list`, `show`, `create`, `update`, `close` | Implemented | Uses native Milestone rows. Writes currently use Human-admin administrative governance because global Work milestone Actions are not yet modeled. |
-| WorkType/business-line management | no dedicated `work type ...` or `work business-line ...` | Missing / next | Currently encoded on WorkItems/modules/views, not first-class CLI commands. |
+| WorkType/business-line management | `work update --work-type ... --module ...` | Partial | WorkItems can now be reclassified against native WorkType/module fields. Dedicated catalogs for WorkType/business-line governance remain planned. |
 | Approval request/decision | `harness company approval request`, `decide`, `list`, `show` | Implemented | Approval is a shared Company OS CLI group, not nested under Work. Requests/decisions dispatch governed Actions. |
 
 ### Organization

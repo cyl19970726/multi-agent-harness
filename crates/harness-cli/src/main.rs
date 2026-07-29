@@ -1459,7 +1459,7 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|assign|transition|close|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
+    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|update|assign|transition|close|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
     match args[0].as_str() {
         "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
         "list" => company_store_list_command(),
@@ -2988,18 +2988,19 @@ fn company_finance_transition_payment_command(
 fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "company work list|query|create|assign|transition|close|milestone",
+        "company work list|query|create|update|assign|transition|close|milestone",
     )?;
     match args[0].as_str() {
         "list" => company_work_list_command(store, &args[1..]),
         "query" => company_work_query_command(store, &args[1..]),
         "create" => company_work_create_command(store, &args[1..]),
+        "update" => company_work_update_command(store, &args[1..]),
         "assign" => company_work_assign_command(store, &args[1..]),
         "transition" => company_work_transition_command(store, &args[1..]),
         "close" => company_work_close_command(store, &args[1..]),
         "milestone" => company_work_milestone_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company work command: {other}; usage: harness company work list|query|create|assign|transition|close|milestone"
+            "unknown company work command: {other}; usage: harness company work list|query|create|update|assign|transition|close|milestone"
         ))),
     }
 }
@@ -3121,6 +3122,136 @@ fn company_work_create_command(store: &HarnessStore, args: &[String]) -> CliResu
         record,
         "company.records.write",
         "r1",
+        false,
+    );
+    dispatch_company_work_action(store, &body)
+}
+
+fn company_work_update_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let work_item_id = required(args, "--work-item")?;
+    let actor_id = required(args, "--actor")?;
+    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
+    let mut record = latest_work_item_value(store, &work_item_id)?;
+    if let Some(title) = value(args, "--title") {
+        record["title"] = serde_json::json!(title);
+    }
+    if let Some(objective) = value(args, "--objective") {
+        record["objective"] = serde_json::json!(objective);
+    }
+    if let Some(description) = value(args, "--description") {
+        record["description"] = serde_json::json!(description);
+    }
+    if has_flag(args, "--clear-description") {
+        record["description"] = serde_json::json!(null);
+    }
+    if !many(args, "--acceptance-criterion").is_empty() {
+        record["acceptance_criteria"] = serde_json::json!(many(args, "--acceptance-criterion"));
+    }
+    if !many(args, "--context-ref-json").is_empty() {
+        record["context_refs"] = serde_json::json!(many_json(args, "--context-ref-json")?);
+    }
+    if !many(args, "--deliverable-ref-json").is_empty() {
+        record["deliverable_refs"] = serde_json::json!(many_json(args, "--deliverable-ref-json")?);
+    }
+    if let Some(source_document) = value(args, "--source-document") {
+        record["source_document_ref"] = serde_json::json!(source_document);
+    }
+    if has_flag(args, "--clear-source-records") || !many(args, "--source-record").is_empty() {
+        record["source_record_refs"] = serde_json::json!(many(args, "--source-record"));
+    }
+    if let Some(milestone) = value(args, "--milestone") {
+        record["milestone_ref"] = serde_json::json!(milestone);
+    }
+    if has_flag(args, "--clear-milestone") {
+        record["milestone_ref"] = serde_json::json!(null);
+    }
+    if let Some(work_type) = value(args, "--work-type") {
+        record["work_type"] = serde_json::json!(work_type);
+    }
+    if let Some(module) = value(args, "--module") {
+        record["business_module_ref"] = serde_json::json!(module);
+    }
+    if has_flag(args, "--clear-module") {
+        record["business_module_ref"] = serde_json::json!(null);
+    }
+    if let Some(requested_by) = value(args, "--requested-by") {
+        record["requested_by"] = company_actor_ref_json(
+            &value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string()),
+            &requested_by,
+        )?;
+    }
+    if has_flag(args, "--clear-requested-by") {
+        record["requested_by"] = serde_json::json!(null);
+    }
+    if let Some(accountable_owner) = value(args, "--accountable-owner") {
+        record["accountable_owner"] = company_actor_ref_json(
+            &value(args, "--accountable-owner-kind").unwrap_or_else(|| "agent".to_string()),
+            &accountable_owner,
+        )?;
+    }
+    if has_flag(args, "--clear-assignees") || !many(args, "--assignee").is_empty() {
+        record["assignees"] = serde_json::Value::Array(company_actor_refs_json(
+            &many(args, "--assignee"),
+            &value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()),
+        )?);
+    }
+    if has_flag(args, "--clear-contributors") || !many(args, "--contributor").is_empty() {
+        record["contributors"] = serde_json::Value::Array(company_actor_refs_json(
+            &many(args, "--contributor"),
+            &value(args, "--contributor-kind").unwrap_or_else(|| "agent".to_string()),
+        )?);
+    }
+    if let Some(reviewer) = value(args, "--reviewer") {
+        record["reviewer"] = company_actor_ref_json(
+            &value(args, "--reviewer-kind").unwrap_or_else(|| "agent".to_string()),
+            &reviewer,
+        )?;
+    }
+    if has_flag(args, "--clear-reviewer") {
+        record["reviewer"] = serde_json::json!(null);
+    }
+    if let Some(approver) = value(args, "--approver") {
+        record["approver"] = company_actor_ref_json(
+            &value(args, "--approver-kind").unwrap_or_else(|| "agent".to_string()),
+            &approver,
+        )?;
+    }
+    if has_flag(args, "--clear-approver") {
+        record["approver"] = serde_json::json!(null);
+    }
+    if let Some(execution_mode) = value(args, "--execution-mode") {
+        record["execution_mode"] = serde_json::json!(execution_mode);
+    }
+    if let Some(due_at) = value(args, "--due-at") {
+        record["due_at"] = serde_json::json!(due_at);
+    }
+    if has_flag(args, "--clear-due-at") {
+        record["due_at"] = serde_json::json!(null);
+    }
+    if let Some(priority) = value(args, "--priority") {
+        record["priority"] = serde_json::json!(priority);
+    }
+    if has_flag(args, "--clear-priority") {
+        record["priority"] = serde_json::json!(null);
+    }
+    if let Some(risk_level) = value(args, "--risk-level") {
+        record["risk_level"] = serde_json::json!(risk_level);
+    }
+    if has_flag(args, "--clear-risk-level") {
+        record["risk_level"] = serde_json::json!(null);
+    }
+    record["updated_at"] = serde_json::json!(now_string());
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:work_item.update")),
+        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-update")),
+        "work_item.update",
+        serde_json::json!({"kind": "work_item", "id": work_item_id}),
+        company_actor_ref_json(&actor_kind, &actor_id)?,
+        record,
+        "company.records.write",
+        "r2",
         false,
     );
     dispatch_company_work_action(store, &body)
@@ -28662,7 +28793,7 @@ fn print_help() {
   company docs document create|rename|move|archive | template create|status
   company docs block append|update|archive|remove|reorder
   company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
-  company work list|query|create|assign|transition|close
+  company work list|query|create|update|assign|transition|close
   company work milestone list|show|create|update|close
   company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
   company finance commitment list|show|propose|transition
