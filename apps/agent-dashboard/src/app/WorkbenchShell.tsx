@@ -931,7 +931,8 @@ function SurfaceSwitch({
     executionSpaceId,
   };
   if (isCompanyOsSurface(selection.surface)) {
-    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} onAction={onAction} onSelectionChange={onSelectionChange} />;
+    const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
+    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} onAction={onAction} onSelectionChange={onSelectionChange} />;
   }
   switch (selection.surface) {
     case "missions":
@@ -1038,7 +1039,7 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
     case "docs":
       if (selection.documentId === "document-brand-a-content-operating-plan") return "Brand A content operating plan";
       if (selection.moduleId === "module-trademark-management") return "Trademark Management";
-      return selection.documentId ?? selection.moduleId ?? "Company knowledge";
+      return selection.documentId ?? selection.moduleId ?? "Operating knowledge";
     case "debug":
       return "Diagnostics";
     default:

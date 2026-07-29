@@ -56,6 +56,28 @@ merchant operations.
   software product truth and creates source snapshots or review WorkItems, but
   it does not overwrite commercial truth.
 
+## GitHub connector priority
+
+GitHub is the next core connector for AgentOS dogfood because development
+WorkItems need a reliable bridge to issues, branches, pull requests, checks,
+previews, deployments, and releases.
+
+The connector maps external software-delivery facts into Company OS refs:
+
+| GitHub fact | Company OS usage | Boundary |
+| --- | --- | --- |
+| Issue | intake, discussion, or delivery tracking ref for a Development WorkItem | Issue open/close is not WorkItem lifecycle authority unless an explicit sync policy says so. |
+| Branch / worktree | execution workspace ref | It does not imply assignment or acceptance. |
+| Pull Request | delivery ref with review and diff evidence | Merge proves repository delivery, not product acceptance. |
+| Check / CI result | evidence ref for acceptance criteria | Passing checks do not approve product, legal, finance, or org changes. |
+| Repo PRD docs | source observation for software product docs | GitHub docs can be mapped into Docs, but Company Store remains operating truth. |
+
+Gateway-created development work still follows the same loop: source Document
+or external observation -> WorkItem -> Organization Actor assignment ->
+execution -> PR/check evidence -> Docs/Work result update. Future WeCom,
+social, ecommerce, logistics, and payment connectors should follow the same
+adapter pattern instead of becoming separate operating models.
+
 ## Current implementation status
 
 | Capability | Status |

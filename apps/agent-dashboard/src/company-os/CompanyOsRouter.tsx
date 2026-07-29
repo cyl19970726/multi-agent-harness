@@ -145,6 +145,45 @@ function DataTruthBanner({ resolved }: { resolved: ResolvedCompanyOsData }) {
   );
 }
 
+function StoreLiveLoadingBanner() {
+  return (
+    <div
+      className="flex h-8 shrink-0 items-center gap-2 border-b border-status-good/25 bg-status-good/5 px-4 text-[11px] text-muted-foreground"
+      data-company-os-data-mode="store-live-loading"
+      role="status"
+    >
+      <Database className="size-3.5 animate-pulse text-status-good" aria-hidden />
+      <span className="font-medium text-foreground">Loading · Store-backed Company OS</span>
+      <span className="hidden sm:inline">Waiting for the live Company Store projection; prototype fixture data is suppressed.</span>
+    </div>
+  );
+}
+
+function StoreLiveLoadingPage({ page }: { page: CompanyOsPage }) {
+  return (
+    <div
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
+      data-company-os-page={page}
+      data-company-os-ready="loading"
+      data-company-os-prototype="false"
+      data-company-os-data-mode="store-live-loading"
+    >
+      <StoreLiveLoadingBanner />
+      <main className="flex h-full min-h-0 items-center justify-center bg-background p-6">
+        <section className="w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-sm">
+          <div className="inline-flex size-10 items-center justify-center rounded-full bg-status-good/10 text-status-good">
+            <Database className="size-5 animate-pulse" aria-hidden />
+          </div>
+          <h1 className="mt-4 text-xl font-semibold tracking-tight">Loading live Company OS Docs</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            The dashboard is connecting to the selected Company Store. Static Brand or Trademark fixture data is intentionally hidden so the page cannot be mistaken for current company truth.
+          </p>
+        </section>
+      </main>
+    </div>
+  );
+}
+
 function CompanyOsRouteRoot({
   page,
   resolved,
@@ -198,7 +237,7 @@ function PlatformPlaceholder({ surface }: { surface: "providers" | "plugins" | "
  * explicitly labelled prototype fixture. Presentation remains read-only until
  * a governed browser Action transport is connected separately.
  */
-export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAction, onSelectionChange }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
+export function CompanyOsRouter({ model, selection, actionsEnabled = false, livePending = false, onAction, onSelectionChange }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; livePending?: boolean; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   if (selection.surface === "providers" || selection.surface === "plugins" || selection.surface === "settings") {
     return <PlatformPlaceholder surface={selection.surface} />;
   }
@@ -206,6 +245,9 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, onAc
   const page = selectedPage(selection);
   if (!page) return null;
   const resolved = resolveCompanyOsRouteData(model);
+  if (livePending && resolved.mode === "prototype-fixture") {
+    return <StoreLiveLoadingPage page={page} />;
+  }
   const docs = adaptCompanyOsDocsProjection(resolved.value, {
     documentId: selection.documentId,
     moduleId: selection.moduleId,

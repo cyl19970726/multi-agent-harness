@@ -87,6 +87,15 @@ participant, or an execution substrate such as a Mission/Wave, Agent Team, or
 Dynamic Workflow. The execution reference is proof of how work ran; it is not a
 substitute for responsibility, approval, or the business context held in Docs.
 
+The current product slice prioritizes the Docs + WorkItem + Organization loop.
+Agents may discover gaps in documents, code, external gateway events, or Work
+views; create or route WorkItems; assign them to existing Organization Actors;
+and return accepted outcomes to Docs. Upper Standing Agents may drive lower
+Standing Agents through explicit organization and WorkItem records. Creating a
+new durable Agent remains an Org/HR-governed capability change, not a runtime
+side effect. Finance is conditional and enters only when a WorkItem requests a
+monetary effect.
+
 Before claiming any part of this loop is implemented, read the
 [implementation truth matrix](implementation-truth-matrix.md). It maps Docs,
 Organization, Work and Finance from contract through acceptance and names the

@@ -267,6 +267,31 @@ async function main() {
       && !selectedDocumentPages.document.resultLinks?.some((link) => link.id === "work-selected-a"),
     "selected Document Focus scopes context rail records to the selected document",
   );
+  const archivedPages = adaptCompanyOsDocsProjection({
+    documents: [
+      { id: "document-active-root", title: "Active Root", space_id: "agentos", parent_document_id: null, kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-archived-company-root", title: "Archived Company Root", space_id: "company", parent_document_id: null, kind: "page", lifecycle_status: "archived", block_ids: [] },
+      { id: "document-archived-company-child", title: "Archived Company Child", space_id: "company", parent_document_id: "document-archived-company-root", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    ],
+    business_modules: [
+      { id: "module-active", name: "Active module", root_document_ref: "document-active-root", status: "active", default_view_refs: [] },
+      { id: "module-archived-root", name: "Archived root module", root_document_ref: "document-archived-company-root", status: "active", default_view_refs: [] },
+    ],
+  });
+  const archivedVisibleRefs = [
+    ...archivedPages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+    ...(archivedPages.workspace.recentlyUpdated ?? []).map((link) => link.id),
+    ...(archivedPages.health.structureLinks ?? []).map((link) => link.id),
+    ...archivedPages.moduleView.sourceLinks.map((link) => link.id),
+  ].filter(Boolean);
+  check(
+    archivedPages.health.counts.documents === 1
+      && archivedPages.workspace.spaces?.every((space) => space.name !== "company")
+      && !archivedVisibleRefs.some((id) => /archived-company/.test(id))
+      && archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-active")
+      && !archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-archived-root"),
+    "Docs workspace hides archived Documents and modules whose root Document is archived from active navigation",
+  );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
 
   const pageRefs = {
