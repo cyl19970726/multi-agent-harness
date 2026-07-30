@@ -149,6 +149,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Finance | [Financial relations](financial-relations.md) |
 | Cross-system ownership | [Four-system collaboration](four-system-collaboration.md) |
 | Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
+| Scoped Company authority brokerage | [Scoped Company Authority Broker](scoped-authority-broker.md), [ADR 0047](../decisions/0047-scoped-company-authority-broker.md) |
 | Company / execution / project identity | [ADR 0042](../decisions/0042-company-store-execution-space-project-binding.md), [Execution foundation](execution-foundation.md) |
 | Execution boundary | [Execution foundation](execution-foundation.md) |
 | External gateways and plugins | [External Gateway and Plugin Intake](external-gateway-and-plugins.md) |
