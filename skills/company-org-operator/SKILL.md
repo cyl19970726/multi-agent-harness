@@ -44,6 +44,10 @@ Before proposing or executing a durable Organization change, read:
 If repository files, schemas, API code, or acceptance checks conflict with this
 skill, the canonical implementation contract wins.
 
+Use `$dogfood-company-os` when the task is the repeated cross-system
+self-hosting loop. This Skill owns only Organization reads and changes inside
+that loop.
+
 ## Operating boundary
 
 Organization owns who exists and who may act:
@@ -140,6 +144,11 @@ panel must render Company OS records or scoped connector projections and link
 back to source Documents, WorkItems, and evidence. It must not infer authority
 from a logged-in platform account, phone session, profile card, or plugin
 installation.
+
+For GitHub, `$connect-github-company-os` owns repository facts and delivery
+links. Organization owns which durable actor may triage, write, review, merge,
+release, or change repository permissions; a valid `gh` login does not grant
+that company authority.
 
 ## Current interface state
 

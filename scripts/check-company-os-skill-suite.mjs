@@ -6,6 +6,8 @@ const repo = process.cwd();
 
 const suiteSkills = [
   "company-business-project-bootstrap",
+  "dogfood-company-os",
+  "connect-github-company-os",
   "company-docs-operator",
   "company-work-operator",
   "company-finance-operator",
@@ -87,6 +89,52 @@ expect(
 const governance = read("docs/company-os/governance-agent-workspaces.md");
 for (const skill of operatorSkills) {
   expect(governance.includes(`../../skills/${skill}/SKILL.md`), `governance-agent-workspaces.md missing ${skill}`);
+}
+
+const dogfood = read("skills/dogfood-company-os/SKILL.md");
+for (const skill of [
+  "company-docs-operator",
+  "company-work-operator",
+  "company-org-operator",
+  "connect-github-company-os",
+  "orchestrate-mission-waves",
+]) {
+  expect(dogfood.includes(`$${skill}`), `dogfood-company-os must route to $${skill}`);
+}
+expect(
+  dogfood.includes("A finding is not a commitment until Work owns it."),
+  "dogfood-company-os must preserve the Work commitment boundary",
+);
+expect(
+  dogfood.includes("it is neither the Execution Space nor the owner of Company Docs"),
+  "dogfood-company-os must keep Git worktree, Project Binding, Execution Space, and Company Store distinct",
+);
+expect(
+  !dogfood.includes("A Git worktree is an Execution Space or Project Binding"),
+  "dogfood-company-os must not collapse a worktree into Execution Space or Project Binding identity",
+);
+
+const github = read("skills/connect-github-company-os/SKILL.md");
+for (const phrase of [
+  "Company Store",
+  "Project Binding",
+  "Use Existing Transport First",
+  "$company-docs-operator",
+  "$company-work-operator",
+]) {
+  expect(github.includes(phrase), `connect-github-company-os missing boundary: ${phrase}`);
+}
+expect(
+  !github.includes("MCP is required"),
+  "connect-github-company-os must not require MCP when gh/Git/API is sufficient",
+);
+
+const starHarnessSync = read("scripts/sync-star-harness-plugin-skills.mjs");
+for (const skill of ["dogfood-company-os", "connect-github-company-os"]) {
+  expect(
+    !starHarnessSync.includes(`"${skill}"`),
+    `${skill} belongs to the Company OS suite, not the Star Harness execution plugin`,
+  );
 }
 
 const forbiddenAsImplemented = ["OrgChangeProposal"];

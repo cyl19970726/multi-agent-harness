@@ -51,6 +51,15 @@ These skill references belong in `skill_refs[]`. They do not replace
 `permission_policy_refs[]`, maintained document refs, WorkType routing, Human
 approval, or governed Actions.
 
+Lead or Supervisor may additionally use
+[`dogfood-company-os`](../../skills/dogfood-company-os/SKILL.md) to compose a
+bounded Docs/Work/Org self-hosting cycle. A development or repository
+governance actor may use
+[`connect-github-company-os`](../../skills/connect-github-company-os/SKILL.md)
+to observe GitHub and return delivery evidence. Neither Skill grants module
+permissions, creates organization authority, or replaces the focused operator
+Skills above.
+
 Each role requires a clear decision contract, durable activity, supporting
 evidence, authority, Skills, maintained Docs, linked work, and required gates.
 The shared Standing Agent workspace is now implemented as an Organization

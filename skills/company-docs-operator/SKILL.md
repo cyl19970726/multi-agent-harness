@@ -26,6 +26,10 @@ When the change touches a recurring business domain or custom page, also read:
 - `docs/company-os/agent-programmable-pages.md`
 - `docs/company-os/frontend-information-architecture.md`
 
+When observing GitHub repositories, Issues, PRs, checks, or reviews, use
+`$connect-github-company-os` for the external-system boundary. This Skill owns
+only the Docs records, snapshots, and Relations used by that connector.
+
 Do not use this skill to override those contracts. If a repository document,
 schema, API, or acceptance check conflicts with this skill, the canonical
 contract wins.
@@ -199,7 +203,9 @@ schema or SQL read models must remain rebuildable from these Company OS records.
 commercial truth, create WorkItems, approve spending, update Finance, mutate
 Organization, execute GitHub actions, or treat a GitHub webhook as authority.
 When synced sources drift materially, create or route a separate WorkItem for
-Docs Governance review.
+Docs Governance review through `$company-work-operator`. Issue/PR/check/review
+sync and DeliveryRef reconciliation belong to `$connect-github-company-os`,
+not to this Docs command.
 
 ## Code-declared custom pages
 

@@ -27,7 +27,7 @@ SV=""
 cleanup() { [ -n "$SV" ] && { kill "$SV" 2>/dev/null; wait "$SV" 2>/dev/null; }; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-echo "== A0: Claude marketplace isolates the Dynamic Workflow skill =="
+echo "== A0: Claude marketplace keeps Dynamic Workflow and Star Harness isolated =="
 if python3 - "$REPO_ROOT" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -36,10 +36,13 @@ market = json.loads((root / ".claude-plugin/marketplace.json").read_text())
 plugins = market.get("plugins", [])
 assert manifest.get("name") == "star-workflow"
 assert manifest.get("skills") == "./skills/star-workflow"
-assert [entry.get("name") for entry in plugins] == ["star-workflow"]
+assert [entry.get("name") for entry in plugins] == ["star-workflow", "star-harness"]
+star_workflow, star_harness = plugins
+assert star_workflow.get("source", {}).get("repo") == "cyl19970726/multi-agent-harness"
+assert star_harness.get("source") == "./plugins/star-harness"
 PY
 then
-  ok "Claude plugin exposes only skills/star-workflow"
+  ok "Claude marketplace keeps workflow and execution plugins separately sourced"
 else
   bad "Claude plugin marketplace/component isolation is invalid"
 fi
@@ -79,7 +82,7 @@ if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ
 else
   bad "install-skill.sh --suite company-os exited nonzero"
 fi
-for name in company-business-project-bootstrap company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder; do
+for name in company-business-project-bootstrap dogfood-company-os connect-github-company-os company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder; do
   for d in .claude/skills .agents/skills; do
     if [ -f "$COMPANY_PROJ/$d/$name/SKILL.md" ] && [ ! -L "$COMPANY_PROJ/$d/$name" ]; then
       ok "$d/$name installed as real files"

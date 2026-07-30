@@ -10,6 +10,7 @@ OS workspace. This skill is a procedural capability, not product authority.
 
 It does not replace the module operators:
 
+- `$dogfood-company-os` owns repeated self-hosting cycles after bootstrap.
 - `$company-docs-operator` owns durable company memory.
 - `$company-work-operator` owns WorkItems, Milestones, assignments, lifecycle,
   and result provenance.
@@ -21,6 +22,8 @@ It does not replace the module operators:
   implementation.
 - `$company-page-builder` builds code-declared custom pages from approved
   module/page contracts.
+- `$connect-github-company-os` owns GitHub source/delivery mapping and
+  connector boundaries.
 
 The normal progression is:
 
@@ -59,6 +62,7 @@ For page architecture and Docs Store authoring, also use:
 If the project has software source truth in GitHub or another repo, also read:
 
 - `docs/company-os/external-project-product-sources.md`
+- `$connect-github-company-os` for Issue/PR/check/source correlation.
 
 If building custom pages, also read:
 
@@ -212,10 +216,11 @@ link them back to the source WorkItem and Docs record.
 
 ### 6. Sync software PRDs as external product sources
 
-If the project has a software repo, map it as an external source:
+If the project has a software repo, use `$connect-github-company-os` to map
+external source and delivery facts. The Docs-owned source snapshot starts with:
 
 ```bash
-harness --project <company-os-project-selector> \
+harness --company <company-store-id> --project <project-binding> \
   company docs source sync \
   --definition <custom-page-definition-id> \
   --module <software-product-sources-module-id> \
@@ -228,8 +233,9 @@ harness --project <company-os-project-selector> \
   --path <prd-or-design-path>
 ```
 
-The top-level `--project` selects the Company OS project Store. The
-command-level `--project-id` names the external software product source.
+The top-level `--company` selects Company Store truth. The optional top-level
+`--project` selects the Project Binding/worktree context. The command-level
+`--project-id` names the external software product source.
 Treat GitHub webhooks and sync runs as observations of software product truth.
 They do not overwrite commercial truth, create WorkItems, approve finance,
 change Organization, or prove delivery.
@@ -343,3 +349,7 @@ When handing off, state:
 - commands/scripts run and acceptance results;
 - stale docs or obsolete records to delete instead of preserving as active
   context.
+
+After bootstrap, hand recurring self-improvement to `$dogfood-company-os`.
+Bootstrap defines the first operating shape; it does not become a perpetual
+Company supervisor.

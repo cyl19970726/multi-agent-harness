@@ -130,6 +130,8 @@ ergonomic governed commands that preserve ownership boundaries:
 
 Repository skills exist for the intended Company OS operator roles:
 
+- `skills/dogfood-company-os`
+- `skills/connect-github-company-os`
 - `skills/company-docs-operator`
 - `skills/company-work-operator`
 - `skills/company-org-operator`
@@ -142,6 +144,10 @@ The skill suite is checked by `scripts/check-company-os-skill-suite.mjs` and
 `acceptance:skill-install`. Skills are distribution/operator guidance. They are
 not the authority for product architecture; canonical truth remains schemas,
 store/API, CLI routing, UI, tests and ADRs.
+
+`skills/` is the canonical source. User-level `.agents/skills` and
+`.claude/skills` copies are installed artifacts; Star Harness Plugin mirrors
+only its two execution skills and does not absorb the Company OS suite.
 
 ## Current validation commands
 

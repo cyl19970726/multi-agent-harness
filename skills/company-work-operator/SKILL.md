@@ -45,6 +45,10 @@ When the WorkItem starts from or returns to company memory, also read:
 - `docs/company-os/document-system.md`
 - `docs/company-os/collaboration-and-agent-work.md`
 
+When software work is sourced from or delivered through GitHub, use
+`$connect-github-company-os` to observe and reconcile the external objects.
+This Skill still owns the Company WorkItem, acceptance, and result.
+
 If repository files, schemas, API code, or acceptance checks conflict with this
 skill, the canonical implementation contract wins.
 
@@ -112,6 +116,12 @@ publication, answer a merchant/customer question, perform a daily retrospective,
 or request a paid-promotion approval. Synced account, post, metric, and message
 records should be linked as context/evidence rather than copied into the
 WorkItem description.
+
+For GitHub delivery, an Issue, PR, commit, check, review, comment, or release is
+an external source/delivery fact. Link it through explicit refs and stable
+external identity; do not make GitHub labels or PR state the Work lifecycle.
+A merged PR and green checks may satisfy delivery criteria, but the accountable
+reviewer must still accept the WorkItem and return its result to Docs.
 
 ## Current interface state
 
@@ -222,6 +232,9 @@ WorkItem responsibility chain changed.
    Work/Approval path. A comment or model answer is not an Approval.
 8. On completion, return durable result and evidence to the originating Docs
    record/module. Closing a WorkItem without result provenance is incomplete.
+9. For externally delivered software work, read the remote GitHub object again
+   before acceptance and preserve repo, number/SHA, URL, checks/reviews,
+   observation time, and connector freshness.
 
 ## Validation checklist
 

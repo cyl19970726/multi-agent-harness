@@ -23,6 +23,8 @@ The suite currently expands to:
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
 | [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
+| [`dogfood-company-os`](../../skills/dogfood-company-os/SKILL.md) | Repeated Company self-hosting loop across Docs, Work, Organization, external delivery and execution | procedural composition skill; delegates writes to the owning operator |
+| [`connect-github-company-os`](../../skills/connect-github-company-os/SKILL.md) | GitHub repository source observations and software-delivery evidence linked to Company Docs and Work | procedural connector skill; uses existing Git/`gh`/API transport first; Issue/PR/check projections remain partial |
 | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
 | [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
 | [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence linked into Docs page contracts | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
@@ -33,6 +35,32 @@ The suite currently expands to:
 These are procedural capabilities, not part of the Company OS data model and
 not an authority for product, organization, security, finance, or legal
 decisions.
+
+## Skill composition and ownership
+
+The repository `skills/` directory is the canonical source for this suite.
+Copies installed under `.claude/skills`, `.agents/skills`, or a provider/plugin
+cache are distribution artifacts. They must be regenerated or reinstalled from
+the repository source and must not become a second hand-edited authority.
+
+Use the suite in layers:
+
+| Situation | Primary skill | What it may compose | What it does not own |
+| --- | --- | --- | --- |
+| First-time operating-area setup | `company-business-project-bootstrap` | Docs, Work, Org, Finance, module and page skills | repeated self-hosting operations |
+| Repeated self-improvement | `dogfood-company-os` | focused Company operators, external connector, and an execution skill | the schema or lifecycle of any composed object |
+| One Company module mutation | matching `company-*-operator` | that module's native CLI/API only | cross-system orchestration |
+| GitHub observation/delivery | `connect-github-company-os` | Docs and Work relations plus existing Git/`gh`/API transport | Work acceptance, actor authority, or a duplicate GitHub store |
+| Mission/Wave or Team execution | Star Harness execution skills | native execution commands and provider sessions | Company Work, Standing Agent, or business-document truth |
+
+This separation is deliberate. `dogfood-company-os` explains the Company-level
+loop. It does not turn `orchestrate-mission-waves` into a Company OS skill, and
+the Star Harness Plugin continues to distribute only the execution skills it
+owns. Company suite installation remains explicit:
+
+```bash
+scripts/install-skill.sh --agent both --scope user --suite company-os
+```
 
 For real commercial projects, the operator suite must produce more than a
 folder tree or a sequence of CLI writes. It must define the operating page

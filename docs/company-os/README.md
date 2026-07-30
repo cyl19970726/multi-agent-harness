@@ -29,8 +29,10 @@ clear to people; the authoritative machine interface is CLI/API.
 The installable Company OS skill suite is indexed in
 [Skill and CLI Contracts](skill-contracts.md). Start with
 `company-business-project-bootstrap` when turning a real commercial project
-into Company OS, then use the dedicated Docs, Work, Org, Finance, module-design,
-and page-building skills for each owned surface. Use:
+into Company OS. Use `dogfood-company-os` for the recurring self-hosting loop,
+`connect-github-company-os` for repository source and delivery facts, then use
+the dedicated Docs, Work, Org, Finance, module-design, and page-building skills
+for each owned surface. Use:
 
 ```bash
 scripts/install-skill.sh --agent both --suite company-os
