@@ -5,7 +5,7 @@
 //! events), and the -32601 unknown-method error.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use harness_core::{
     TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
@@ -15,7 +15,7 @@ use harness_store::HarnessStore;
 
 mod fake_provider;
 mod harness_env;
-use harness_env::{current_project_id, run_harness, TempHome};
+use harness_env::{current_project_id, isolated_harness_command, run_harness, TempHome};
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -36,14 +36,10 @@ struct McpClient {
 
 impl McpClient {
     fn spawn(home: &TempHome, project_id: &str, extra_env: &[(&str, &str)]) -> Self {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+        let mut cmd = isolated_harness_command(home, home.base());
         cmd.arg("--project")
             .arg(project_id)
             .arg("mcp")
-            .current_dir(home.base())
-            .envs(home.envs())
-            .env_remove("HARNESS_ROOT")
-            .env_remove("HARNESS_PROJECT")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());

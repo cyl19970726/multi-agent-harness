@@ -13,10 +13,9 @@
 //! policy gate fires before any provider spawn).
 
 use std::path::Path;
-use std::process::Command;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 fn write_program(dir: &Path) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).expect("mk program dir");
@@ -49,27 +48,21 @@ fn workflow_options_route_to_the_selected_project_root() {
     let project_root = home.base().join("selected-proj");
     std::fs::create_dir_all(&project_root).unwrap();
     // Register the project centrally.
-    let init = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let init = isolated_harness_command(&home, home.base())
         .arg("--project")
         .arg(&project_root)
         .arg("init")
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("init");
     assert!(init.status.success(), "init failed: {:?}", init);
 
     let prog = write_program(&home.base().join("prog"));
     // Run from a cwd that is NOT the project root, selecting the project by id-path.
-    let out = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let out = isolated_harness_command(&home, home.base())
         .arg("--project")
         .arg(&project_root)
         .args(["workflow", "run-script"])
         .arg(&prog)
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run workflow");
     let summary = step_summary(&String::from_utf8_lossy(&out.stdout));
@@ -91,14 +84,11 @@ fn workflow_options_backcompat_store_override_uses_process_cwd() {
     std::fs::create_dir_all(&cwd).unwrap();
 
     let prog = write_program(&home.base().join("prog"));
-    let out = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let out = isolated_harness_command(&home, &cwd)
         .arg("--store")
         .arg(&store)
         .args(["workflow", "run-script"])
         .arg(&prog)
-        .current_dir(&cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run workflow");
     let summary = step_summary(&String::from_utf8_lossy(&out.stdout));

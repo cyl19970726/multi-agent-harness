@@ -14,19 +14,15 @@
 //! the old `env::current_dir()` behavior were still in place.
 
 use std::path::Path;
-use std::process::Command;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 fn init_project(home: &TempHome, project_root: &Path) {
-    let out = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let out = isolated_harness_command(home, home.base())
         .arg("--project")
         .arg(project_root)
         .arg("init")
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run init");
     assert!(out.status.success(), "init failed: {:?}", out);
@@ -47,14 +43,11 @@ fn run_workflow(
     cwd: &Path,
     prog: &Path,
 ) -> serde_json::Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let out = isolated_harness_command(home, cwd)
         .arg("--project")
         .arg(project_root)
         .args(["workflow", "run-script"])
         .arg(prog)
-        .current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run workflow");
     let stdout = String::from_utf8_lossy(&out.stdout);

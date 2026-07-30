@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 fn run(home: &TempHome, cwd: &Path, args: &[String]) -> Output {
     run_with_env(home, cwd, args, &[])
@@ -17,13 +17,9 @@ fn run_with_env(
     args: &[String],
     extra_env: &[(&str, &str)],
 ) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_harness"));
+    let mut command = isolated_harness_command(home, cwd);
     command
         .args(args)
-        .current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT")
         .env_remove("HARNESS_WORKFLOW_CHILD_STORE_ROOT");
     for (key, value) in extra_env {
         command.env(key, value);

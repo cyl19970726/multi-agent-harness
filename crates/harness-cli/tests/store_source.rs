@@ -8,25 +8,19 @@
 //! observable so nothing silently mixes central and local data.
 
 use std::path::Path;
-use std::process::Command;
 
 mod harness_env;
-use harness_env::{run_harness, TempHome};
+use harness_env::{isolated_harness_command, run_harness, TempHome};
 
 /// Run `harness --store-source <args...>` from `cwd` and return its Output. The
 /// flag prints `store-source: <Source> root=<path>` to stderr, then runs the cmd.
 fn run_with_store_source(home: &TempHome, cwd: &Path, args: &[&str]) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+    let mut cmd = isolated_harness_command(home, cwd);
     cmd.arg("--store-source");
     for a in args {
         cmd.arg(a);
     }
-    cmd.current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT")
-        .output()
-        .expect("run harness --store-source")
+    cmd.output().expect("run harness --store-source")
 }
 
 /// The resolution line `store-source: <Source> root=<path>` from stderr (the line

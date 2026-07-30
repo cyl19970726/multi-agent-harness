@@ -426,7 +426,7 @@ pub fn run_harness_with_env(
 /// Build a child command whose store selectors are isolated from the developer
 /// or dogfood Supervisor environment. Tests may add an explicit selector after
 /// this helper returns, but they never inherit one accidentally.
-fn isolated_harness_command(home: &TempHome, cwd: &Path) -> Command {
+pub fn isolated_harness_command(home: &TempHome, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
     cmd.current_dir(cwd)
         .envs(home.envs())

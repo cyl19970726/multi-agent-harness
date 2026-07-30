@@ -7,10 +7,9 @@
 //! developer's real `~/.harness` is never read.
 
 use std::path::Path;
-use std::process::Command;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 /// Run `harness --store-source <args...>` in `cwd` with the given extra env, and
 /// return (stdout, stderr). `mission list` is a harmless read used as the subcommand.
@@ -20,17 +19,12 @@ fn resolve(
     extra_args: &[&str],
     extra_env: &[(&str, &str)],
 ) -> (String, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+    let mut cmd = isolated_harness_command(home, cwd);
     cmd.arg("--store-source");
     for a in extra_args {
         cmd.arg(a);
     }
     cmd.arg("mission").arg("list");
-    cmd.current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT")
-        .env_remove("HARNESS_SPACE");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -42,11 +36,8 @@ fn resolve(
 }
 
 fn init(home: &TempHome, cwd: &Path) {
-    let out = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let out = isolated_harness_command(home, cwd)
         .arg("init")
-        .current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run init");
     assert!(out.status.success(), "init failed: {:?}", out);

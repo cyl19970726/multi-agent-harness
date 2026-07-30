@@ -66,6 +66,8 @@ fn run_with_fake_kimi(
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .output()
         .expect("run harness")
 }
@@ -386,6 +388,8 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .output()
         .expect("start fake kimi team");
     assert!(
@@ -472,6 +476,8 @@ fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .output()
         .expect("start fake kimi team");
     assert!(
@@ -982,6 +988,8 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .spawn()
         .expect("spawn team run");
 
@@ -1126,6 +1134,8 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .spawn()
         .expect("spawn team run");
 

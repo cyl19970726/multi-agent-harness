@@ -9,17 +9,13 @@
 //! end-to-end by `harness init`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 fn run_init_in(home: &TempHome, cwd: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_harness"))
+    isolated_harness_command(home, cwd)
         .arg("init")
-        .current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run harness init")
 }

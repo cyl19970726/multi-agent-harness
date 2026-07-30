@@ -15,6 +15,7 @@ fn run(home: &TempHome, cwd: &Path, args: &[&str]) -> Output {
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
         .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .output()
         .expect("run harness")
 }

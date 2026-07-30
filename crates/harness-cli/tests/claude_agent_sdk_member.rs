@@ -16,7 +16,7 @@ use std::path::Path;
 
 mod harness_env;
 
-use harness_env::{current_project_id, run_harness, TempHome};
+use harness_env::{current_project_id, isolated_harness_command, run_harness, TempHome};
 
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
@@ -121,10 +121,8 @@ fn start_with_fake_runner(
     grace_ms: &str,
     run_id: &str,
 ) -> std::process::Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+    isolated_harness_command(home, root)
         .args(["team-run", "start", "--id", run_id])
-        .current_dir(root)
-        .envs(home.envs())
         .env("HARNESS_CLAUDE_MEMBER_RUNNER", runner)
         .env("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS", grace_ms)
         .env("HARNESS_BIN", env!("CARGO_BIN_EXE_harness"))

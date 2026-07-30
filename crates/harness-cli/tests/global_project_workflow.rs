@@ -12,19 +12,15 @@
 //! the policy gate lives in `spawn_ephemeral_worker`, which `--dry-run` skips.
 
 use std::path::Path;
-use std::process::Command;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 /// Initialize the reserved `_global` (`~/`) project so its central store +
 /// metadata exist and it is the active project.
 fn init_global(home: &TempHome) {
-    let out = Command::new(env!("CARGO_BIN_EXE_harness"))
+    let out = isolated_harness_command(home, home.home())
         .args(["--project", "_global", "init"])
-        .current_dir(home.home())
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
         .output()
         .expect("run init _global");
     assert!(out.status.success(), "init _global failed: {:?}", out);
@@ -46,18 +42,14 @@ fn write_program(dir: &Path, body: &str) -> std::path::PathBuf {
 /// any provider spawn, so no live provider is involved. For the read-only case we
 /// pass `--dry-run` so the full pipeline runs WITHOUT spawning a provider.
 fn run_global_workflow(home: &TempHome, prog: &Path, extra: &[&str]) -> serde_json::Value {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+    let mut cmd = isolated_harness_command(home, home.base());
     cmd.args(["--project", "_global", "workflow", "run-script"])
         .arg(prog);
     for a in extra {
         cmd.arg(a);
     }
-    let out = cmd
-        .current_dir(home.base()) // cwd intentionally != the project root (~/)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
-        .output()
-        .expect("run workflow");
+    // cwd intentionally != the project root (~/)
+    let out = cmd.output().expect("run workflow");
     let stdout = String::from_utf8_lossy(&out.stdout);
     serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("run-script stdout was not JSON ({e}):\n{stdout}"))

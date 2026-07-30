@@ -7,22 +7,17 @@
 //! back-compat. Runs against an isolated HOME.
 
 use std::path::Path;
-use std::process::Command;
 
 mod harness_env;
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 fn init_in(home: &TempHome, cwd: &Path, extra_args: &[&str]) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+    let mut cmd = isolated_harness_command(home, cwd);
     cmd.arg("init");
     for a in extra_args {
         cmd.arg(a);
     }
-    cmd.current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
-        .output()
-        .expect("run init")
+    cmd.output().expect("run init")
 }
 
 #[test]

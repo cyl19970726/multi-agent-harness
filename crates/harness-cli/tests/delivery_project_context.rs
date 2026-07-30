@@ -12,13 +12,12 @@
 #![cfg(unix)]
 
 use std::path::Path;
-use std::process::Command;
 
 mod fake_provider;
 mod harness_env;
 
 use fake_provider::{install_provider_shim, read_recorded_cwd, DeliveryDriver};
-use harness_env::TempHome;
+use harness_env::{isolated_harness_command, TempHome};
 
 fn canon(p: &Path) -> std::path::PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
@@ -83,15 +82,11 @@ fn dry_run_delivery_still_succeeds_without_a_provider() {
     let project_root = home.base().join("proj-dry");
     std::fs::create_dir_all(&project_root).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_harness");
     let run = |args: &[&str]| -> (bool, String, String) {
-        let out = Command::new(bin)
+        let out = isolated_harness_command(&home, home.base())
             .arg("--project")
             .arg(&project_root)
             .args(args)
-            .current_dir(home.base())
-            .envs(home.envs())
-            .env_remove("HARNESS_ROOT")
             .output()
             .expect("run harness");
         (
