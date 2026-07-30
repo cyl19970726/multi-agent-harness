@@ -13646,6 +13646,18 @@ impl TeamRunLedger {
         title: &str,
         summary: &str,
     ) -> CliResult<MemberAction> {
+        self.append_action_with_evidence(member_run_id, action_type, status, title, summary, &[])
+    }
+
+    fn append_action_with_evidence(
+        &self,
+        member_run_id: &str,
+        action_type: &str,
+        status: MemberActionStatus,
+        title: &str,
+        summary: &str,
+        evidence_refs: &[String],
+    ) -> CliResult<MemberAction> {
         let _guard = self.write_lock();
         let seq = self
             .store
@@ -13674,7 +13686,7 @@ impl TeamRunLedger {
             semantic_status: None,
             title: title.to_string(),
             summary: summary.to_string(),
-            evidence_refs: Vec::new(),
+            evidence_refs: evidence_refs.to_vec(),
             started_at: now_string(),
             completed_at,
         };
@@ -15611,6 +15623,11 @@ fn run_claude_agent_sdk_team_member(
                     }
                 }
                 "turn_complete" => {
+                    for evidence_ref in pending_continuation_evidence_refs(ledger, &member.id)? {
+                        if !carried_evidence_refs.contains(&evidence_ref) {
+                            carried_evidence_refs.push(evidence_ref);
+                        }
+                    }
                     let turn_evidence_refs: Vec<String> = data
                         .get("evidenceRefs")
                         .and_then(|value| value.as_array())
@@ -15859,6 +15876,35 @@ enum RoundHandoffRecord {
     Deferred { pending_count: usize },
 }
 
+fn pending_continuation_evidence_refs(
+    ledger: &TeamRunLedger,
+    member_run_id: &str,
+) -> CliResult<Vec<String>> {
+    let mut actions = ledger
+        .store
+        .member_actions()?
+        .into_iter()
+        .filter(|action| action.member_run_id == member_run_id)
+        .collect::<Vec<_>>();
+    actions.sort_by_key(|action| action.seq);
+
+    let mut pending = Vec::new();
+    for action in actions {
+        match action.action_type.as_str() {
+            "continued" => {
+                for evidence_ref in action.evidence_refs {
+                    if !pending.contains(&evidence_ref) {
+                        pending.push(evidence_ref);
+                    }
+                }
+            }
+            "completed" | "blocked" | "error" => pending.clear(),
+            _ => {}
+        }
+    }
+    Ok(pending)
+}
+
 fn record_round_handoff(
     ledger: &TeamRunLedger,
     member_row: &MemberRun,
@@ -15984,12 +16030,13 @@ fn record_member_round(
             )
         }
     };
-    let action = ledger.append_action(
+    let action = ledger.append_action_with_evidence(
         &member_row.id,
         action_type,
         action_status,
         &format!("round {} {action_type}", record.round),
         &action_summary,
+        record.evidence_refs,
     )?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,

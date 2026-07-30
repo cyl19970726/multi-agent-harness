@@ -339,6 +339,19 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
             first_handoff["causation_id"], assignment["id"],
             "a non-stale round-one Handoff is caused by the Assignment"
         );
+    } else {
+        assert!(
+            detail_json["actions"]
+                .as_array()
+                .is_some_and(|actions| actions.iter().any(|action| {
+                    action["action_type"] == "continued"
+                        && action["evidence_refs"]
+                            .as_array()
+                            .is_some_and(|refs| refs.iter().any(|value| value == "src/member.ts"))
+                })),
+            "a deferred Handoff must durably journal its evidence before the \
+             next provider round"
+        );
     }
     assert_eq!(
         second_handoff["causation_id"], follow_up["id"],
