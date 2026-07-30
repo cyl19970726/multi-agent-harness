@@ -68,9 +68,11 @@ interface MissionsProps {
 interface MemberDraft {
   name: string;
   role: string;
-  provider: "codex" | "kimi";
-  executionMode: "codex_app_server" | "kimi_acp";
+  provider: "codex" | "kimi" | "claude";
+  executionMode: "codex_app_server" | "kimi_acp" | "claude_agent_sdk";
   model: string;
+  effort: string;
+  serviceTier: string;
   ownedPaths: string;
 }
 
@@ -213,6 +215,8 @@ function blankMember(): MemberDraft {
     provider: "codex",
     executionMode: "codex_app_server",
     model: "",
+    effort: "high",
+    serviceTier: "",
     ownedPaths: "",
   };
 }
@@ -1338,6 +1342,8 @@ function AttemptDialog({
           provider: member.provider,
           executionMode: member.executionMode,
           model: member.model.trim() || undefined,
+          effort: member.effort.trim() || undefined,
+          serviceTier: member.serviceTier.trim() || undefined,
           ownedPaths: parseList(member.ownedPaths),
         })),
       }),
@@ -1408,14 +1414,19 @@ function AttemptDialog({
                       const provider = event.target.value as MemberDraft["provider"];
                       updateMember(index, {
                         provider,
-                        executionMode: provider === "codex" ? "codex_app_server" : "kimi_acp",
-                        model: provider === "kimi" ? "k2.5" : "",
+                        executionMode: provider === "codex"
+                          ? "codex_app_server"
+                          : provider === "kimi"
+                            ? "kimi_acp"
+                            : "claude_agent_sdk",
+                        model: provider === "kimi" ? "kimi-code/k3" : "",
+                        serviceTier: provider === "codex" ? member.serviceTier : "",
                       });
                     }}
                   >
                     <option value="codex">Codex</option>
                     <option value="kimi">Kimi</option>
-                    <option disabled>Claude (coming later)</option>
+                    <option value="claude">Claude Code</option>
                   </Select>
                 )}
               </Field>
@@ -1423,7 +1434,9 @@ function AttemptDialog({
                 label="Execution mode"
                 hint={member.executionMode === "codex_app_server"
                   ? "Interactive app-server is the only Codex Agent Team mode; one-shot exec belongs to Dynamic Workflow."
-                  : "ACP: provider questions resume in-turn; chat queues to the next round."}
+                  : member.executionMode === "kimi_acp"
+                    ? "ACP: provider questions resume in-turn; chat queues to the next round."
+                    : "Agent SDK streaming session is the only Claude Agent Team mode; claude -p belongs to Dynamic Workflow."}
               >
                 {(id) => (
                   <Select
@@ -1433,11 +1446,9 @@ function AttemptDialog({
                       executionMode: event.target.value as MemberDraft["executionMode"],
                     })}
                   >
-                    {member.provider === "codex" ? (
-                      <option value="codex_app_server">Interactive app-server</option>
-                    ) : (
-                      <option value="kimi_acp">Kimi ACP</option>
-                    )}
+                    {member.provider === "codex" && <option value="codex_app_server">Interactive app-server</option>}
+                    {member.provider === "kimi" && <option value="kimi_acp">Kimi ACP</option>}
+                    {member.provider === "claude" && <option value="claude_agent_sdk">Claude Agent SDK</option>}
                   </Select>
                 )}
               </Field>
@@ -1447,6 +1458,26 @@ function AttemptDialog({
                     id={id}
                     value={member.model}
                     onChange={(event) => updateMember(index, { model: event.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="Reasoning effort" hint="Provider-neutral intent. The run records the effective receipt separately.">
+                {(id) => (
+                  <TextInput
+                    id={id}
+                    value={member.effort}
+                    onChange={(event) => updateMember(index, { effort: event.target.value })}
+                    placeholder="low, medium, high, max"
+                  />
+                )}
+              </Field>
+              <Field label="Service / latency tier" hint="Optional. Unsupported providers report unsupported; this is not a universal fast switch.">
+                {(id) => (
+                  <TextInput
+                    id={id}
+                    value={member.serviceTier}
+                    onChange={(event) => updateMember(index, { serviceTier: event.target.value })}
+                    placeholder={member.provider === "codex" ? "priority" : "Not reviewed for this mode"}
                   />
                 )}
               </Field>

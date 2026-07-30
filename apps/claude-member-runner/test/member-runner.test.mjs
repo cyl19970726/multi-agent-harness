@@ -26,6 +26,8 @@ const baseConfig = {
   roleLabel: "Runtime owner",
   cwd: "/tmp/project",
   allowedTools: ["Read", "Edit", "Bash"],
+  model: "claude-sonnet-4-5",
+  effort: "high",
 };
 
 function harness(config = {}) {
@@ -101,6 +103,10 @@ test("native session is bound once and registered under the TeamRun tag", async 
     "2.1.220-test",
     "the execution-mode version comes from the SDK system/init event",
   );
+  assert.equal(of("session_bound")[0].data.model, "claude-sonnet-4-5");
+  assert.equal(of("session_bound")[0].data.effort, "high");
+  assert.equal(sdk.lastOptions.model, "claude-sonnet-4-5");
+  assert.equal(sdk.lastOptions.effort, "high");
   assert.equal(sdk.calls.tagSession.length, 1);
   assert.equal(sdk.calls.tagSession[0].tag, "trun-1:mrun-runtime");
   assert.equal(sdk.calls.renameSession[0].title, "RuntimeBuilder · Runtime owner");

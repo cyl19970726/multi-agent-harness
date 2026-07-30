@@ -75,6 +75,12 @@ pub(crate) struct KimiAcpClient {
     /// Requested model alias, applied through ACP
     /// `session/set_config_option(configId=model)` after session creation.
     model: Option<String>,
+    /// Provider-neutral reasoning effort. Kimi ACP exposes this as the
+    /// `thinking` config option; the adapter keeps that wire spelling local.
+    effort: Option<String>,
+    effective_model: Option<String>,
+    effective_effort: Option<String>,
+    config_options: Vec<serde_json::Value>,
     provider_version: Option<String>,
 }
 
@@ -87,6 +93,7 @@ impl KimiAcpClient {
     pub(crate) fn spawn(
         cwd: &Path,
         model: Option<&str>,
+        effort: Option<&str>,
         resume_session_id: Option<&str>,
         collaboration_env: &[(String, String)],
     ) -> CliResult<Self> {
@@ -178,6 +185,10 @@ impl KimiAcpClient {
             stderr_tail,
             session_id: None,
             model: model.map(str::to_string),
+            effort: effort.map(str::to_string),
+            effective_model: None,
+            effective_effort: None,
+            config_options: Vec::new(),
             provider_version: None,
         };
         client.handshake(cwd, resume_session_id)?;
@@ -191,6 +202,14 @@ impl KimiAcpClient {
 
     pub(crate) fn provider_version(&self) -> Option<&str> {
         self.provider_version.as_deref()
+    }
+
+    pub(crate) fn model(&self) -> Option<&str> {
+        self.effective_model.as_deref()
+    }
+
+    pub(crate) fn effort(&self) -> Option<&str> {
+        self.effective_effort.as_deref()
     }
 
     pub(crate) fn ensure_transport_alive(&mut self) -> CliResult<()> {
@@ -257,6 +276,11 @@ impl KimiAcpClient {
                 "kimi acp {method} rejected: {error}"
             )));
         }
+        self.config_options = frame
+            .pointer("/result/configOptions")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
         let session_id = frame
             .get("result")
             .and_then(|result| result.get("sessionId"))
@@ -266,7 +290,7 @@ impl KimiAcpClient {
         match session_id {
             Some(session_id) => {
                 self.session_id = Some(session_id);
-                self.apply_requested_model()
+                self.apply_requested_controls()
             }
             None => {
                 self.kill_quiet();
@@ -280,10 +304,34 @@ impl KimiAcpClient {
     /// Apply the requested Kimi model to the newly-created ACP session. A
     /// named model is a real execution constraint, not display metadata: an
     /// unknown/unavailable alias fails before the first prompt.
-    fn apply_requested_model(&mut self) -> CliResult<()> {
-        let Some(model) = self.model.clone() else {
-            return Ok(());
-        };
+    fn apply_requested_controls(&mut self) -> CliResult<()> {
+        if let Some(model) = self.model.clone() {
+            self.apply_config_option("model", "model", &model)?;
+            self.effective_model = Some(model);
+        } else {
+            self.effective_model = current_config_value(&self.config_options, "model");
+        }
+        if let Some(effort) = self.effort.clone() {
+            self.apply_config_option("thinking", "reasoning effort", &effort)?;
+            self.effective_effort = Some(effort);
+        } else {
+            self.effective_effort = current_config_value(&self.config_options, "thinking");
+        }
+        Ok(())
+    }
+
+    fn apply_config_option(
+        &mut self,
+        config_id: &str,
+        label: &str,
+        requested: &str,
+    ) -> CliResult<()> {
+        if let Some(false) = config_option_supports(&self.config_options, config_id, requested) {
+            self.kill_quiet();
+            return Err(CliError::Usage(format!(
+                "kimi acp does not advertise requested {label} `{requested}` in config option `{config_id}`"
+            )));
+        }
         let session_id = self
             .session_id
             .clone()
@@ -292,8 +340,8 @@ impl KimiAcpClient {
             "session/set_config_option",
             serde_json::json!({
                 "sessionId": session_id,
-                "configId": "model",
-                "value": model,
+                "configId": config_id,
+                "value": requested,
             }),
         )?;
         let frame = await_response(response, HANDSHAKE_TIMEOUT, "session/set_config_option")
@@ -301,7 +349,7 @@ impl KimiAcpClient {
         if let Some(error) = frame.get("error") {
             self.kill_quiet();
             return Err(CliError::Usage(format!(
-                "kimi acp rejected requested model {model}: {error}"
+                "kimi acp rejected requested {label} {requested}: {error}"
             )));
         }
         Ok(())
@@ -555,6 +603,35 @@ impl Drop for KimiAcpClient {
     }
 }
 
+fn current_config_value(options: &[serde_json::Value], config_id: &str) -> Option<String> {
+    options
+        .iter()
+        .find(|option| option.get("id").and_then(|value| value.as_str()) == Some(config_id))
+        .and_then(|option| option.get("currentValue"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// `None` means the provider omitted its option catalog; the subsequent ACP
+/// request/response remains the authoritative receipt. `Some(false)` means the
+/// provider advertised the option and explicitly excluded the requested value.
+fn config_option_supports(
+    options: &[serde_json::Value],
+    config_id: &str,
+    requested: &str,
+) -> Option<bool> {
+    let option = options
+        .iter()
+        .find(|option| option.get("id").and_then(|value| value.as_str()) == Some(config_id))?;
+    let values = option.get("options")?.as_array()?;
+    Some(
+        values
+            .iter()
+            .any(|value| value.get("value").and_then(|value| value.as_str()) == Some(requested)),
+    )
+}
+
 /// Lock a mutex, recovering from poisoning: every payload here is a plain
 /// buffer/map where a panicking writer cannot leave a lie behind.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -597,4 +674,44 @@ fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
         .unwrap_or("unknown")
         .to_string();
     PromptOutcome { stop_reason }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_options() -> Vec<serde_json::Value> {
+        serde_json::json!([
+            {
+                "id": "model",
+                "currentValue": "kimi-code/k3",
+                "options": [{"value": "kimi-code/k3"}]
+            },
+            {
+                "id": "thinking",
+                "currentValue": "high",
+                "options": [{"value": "low"}, {"value": "high"}, {"value": "max"}]
+            }
+        ])
+        .as_array()
+        .expect("array")
+        .clone()
+    }
+
+    #[test]
+    fn kimi_acp_maps_neutral_effort_to_the_advertised_thinking_option() {
+        let options = config_options();
+        assert_eq!(
+            current_config_value(&options, "thinking").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            config_option_supports(&options, "thinking", "max"),
+            Some(true)
+        );
+        assert_eq!(
+            config_option_supports(&options, "thinking", "ultra"),
+            Some(false)
+        );
+    }
 }

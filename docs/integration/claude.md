@@ -34,6 +34,14 @@ Agent Team     Codex app-server       Claude Agent SDK streaming
 Workflow       codex exec             claude -p
 ```
 
+### Model and reasoning controls
+
+Harness passes the neutral requested `model` and `effort` to each Agent SDK
+query and records the SDK session receipt separately. The current reviewed SDK
+path does not expose a service-tier receipt, so a requested service tier is
+marked `unsupported` rather than silently treated as effective. Provider-native
+session history remains the execution truth.
+
 ## Runtime shape
 
 The runner lives in `apps/claude-member-runner/`. Rust starts one Node process

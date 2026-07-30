@@ -71,7 +71,7 @@ Execution Space owns Mission/Wave, Agent Team, Workflow, and Host coordination,
 and Project Binding owns repo / worktree / provider-cwd selection. Company is
 optional for execution.
 
-## Canonical loop
+## Canonical operating loop
 
 ```text
 Document / business record
@@ -86,6 +86,14 @@ A WorkItem may be performed by a human, a Standing Agent, an external
 participant, or an execution substrate such as a Mission/Wave, Agent Team, or
 Dynamic Workflow. The execution reference is proof of how work ran; it is not a
 substitute for responsibility, approval, or the business context held in Docs.
+
+For AgentOS itself, this is a continuous self-hosting loop rather than one
+mandatory sequence. Docs, Work, and Organization may each reveal the next gap
+and may each receive an accepted result. The current Codex task can act as a
+Supervising Operator, while the Company-owned AgentOS Lead remains an
+independent durable Standing Agent. See the
+[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md) and
+[ADR 0046](../decisions/0046-supervised-agentos-self-hosting-loop.md).
 
 The current product slice prioritizes the Docs + WorkItem + Organization loop.
 Agents may discover gaps in documents, code, external gateway events, or Work
@@ -136,6 +144,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Product thesis and whole-system orientation | [Vision](vision.md), [Product system map](product-system-map.md), [Concept model](concept-model.md) |
 | Docs and business modules | [Document system](document-system.md), [Docs operating surface matrix](docs-operating-surface-matrix.md), [Module design](module-design.md) |
 | Organization and collaboration | [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md) |
+| AgentOS self-hosting | [AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md), [ADR 0046](../decisions/0046-supervised-agentos-self-hosting-loop.md) |
 | Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
 | Finance | [Financial relations](financial-relations.md) |
 | Cross-system ownership | [Four-system collaboration](four-system-collaboration.md) |

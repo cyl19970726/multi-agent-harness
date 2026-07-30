@@ -17,11 +17,12 @@ function check(condition, message) {
 }
 
 async function main() {
-  const [pages, fixture, workOperatingPage, router] = await Promise.all([
+  const [pages, fixture, workOperatingPage, router, docsUrl] = await Promise.all([
     readFile(resolve(operations, "pages.tsx"), "utf8"),
     readFile(fixturePath, "utf8").then(JSON.parse),
     readFile(resolve(root, "src/company-os/work/WorkOperatingPage.tsx"), "utf8"),
     readFile(resolve(root, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
+    readFile(resolve(root, "src/company-os/docs/url.ts"), "utf8"),
   ]);
   const [components, fixtureAdapter, approvalAction, workItemAction] = await Promise.all([
     readFile(resolve(operations, "components.tsx"), "utf8"),
@@ -54,6 +55,9 @@ async function main() {
   check(workOperatingPage.includes('useState<WorkView>("overview")') && workOperatingPage.includes('"submitted", "accepted", "in_progress", "blocked", "in_review", "waiting_for_approval", "completed"'), "Work opens on the operating overview while preserving the seven-lane board lifecycle order");
   check(workOperatingPage.includes("root.work") && workOperatingPage.includes("projection.work_items") && workOperatingPage.includes("projection.milestones"), "Work workspace consumes native Work and Milestone projections before raw fallback records");
   check(workOperatingPage.includes('"No milestone"') && workOperatingPage.includes('"Unclassified"') && workOperatingPage.includes("Unassigned lane"), "Work views preserve missing Milestone, business-line, and assignment truth");
+  check(workOperatingPage.includes("workItemHref(item.id)") && workOperatingPage.includes('aria-label={`Open WorkItem ${item.title}`}'), "Work overview and board cards deep-link to selected WorkItem truth");
+  check(workOperatingPage.includes("No governed WorkItem creation transport is connected") && workOperatingPage.includes("opacity-60"), "unavailable Work creation looks and reads as disabled");
+  check(["api", "project", "space", "company"].every((key) => docsUrl.includes(`"${key}"`)), "Company OS links preserve API, Project Binding, Execution Space, and Company Store context");
   check(types.includes('"human" | "standing_agent"') && types.includes("interface ActorSummary"), "keeps Human and Standing Agent as distinct actor kinds");
   check(pages.includes("Runtime attempts and private reasoning do not define membership or authority") && !pages.includes("MemberRunContext") && !pages.includes("TeamRunCompact"), "Standing Agent activity does not collapse into execution lifecycle or TeamRun state");
   check(pages.includes("Required human approver") && pages.includes("actorDescriptor(approval.requiredApprover)"), "renders the named Human approval boundary from the projection");
@@ -90,6 +94,73 @@ async function main() {
   const emptyTruth = JSON.stringify(emptyAuthoritativeProjection);
   check(!emptyTruth.includes("CN-2026-018") && !emptyTruth.includes("¥3,000") && !emptyTruth.includes("Brand Owner"), "an explicit empty authoritative projection never falls back to prototype trademark facts");
   const canonicalProjection = adapterModule.adaptTrademarkOperationsProjection(fixture);
+  const agentosOrganizationProjection = structuredClone(fixture);
+  agentosOrganizationProjection.organization.org_units = [
+    {
+      id: "orgunit-agentos-root",
+      name: "AgentOS",
+      parent_id: null,
+      human_lead_actor_ref: { actor_type: "human", actor_id: "actor-human-brand-owner" },
+    },
+    {
+      id: "orgunit-agentos-governance",
+      name: "AgentOS Governance",
+      parent_id: "orgunit-agentos-root",
+      agent_lead_actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" },
+    },
+  ];
+  agentosOrganizationProjection.organization.memberships = [
+    { actor_id: "actor-human-brand-owner", org_unit_id: "orgunit-agentos-root", membership_role: "owner" },
+    { actor_id: "actor-agent-document-architecture", org_unit_id: "orgunit-agentos-governance", membership_role: "lead" },
+    { actor_id: "actor-agent-organization-governance", org_unit_id: "orgunit-agentos-governance", membership_role: "member" },
+    { actor_id: "actor-agent-content-strategy", org_unit_id: "orgunit-agentos-governance", membership_role: "member" },
+  ];
+  const agentosOrganization = adapterModule.adaptTrademarkOperationsProjection(agentosOrganizationProjection);
+  check(
+    agentosOrganization.organization.company.id === "orgunit-agentos-root"
+      && agentosOrganization.organization.brandUnit.id === "orgunit-agentos-governance"
+      && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-governance")?.agentLeadActorId === "actor-agent-document-architecture",
+    "organization projection discovers the explicit AgentOS root and lead unit without trademark ids or an exact Governance label",
+  );
+  check(!fixtureAdapter.includes('pick(units, "org-company")') && !pages.includes('.label.toLowerCase() === "governance"'), "Organization has no hard-coded fixture root, primary unit, or governance label selector");
+  const nonFinancialProjection = structuredClone(fixture);
+  nonFinancialProjection.work_items.push({
+    id: "work-agentos-loop",
+    title: "Run AgentOS self-hosting loop",
+    objective: "Operate Docs, Work, and Org through native truth.",
+    description: "No monetary effect exists.",
+    acceptance_criteria: ["Selected page contains no borrowed finance relation"],
+    context_refs: [{ kind: "document", id: "document-company-operating-manual" }],
+    deliverable_refs: [],
+    status: "submitted",
+    source_document_ref: "document-company-operating-manual",
+    source_record_refs: [],
+    result_document_ref: null,
+    result_record_refs: [],
+    submitted_by: { actor_type: "agent", actor_id: "actor-agent-document-architecture" },
+    requested_by: null,
+    accountable_owner: { actor_type: "agent", actor_id: "actor-agent-document-architecture" },
+    assignees: [{ actor_type: "agent", actor_id: "actor-agent-document-architecture" }],
+    contributors: [],
+    reviewer: { actor_type: "agent", actor_id: "actor-agent-organization-governance" },
+    approver: null,
+    execution_mode: "direct",
+    execution_refs: [],
+    approval_refs: [],
+    evidence_refs: [],
+    artifact_refs: [],
+    outcome_summary: null,
+    due_at: null,
+    priority: "high",
+    risk_level: null,
+    created_at: "2026-07-30T10:00:00+08:00",
+    updated_at: "2026-07-30T10:00:00+08:00",
+    completed_at: null,
+  });
+  const selectedNonFinancial = adapterModule.adaptTrademarkOperationsProjection(nonFinancialProjection, { workItemId: "work-agentos-loop" });
+  check(selectedNonFinancial.workItem.status === "submitted" && selectedNonFinancial.workItem.requestedBy === undefined, "selected WorkItem preserves submitted state and absent requester without fabricating in-progress or unresolved identity");
+  check(selectedNonFinancial.linkedApproval === undefined && selectedNonFinancial.linkedCommitment === undefined && selectedNonFinancial.linkedTypedRecords.length === 0, "selected non-financial WorkItem does not borrow unrelated Approval, Commitment, or TypedRecord rows");
+  check(pages.includes("No Approval or Finance record is linked to this WorkItem") && pages.includes("linkedApproval || linkedCommitment"), "WorkItem focus renders absent governed relations honestly");
   const linkedExecutionProjection = structuredClone(fixture);
   const linkedActor = linkedExecutionProjection.actors.find((actor) => actor.id === "actor-agent-trademark");
   linkedActor.execution_agent_member_ref = "execution-agent-trademark";
@@ -119,6 +190,10 @@ async function main() {
   "adapter preserves the explicit Company-owned StandingAgent-to-AgentMember link");
   check(pages.includes("actor.executionAgentMemberRef") && !pages.includes("assignment.agentMemberId === actor.id"),
     "Standing Agent focus never binds execution by same-string actor id");
+  check(pages.includes("workItem.reviewer?.id === actor.id")
+    && pages.includes("activeRelatedItems")
+    && pages.includes('return "Reviewer"'),
+  "Standing Agent focus includes active review responsibility instead of hiding review work");
   check((canonicalProjection.standingAssignmentConflicts ?? []).length === 0, "a healthy snapshot with no standing_assignment_conflicts adapts to an empty list");
   const conflictProjection = structuredClone(fixture);
   conflictProjection.standing_assignment_conflicts = [

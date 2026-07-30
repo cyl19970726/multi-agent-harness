@@ -18,6 +18,19 @@ execution-mode capability, adapter coverage, and product permission remain
 separate claims. See
 [ADR 0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
+### Model, effort, and service tier
+
+For `codex_app_server`, Harness sends the requested model, reasoning effort,
+and service tier through the native thread/turn configuration. `MemberRun`
+keeps the requested values separately from the effective values returned by
+app-server. A missing native receipt stays `requested` or becomes
+`review_required`; it is never reported as effective by copying launch input.
+
+The Dashboard therefore renders `requested -> effective` with a status for
+each control. Changing one of these controls for a long-lived Standing Agent is
+a runtime-contract change: drain or interrupt the old active turn, then
+reattach the reviewed native thread under the replacement runtime generation.
+
 ## Agent Team Runtime
 
 One live Codex MemberRun owns one app-server child and one native Codex thread:

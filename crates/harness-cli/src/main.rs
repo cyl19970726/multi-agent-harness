@@ -22,14 +22,15 @@ use harness_core::{
     MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
     PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
-    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionStatus,
-    ProviderFeatureMode, ProviderIntegrationProfile, ProviderInteractionMode, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
-    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
-    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMode, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
+    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{
     HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
@@ -9677,6 +9678,8 @@ struct TeamMemberSpec {
     provider: String,
     execution_mode: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
+    service_tier: Option<String>,
     worktree_ref: Option<String>,
     owned_paths: Vec<String>,
     resume_native_session_id: Option<String>,
@@ -9705,6 +9708,8 @@ fn team_member_specs_from_definition(
                 provider: member.provider.clone(),
                 execution_mode: None,
                 model: member.model.clone(),
+                effort: member.provider_config.effort.clone(),
+                service_tier: member.provider_config.service_tier.clone(),
                 worktree_ref: member.worktree_ref.clone(),
                 owned_paths: Vec::new(),
                 resume_native_session_id: member
@@ -10141,6 +10146,8 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             .get(3)
             .map(|model| model.to_string())
             .filter(|model| !model.is_empty()),
+        effort: None,
+        service_tier: None,
         worktree_ref: None,
         owned_paths,
         resume_native_session_id: None,
@@ -10290,6 +10297,11 @@ fn build_member_run_for_team(
         role: member.role.clone(),
         provider: member.provider.clone(),
         model: member.model.clone(),
+        provider_controls: ProviderExecutionControls::requested(
+            member.model.clone(),
+            member.effort.clone(),
+            member.service_tier.clone(),
+        ),
         provider_profile: Some(profile),
         status: MemberRunStatus::Idle,
         native_session,
@@ -11769,6 +11781,42 @@ fn team_run_command(
                     })?;
                 member.owned_paths.push(owned_path.to_string());
             }
+            for override_spec in many(args, "--member-effort") {
+                let (name, effort) = override_spec.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--member-effort expects name:effort".to_string())
+                })?;
+                if effort.trim().is_empty() {
+                    return Err(CliError::Usage(
+                        "--member-effort effort must not be empty".to_string(),
+                    ));
+                }
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!("--member-effort names unknown member {name}"))
+                    })?;
+                member.effort = Some(effort.to_string());
+            }
+            for override_spec in many(args, "--member-service-tier") {
+                let (name, service_tier) = override_spec.split_once(':').ok_or_else(|| {
+                    CliError::Usage("--member-service-tier expects name:service-tier".to_string())
+                })?;
+                if service_tier.trim().is_empty() {
+                    return Err(CliError::Usage(
+                        "--member-service-tier service tier must not be empty".to_string(),
+                    ));
+                }
+                let member = members
+                    .iter_mut()
+                    .find(|member| member.name == name)
+                    .ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "--member-service-tier names unknown member {name}"
+                        ))
+                    })?;
+                member.service_tier = Some(service_tier.to_string());
+            }
             let budget_limit_usd = value(args, "--budget-usd")
                 .map(|raw| {
                     raw.parse::<f64>()
@@ -12158,7 +12206,9 @@ fn team_run_command(
             }
         }
         "add-member" => {
-            let member = parse_team_member_spec(&required(args, "--member")?)?;
+            let mut member = parse_team_member_spec(&required(args, "--member")?)?;
+            member.effort = value(args, "--effort");
+            member.service_tier = value(args, "--service-tier");
             let (run, member, assignment) = add_team_run_member(
                 store,
                 resolved.context.as_ref(),
@@ -14009,6 +14059,12 @@ fn run_codex_member(
     let mut app_server = codex_app_server::CodexAppServerClient::spawn(
         cwd,
         member.model.as_deref(),
+        member
+            .provider_controls
+            .reasoning_effort
+            .requested
+            .as_deref(),
+        member.provider_controls.service_tier.requested.as_deref(),
         !member.owned_paths.is_empty(),
         member
             .native_session
@@ -14018,6 +14074,37 @@ fn run_codex_member(
         &collaboration_env,
         false,
     )?;
+    member_row.provider_controls.model.mark_effective(
+        Some(app_server.model().to_string()),
+        "confirmed by codex app-server thread start/resume response",
+    );
+    if member_row
+        .provider_controls
+        .reasoning_effort
+        .requested
+        .is_some()
+        || app_server.reasoning_effort().is_some()
+    {
+        member_row
+            .provider_controls
+            .reasoning_effort
+            .mark_effective(
+                app_server.reasoning_effort().map(str::to_string),
+                "confirmed by codex app-server thread start/resume response",
+            );
+    }
+    if member_row
+        .provider_controls
+        .service_tier
+        .requested
+        .is_some()
+        || app_server.service_tier().is_some()
+    {
+        member_row.provider_controls.service_tier.mark_effective(
+            app_server.service_tier().map(str::to_string),
+            "confirmed by codex app-server thread start/resume response",
+        );
+    }
     member_row.native_session = Some(native_session_ref(
         &member_row,
         app_server.thread_id(),
@@ -14862,6 +14949,16 @@ fn run_claude_agent_sdk_team_member(
     let runner = claude_agent_sdk_runner_path(cwd)?;
 
     let mut member_row = member.clone();
+    if member_row
+        .provider_controls
+        .service_tier
+        .requested
+        .is_some()
+    {
+        member_row.provider_controls.service_tier.mark_unsupported(
+            "claude_agent_sdk query options expose model and effort but no reviewed service-tier or fast-mode control",
+        );
+    }
     member_row.status = MemberRunStatus::Starting;
     member_row.last_event_at = Some(now_string());
     ledger.save_member_run(&member_row)?;
@@ -14961,6 +15058,7 @@ fn run_claude_agent_sdk_team_member(
             "cwd": cwd.to_string_lossy(),
             "ownedPaths": member.owned_paths,
             "model": member.model,
+            "effort": member.provider_controls.reasoning_effort.requested,
             "permissionMode": claude_team_permission_mode(),
             "resumeSessionId": member
                 .native_session
@@ -15123,6 +15221,18 @@ fn run_claude_agent_sdk_team_member(
                             session_id,
                             "claude_project_session",
                         ));
+                        if let Some(model) = data.get("model").and_then(|v| v.as_str()) {
+                            member_row.provider_controls.model.mark_effective(
+                                Some(model.to_string()),
+                                "confirmed by Claude Agent SDK system init event",
+                            );
+                        }
+                        if let Some(effort) = data.get("effort").and_then(|v| v.as_str()) {
+                            member_row.provider_controls.reasoning_effort.mark_effective(
+                                Some(effort.to_string()),
+                                "applied by the reviewed Claude Agent SDK query options before session init",
+                            );
+                        }
                         ledger.save_member_run(&member_row)?;
                     }
                 }
@@ -15745,6 +15855,11 @@ fn run_kimi_member(
         cwd,
         member.model.as_deref(),
         member
+            .provider_controls
+            .reasoning_effort
+            .requested
+            .as_deref(),
+        member
             .native_session
             .as_ref()
             .map(|session| session.native_session_id.as_str()),
@@ -15757,6 +15872,31 @@ fn run_kimi_member(
     };
     if let Some(profile) = member_row.provider_profile.as_mut() {
         apply_provider_version(profile, client.provider_version().map(str::to_string));
+    }
+    if let Some(model) = client.model() {
+        member_row.provider_controls.model.mark_effective(
+            Some(model.to_string()),
+            "acknowledged by kimi ACP session/set_config_option or advertised session default",
+        );
+    }
+    if let Some(effort) = client.effort() {
+        member_row
+            .provider_controls
+            .reasoning_effort
+            .mark_effective(
+                Some(effort.to_string()),
+                "acknowledged by kimi ACP configId=thinking or advertised session default",
+            );
+    }
+    if member_row
+        .provider_controls
+        .service_tier
+        .requested
+        .is_some()
+    {
+        member_row.provider_controls.service_tier.mark_unsupported(
+            "kimi ACP exposes model and thinking config options but no service-tier option",
+        );
     }
     member_row.native_session = client
         .session_id()
@@ -18824,6 +18964,8 @@ fn handle_http_action(
             provider: required_json_string(body, "provider")?,
             execution_mode: optional_json_string(body, "execution_mode")?,
             model: optional_json_string(body, "model")?,
+            effort: optional_json_string(body, "effort")?,
+            service_tier: optional_json_string(body, "service_tier")?,
             worktree_ref: optional_json_string(body, "worktree_ref")?,
             owned_paths: optional_json_string_array(body, "owned_paths")?,
             resume_native_session_id: optional_json_string(body, "resume_native_session_id")?,
@@ -19656,6 +19798,8 @@ fn create_team_run_value(
             provider: required_json_string(member, "provider")?,
             execution_mode: optional_json_string(member, "execution_mode")?,
             model: optional_json_string(member, "model")?,
+            effort: optional_json_string(member, "effort")?,
+            service_tier: optional_json_string(member, "service_tier")?,
             worktree_ref: optional_json_string(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
@@ -32859,6 +33003,7 @@ mod tests {
             role: "reviewer".into(),
             provider: provider.into(),
             model: None,
+            provider_controls: Default::default(),
             provider_profile: None,
             status: MemberRunStatus::Idle,
             native_session: Some(NativeSessionRef {
@@ -34174,6 +34319,8 @@ package:com.tencent.mm
                     provider: "codex".into(),
                     execution_mode: Some("codex_app_server".into()),
                     model: None,
+                    effort: None,
+                    service_tier: None,
                     worktree_ref: None,
                     owned_paths: vec!["crates/a".into()],
                     resume_native_session_id: None,
@@ -34185,6 +34332,8 @@ package:com.tencent.mm
                     provider: "codex".into(),
                     execution_mode: Some("codex_app_server".into()),
                     model: None,
+                    effort: None,
+                    service_tier: None,
                     worktree_ref: None,
                     owned_paths: vec!["crates/b".into()],
                     resume_native_session_id: None,
@@ -34192,6 +34341,52 @@ package:com.tencent.mm
             ],
         )
         .expect("create team run")
+    }
+
+    #[test]
+    fn member_run_snapshots_requested_provider_controls_before_start() {
+        let member = TeamMemberSpec {
+            agent_member_id: None,
+            name: "ControlledBuilder".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("max".into()),
+            service_tier: Some("priority".into()),
+            worktree_ref: None,
+            owned_paths: Vec::new(),
+            resume_native_session_id: None,
+        };
+
+        let run =
+            build_member_run_for_team(None, "team-run-controls", &member).expect("build MemberRun");
+
+        assert_eq!(run.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            run.provider_controls.model.requested.as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            run.provider_controls.reasoning_effort.requested.as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            run.provider_controls.service_tier.requested.as_deref(),
+            Some("priority")
+        );
+        assert_eq!(
+            run.provider_controls.model.status,
+            harness_core::ProviderControlStatus::Requested
+        );
+        assert_eq!(
+            run.provider_controls.reasoning_effort.status,
+            harness_core::ProviderControlStatus::Requested
+        );
+        assert_eq!(
+            run.provider_controls.service_tier.status,
+            harness_core::ProviderControlStatus::Requested
+        );
     }
 
     #[test]
@@ -34260,6 +34455,8 @@ package:com.tencent.mm
             provider: "codex".into(),
             execution_mode: Some("codex_app_server".into()),
             model: None,
+            effort: None,
+            service_tier: None,
             worktree_ref: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
@@ -34347,6 +34544,8 @@ package:com.tencent.mm
                 provider: "codex".into(),
                 execution_mode: Some("codex_app_server".into()),
                 model: None,
+                effort: None,
+                service_tier: None,
                 worktree_ref: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
@@ -34413,6 +34612,8 @@ package:com.tencent.mm
             provider: "codex".into(),
             execution_mode: Some("codex_app_server".into()),
             model: None,
+            effort: None,
+            service_tier: None,
             worktree_ref: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
@@ -34841,6 +35042,8 @@ package:com.tencent.mm
                 provider: "codex".into(),
                 execution_mode: Some("codex_exec".into()),
                 model: None,
+                effort: None,
+                service_tier: None,
                 worktree_ref: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
@@ -34867,6 +35070,8 @@ package:com.tencent.mm
                 provider: "codex".into(),
                 execution_mode: Some("codex_exec".into()),
                 model: None,
+                effort: None,
+                service_tier: None,
                 worktree_ref: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
@@ -35513,6 +35718,7 @@ mod sse_tests {
             role: "implementer".into(),
             provider: "codex".into(),
             model: None,
+            provider_controls: Default::default(),
             provider_profile: None,
             status: MemberRunStatus::Idle,
             native_session: None,

@@ -1499,35 +1499,81 @@
    "path": "docs/integration/kimi.md",
    "ownerRole": "provider-integration",
    "status": "stable",
-   "lifecycle": "stable",
+   "lifecycle": "volatile",
    "canonicalFor": [
-    "kimi provider integration"
+    "Kimi provider integration overview",
+    "Kimi bounded Workflow and historical mode",
+    "Kimi native record and permission limitations"
    ],
    "dependsOn": [
     "crates/harness-cli/src/main.rs",
     "crates/harness-core/src/lib.rs",
-    "docs/integration/claude.md",
-    "docs/agent-runtime.md"
+    "docs/agent-runtime.md",
+    "docs/integration/README.md",
+    "docs/integration/kimi-agent-team.md"
    ],
    "machineConsumers": [
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-09-20",
+   "reviewAfter": "2026-08-03",
    "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check"
+    "cargo test -p harness-cli",
+    "npx pnpm@9.15.4 check",
+    "harness governance check"
    ],
-   "reorgTrigger": "The KimiAdapter CLI surface, kimi_exec capabilities, or kimi stream shape change.",
+   "reorgTrigger": "Kimi bounded execution, native stream shape, installation, permissions, or fallback boundaries change.",
    "authorityClass": "implementation_reference",
-   "implementationState": "verified",
+   "implementationState": "partial",
    "truthRefs": [
     {
      "kind": "api",
      "ref": "crates/harness-cli/src/main.rs"
+    }
+   ]
+  },
+  {
+   "path": "docs/integration/kimi-agent-team.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Kimi ACP persistent Agent Team mode",
+    "Kimi requested and effective provider controls",
+    "Kimi busy-turn mailbox and receipt boundary",
+    "Kimi Agent Team restart and native-session resume"
+   ],
+   "dependsOn": [
+    "docs/agent-runtime.md",
+    "docs/integration/README.md",
+    "docs/integration/kimi.md",
+    "docs/member-continuation-model.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+    "crates/harness-cli/src/kimi_acp.rs",
+    "crates/harness-cli/src/main.rs"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-03",
+   "lastVerifiedWith": [
+    "cargo test -p harness-cli",
+    "npx pnpm@9.15.4 acceptance:mission-wave",
+    "harness governance check"
+   ],
+   "reorgTrigger": "Kimi ACP protocol, mailbox boundary, control mapping, interrupt, resume, compatibility review, or issue #274 acceptance changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/kimi_acp.rs"
     },
     {
-     "kind": "test",
-     "ref": "cargo test -p harness-cli --test kimi_provider"
+     "kind": "runtime_evidence",
+     "ref": "https://github.com/cyl19970726/multi-agent-harness/issues/274"
     }
    ]
   },
@@ -3934,6 +3980,141 @@
      "ref": "crates/harness-store/tests/company_os.rs"
     }
    ]
+  },
+  {
+   "path": "docs/company-os/agentos-self-hosting-loop.md",
+   "ownerRole": "agentos-lead",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentOS continuous self-hosting dogfood operating loop",
+    "Supervising Operator, durable Lead, governance Agents, and Runtime Supervisor boundaries",
+    "coequal Docs, Work, and Organization iteration"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/collaboration-and-agent-work.md",
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
+    "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "AgentOS dogfood actor roles, system loop, authority, Inbox, runtime, or acceptance semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Supervising Operator, durable Lead, and Runtime Supervisor separation",
+    "Standing Agent runtime reuse without a synthetic TeamRun",
+    "continuous multi-directional AgentOS self-hosting"
+   ],
+   "dependsOn": [
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
+    "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+    "docs/company-os/agentos-self-hosting-loop.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Supervising Operator, durable Lead, Runtime Supervisor, Standing Agent Inbox, or Company OS self-hosting semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentOS self-hosting P0 visual and interaction acceptance entry"
+   ],
+   "dependsOn": [
+    "docs/company-os/agentos-self-hosting-loop.md",
+    "docs/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
+    "docs/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-15",
+   "lastVerifiedWith": [
+    "browser baseline capture at 1536x1024"
+   ],
+   "reorgTrigger": "P0 page scope, expected design, visual evidence, or interaction acceptance changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentOS self-hosting P0 page and evidence matrix"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-15",
+   "lastVerifiedWith": [
+    "browser baseline capture at 1536x1024"
+   ],
+   "reorgTrigger": "P0 page scope, state, viewport, or evidence changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentOS self-hosting navigation, action honesty, delivery, and motion contract"
+   ],
+   "dependsOn": [
+    "docs/company-os/agentos-self-hosting-loop.md",
+    "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-15",
+   "lastVerifiedWith": [
+    "browser baseline capture at 1536x1024"
+   ],
+   "reorgTrigger": "Navigation, action states, message delivery, or visual state semantics change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
   },
   {
    "path": "docs/cli-map.md",

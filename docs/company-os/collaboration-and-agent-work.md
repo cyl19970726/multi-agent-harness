@@ -108,7 +108,7 @@ remain the source of execution responsibility.
 ## Current core loop: Docs + WorkItem + Organization
 
 The current implementation priority is intentionally narrower than the full
-four-system model:
+four-system model. The diagram below names ownership, not one mandatory order:
 
 ```text
 Docs holds context and receives durable results
@@ -123,6 +123,20 @@ monetary effect. That keeps normal document maintenance, development, merchant
 follow-up, content planning, and org-capability work lightweight while still
 preserving a clean escalation path for purchases, invoices, payouts, refunds,
 and budgets.
+
+For AgentOS self-hosting, all three systems are active sensors and result
+surfaces. Work may reveal a missing organizational capability, Organization may
+require a role-charter Document or migration WorkItem, and Docs may reveal
+unowned or obsolete work. The Lead repeatedly observes, records, executes,
+reviews, promotes, and re-observes. The complete operating contract is
+[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md).
+
+The Human may speak to an AI Supervising Operator instead of the Lead directly.
+That Operator remains outside Organization unless explicitly provisioned. It
+delivers ordinary governed messages to the independent Company-owned Lead.
+Runtime delivery, retry, recovery, and Close belong to the deterministic
+Runtime Supervisor rather than either organizational identity. ADR 0046 freezes
+this separation.
 
 The key autonomous pattern is:
 

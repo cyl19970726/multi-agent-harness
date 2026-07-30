@@ -197,6 +197,7 @@ export interface CompanyOsDocumentPageData {
   title: string;
   breadcrumb?: string[];
   space?: string;
+  lifecycleStatus?: string;
   description?: string;
   documentTree?: CompanyOsWorkspaceTreeItem[];
   properties?: CompanyOsProperty[];

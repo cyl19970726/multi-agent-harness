@@ -664,7 +664,13 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const homeRefs = refs(root, "home");
   const focusFacts = facts(root, "document-focus");
   const workspaceDocument = firstReferenced(documents, workspaceRefs) ?? documents[0];
-  const focusDocument = record(documents, selected.documentId) ?? firstReferenced(documents, focusRefs) ?? workspaceDocument ?? documents[0];
+  const explicitlySelectedDocument = selected.documentId
+    ? record(allDocuments, selected.documentId)
+    : undefined;
+  const focusDocument = explicitlySelectedDocument
+    ?? firstReferenced(documents, focusRefs)
+    ?? workspaceDocument
+    ?? documents[0];
   const templateDocuments = documents.filter((entry) => text(entry.kind).toLowerCase() === "template");
   const templateLinks = templateDocuments.map((document) => templateOption(document, blocks));
   const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
@@ -703,7 +709,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const proposalLink = proposal ? { id: text(proposal.id), label: text(field(proposal, "title"), text(proposal.title, "Structure proposal")), kind: "module" as const } : undefined;
   const selectedModuleLink = moduleLink(module);
   const focusDocumentId = text(focusDocument?.id);
-  const focusParentDocument = record(documents, focusDocument?.parent_document_id);
+  const focusParentDocument = record(allDocuments, focusDocument?.parent_document_id);
   const focusTypedRecords = focusDocumentId
     ? typedRecords.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
       || hasRelationBetween(relations, focusDocumentId, text(entry.id)))
@@ -756,8 +762,16 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     entry.reviewer_ref ?? entry.reviewer, entry.legal_reviewer_ref, entry.approver_ref ?? entry.approver,
   ].map(refId).filter(Boolean));
   const focusActors = linkEntries(distinct([...focusActorRefs, refId(focusDocument?.owner_ref), ...referencedActorIds, ...focusWorkActorRefs]).map((id) => actorLink(actors, id)));
+  const explicitDocumentActors = linkEntries(distinct([
+    ...focusActorRefs,
+    refId(focusDocument?.owner_ref),
+    ...referencedActorIds,
+  ]).map((id) => actorLink(actors, id)));
   const moduleActors = linkEntries(distinct([...moduleActorRefs, ...workActorRefs]).map((id) => actorLink(actors, id)));
-  const owner = actorLink(actors, focusDocument?.owner_ref ?? focusDocument?.created_by) ?? actorLink(actors, work?.accountable_owner_ref ?? work?.accountable_owner);
+  const owner = actorLink(actors, focusDocument?.owner_ref);
+  const creator = actorLink(actors, focusDocument?.created_by);
+  const lastMaintainer = actorLink(actors, focusDocument?.updated_by);
+  const workAccountable = actorLink(actors, focusWorkItems[0]?.accountable_owner_ref ?? focusWorkItems[0]?.accountable_owner);
   const decisionActor = actorLink(actors, approval?.accountable_owner_ref ?? work?.approver_ref ?? work?.approver);
   const decisionRequester = actorLink(actors, approval?.requested_by_ref ?? approval?.requested_by ?? work?.requested_by_ref ?? work?.requested_by);
   const decisionCollaborators = linkEntries(distinct([
@@ -770,8 +784,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     refId(work?.legal_reviewer_ref),
     ...(Array.isArray(work?.contributor_refs) ? work.contributor_refs.map(refId) : []),
   ]).filter((id) => id && id !== decisionActor?.id && id !== decisionRequester?.id).map((id) => actorLink(actors, id)));
-  const strategyPartner = focusActors.find((actor) => /strategy/i.test(actor.label));
-  const rawDocumentStatus = text(field(focusDocument, "status"));
+  const strategyPartner = explicitDocumentActors.find((actor) => /strategy/i.test(actor.label));
+  const rawDocumentStatus = text(focusDocument?.lifecycle_status, text(field(focusDocument, "status")));
   const documentStatus = rawDocumentStatus
     ? humanize(rawDocumentStatus)
     : focusFacts.some((fact) => /on track/i.test(fact)) ? "On track" : "";
@@ -801,17 +815,23 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     }),
     };
   });
-  if (module && workspaceTree.length) {
-    const parent = workspaceTree.find((entry) => entry.label === text(workspaceDocument?.space, text(workspaceDocument?.space_id))) ?? workspaceTree[0];
-    const moduleId = text(module.id);
-    parent.children?.push({ id: moduleId, ref: moduleId, label: text(module.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(module.status) || undefined });
+  for (const candidate of modules) {
+    const moduleId = text(candidate.id);
+    const rootDocument = record(documents, candidate.root_document_ref ?? candidate.root_document_id);
+    if (!rootDocument && selected.documentId) continue;
+    const moduleSpace = text(rootDocument?.space, text(rootDocument?.space_id, text(workspaceDocument?.space, text(workspaceDocument?.space_id))));
+    const parent = workspaceTree.find((entry) => entry.label === moduleSpace) ?? (!rootDocument ? workspaceTree[0] : undefined);
+    if (!moduleId || !parent) continue;
+    parent.children?.push({ id: moduleId, ref: moduleId, label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
   }
 
   const documentProperties = [
     owner && { label: "Owner", value: `${owner.label} · ${owner.actorType}`, ref: owner.id, actorType: owner.actorType },
+    creator && { label: "Created by", value: `${creator.label} · ${creator.actorType}`, ref: creator.id, actorType: creator.actorType },
+    lastMaintainer && lastMaintainer.id !== creator?.id && { label: "Last maintained by", value: `${lastMaintainer.label} · ${lastMaintainer.actorType}`, ref: lastMaintainer.id, actorType: lastMaintainer.actorType },
     documentStatus && { label: "Operating status", value: documentStatus },
     strategyPartner && { label: "Strategy partner", value: `${strategyPartner.label} · ${strategyPartner.actorType}`, ref: strategyPartner.id, actorType: strategyPartner.actorType },
-    ...focusActors.filter((actor) => actor.id !== owner?.id && actor.id !== strategyPartner?.id).slice(0, 2).map((actor) => ({ label: "Participant", value: `${actor.label} · ${actor.actorType}`, ref: actor.id, actorType: actor.actorType })),
+    ...explicitDocumentActors.filter((actor) => actor.id !== owner?.id && actor.id !== strategyPartner?.id).slice(0, 2).map((actor) => ({ label: "Participant", value: `${actor.label} · ${actor.actorType}`, ref: actor.id, actorType: actor.actorType })),
   ].filter(Boolean) as NonNullable<CompanyOsDocumentPageData["properties"]>;
   const storeDocumentBlocks = projectedDocumentBlocks(focusDocument, blocks);
   const documentBlocks: CompanyOsDocumentPageData["blocks"] = storeDocumentBlocks.length
@@ -840,7 +860,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
             columns: ["Work", "Accountable", "Status", "Last updated"],
             rows: [[
               text(work.title, "Untitled work"),
-              owner?.label ?? "Not supplied",
+              workAccountable?.label ?? "Not supplied",
               humanize(work.status) || "Not supplied",
               humanTimestamp(work.updated_at) ?? "Not supplied",
             ]],
@@ -901,7 +921,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const primaryDefinitionForPolicy = text(documentDefinition?.id, "<custom-page-definition-id>");
   const actorForPolicy = documentAuthoringActor?.actor_id ?? "<agent-or-human-id>";
   const templatePolicy = templateRecordPolicy(module, primaryDefinitionForPolicy, actorForPolicy);
-  const documentAuthoring: CompanyOsDocumentAuthoringContext | undefined = focusDocument && documentDefinition && documentPolicyRef && blockPolicyRef && documentAuthoringActor
+  const documentAuthoring: CompanyOsDocumentAuthoringContext | undefined = focusDocument && !isArchived(focusDocument) && documentDefinition && documentPolicyRef && blockPolicyRef && documentAuthoringActor
     ? {
         definitionId: text(documentDefinition.id),
         documentPolicyRef,
@@ -1136,6 +1156,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       id: focusDocument ? text(focusDocument.id) : undefined,
       title: focusDocument ? text(focusDocument.title, "Untitled document") : "No document selected",
       breadcrumb: focusDocument?.space || focusDocument?.space_id ? [text(focusDocument.space, text(focusDocument.space_id))] : undefined,
+      lifecycleStatus: text(focusDocument?.lifecycle_status, text(field(focusDocument, "status"))) || undefined,
       description: focusDocument ? "This document is rendered from the supplied Company OS projection." : "Select a document or provide a document projection to begin.",
       documentTree: workspaceTree,
       properties: documentProperties,

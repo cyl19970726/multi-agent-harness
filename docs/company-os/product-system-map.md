@@ -57,6 +57,13 @@ Relations connect the systems; they do not transfer ownership. Docs may show a
 Commitment, but Finance owns its amount and state. Work may show an Agent, but
 Organization owns that Agent's identity and authority.
 
+The diagram is not a mandatory process order. In the AgentOS self-hosting
+scenario, Docs, Work, and Organization form a continuous loop: an Org gap may
+create Work and a role-charter Document; a Work blocker may request a new
+capability; a Document audit may create Work; an accepted implementation may
+update all three. See
+[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md).
+
 ## Initial organization
 
 The first organization is governance-led and deliberately shallow:
@@ -166,6 +173,7 @@ after the GitHub path proves the contract.
 | Work read model | native Milestone/WorkType/business-line projection and six responsive Store-live views exist | governed intake, reassignment, Milestone mutation, saved views, and delivery adapters |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
 | Governance Agents | canonical roles and decision contracts exist | durable definitions, permissions, queues, and Org/HR lifecycle Actions |
+| AgentOS self-hosting | AgentOS Lead and governance Standing Agents plus a real autonomy WorkItem exist in Company Store; baseline Org/Docs/Work pages are captured | stable Standing Agent Inbox transport, relation-correct selected pages, governed Org mutation, needs-attention loop, and durable Runtime Supervisor |
 | Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
 | AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
 

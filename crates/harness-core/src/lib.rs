@@ -1848,6 +1848,93 @@ pub enum NativeSessionAvailability {
     Unknown,
 }
 
+/// Provider-neutral control lifecycle for one requested execution setting.
+///
+/// `requested` is Harness intent. `effective` is populated only from a
+/// provider-native receipt or a reviewed protocol guarantee; adapters must
+/// never copy the request into this field merely for display. Unsupported and
+/// unreviewed settings remain explicit so the Dashboard cannot imply that a
+/// model, reasoning effort, or latency tier took effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderControlStatus {
+    #[default]
+    NotRequested,
+    Requested,
+    Effective,
+    Unsupported,
+    ReviewRequired,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderControlValue {
+    #[serde(default)]
+    pub requested: Option<String>,
+    #[serde(default)]
+    pub effective: Option<String>,
+    #[serde(default)]
+    pub status: ProviderControlStatus,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl ProviderControlValue {
+    pub fn requested(value: Option<String>) -> Self {
+        Self {
+            status: if value.is_some() {
+                ProviderControlStatus::Requested
+            } else {
+                ProviderControlStatus::NotRequested
+            },
+            requested: value,
+            effective: None,
+            note: None,
+        }
+    }
+
+    pub fn mark_effective(&mut self, value: Option<String>, note: impl Into<String>) {
+        self.effective = value;
+        self.status = ProviderControlStatus::Effective;
+        self.note = Some(note.into());
+    }
+
+    pub fn mark_unsupported(&mut self, note: impl Into<String>) {
+        self.effective = None;
+        self.status = ProviderControlStatus::Unsupported;
+        self.note = Some(note.into());
+    }
+
+    pub fn mark_review_required(&mut self, note: impl Into<String>) {
+        self.effective = None;
+        self.status = ProviderControlStatus::ReviewRequired;
+        self.note = Some(note.into());
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderExecutionControls {
+    #[serde(default)]
+    pub model: ProviderControlValue,
+    #[serde(default)]
+    pub reasoning_effort: ProviderControlValue,
+    #[serde(default)]
+    pub service_tier: ProviderControlValue,
+}
+
+impl ProviderExecutionControls {
+    pub fn requested(
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+    ) -> Self {
+        Self {
+            model: ProviderControlValue::requested(model),
+            reasoning_effort: ProviderControlValue::requested(reasoning_effort),
+            service_tier: ProviderControlValue::requested(service_tier),
+        }
+    }
+}
+
 /// One member's session inside an [`AgentTeamRun`]. `provider` is the neutral
 /// provider spelling (codex|claude|kimi). `native_session` points to the
 /// provider-owned execution record; Harness owns only the surrounding
@@ -1868,6 +1955,10 @@ pub struct MemberRun {
     pub provider: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// Immutable requested controls plus provider-confirmed effective values.
+    /// `model` above remains as a wire-compatible shortcut for older readers.
+    #[serde(default)]
+    pub provider_controls: ProviderExecutionControls,
     /// Immutable-at-start snapshot of the concrete provider execution path.
     /// This distinguishes provider-native capability from what this adapter
     /// and execution mode have actually wired for the run.
@@ -3228,6 +3319,48 @@ mod tests {
         .expect("deserialize legacy member run");
         assert!(member.worktree_ref.is_none());
         assert!(member.workspace_snapshot.is_none());
+        assert_eq!(
+            member.provider_controls,
+            ProviderExecutionControls::default(),
+            "historical rows stay readable without inventing requested or effective controls"
+        );
+    }
+
+    #[test]
+    fn provider_execution_controls_separate_intent_from_native_receipt() {
+        let mut controls = ProviderExecutionControls::requested(
+            Some("gpt-5.6-sol".into()),
+            Some("max".into()),
+            Some("priority".into()),
+        );
+
+        assert_eq!(controls.model.status, ProviderControlStatus::Requested);
+        assert_eq!(controls.model.effective, None);
+        controls
+            .model
+            .mark_effective(Some("gpt-5.6-sol".into()), "confirmed by provider response");
+        controls
+            .service_tier
+            .mark_unsupported("provider exposes no service tier");
+        controls
+            .reasoning_effort
+            .mark_review_required("installed provider version is not reviewed");
+
+        assert_eq!(controls.model.status, ProviderControlStatus::Effective);
+        assert_eq!(
+            controls.service_tier.status,
+            ProviderControlStatus::Unsupported
+        );
+        assert_eq!(
+            controls.reasoning_effort.status,
+            ProviderControlStatus::ReviewRequired
+        );
+        assert_eq!(controls.reasoning_effort.effective, None);
+
+        let encoded = serde_json::to_string(&controls).expect("serialize controls");
+        let decoded: ProviderExecutionControls =
+            serde_json::from_str(&encoded).expect("deserialize controls");
+        assert_eq!(decoded, controls);
     }
 }
 

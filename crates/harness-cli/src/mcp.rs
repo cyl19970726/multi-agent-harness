@@ -540,6 +540,8 @@ fn tool_team_run_create(
             provider: member_str("provider")?.to_string(),
             execution_mode: optional_str(member, "execution_mode")?,
             model: optional_str(member, "model")?,
+            effort: optional_str(member, "effort")?,
+            service_tier: optional_str(member, "service_tier")?,
             worktree_ref: optional_str(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_str(member, "resume_native_session_id")?,
@@ -620,6 +622,8 @@ fn tool_team_run_add_member(
         provider: member_str("provider")?.to_string(),
         execution_mode: optional_str(&Value::Object(member.clone()), "execution_mode")?,
         model: optional_str(&Value::Object(member.clone()), "model")?,
+        effort: optional_str(&Value::Object(member.clone()), "effort")?,
+        service_tier: optional_str(&Value::Object(member.clone()), "service_tier")?,
         worktree_ref: optional_str(&Value::Object(member.clone()), "worktree_ref")?,
         owned_paths,
         resume_native_session_id: optional_str(
@@ -1068,6 +1072,8 @@ fn tool_definitions() -> Value {
                                 "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
                                 "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; codex_exec and claude_cli are workflow-only."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
+                                "effort": {"type": "string", "minLength": 1, "description": "Optional provider-neutral reasoning-effort request. The adapter must record the provider-confirmed effective value or an unsupported/review_required status."},
+                                "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
                                 "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
@@ -1096,6 +1102,8 @@ fn tool_definitions() -> Value {
                             "provider": {"type": "string", "minLength": 1},
                             "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"]},
                             "model": {"type": "string", "minLength": 1},
+                            "effort": {"type": "string", "minLength": 1},
+                            "service_tier": {"type": "string", "minLength": 1},
                             "worktree_ref": {"type": "string", "minLength": 1},
                             "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
                             "resume_native_session_id": {"type": "string", "minLength": 1}

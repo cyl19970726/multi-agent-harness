@@ -15,6 +15,7 @@
 export function createFakeSdk({
   sessionId = "fake-session-0001",
   claudeCodeVersion = "2.1.220-test",
+  model = "claude-sonnet-4-5",
 } = {}) {
   const calls = { tagSession: [], renameSession: [], permissionModes: [], interrupts: 0 };
   let lastOptions = null;
@@ -29,6 +30,7 @@ export function createFakeSdk({
         subtype: "init",
         session_id: sessionId,
         claude_code_version: claudeCodeVersion,
+        model,
       };
       // One turn per inbound user message. The stream ends only when the
       // mailbox closes — which is exactly the property under test.

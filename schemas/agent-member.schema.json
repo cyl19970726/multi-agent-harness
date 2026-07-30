@@ -77,6 +77,8 @@
       "properties": {
         "service_tier": { "type": ["string", "null"] },
         "collaboration_mode": { "type": ["string", "null"] },
+        "effort": { "type": ["string", "null"] },
+        "output_schema": {},
         "approval_policy": { "type": ["string", "null"] },
         "approvals_reviewer": { "type": ["string", "null"] },
         "sandbox_policy": { "type": ["string", "null"] },
@@ -85,7 +87,35 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
-        "environment_id": { "type": ["string", "null"] }
+        "environment_id": { "type": ["string", "null"] },
+        "mcp": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["servers"],
+          "properties": {
+            "servers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "transport", "command", "url", "allowed_tools"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "transport": { "type": ["string", "null"] },
+                  "command": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "url": { "type": ["string", "null"] },
+                  "allowed_tools": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "capabilities": {

@@ -229,6 +229,8 @@ export interface TeamRunMemberSpec {
   role: string;
   provider: string;
   model?: string;
+  effort?: string;
+  serviceTier?: string;
   executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk";
   /** Optional member-specific workspace override validated against project_root. */
   worktreeRef?: string;
@@ -264,6 +266,12 @@ export function createTeamRun(params: {
       };
       if (member.model) {
         spec.model = member.model;
+      }
+      if (member.effort) {
+        spec.effort = member.effort;
+      }
+      if (member.serviceTier) {
+        spec.service_tier = member.serviceTier;
       }
       if (member.executionMode) {
         spec.execution_mode = member.executionMode;

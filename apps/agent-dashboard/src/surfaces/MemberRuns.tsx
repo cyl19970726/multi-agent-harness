@@ -48,6 +48,7 @@ import type { WorkbenchModel } from "@/model/readModel";
 import type {
   NativeActivityItem,
   NativeActivityProjection,
+  ProviderControlValue,
   TeamMemberCloseRequest,
   TeamMessage,
   Wave,
@@ -381,7 +382,7 @@ function MemberHeroHeader({
             <span className="inline-flex items-center gap-1.5 font-medium text-status-good"><StatusDot tone={memberStatusTone(context.member.status)} /> {context.member.status ?? "unknown"}</span>
             <span className="h-4 w-px bg-border" />
             <span className="text-muted-foreground">Provider</span>
-            <span className="text-foreground">{context.member.provider ?? "provider"}{context.member.model ? ` · ${context.member.model}` : ""}</span>
+            <span className="text-foreground">{context.member.provider ?? "provider"}{memberModelLabel(context.member) ? ` · ${memberModelLabel(context.member)}` : ""}</span>
           </div>
         </div>
       </div>
@@ -770,7 +771,9 @@ function MemberContextRail({
           <RailKeyValue label="Execution mode" value={context.member.provider_profile?.execution_mode ?? "Not recorded"} />
           <RailKeyValue label="Ordinary mail" value={context.member.provider_profile?.ordinary_message_boundary ?? "unknown"} />
           <RailKeyValue label="Compatibility" value={context.member.provider_profile?.compatibility_status ?? "unknown"} />
-          <RailKeyValue label="Model" value={context.member.model ?? "Not recorded"} />
+          <RailKeyValue label="Model control" value={providerControlSummary(context.member.provider_controls?.model, context.member.model)} />
+          <RailKeyValue label="Reasoning control" value={providerControlSummary(context.member.provider_controls?.reasoning_effort)} />
+          <RailKeyValue label="Service control" value={providerControlSummary(context.member.provider_controls?.service_tier)} />
           <RailKeyValue label="Native session" value={context.member.native_session?.native_session_id ?? "Unavailable"} mono />
           <RailKeyValue label="Resume" value={context.member.native_session?.supports_resume ? "Supported" : "Not verified"} />
           <RailKeyValue label="Actual cwd" value={context.member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono />
@@ -786,6 +789,9 @@ function MemberContextRail({
             <div className="mt-2 space-y-1.5 border-l border-border pl-2.5 text-[11px]">
               <RailKeyValue label="Provider version" value={context.member.provider_profile?.provider_version ?? "Not reported"} />
               <RailKeyValue label="Adapter contract" value={context.member.provider_profile?.adapter_contract_version ?? "Not recorded"} />
+              {context.member.provider_controls?.model.note && <RailKeyValue label="Model receipt" value={context.member.provider_controls.model.note} />}
+              {context.member.provider_controls?.reasoning_effort.note && <RailKeyValue label="Reasoning receipt" value={context.member.provider_controls.reasoning_effort.note} />}
+              {context.member.provider_controls?.service_tier.note && <RailKeyValue label="Service receipt" value={context.member.provider_controls.service_tier.note} />}
               <RailKeyValue label="Session status" value={sessionStatus ?? "Not reported"} />
               <RailKeyValue label="Execution root" value={context.run.execution_root ?? "Not recorded"} mono />
               <RailKeyValue label="Worktree" value={context.member.worktree_ref ?? "None"} mono />
@@ -999,6 +1005,21 @@ function RailEmpty({ children }: { children: string }) {
 
 function RailKeyValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return <div className="flex min-w-0 items-start justify-between gap-3"><span className="shrink-0 text-muted-foreground">{label}</span><span className={cn("min-w-0 text-right text-foreground", mono && "truncate font-mono text-[11px]")}>{value}</span></div>;
+}
+
+function providerControlSummary(control?: ProviderControlValue | null, legacyRequested?: string | null): string {
+  const requested = control?.requested ?? legacyRequested;
+  const effective = control?.effective;
+  const status = control?.status ?? (legacyRequested ? "legacy_unverified" : "not_recorded");
+  return `${requested ? `requested ${requested}` : "provider default"} → ${effective ?? "not confirmed"} · ${status}`;
+}
+
+function memberModelLabel(member: MemberRunContext["member"]): string | undefined {
+  const control = member.provider_controls?.model;
+  if (control?.effective) return control.effective;
+  if (control?.requested) return `${control.requested} (${control.status ?? "requested"})`;
+  if (member.model) return `${member.model} (unverified)`;
+  return undefined;
 }
 
 function toActivityItems(

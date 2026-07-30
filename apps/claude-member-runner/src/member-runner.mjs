@@ -88,7 +88,7 @@ export function createMemberRunner({ sdk, config, emit }) {
    * `listSessions()` filtered by this tag IS the list of a TeamRun's members,
    * which is why the tag encodes both ids.
    */
-  async function bindSession(sessionId, providerVersion = null) {
+  async function bindSession(sessionId, providerVersion = null, effectiveModel = null) {
     if (state.registered) return;
     state.sessionId = sessionId;
     state.registered = true;
@@ -105,7 +105,14 @@ export function createMemberRunner({ sdk, config, emit }) {
       // A registry write failure still must not take the member down.
       emit("registry_write_failed", { sessionId, error: String(error) });
     }
-    emit("session_bound", { sessionId, tag, title, providerVersion });
+    emit("session_bound", {
+      sessionId,
+      tag,
+      title,
+      providerVersion,
+      model: effectiveModel ?? config.model ?? null,
+      effort: config.effort ?? null,
+    });
   }
 
   function openQuery(resumeSessionId) {
@@ -132,6 +139,7 @@ export function createMemberRunner({ sdk, config, emit }) {
         allowedTools: config.allowedTools,
         disallowedTools: config.disallowedTools,
         model: config.model ?? undefined,
+        effort: config.effort ?? undefined,
         // `bypassPermissions`: an interactive permission prompt has nobody to
         // answer it inside an unattended member. It does not switch observation
         // hooks off, but it does NOT make this a sandbox and nothing here tries
@@ -177,7 +185,11 @@ export function createMemberRunner({ sdk, config, emit }) {
         try {
           for await (const message of query) {
             if (message.type === "system" && message.subtype === "init") {
-              await bindSession(message.session_id, message.claude_code_version ?? null);
+              await bindSession(
+                message.session_id,
+                message.claude_code_version ?? null,
+                message.model ?? null,
+              );
               continue;
             }
             if (message.type === "assistant") {
@@ -191,7 +203,11 @@ export function createMemberRunner({ sdk, config, emit }) {
               // A result ends a TURN. It does not end the member; the mailbox
               // decides that. This distinction is the entire fix.
               if (!state.sessionId && message.session_id) {
-                await bindSession(message.session_id, message.claude_code_version ?? null);
+                await bindSession(
+                  message.session_id,
+                  message.claude_code_version ?? null,
+                  message.model ?? null,
+                );
               }
               emit("turn_complete", {
                 sessionId: message.session_id ?? state.sessionId,
