@@ -273,9 +273,27 @@ pub struct ResidentClaude {
 impl ResidentClaude {
     /// Spawn a fresh resident with stderr redirected to `stderr_path`.
     pub fn spawn(config: ResidentConfig, stderr_path: &Path) -> io::Result<ResidentClaude> {
-        let stderr_file = File::create(stderr_path)?;
-        let mut cmd = config.build_command(stderr_file);
-        let mut child = cmd.spawn()?;
+        let mut text_busy_retries = 0;
+        let mut child = loop {
+            let stderr_file = File::create(stderr_path)?;
+            let mut cmd = config.build_command(stderr_file);
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.kind() == io::ErrorKind::ExecutableFileBusy
+                        && text_busy_retries < 3 =>
+                {
+                    // Linux overlay filesystems can briefly retain an
+                    // executable write lease immediately after an installed
+                    // provider or test shim is replaced. No child or provider
+                    // turn exists yet, so a bounded spawn retry is safe and
+                    // cannot duplicate work.
+                    text_busy_retries += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let stdin = child
             .stdin
             .take()
