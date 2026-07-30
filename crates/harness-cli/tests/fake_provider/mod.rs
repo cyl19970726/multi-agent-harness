@@ -122,16 +122,19 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"%s"}}}\n' "$id" "$version"
       ;;
     *'"method":"session/new"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[]}}\n' "$id" "$session_id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
       ;;
     *'"method":"session/load"'*)
       session_id=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
       ;;
     *'"method":"session/set_config_option"'*)
       case "$line" in
         *'"configId":"model"'*'"value":"k2.5"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          ;;
+        *'"configId":"thinking"'*'"value":"low"'*|*'"configId":"thinking"'*'"value":"high"'*|*'"configId":"thinking"'*'"value":"max"'*)
           printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
           ;;
         *'"configId":"mode"'*'"value":"plan"'*|*'"configId":"mode"'*'"value":"default"'*)
@@ -248,11 +251,23 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
         ;;
       *'"method":"thread/start"'*)
-        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"%s"}}}\n' "$id" "$thread_id"
+        reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
+        service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
+        reasoning_json=null
+        service_json=null
+        if [ -n "$reasoning_effort" ]; then reasoning_json="\"$reasoning_effort\""; fi
+        if [ -n "$service_tier" ]; then service_json="\"$service_tier\""; fi
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s"}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
-        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","thread":{"id":"%s","turns":[]}}}\n' "$id" "$thread_id"
+        reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
+        service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
+        reasoning_json=null
+        service_json=null
+        if [ -n "$reasoning_effort" ]; then reasoning_json="\"$reasoning_effort\""; fi
+        if [ -n "$service_tier" ]; then service_json="\"$service_tier\""; fi
+        printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s","turns":[]}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
         ;;
       *'"method":"thread/name/set"'*)
         if [ -n "${FAKE_CODEX_NAME_MARKER:-}" ]; then

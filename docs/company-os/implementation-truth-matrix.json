@@ -214,6 +214,33 @@
       }
     }
   },
+  "agentOsSelfHostingLoop": {
+    "implementationState": "partial",
+    "contract": [
+      "docs/company-os/agentos-self-hosting-loop.md",
+      "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
+    ],
+    "existingEvidence": [
+      "Company Store agent-company contains AgentOS Lead and governance Standing Agents",
+      "Company Store agent-company contains work-agentos-docs-work-org-autonomy-v1",
+      "Store-live Organization, Docs, Work, Standing Agent, WorkItem, and Document projections"
+    ],
+    "verifiedSlices": [
+      "durable AgentOS organization identities",
+      "readable AgentOS Docs and WorkItem",
+      "explicit StandingAgent.execution_agent_member_ref boundary",
+      "Company Store, Execution Space, and Project Binding selection"
+    ],
+    "blockingGaps": [
+      "relation-correct selected WorkItem and Document projections",
+      "stable Standing Agent Inbox transport and delivery state machine",
+      "governed Organization proposal and provisioning",
+      "module-owned permission catalogs",
+      "durable cross-client Runtime Supervisor",
+      "multiple accepted multi-directional Docs/Work/Org dogfood cycles"
+    ],
+    "visualContract": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/visual-contract.json"
+  },
   "standingAgentWorkLoop": {
     "implementationState": "verified",
     "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/src/company-os/operations/pages.tsx"],

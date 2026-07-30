@@ -128,6 +128,21 @@ async function main() {
   check(commitment?.display_amount === "¥3,000" && commitment?.status === "pending_approval" && !fixture.financial_records.some((record) => record.type === "payment"), "fixture has only the pending ¥3,000 trademark commitment");
   const { adaptCompanyOsDocsProjection, adaptTrademarkDocsFixture } = await loadFixtureAdapter();
   const pages = adaptTrademarkDocsFixture(fixture);
+  const archivedSourceProjection = structuredClone(fixture);
+  const archivedSource = archivedSourceProjection.documents.find((entry) => entry.id === "document-trademark-application-cn-2026-018");
+  archivedSource.lifecycle_status = "archived";
+  const archivedSourcePages = adaptCompanyOsDocsProjection(
+    archivedSourceProjection,
+    { documentId: archivedSource.id },
+  );
+  check(
+    archivedSourcePages.document.id === archivedSource.id
+      && archivedSourcePages.document.lifecycleStatus === "archived"
+      && archivedSourcePages.document.authoring === undefined
+      && archivedSourcePages.document.resultLinks?.some((link) => link.id === "workitem-trademark-filing-brand-a"),
+    "an explicitly selected archived source remains readable and linked to active Work while Store-live authoring is disabled",
+  );
+  check(document.includes('data-docs-archived-history="true"') && document.includes("Archived history.") && types.includes("lifecycleStatus?: string"), "Document Focus labels the read-only archived history route instead of degrading Work provenance to a raw id");
   check(pages.document.sourceLinks?.[0]?.label === "Trademark application CN-2026-018" && pages.document.resultLinks?.[0]?.label === "Trademark filing for Brand A", "fixture adapter preserves source and WorkItem provenance");
   check(pages.home.decisionActor?.name === "Brand Owner" && pages.home.financeSummary[0]?.value === "¥3,000" && pages.home.financeSummary[0]?.financialRecordType === "commitment", "home preserves the human decision and pending-commitment distinction");
   check(pages.home.decisionRequired?.href === "?surface=approvals&approval=approval-trademark-filing-fee-cn-2026-018", "projection adapter supplies the Home review CTA with the selected approval route");

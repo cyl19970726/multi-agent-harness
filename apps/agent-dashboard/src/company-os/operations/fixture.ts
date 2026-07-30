@@ -37,6 +37,10 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => text(item)).filter(Boolean) : [];
 }
 
+function distinct<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
+
 function refId(value: unknown): string {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
@@ -71,6 +75,12 @@ function relatedEntityLinks(value: unknown): RelatedLink[] {
     : [];
 }
 
+function entityRefs(value: unknown): CanonicalEntityRef[] {
+  return Array.isArray(value)
+    ? value.map(canonicalEntityRef).filter((entry): entry is CanonicalEntityRef => Boolean(entry))
+    : [];
+}
+
 function field(record: JsonRecord | undefined, key: string): unknown {
   if (!record) return undefined;
   if (record[key] !== undefined) return record[key];
@@ -100,8 +110,11 @@ function actorKind(value: unknown): ActorKind {
 
 function workStatus(value: unknown): WorkItemView["status"] {
   switch (text(value)) {
-    case "waiting_for_approval": case "in_progress": case "in_review": case "completed": case "blocked": return text(value) as WorkItemView["status"];
-    default: return "in_progress";
+    case "draft": case "submitted": case "triaged": case "accepted":
+    case "waiting_for_approval": case "in_progress": case "in_review":
+    case "completed": case "blocked": case "cancelled": case "archived":
+      return text(value) as WorkItemView["status"];
+    default: return "draft";
   }
 }
 
@@ -372,6 +385,10 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const actor = (id: unknown): ActorSummary => actorById[refId(id)] ?? {
     id: refId(id) || "unresolved-actor", name: "Unresolved actor", kind: "service", role: "Unresolved role",
   };
+  const optionalActor = (id: unknown): ActorSummary | undefined => {
+    const resolved = refId(id);
+    return resolved ? actor(resolved) : undefined;
+  };
 
   const documents = records(root.documents);
   const typedRecords = records(root.typed_records);
@@ -453,7 +470,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     deliverableRefs: relatedEntityLinks(workRecord.deliverable_refs),
     status: workStatus(workRecord.status),
     sourceDocument: source,
-    requestedBy: actor(workRecord.requested_by_ref ?? workRecord.requested_by),
+    requestedBy: optionalActor(workRecord.requested_by_ref ?? workRecord.requested_by),
     submittedBy: actor(workRecord.submitted_by_ref ?? workRecord.submitted_by),
     accountableOwner: actor(workRecord.accountable_owner_ref ?? workRecord.accountable_owner),
     assignees: Array.isArray(workRecord.assignee_refs) ? workRecord.assignee_refs.map(actor) : Array.isArray(workRecord.assignees) ? workRecord.assignees.map(actor) : [],
@@ -479,7 +496,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       deliverableRefs: relatedEntityLinks(record.deliverable_refs),
       status: workStatus(record.status),
       sourceDocument: asRef(recordSource?.id ?? record.source_document_ref, recordSource?.title ?? record.source_document_ref, recordSource?.space ?? recordSource?.space_id),
-      requestedBy: actor(record.requested_by_ref ?? record.requested_by),
+      requestedBy: optionalActor(record.requested_by_ref ?? record.requested_by),
       submittedBy: actor(record.submitted_by_ref ?? record.submitted_by),
       accountableOwner: actor(record.accountable_owner_ref ?? record.accountable_owner),
       assignees: Array.isArray(record.assignee_refs) ? record.assignee_refs.map(actor) : Array.isArray(record.assignees) ? record.assignees.map(actor) : [],
@@ -582,6 +599,30 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       expiresAt: text(approvalRecord.expires_at) || undefined,
     };
   }
+  const linkedApprovalIds = stringArray(workRecord.approval_refs);
+  const linkedApproval = linkedApprovalIds.includes(approval.id) ? approval : undefined;
+  const linkedEntityRefs = [
+    ...entityRefs(workRecord.context_refs),
+    ...entityRefs(workRecord.deliverable_refs),
+  ];
+  const linkedTypedRecordIds = distinct([
+    ...stringArray(workRecord.source_record_refs),
+    ...stringArray(workRecord.result_record_refs),
+    ...linkedEntityRefs.filter((entry) => entry.kind === "typed_record").map((entry) => entry.id),
+  ]);
+  const linkedTypedRecords = linkedTypedRecordIds
+    .map((id) => find(typedRecords, id))
+    .filter((entry): entry is JsonRecord => Boolean(entry))
+    .map((entry) => asRef(
+      entry.id,
+      field(entry, "display_id") ?? entry.display_name ?? entry.title ?? entry.id,
+      text(entry.record_type, "Typed record"),
+    ));
+  const linkedFinancialIds = distinct([
+    ...linkedEntityRefs.filter((entry) => entry.kind === "financial_record").map((entry) => entry.id),
+    ...(linkedApproval && subjectRef?.kind === "financial_record" ? [subjectRef.id] : []),
+  ]);
+  const linkedCommitment = linkedFinancialIds.includes(commitment.id) ? commitment : undefined;
 
   const organizationUnits = units.map((unit) => {
     const unitMemberships = memberships.filter((membership) => text(field(membership, "org_unit_id")) === text(unit.id));
@@ -604,8 +645,17 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       actorIds,
     };
   });
-  const companyUnit = pick(units, "org-company");
-  const brandUnit = pick(units, "org-brand-ip");
+  const companyUnit = organizationUnits.find((unit) => !unit.parentId) ?? organizationUnits[0];
+  const primaryOperatingUnit = organizationUnits
+    .filter((unit) => unit.id !== companyUnit?.id)
+    .sort((left, right) => {
+      const score = (unit: typeof left) => (
+        (unit.agentLeadActorId ? 100 : 0)
+        + unit.actorIds.filter((actorId) => actorById[actorId]?.kind === "standing_agent").length * 10
+        + unit.actorIds.length
+      );
+      return score(right) - score(left) || left.label.localeCompare(right.label);
+    })[0] ?? companyUnit;
 
   return {
     fixtureId: text(root.fixture_id) || undefined,
@@ -614,13 +664,16 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     standingAssignments,
     standingAssignmentConflicts,
     organization: {
-      company: asRef(companyUnit.id, field(companyUnit, "name")),
-      brandUnit: asRef(brandUnit.id, field(brandUnit, "name")),
+      company: asRef(companyUnit?.id, companyUnit?.label),
+      brandUnit: asRef(primaryOperatingUnit?.id, primaryOperatingUnit?.label),
       units: organizationUnits,
     },
     sourceDocument: source,
     contentPlanDocument: asRef(contentPlan.id, contentPlan.title, contentPlan.space ?? contentPlan.space_id),
     typedApplication: asRef(application.id, field(application, "display_id") ? `Trademark application ${text(field(application, "display_id"))}` : application.display_name ?? application.title, "Typed application record · filing preparation"),
+    linkedTypedRecords,
+    linkedApproval,
+    linkedCommitment,
     workItem,
     workItems,
     assignments,

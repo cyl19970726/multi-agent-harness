@@ -145,13 +145,37 @@ should reconcile the two: a member may *want* a capability the platform cannot
 provide, and that gap must be shown honestly (see Pillar 3 and invariant 4 in
 [integration/README.md](integration/README.md)).
 
-### Model / profile selection
+### Model, reasoning and service selection
 
 `AgentMember.model` and `AgentMember.profile` are nullable strings. `model`
 selects the platform model (mapped to `--config model=` for Codex, `--model`
 for Claude). `profile` selects a named provider configuration profile where the
 platform supports one. Both are part of base configuration because they affect
 behavior and cost but not *what the agent is allowed to touch*.
+
+`AgentProviderConfig.effort` is the neutral reasoning-intensity request.
+`AgentProviderConfig.service_tier` is the neutral latency/service-class request.
+They are not assumed to use the same provider vocabulary. The selected adapter
+maps them only when its reviewed execution mode exposes an equivalent control:
+
+| Neutral request | Codex app-server | Claude Agent SDK | Kimi ACP |
+| --- | --- | --- | --- |
+| `model` | thread start/resume and turn start | SDK query `model` | ACP `model` config option |
+| `effort` | `model_reasoning_effort` / turn effort | SDK query `effort` | ACP `thinking` config option |
+| `service_tier` | app-server `serviceTier` | unsupported until the SDK returns a native receipt | unsupported until ACP advertises a reviewed option |
+
+Requested configuration and effective provider state are different facts.
+Every new `MemberRun` snapshots `ProviderExecutionControls` with separate
+`requested`, `effective`, `status`, and non-secret `note` values for model,
+reasoning effort, and service tier. An adapter may mark a value `effective`
+only from the real native response/configuration receipt. Missing support is
+`unsupported`; an unreviewed provider/mode is `review_required`; Harness never
+copies a requested value into the effective field merely because launch did
+not fail.
+
+These fields are execution configuration, not Organization authority. A
+Standing Agent may reuse a different model or provider without changing its
+company identity, Work ownership, or native-session provenance.
 
 ---
 

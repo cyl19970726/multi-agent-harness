@@ -225,6 +225,19 @@ policy, creation rationale, and the approvals required by organization policy.
 Low-risk creation may be delegated to the Lead; financial, legal, credential,
 external-access, or organization-wide authority changes require Human approval.
 
+### Supervising Operator and Runtime Supervisor
+
+The Human may use a current Codex, Claude, Kimi, or other AI task as a
+Supervising Operator for the Lead. This is an operating relationship, not
+automatic Organization membership. The durable Lead keeps the same identity,
+queue, history, and authority when its provider or runtime changes.
+
+A separate deterministic Runtime Supervisor owns process leases, message
+delivery, retry, health, recovery, interrupt, resume, and Close. It is not an
+Actor and cannot assign company responsibility or approve a company action.
+The full separation and AgentOS dogfood loop are defined by
+[ADR 0046](../decisions/0046-supervised-agentos-self-hosting-loop.md).
+
 ## Cascading Standing Agent delegation
 
 Organization supports a deliberately nested agent hierarchy. An upper Standing
@@ -241,6 +254,11 @@ Agent may drive lower Standing Agents when all of the following are explicit:
 This lets a Lead Agent coordinate Governance Agents, a Docs Governance Agent
 maintain company memory, or a Development Agent route code work without turning
 every execution into a manually managed flat team.
+
+Each product system defines its own permission catalog. A parent may delegate
+Docs, Work, or Org capabilities only within the parent's declared ceiling.
+Proposing a child, provisioning it, granting permissions, reviewing its work,
+and approving a sensitive effect are distinct authorities.
 
 The same cascade can create new capability, but creation is governed. If a
 Docs Agent, Development Agent, Merchant Ops Agent, or any other Standing Agent

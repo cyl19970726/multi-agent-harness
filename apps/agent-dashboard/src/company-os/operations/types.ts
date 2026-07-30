@@ -51,9 +51,9 @@ export interface WorkItemView {
   acceptanceCriteria?: string[];
   contextRefs?: RelatedLink[];
   deliverableRefs?: RelatedLink[];
-  status: "waiting_for_approval" | "in_progress" | "in_review" | "completed" | "blocked";
+  status: "draft" | "submitted" | "triaged" | "accepted" | "waiting_for_approval" | "in_progress" | "in_review" | "completed" | "blocked" | "cancelled" | "archived";
   sourceDocument: RelatedLink;
-  requestedBy: ActorSummary;
+  requestedBy?: ActorSummary;
   submittedBy: ActorSummary;
   accountableOwner: ActorSummary;
   assignees: ActorSummary[];
@@ -238,6 +238,10 @@ export interface TrademarkOperationsProjection {
   sourceDocument: RelatedLink;
   contentPlanDocument: RelatedLink;
   typedApplication: RelatedLink;
+  /** Selected WorkItem relations. Empty means Store truth supplies no link. */
+  linkedTypedRecords?: RelatedLink[];
+  linkedApproval?: ApprovalView;
+  linkedCommitment?: FinancialRecordView;
   workItem: WorkItemView;
   workItems?: WorkItemView[];
   assignments?: AssignmentView[];

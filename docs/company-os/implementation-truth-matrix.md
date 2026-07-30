@@ -44,6 +44,31 @@ Human-owned source Document
 The absence of Finance is asserted before the financial trademark path begins;
 it is not inferred from missing fixture data.
 
+## AgentOS self-hosting loop
+
+The Company Store now contains an AgentOS Lead, Docs Governance Agent, Work
+Governance Agent, Platform Development Agent, AgentOS Docs, and a real autonomy
+WorkItem. The Store-live Organization, Docs, Work, Standing Agent, WorkItem,
+and Document pages can project those identities and records.
+
+This is a **partial dogfood foundation**, not a completed autonomous company.
+The current verified slice is durable identity and readable linked work. The
+blocking gaps are:
+
+- relation-correct selected pages that never attach another business line's
+  first Approval, finance record, typed record, or Actor;
+- stable Standing Agent Inbox transport with busy, idle, offline/recovered,
+  and closed delivery semantics;
+- governed Organization proposal/provisioning and module-owned permission
+  catalogs;
+- durable Runtime Supervisor ownership across clients and service restarts;
+- needs-attention projections and several real multi-directional Docs/Work/Org
+  cycles with accepted result promotion.
+
+The canonical operating model and staged visual contract are
+[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md) and
+[`company-os-v5/agentos-self-hosting-loop-v1`](../design/company-os-v5/agentos-self-hosting-loop-v1/README.md).
+
 The verified closure slice is:
 
 ```text

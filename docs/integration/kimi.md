@@ -10,64 +10,18 @@ This file should explain only how Kimi implements those contracts. Shared object
 semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and `Decision` must
 not be redefined here.
 
-## Agent Team planning
+## Persistent Agent Team mode
 
-The Agent Team adapter uses Kimi ACP, which may expose native plan updates.
-Those remain a Member-internal aid, not a Harness Plan lifecycle:
+Kimi Agent Team members use only `kimi_acp`; bounded `kimi_exec` remains a
+Dynamic Workflow and historical-read substrate. Planning, continuation,
+requested/effective controls, busy-turn mailbox behavior, Interrupt, restart,
+and native-session resume are defined in the focused
+[Kimi ACP Agent Team runtime](kimi-agent-team.md) contract.
 
-```text
-Host TeamMessage(message): "Return a Markdown plan first; do not execute"
-  -> Member may use Kimi native planning in its session
-  -> Member TeamMessage(message): Markdown plan
-  -> Host TeamMessage(message): revise or execute
-```
-
-Kimi does not currently have a reviewed native continuation controller in this
-adapter. It therefore uses the provider-neutral `host_driven` path: Harness
-delivers one eligible mailbox envelope at a time and Kimi keeps its native
-session as execution truth. This is not an “emulated Goal”; no Harness Goal
-object exists. Raw ACP plan/thought/tool streams remain provider-native. Only
-ordinary Host/Member coordination is persisted. A provider-owned pause that
-actually blocks the session is still a `PendingInteraction`; ACP `completed`
-is not semantic Host acceptance. See
-[ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
-The cross-provider contract is
-[Member Continuation Model](../member-continuation-model.md).
-
-## Mode Boundary
-
-| Product surface | Mode | Status |
-| --- | --- | --- |
-| Agent Team Member | `kimi_acp` | persistent bidirectional Team mode |
-| Dynamic Workflow / bounded execution | `kimi_exec` | one-shot `kimi -p` mode |
-| Historical Team record | `kimi_exec` | readable, never startable |
-
-Harness never silently falls back from ACP to one-shot print mode. The older
-`ProviderCapabilities::kimi_exec()` preset describes bounded Workflow
-execution and must not be used to infer Team capability.
-
-Current compatibility is explicit: the installed Kimi Code probe reports
-`0.29.1`, while `kimi-acp-v1` is reviewed only for `0.27.0`. The adapter
-therefore reports `review_required`. Do not promote 0.29.1 or infer support
-from the existing hot path without protocol/schema regeneration, deterministic
-checks, and a proportional live canary. Any Kimi change follows ADR 0031's
-Agent-managed, one-Provider-at-a-time update and rollback loop.
-
-The Agent Team runtime is:
-
-```text
-MemberRun + correlated Assignment
-  -> Kimi ACP process over stdio
-  -> initialize
-  -> session/new or session/load
-  -> session/prompt for one eligible mailbox envelope
-  -> session/cancel only when the detected version's reviewed capability supports it
-  -> explicit Host Close ends the Member runtime
-```
-
-Health is reported separately for process, ACP protocol, native session, and
-mailbox delivery. Provider-native activity stays in the Kimi session; Harness
-retains only the native binding and explicit coordination facts.
+The installed Kimi Code probe is 0.29.1 while `kimi-acp-v1` remains reviewed
+only for 0.27.0, so compatibility stays `review_required`. A successful
+model/`thinking` setting receipt does not promote that separate compatibility
+claim.
 
 ## Install and login
 

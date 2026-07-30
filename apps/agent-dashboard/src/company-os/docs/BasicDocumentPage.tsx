@@ -1,4 +1,5 @@
 import {
+  Archive,
   ArrowUpRight,
   BookOpen,
   ChevronDown,
@@ -542,8 +543,8 @@ function WanchengwanlingDocumentPage({
                 <p className="mt-4 max-w-4xl text-sm leading-6 text-muted-foreground">{paragraphText || document.description}</p>
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => onRequestAction?.("new-action", document)}>New action</Button>
-                <Button size="sm" onClick={() => onRequestAction?.("ask-agent", document)}>Ask agent</Button>
+                <Button variant="outline" size="sm" disabled={!onRequestAction} title={!onRequestAction ? "No governed action transport is connected." : undefined} onClick={() => onRequestAction?.("new-action", document)}>New action</Button>
+                <Button size="sm" disabled={!onRequestAction} title={!onRequestAction ? "No Standing Agent Inbox transport is connected." : undefined} onClick={() => onRequestAction?.("ask-agent", document)}>Ask agent</Button>
                 <Button variant="ghost" size="icon" aria-label="More document options"><MoreHorizontal /></Button>
               </div>
             </div>
@@ -763,9 +764,10 @@ export function BasicDocumentPage({
         <DocumentSurface className="mx-0 min-w-0 max-w-[800px] space-y-6">
           <header className="space-y-3 border-b border-border pb-5">
             {document.breadcrumb?.length ? <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">{document.breadcrumb.join(" / ")}</nav> : null}
+            {document.lifecycleStatus === "archived" && <div role="status" data-docs-archived-history="true" className="flex gap-2 rounded-lg border border-status-warn/30 bg-status-warn/[0.07] px-3 py-2.5 text-sm leading-5"><Archive className="mt-0.5 size-4 shrink-0 text-status-warn" /><span><strong>Archived history.</strong> This source remains readable and navigable for Work provenance, but Store-live authoring is disabled.</span></div>}
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 space-y-2"><h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{document.title}</h1>{document.description && <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{document.description}</p>}</div>
-              <div className="flex shrink-0 gap-1.5"><Button variant="outline" size="sm" onClick={() => onRequestAction?.("new-action", document)}>New action</Button><Button size="sm" onClick={() => onRequestAction?.("ask-agent", document)}>Ask an agent</Button><Button variant="ghost" size="icon" aria-label="More document options"><MoreHorizontal /></Button></div>
+              <div className="flex shrink-0 gap-1.5"><Button variant="outline" size="sm" disabled={!onRequestAction} title={!onRequestAction ? "No governed action transport is connected." : undefined} onClick={() => onRequestAction?.("new-action", document)}>New action</Button><Button size="sm" disabled={!onRequestAction} title={!onRequestAction ? "No Standing Agent Inbox transport is connected." : undefined} onClick={() => onRequestAction?.("ask-agent", document)}>Ask an agent</Button><Button variant="ghost" size="icon" aria-label="More document options"><MoreHorizontal /></Button></div>
             </div>
             {document.properties?.length ? <dl className="flex min-w-0 flex-wrap gap-1.5">{document.properties.map((property, index) => <div key={`${property.ref ?? "property"}:${property.label}:${index}`} data-company-os-ref={property.ref} data-actor-type={property.actorType} className="flex max-w-full min-w-0 items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs"><dt className="shrink-0 text-muted-foreground">{property.label}:</dt><dd className="min-w-0 break-words font-medium text-foreground">{property.value}</dd></div>)}</dl> : null}
           </header>

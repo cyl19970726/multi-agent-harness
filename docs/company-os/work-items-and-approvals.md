@@ -221,6 +221,13 @@ Finance is not part of this core path unless the WorkItem declares a monetary
 effect. If the work involves purchase, payout, refund, budget, commitment, or
 invoice state, Work records the request and Finance owns the monetary record.
 
+In AgentOS self-hosting, Work is not merely the middle step of a fixed
+Docs-to-Work pipeline. A Work blocker may create an Organization capability
+proposal; an Org change may create documentation and migration WorkItems; a
+Docs audit may create corrective Work. Every WorkItem still requires explicit
+source context, accountability, lifecycle, review, and result promotion. See
+[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md).
+
 ## Approval contract
 
 An `Approval` is an auditable authorization request associated with a WorkItem

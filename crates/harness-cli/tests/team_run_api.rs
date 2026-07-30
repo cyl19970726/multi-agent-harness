@@ -139,6 +139,10 @@ fn team_run_cli_create_list_status_send_events() {
             "lead:coordinator:kimi",
             "--member",
             "worker-1:implementer:codex:gpt-5@crates/a,docs",
+            "--member-effort",
+            "worker-1:max",
+            "--member-service-tier",
+            "worker-1:priority",
             "--member-worktree",
             &format!("worker-1:{project_root}"),
         ],
@@ -178,6 +182,23 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(status["team_run"]["id"].as_str(), Some(run_id.as_str()));
     let members = status["members"].as_array().expect("members");
     assert_eq!(members.len(), 2, "members: {members:?}");
+    let controlled_member = members
+        .iter()
+        .find(|entry| entry["member_run"]["name"].as_str() == Some("worker-1"))
+        .expect("worker-1 MemberRun");
+    assert_eq!(
+        controlled_member["member_run"]["provider_controls"]["model"]["requested"].as_str(),
+        Some("gpt-5")
+    );
+    assert_eq!(
+        controlled_member["member_run"]["provider_controls"]["reasoning_effort"]["requested"]
+            .as_str(),
+        Some("max")
+    );
+    assert_eq!(
+        controlled_member["member_run"]["provider_controls"]["service_tier"]["requested"].as_str(),
+        Some("priority")
+    );
     assert_eq!(
         members[0]["member_run"]["name"].as_str(),
         Some("lead"),

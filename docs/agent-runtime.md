@@ -49,6 +49,27 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
 | How are providers swapped? | Providers implement the same interfaces and cannot own harness state. |
 
+## Runtime contract updates and reconciliation
+
+A long-lived Agent may outlive the Harness binary or adapter configuration that
+started its current process. Updating the Dashboard bundle or a Docs projection
+does not require restarting provider runtimes. Updating an adapter protocol,
+provider-control mapping, permission envelope, provider version, or delivery
+contract does.
+
+| Change | Required action |
+| --- | --- |
+| Docs/UI/read projection only | refresh the projection; keep MemberRun and native session |
+| Harness process restart with the same adapter contract | acquire a new Supervisor generation and reattach the same unclosed MemberRun/native session |
+| adapter, protocol, permission, model/effort mapping, or Plugin contract change | drain or interrupt the active turn, release the old runtime owner, create an explicit replacement runtime generation, and resume the provider-native session only when that version/mode declares it compatible |
+| incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
+
+At no point may both generations drive the same writable Workspace. Durable
+WorkItem, Assignment correlation, Standing Agent identity, and accepted
+evidence survive the transition. Provider upgrades still require explicit
+Human confirmation under ADR 0031; an ordinary Harness build update is not
+permission to upgrade Codex, Claude Code, or Kimi.
+
 ## A-ROM Objects
 
 | Object | Owns | Refuses |
@@ -60,6 +81,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
 | `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
+| `ProviderExecutionControls` | requested versus effective model, reasoning effort, and service tier with native receipt status | provider capability inference or Organization authority |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
@@ -98,6 +120,14 @@ The member Inbox is a latest-row projection over messages addressed to that
 MemberRun. Its default view contains actionable queued/delivered coordination;
 the historical view contains the complete same-run coordination lineage. It
 does not read or copy provider-native chat.
+
+Delivery does not imply that a semantic reply is required. An ordinary
+coordination message should declare response intent explicitly when the sender
+needs another provider round. Receipt acknowledgements, final scope
+confirmations, and other messages with no new fact, question, blocker, review
+request, or requested action must be allowed to converge without recursive
+acknowledgement replies. The durable transport ACK remains a control-plane fact
+and is not implemented by asking the provider to write another chat message.
 
 `PendingInteraction` is reserved for a provider turn actually paused on a
 question or approval. It is not a replacement for ordinary peer or Host chat,

@@ -18,6 +18,16 @@
     "role": { "type": "string", "minLength": 1 },
     "provider": { "type": "string", "minLength": 1 },
     "model": { "type": ["string", "null"], "minLength": 1 },
+    "provider_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "reasoning_effort", "service_tier"],
+      "properties": {
+        "model": { "$ref": "#/$defs/providerControlValue" },
+        "reasoning_effort": { "$ref": "#/$defs/providerControlValue" },
+        "service_tier": { "$ref": "#/$defs/providerControlValue" }
+      }
+    },
     "provider_profile": {
       "type": ["object", "null"],
       "additionalProperties": false,
@@ -97,5 +107,27 @@
     "started_at": { "type": "string", "minLength": 1 },
     "last_event_at": { "type": ["string", "null"], "minLength": 1 },
     "finished_at": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "$defs": {
+    "providerControlValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "effective", "status", "note"],
+      "properties": {
+        "requested": { "type": ["string", "null"] },
+        "effective": { "type": ["string", "null"] },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_requested",
+            "requested",
+            "effective",
+            "unsupported",
+            "review_required"
+          ]
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    }
   }
 }

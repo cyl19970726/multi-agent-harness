@@ -26,24 +26,34 @@ const DEVELOPMENT_APPROVAL_POLICY: &str = "never";
 fn thread_open_params(
     cwd: &Path,
     model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    service_tier: Option<&str>,
     resume_thread_id: Option<&str>,
 ) -> serde_json::Value {
-    match resume_thread_id {
+    let mut params = match resume_thread_id {
         Some(thread_id) => serde_json::json!({
             "threadId": thread_id,
             "cwd": cwd,
             "model": model,
+            "serviceTier": service_tier,
             "sandbox": DEVELOPMENT_SANDBOX,
             "approvalPolicy": DEVELOPMENT_APPROVAL_POLICY
         }),
         None => serde_json::json!({
             "cwd": cwd,
             "model": model,
+            "serviceTier": service_tier,
             "sandbox": DEVELOPMENT_SANDBOX,
             "approvalPolicy": DEVELOPMENT_APPROVAL_POLICY,
             "ephemeral": false
         }),
+    };
+    if let Some(reasoning_effort) = reasoning_effort {
+        params["config"] = serde_json::json!({
+            "model_reasoning_effort": reasoning_effort,
+        });
     }
+    params
 }
 
 fn thread_name_params(thread_id: &str, member_name: &str) -> serde_json::Value {
@@ -53,10 +63,7 @@ fn thread_name_params(thread_id: &str, member_name: &str) -> serde_json::Value {
     })
 }
 
-fn effective_thread_model(
-    response: &serde_json::Value,
-    requested_model: Option<&str>,
-) -> Option<String> {
+fn effective_thread_model(response: &serde_json::Value) -> Option<String> {
     [
         // Current app-server responses expose the effective model alongside
         // `thread`, because it is resolved from the active provider/config.
@@ -68,12 +75,43 @@ fn effective_thread_model(
         response
             .pointer("/result/thread/model")
             .and_then(|value| value.as_str()),
-        requested_model,
     ]
     .into_iter()
     .flatten()
     .find(|model| !model.trim().is_empty())
     .map(str::to_string)
+}
+
+fn effective_thread_reasoning_effort(response: &serde_json::Value) -> Option<String> {
+    response
+        .pointer("/result/reasoningEffort")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn effective_thread_service_tier(response: &serde_json::Value) -> Option<String> {
+    response
+        .pointer("/result/serviceTier")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn require_requested_setting(
+    label: &str,
+    requested: Option<&str>,
+    effective: Option<&str>,
+) -> CliResult<()> {
+    if let Some(requested) = requested {
+        if effective != Some(requested) {
+            return Err(CliError::Usage(format!(
+                "codex app-server did not confirm requested {label} `{requested}`; effective value was {}",
+                effective.unwrap_or("<none>")
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) struct CodexAppServerClient {
@@ -86,25 +124,29 @@ pub(crate) struct CodexAppServerClient {
     stderr_tail: Arc<Mutex<String>>,
     thread_id: String,
     model: String,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     collaboration_mode: &'static str,
 }
 
+pub(crate) struct CodexAppServerSpawnOptions<'a> {
+    pub(crate) model: Option<&'a str>,
+    pub(crate) reasoning_effort: Option<&'a str>,
+    pub(crate) service_tier: Option<&'a str>,
+    pub(crate) resume_thread_id: Option<&'a str>,
+    pub(crate) member_name: &'a str,
+    pub(crate) collaboration_env: &'a [(String, String)],
+    pub(crate) plan_mode: bool,
+}
+
 impl CodexAppServerClient {
-    pub(crate) fn spawn(
-        cwd: &Path,
-        model: Option<&str>,
-        _workspace_write: bool,
-        resume_thread_id: Option<&str>,
-        member_name: &str,
-        collaboration_env: &[(String, String)],
-        plan_mode: bool,
-    ) -> CliResult<Self> {
+    pub(crate) fn spawn(cwd: &Path, options: CodexAppServerSpawnOptions<'_>) -> CliResult<Self> {
         let mut command = Command::new("codex");
         command
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")
-            .envs(collaboration_env.iter().cloned())
+            .envs(options.collaboration_env.iter().cloned())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -181,7 +223,9 @@ impl CodexAppServerClient {
             stderr_tail,
             thread_id: String::new(),
             model: String::new(),
-            collaboration_mode: if plan_mode { "plan" } else { "default" },
+            reasoning_effort: None,
+            service_tier: None,
+            collaboration_mode: if options.plan_mode { "plan" } else { "default" },
         };
         client.request_blocking(
             "initialize",
@@ -199,12 +243,18 @@ impl CodexAppServerClient {
         // Temporary development policy: interactive Agent Team members receive
         // the same full execution permission as batch Codex members. Owned paths
         // remain a coordination/acceptance boundary, not a provider sandbox.
-        let method = if resume_thread_id.is_some() {
+        let method = if options.resume_thread_id.is_some() {
             "thread/resume"
         } else {
             "thread/start"
         };
-        let params = thread_open_params(cwd, model, resume_thread_id);
+        let params = thread_open_params(
+            cwd,
+            options.model,
+            options.reasoning_effort,
+            options.service_tier,
+            options.resume_thread_id,
+        );
         let response = client.request_blocking(method, params, HANDSHAKE_TIMEOUT)?;
         client.thread_id = response
             .pointer("/result/thread/id")
@@ -213,15 +263,27 @@ impl CodexAppServerClient {
                 CliError::Usage(format!("codex {method} omitted thread id: {response}"))
             })?
             .to_string();
-        client.model = effective_thread_model(&response, model)
+        client.model = effective_thread_model(&response)
             .ok_or_else(|| {
                 CliError::Usage(format!(
                     "codex {method} omitted the effective thread model required for collaborationMode: {response}"
                 ))
             })?;
+        client.reasoning_effort = effective_thread_reasoning_effort(&response);
+        client.service_tier = effective_thread_service_tier(&response);
+        require_requested_setting(
+            "reasoning effort",
+            options.reasoning_effort,
+            client.reasoning_effort.as_deref(),
+        )?;
+        require_requested_setting(
+            "service tier",
+            options.service_tier,
+            client.service_tier.as_deref(),
+        )?;
         client.request_blocking(
             "thread/name/set",
-            thread_name_params(&client.thread_id, member_name),
+            thread_name_params(&client.thread_id, options.member_name),
             HANDSHAKE_TIMEOUT,
         )?;
         Ok(client)
@@ -229,6 +291,18 @@ impl CodexAppServerClient {
 
     pub(crate) fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub(crate) fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort.as_deref()
+    }
+
+    pub(crate) fn service_tier(&self) -> Option<&str> {
+        self.service_tier.as_deref()
     }
 
     pub(crate) fn ensure_transport_alive(&mut self) -> CliResult<()> {
@@ -254,6 +328,9 @@ impl CodexAppServerClient {
             serde_json::json!({
                 "threadId": self.thread_id,
                 "input": [{"type": "text", "text": text}],
+                "model": self.model,
+                "effort": self.reasoning_effort,
+                "serviceTier": self.service_tier,
                 // app-server collaboration modes are a per-turn experimental
                 // protocol field, not a `codex -c` configuration key. Send a
                 // complete preset so the provider's native turn_context
@@ -262,6 +339,7 @@ impl CodexAppServerClient {
                     "mode": self.collaboration_mode,
                     "settings": {
                         "model": self.model,
+                        "reasoning_effort": self.reasoning_effort,
                         "developer_instructions": null
                     }
                 }
@@ -406,11 +484,19 @@ mod tests {
 
     #[test]
     fn new_thread_uses_temporary_full_access_policy() {
-        let params = thread_open_params(Path::new("/tmp/project"), Some("gpt-test"), None);
+        let params = thread_open_params(
+            Path::new("/tmp/project"),
+            Some("gpt-test"),
+            Some("max"),
+            Some("priority"),
+            None,
+        );
 
         assert_eq!(params["sandbox"], "danger-full-access");
         assert_eq!(params["approvalPolicy"], "never");
         assert_eq!(params["ephemeral"], false);
+        assert_eq!(params["config"]["model_reasoning_effort"], "max");
+        assert_eq!(params["serviceTier"], "priority");
         assert!(params.get("threadId").is_none());
     }
 
@@ -419,6 +505,8 @@ mod tests {
         let params = thread_open_params(
             Path::new("/tmp/project"),
             Some("gpt-test"),
+            Some("high"),
+            Some("default"),
             Some("thread-123"),
         );
 
@@ -449,13 +537,13 @@ mod tests {
         });
 
         assert_eq!(
-            effective_thread_model(&response, Some("gpt-requested")).as_deref(),
+            effective_thread_model(&response).as_deref(),
             Some("gpt-current")
         );
     }
 
     #[test]
-    fn effective_model_accepts_legacy_nested_and_requested_fallbacks() {
+    fn effective_model_accepts_legacy_nested_but_never_invents_a_requested_receipt() {
         let legacy = serde_json::json!({
             "result": {"thread": {"id": "thread-123", "model": "gpt-legacy"}}
         });
@@ -464,13 +552,32 @@ mod tests {
         });
 
         assert_eq!(
-            effective_thread_model(&legacy, Some("gpt-requested")).as_deref(),
+            effective_thread_model(&legacy).as_deref(),
             Some("gpt-legacy")
         );
+        assert_eq!(effective_thread_model(&omitted), None);
+    }
+
+    #[test]
+    fn requested_reasoning_and_service_controls_require_native_confirmation() {
+        let response = serde_json::json!({
+            "result": {
+                "reasoningEffort": "max",
+                "serviceTier": "priority"
+            }
+        });
         assert_eq!(
-            effective_thread_model(&omitted, Some("gpt-requested")).as_deref(),
-            Some("gpt-requested")
+            effective_thread_reasoning_effort(&response).as_deref(),
+            Some("max")
         );
-        assert_eq!(effective_thread_model(&omitted, Some("   ")), None);
+        assert_eq!(
+            effective_thread_service_tier(&response).as_deref(),
+            Some("priority")
+        );
+        require_requested_setting("reasoning effort", Some("max"), Some("max"))
+            .expect("matching native receipt");
+        assert!(
+            require_requested_setting("service tier", Some("priority"), Some("default")).is_err()
+        );
     }
 }

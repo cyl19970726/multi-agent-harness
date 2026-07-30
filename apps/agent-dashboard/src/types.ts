@@ -345,6 +345,27 @@ export interface MemberWorkspaceSnapshot {
   skill_roots: string[];
 }
 
+export type ProviderControlStatus =
+  | "not_requested"
+  | "requested"
+  | "effective"
+  | "unsupported"
+  | "review_required";
+
+/** One provider-neutral execution setting, separated into intent and receipt. */
+export interface ProviderControlValue {
+  requested?: string | null;
+  effective?: string | null;
+  status?: ProviderControlStatus | string;
+  note?: string | null;
+}
+
+export interface ProviderExecutionControls {
+  model: ProviderControlValue;
+  reasoning_effort: ProviderControlValue;
+  service_tier: ProviderControlValue;
+}
+
 /** One member's participation in a {@link TeamRun}. */
 export interface MemberRun {
   id: string;
@@ -355,7 +376,9 @@ export interface MemberRun {
   name?: string | null;
   role?: string | null;
   provider?: "codex" | "claude" | "kimi" | string;
+  /** Legacy requested-model shortcut; use provider_controls for effective truth. */
   model?: string | null;
+  provider_controls?: ProviderExecutionControls | null;
   provider_profile?: ProviderIntegrationProfile | null;
   status?: MemberRunStatus | string;
   native_session?: NativeSessionRef | null;
