@@ -8,7 +8,9 @@
 //! bind implicitly, and every other StandingAgent field survives the re-append.
 
 mod harness_env;
+use harness_core::TeamDeliveryStatus;
 use harness_env::{current_project_id, run_harness, run_harness_with_env, TempHome};
+use harness_store::HarnessStore;
 
 const COMPANY_OS_TEST_TOKEN: &str = "company-execution-link-test-capability";
 
@@ -137,6 +139,8 @@ fn seed(home: &TempHome, project_id: &str) {
             "Own merchant operations",
             "--capability",
             "ops.review",
+            "--permission",
+            "company.records.write",
             "--tool",
             "harness",
             "--skill",
@@ -144,6 +148,317 @@ fn seed(home: &TempHome, project_id: &str) {
             "--capacity",
             "3",
         ],
+    );
+}
+
+#[test]
+fn company_assignment_reconciliation_requires_exact_member_delivery_and_never_moves_work() {
+    let home = TempHome::new("company-assignment-execution-bridge");
+    let project_id = init_project(&home, "wcw");
+    seed(&home, &project_id);
+
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "org",
+            "link-execution",
+            "--authority",
+            "human-wcw-owner",
+            "--actor",
+            "agent-wcw-ops",
+            "--agent-member",
+            "agent-wcw-ops",
+            "--execution-space",
+            &project_id,
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-wcw-ops",
+            "--name",
+            "Wcw Operations",
+            "--description",
+            "Execute governed operations work.",
+            "--lead",
+            "agent-wcw-ops",
+            "--member",
+            "agent-wcw-ops",
+        ],
+    );
+    let created = run_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "create",
+            "--agent-team-id",
+            "team-wcw-ops",
+            "--objective",
+            "Execute the explicit Company Assignment.",
+            "--json",
+        ],
+    );
+    let team_message = &created["assignment_messages"][0];
+    let team_message_id = team_message["id"].as_str().unwrap();
+    let correlation_id = team_message["correlation_id"].as_str().unwrap();
+    let member_run_id = created["member_runs"][0]["id"].as_str().unwrap();
+
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "docs",
+            "document",
+            "create",
+            "--root",
+            "--id",
+            "document-work-root",
+            "--title",
+            "Work root",
+            "--actor",
+            "human-wcw-owner",
+            "--actor-kind",
+            "human",
+            "--authority",
+            "human-wcw-owner",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "docs",
+            "module",
+            "create",
+            "--id",
+            "module-work-bridge",
+            "--root-document",
+            "document-work-root",
+            "--name",
+            "Work bridge",
+            "--purpose",
+            "Exercise Company Assignment delivery.",
+            "--record-type",
+            "work",
+            "--default-view-id",
+            "view-work-bridge",
+            "--default-view-title",
+            "Work bridge",
+            "--authority",
+            "human-wcw-owner",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "docs",
+            "page-definition",
+            "create",
+            "--id",
+            "page-work-bridge",
+            "--module",
+            "module-work-bridge",
+            "--fallback-view",
+            "view-work-bridge",
+            "--purpose",
+            "Declare the explicit Assignment bridge actions.",
+            "--package-id",
+            "package-work-bridge",
+            "--authority",
+            "human-wcw-owner",
+            "--owner",
+            "human-wcw-owner",
+            "--action",
+            "work_item.append",
+            "--action",
+            "assignment.append",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "create",
+            "--definition",
+            "page-work-bridge",
+            "--id",
+            "workitem-assignment-bridge",
+            "--source-document",
+            "document-work-root",
+            "--module",
+            "module-work-bridge",
+            "--title",
+            "Exercise Assignment bridge",
+            "--objective",
+            "Prove delivery is explicit and Work lifecycle remains independent.",
+            "--submitted-by",
+            "agent-wcw-ops",
+            "--accountable-owner",
+            "agent-wcw-ops",
+            "--assignee",
+            "agent-wcw-ops",
+            "--actor",
+            "agent-wcw-ops",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "assign",
+            "--definition",
+            "page-work-bridge",
+            "--id",
+            "assignment-work-bridge",
+            "--work-item",
+            "workitem-assignment-bridge",
+            "--assignee",
+            "agent-wcw-ops",
+            "--assigned-by",
+            "agent-wcw-ops",
+            "--correlation-id",
+            correlation_id,
+            "--delivery-evidence",
+            team_message_id,
+        ],
+    );
+
+    let pending = run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "assignment",
+            "status",
+            "--assignment",
+            "assignment-work-bridge",
+            "--execution-space",
+            &project_id,
+        ],
+    );
+    assert_eq!(pending["result"]["link_status"], "linked");
+    assert_eq!(pending["result"]["member_run_id"], member_run_id);
+    assert_eq!(pending["result"]["team_delivery_proven"], false);
+
+    let premature = run_failure(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "assignment",
+            "reconcile",
+            "--definition",
+            "page-work-bridge",
+            "--assignment",
+            "assignment-work-bridge",
+            "--execution-space",
+            &project_id,
+            "--delivery-state",
+            "delivered",
+            "--actor",
+            "agent-wcw-ops",
+        ],
+    );
+    assert!(
+        premature.contains("has not reached the target MemberRun"),
+        "queued TeamMessage must not prove Company delivery: {premature}"
+    );
+
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let mut message = store
+        .team_messages()
+        .expect("read TeamMessages")
+        .into_iter()
+        .find(|candidate| candidate.id == team_message_id)
+        .expect("assignment TeamMessage");
+    message.deliveries[0].status = TeamDeliveryStatus::Delivered;
+    message.deliveries[0].provider_receipt_id = Some("provider-receipt-work-bridge".into());
+    store
+        .append_team_message(&message)
+        .expect("record actual recipient delivery");
+
+    let delivered = run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "assignment",
+            "reconcile",
+            "--definition",
+            "page-work-bridge",
+            "--assignment",
+            "assignment-work-bridge",
+            "--execution-space",
+            &project_id,
+            "--delivery-state",
+            "delivered",
+            "--actor",
+            "agent-wcw-ops",
+        ],
+    );
+    assert_eq!(
+        delivered["result"]["assignment"]["delivery_state"],
+        "delivered"
+    );
+    assert_eq!(delivered["result"]["team_delivery_proven"], true);
+
+    let acknowledged = run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "assignment",
+            "reconcile",
+            "--definition",
+            "page-work-bridge",
+            "--assignment",
+            "assignment-work-bridge",
+            "--execution-space",
+            &project_id,
+            "--delivery-state",
+            "acknowledged",
+            "--actor",
+            "agent-wcw-ops",
+        ],
+    );
+    assert_eq!(
+        acknowledged["result"]["assignment"]["delivery_state"],
+        "acknowledged"
+    );
+
+    let work = run_json(
+        &home,
+        &project_id,
+        &[
+            "company",
+            "work",
+            "query",
+            "--work-item",
+            "workitem-assignment-bridge",
+        ],
+    );
+    assert_eq!(
+        work["result"]["work_item"]["status"], "submitted",
+        "delivery and acknowledgement must never transition Company Work"
     );
 }
 

@@ -3008,7 +3008,7 @@ fn company_finance_transition_payment_command(
 fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "company work list|query|create|update|assign|transition|close|milestone",
+        "company work list|query|create|update|assign|assignment|transition|close|milestone",
     )?;
     match args[0].as_str() {
         "list" => company_work_list_command(store, &args[1..]),
@@ -3016,13 +3016,272 @@ fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> 
         "create" => company_work_create_command(store, &args[1..]),
         "update" => company_work_update_command(store, &args[1..]),
         "assign" => company_work_assign_command(store, &args[1..]),
+        "assignment" => company_work_assignment_command(store, &args[1..]),
         "transition" => company_work_transition_command(store, &args[1..]),
         "close" => company_work_close_command(store, &args[1..]),
         "milestone" => company_work_milestone_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company work command: {other}; usage: harness company work list|query|create|update|assign|transition|close|milestone"
+            "unknown company work command: {other}; usage: harness company work list|query|create|update|assign|assignment|transition|close|milestone"
         ))),
     }
+}
+
+fn company_work_assignment_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "company work assignment status|reconcile")?;
+    match args[0].as_str() {
+        "status" => company_work_assignment_status_command(store, &args[1..]),
+        "reconcile" => company_work_assignment_reconcile_command(store, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown company work assignment command: {other}; usage: harness company work assignment status|reconcile"
+        ))),
+    }
+}
+
+/// Resolve an explicit Company Assignment -> Agent Team execution bridge.
+///
+/// This helper never guesses from an actor name, provider, role, or timestamp.
+/// The durable Assignment names the exact TeamMessage in
+/// `delivery_evidence_ref`; its correlation must match, the recipient Standing
+/// Agent must explicitly link the target AgentMember, and that AgentMember must
+/// own the addressed MemberRun.
+fn company_assignment_execution_status(
+    company_store: &HarnessStore,
+    execution_store: &HarnessStore,
+    assignment_id: &str,
+    team_message_override: Option<&str>,
+) -> CliResult<serde_json::Value> {
+    let assignment = company_store
+        .latest_assignments()?
+        .into_iter()
+        .find(|candidate| candidate.id == assignment_id)
+        .ok_or_else(|| CliError::Usage(format!("Assignment not found: {assignment_id}")))?;
+    let work_item = company_store
+        .latest_work_items()?
+        .into_iter()
+        .find(|candidate| candidate.id == assignment.work_item_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "Assignment {} references missing WorkItem {}",
+                assignment.id, assignment.work_item_id
+            ))
+        })?;
+    let projection = company_os_api::assignment_execution_projection_with_override(
+        company_store,
+        execution_store,
+        team_message_override.map(|message_id| (assignment_id, message_id)),
+    )?;
+    let health_findings = projection
+        .health
+        .into_iter()
+        .filter(|finding| {
+            finding
+                .get("assignment_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(assignment_id)
+        })
+        .collect::<Vec<_>>();
+    let Some(link) = projection.links.into_iter().find(|link| {
+        link.get("assignment_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(assignment_id)
+    }) else {
+        let standing_agent =
+            company_store
+                .latest_standing_agents()?
+                .into_iter()
+                .find(|candidate| {
+                    assignment.recipient.actor_type == harness_core::ActorType::Agent
+                        && candidate.id == assignment.recipient.actor_id
+                });
+        let same_correlation_candidates = health_findings
+            .iter()
+            .filter_map(|finding| finding.get("same_correlation_candidates"))
+            .flat_map(|candidates| candidates.as_array().into_iter().flatten())
+            .cloned()
+            .collect::<Vec<_>>();
+        return Ok(serde_json::json!({
+            "assignment": assignment,
+            "work_item_status": work_item.status,
+            "standing_agent_id": standing_agent.as_ref().map(|agent| agent.id.clone()),
+            "agent_member_id": standing_agent.and_then(|agent| agent.execution_agent_member_ref),
+            "link_status": "unlinked",
+            "same_correlation_candidates": same_correlation_candidates,
+            "health_findings": health_findings
+        }));
+    };
+    let member_run_id = link["member_run_id"]
+        .as_str()
+        .ok_or_else(|| CliError::Usage("execution link is missing member_run_id".into()))?;
+    let team_run_id = link["team_run_id"]
+        .as_str()
+        .ok_or_else(|| CliError::Usage("execution link is missing team_run_id".into()))?;
+    let member = latest_member_runs_in_append_order(execution_store)?
+        .into_iter()
+        .find(|candidate| candidate.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("MemberRun not found: {member_run_id}")))?;
+    let team_run = latest_team_runs_in_append_order(execution_store)?
+        .into_iter()
+        .find(|candidate| candidate.id == team_run_id)
+        .ok_or_else(|| CliError::Usage(format!("AgentTeamRun not found: {team_run_id}")))?;
+    Ok(serde_json::json!({
+        "assignment": assignment,
+        "work_item_status": work_item.status,
+        "standing_agent_id": link["standing_agent_id"],
+        "agent_member_id": link["agent_member_id"],
+        "team_run_id": link["team_run_id"],
+        "team_message_id": link["team_message_id"],
+        "member_run_id": link["member_run_id"],
+        "member_status": member.status,
+        "native_session": link["native_session"],
+        "handoff_message_ids": link["handoff_message_ids"],
+        "team_delivery": link["team_delivery"],
+        "team_delivery_proven": link["team_delivery_proven"],
+        "link_status": "linked",
+        "execution_refs": [
+            {
+                "kind": "agent_team_run",
+                "reference": team_run.id,
+                "role_in_execution": "assignment_delivery",
+                "status": team_run.status,
+                "started_at": team_run.created_at,
+                "ended_at": team_run.completed_at
+            },
+            {
+                "kind": "member_run",
+                "reference": member.id,
+                "role_in_execution": member.role,
+                "status": member.status,
+                "started_at": member.started_at,
+                "ended_at": member.finished_at
+            }
+        ],
+        "evidence_refs": {
+            "provider_native_session_id": member.native_session.as_ref().map(|session| session.native_session_id.clone()),
+            "assignment_team_message_id": link["team_message_id"],
+            "handoff_team_message_ids": link["handoff_message_ids"]
+        },
+        "health_findings": health_findings,
+        "boundaries": {
+            "work_item_auto_transition": false,
+            "provider_transcript_copied": false,
+            "identity_inferred_from_name_or_time": false
+        }
+    }))
+}
+
+fn company_work_assignment_status_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let assignment_id = required(args, "--assignment")?;
+    let space_id = required(args, "--execution-space")?;
+    let (space, execution_store) = company_execution_space_store(&space_id)?;
+    let status =
+        company_assignment_execution_status(store, &execution_store, &assignment_id, None)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company work assignment status",
+        "execution_space": space,
+        "result": status
+    }))
+}
+
+fn company_work_assignment_reconcile_command(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<()> {
+    let definition_id = required(args, "--definition")?;
+    let assignment_id = required(args, "--assignment")?;
+    let actor_id = required(args, "--actor")?;
+    let delivery_state = required(args, "--delivery-state")?;
+    if !matches!(
+        delivery_state.as_str(),
+        "delivered" | "acknowledged" | "declined" | "failed" | "cancelled"
+    ) {
+        return Err(CliError::Usage(
+            "--delivery-state must be delivered, acknowledged, declined, failed, or cancelled"
+                .into(),
+        ));
+    }
+    let space_id = required(args, "--execution-space")?;
+    let (_, execution_store) = company_execution_space_store(&space_id)?;
+    let team_message_id = value(args, "--team-message");
+    let bridge = company_assignment_execution_status(
+        store,
+        &execution_store,
+        &assignment_id,
+        team_message_id.as_deref(),
+    )?;
+    let requires_execution_link = matches!(delivery_state.as_str(), "delivered" | "acknowledged");
+    if requires_execution_link
+        && bridge
+            .get("link_status")
+            .and_then(serde_json::Value::as_str)
+            != Some("linked")
+    {
+        return Err(CliError::Usage(
+            "Assignment has no explicit TeamMessage execution link; pass --team-message <assignment-message-id>"
+                .into(),
+        ));
+    }
+    if requires_execution_link
+        && bridge
+            .get("team_delivery_proven")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return Err(CliError::Usage(
+            "the exact TeamMessage has not reached the target MemberRun; Company Assignment cannot be marked delivered or acknowledged"
+                .into(),
+        ));
+    }
+
+    let mut record = store
+        .latest_assignments()?
+        .into_iter()
+        .find(|candidate| candidate.id == assignment_id)
+        .map(serde_json::to_value)
+        .transpose()?
+        .ok_or_else(|| CliError::Usage(format!("Assignment not found: {assignment_id}")))?;
+    let now = now_string();
+    record["delivery_state"] = serde_json::json!(delivery_state);
+    if requires_execution_link {
+        record["delivery_evidence_ref"] = bridge["team_message_id"].clone();
+    } else if let Some(evidence) = value(args, "--delivery-evidence") {
+        record["delivery_evidence_ref"] = serde_json::json!(evidence);
+    }
+    if matches!(delivery_state.as_str(), "delivered" | "acknowledged")
+        && record["delivered_at"].is_null()
+    {
+        record["delivered_at"] = serde_json::json!(now.clone());
+    }
+    if delivery_state == "acknowledged" && record["acknowledged_at"].is_null() {
+        record["acknowledged_at"] = serde_json::json!(now);
+    }
+    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
+    let work_item_id = record["work_item_id"]
+        .as_str()
+        .ok_or_else(|| CliError::Usage("Assignment work_item_id is missing".into()))?
+        .to_string();
+    let body = company_work_action_body(
+        &definition_id,
+        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:assignment.append")),
+        value(args, "--command-id")
+            .unwrap_or_else(|| generated_id("action-cli-assignment-reconcile")),
+        "assignment.append",
+        serde_json::json!({"kind": "work_item", "id": work_item_id}),
+        company_actor_ref_json(&actor_kind, &actor_id)?,
+        record,
+        "company.records.write",
+        "r1",
+        false,
+    );
+    let action = dispatch_company_work_action_value(store, &body)?;
+    let status =
+        company_assignment_execution_status(store, &execution_store, &assignment_id, None)?;
+    print_json(&serde_json::json!({
+        "ok": true,
+        "command": "harness company work assignment reconcile",
+        "action": action,
+        "result": status
+    }))
 }
 
 fn company_work_list_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {

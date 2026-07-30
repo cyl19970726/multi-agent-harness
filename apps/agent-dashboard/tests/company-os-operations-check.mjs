@@ -57,6 +57,7 @@ async function main() {
   check(workOperatingPage.includes('"No milestone"') && workOperatingPage.includes('"Unclassified"') && workOperatingPage.includes("Unassigned lane"), "Work views preserve missing Milestone, business-line, and assignment truth");
   check(workOperatingPage.includes("workItemHref(item.id)") && workOperatingPage.includes('aria-label={`Open WorkItem ${item.title}`}'), "Work overview and board cards deep-link to selected WorkItem truth");
   check(workOperatingPage.includes("No governed WorkItem creation transport is connected") && workOperatingPage.includes("opacity-60"), "unavailable Work creation looks and reads as disabled");
+  check(workOperatingPage.includes("root.assignment_execution_health") && workOperatingPage.includes('data-assignment-execution-health="true"') && workOperatingPage.includes("Assignment delivery health"), "Work overview surfaces explicit Company Assignment to Agent Team reconciliation health");
   check(["api", "project", "space", "company"].every((key) => docsUrl.includes(`"${key}"`)), "Company OS links preserve API, Project Binding, Execution Space, and Company Store context");
   check(types.includes('"human" | "standing_agent"') && types.includes("interface ActorSummary"), "keeps Human and Standing Agent as distinct actor kinds");
   check(pages.includes("Runtime attempts and private reasoning do not define membership or authority") && !pages.includes("MemberRunContext") && !pages.includes("TeamRunCompact"), "Standing Agent activity does not collapse into execution lifecycle or TeamRun state");

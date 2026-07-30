@@ -82,6 +82,14 @@ interface WorkModel {
   items: WorkRow[];
   milestones: MilestoneRow[];
   actors: ActorRow[];
+  assignmentExecutionHealth: Array<{
+    id: string;
+    kind: string;
+    severity: string;
+    assignmentId?: string;
+    workItemId?: string;
+    detail: string;
+  }>;
   summary: {
     total: number;
     active: number;
@@ -238,10 +246,19 @@ function buildModel(source: unknown): WorkModel {
     };
   });
   const summaryRecord = projection.summary && typeof projection.summary === "object" ? projection.summary as Json : {};
+  const assignmentExecutionHealth = objects(root.assignment_execution_health).map((record) => ({
+    id: text(record.id, "assignment-execution-health"),
+    kind: text(record.kind, "assignment_execution_health"),
+    severity: text(record.severity, "warning"),
+    assignmentId: text(record.assignment_id) || undefined,
+    workItemId: text(record.work_item_id) || undefined,
+    detail: text(record.detail, humanize(text(record.kind, "Assignment execution needs review"))),
+  }));
   return {
     items,
     milestones,
     actors: [...actorMap.values()],
+    assignmentExecutionHealth,
     summary: {
       total: Number(summaryRecord.total ?? items.length),
       active: Number(summaryRecord.active ?? items.filter((item) => isActiveWork(item.status)).length),
@@ -307,6 +324,7 @@ function Overview({ model, items }: { model: WorkModel; items: WorkRow[] }) {
     return statusWeight(right.status) - statusWeight(left.status) || right.total - left.total;
   });
   return <div className="w-full min-w-0 max-w-full space-y-6 overflow-hidden">
+    {model.assignmentExecutionHealth.length > 0 && <section data-assignment-execution-health="true" className="overflow-hidden rounded-2xl border border-status-warn/35 bg-status-warn/[0.045] shadow-sm"><header className="flex items-center gap-3 border-b border-status-warn/20 px-5 py-4"><span className="grid size-9 place-items-center rounded-xl bg-status-warn/12 text-status-warn"><AlertTriangle className="size-4" /></span><div><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-status-warn">Assignment delivery health</p><h2 className="mt-1 font-semibold">Company routing and Agent Team execution need reconciliation</h2></div></header><div className="divide-y divide-status-warn/15">{model.assignmentExecutionHealth.slice(0, 5).map((finding) => <div key={finding.id} data-company-os-ref={finding.assignmentId} className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"><div><p className="text-sm font-medium">{humanize(finding.kind)}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{finding.detail}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{finding.assignmentId ?? "Unresolved Assignment"}{finding.workItemId ? ` · ${finding.workItemId}` : ""}</p></div>{finding.workItemId && <a href={workItemHref(finding.workItemId)} className="inline-flex h-9 items-center gap-2 self-center rounded-lg border border-status-warn/25 bg-background/70 px-3 text-xs font-medium hover:border-status-warn/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Inspect WorkItem <ArrowUpRight className="size-3.5" /></a>}</div>)}</div></section>}
     <section className="flex w-full min-w-0 max-w-full gap-3 overflow-x-auto sm:grid sm:grid-cols-3 sm:overflow-visible xl:grid-cols-6"><Metric label="Active" value={model.summary.active} icon={CircleDot} tone="primary" /><Metric label="Completed" value={model.summary.completed} icon={CheckCircle2} tone="good" /><Metric label="Blocked" value={model.summary.blocked} icon={AlertTriangle} tone="danger" /><Metric label="Waiting" value={model.summary.waiting} icon={Clock3} tone="warn" /><Metric label="Unassigned" value={model.summary.unassigned} icon={UserRound} tone="quiet" /><Metric label="All Work" value={model.summary.total} icon={ListChecks} tone="quiet" /></section>
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.55fr)]">
       <section className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><SectionTitle eyebrow={attention.length > 0 ? "Operational pressure" : "Operating queue"} title={attention.length > 0 ? "Needs attention" : "Next WorkItems"} detail="The first screen shows what the company has committed to, who owns it, and which business line it affects." /><div className="divide-y divide-border">{operatingQueue.length > 0 ? operatingQueue.map((item) => <WorkListRow key={item.id} item={item} />) : <p className="p-6 text-sm text-muted-foreground">No active WorkItems match the current filter.</p>}</div></section>

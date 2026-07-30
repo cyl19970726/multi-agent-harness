@@ -185,6 +185,46 @@ but neither assignment nor WorkItem is inferred from ordinary chat. If work
 must be split, create related WorkItems or an executor-native plan with explicit
 links while keeping executor-internal planning outside the Company OS record.
 
+For a Standing Agent executing through Agent Team, the implemented bridge is
+explicit and reconstructable:
+
+```text
+Assignment.recipient
+  -> StandingAgent.execution_agent_member_ref
+  -> AgentMember.id
+  -> MemberRun.agent_member_id
+
+Assignment.delivery_evidence_ref
+  -> TeamMessage(kind=assignment, same correlation_id, addressed MemberRun)
+  -> TeamMessage.deliveries[target MemberRun].status
+     is delivered or acknowledged
+```
+
+The Company CLI reads that join only from a named Execution Space:
+
+```bash
+harness company work assignment status \
+  --assignment <assignment-id> \
+  --execution-space <execution-space-id>
+
+harness company work assignment reconcile \
+  --definition <work-page-definition> \
+  --assignment <assignment-id> \
+  --execution-space <execution-space-id> \
+  --team-message <assignment-message-id> \
+  --delivery-state delivered \
+  --actor <assignment-sender>
+```
+
+Delivery revisions are monotonic and idempotent. Correlation, responsibility,
+scope, policy, evidence, and recorded timestamps cannot be silently replaced.
+Only the recipient may acknowledge. Naming an exact TeamMessage does not prove
+delivery while its target-recipient delivery remains queued, claimed, failed,
+or expired. A delivered TeamMessage with a pending Company Assignment, a
+Company delivery state ahead of its Team receipt, or a terminal MemberRun with
+a pending Assignment is a health finding in CLI and Work UI; none is an
+automatic WorkItem transition or completion.
+
 ## Agent-owned WorkItem routing
 
 The normal autonomous-company path is that Agents turn observed gaps into

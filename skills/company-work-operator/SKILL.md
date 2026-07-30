@@ -136,7 +136,8 @@ harness company docs related --record <typed-record-id>
 Work records and Work projections exist through the Company OS Store/API and
 governed Action path. Dedicated `harness company work ...` commands are
 implemented for the first native operating slice: list, query, create, update,
-assign, transition, close, and baseline Milestone lifecycle.
+assign, explicit Assignment-to-Agent-Team delivery reconciliation, transition,
+close, and baseline Milestone lifecycle.
 
 Use:
 
@@ -172,6 +173,16 @@ harness company work assign \
   --work-item <work-item-id> \
   --assignee <actor-id> \
   --assigned-by <actor-id>
+harness company work assignment status \
+  --assignment <company-assignment-id> \
+  --execution-space <execution-space-id>
+harness company work assignment reconcile \
+  --definition <custom-page-definition-id> \
+  --assignment <company-assignment-id> \
+  --execution-space <execution-space-id> \
+  --team-message <exact-assignment-message-id> \
+  --delivery-state <delivered|acknowledged|declined|failed|cancelled> \
+  --actor <sender-or-recipient-actor-id>
 harness company work transition \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
@@ -208,6 +219,31 @@ must not change lifecycle status, result, approval, evidence, artifact, or
 execution provenance; use `work transition` / `work close` for lifecycle
 movement. Do not use a direct ledger edit or an `Assignment` row to pretend the
 WorkItem responsibility chain changed.
+
+When that recipient executes through Agent Team, do not infer the bridge from
+actor name, provider, role, or time. `work assignment status` requires the
+selected Execution Space and checks this exact chain:
+
+```text
+Company Assignment.recipient
+  -> StandingAgent.execution_agent_member_ref
+  -> AgentMember.id
+  -> MemberRun.agent_member_id
+
+Company Assignment.delivery_evidence_ref
+  -> TeamMessage(kind=assignment, same correlation_id, addressed MemberRun)
+  -> target MemberRun delivery status is delivered or acknowledged
+```
+
+`work assignment reconcile` appends a latest-row-wins delivery revision. The
+sender or recipient may record delivery; only the recipient may acknowledge.
+An exact TeamMessage id is necessary but not sufficient: queued, claimed,
+failed, or expired delivery to the target MemberRun must not be recorded as
+Company delivery.
+The command never transitions or completes the WorkItem, never copies the
+provider transcript, and never treats a MemberRun or Handoff as Company
+acceptance. Use the returned TeamRun/MemberRun ExecutionRef suggestions and
+native Session/Handoff evidence only in a later explicit Work lifecycle action.
 
 ## Safe workflow
 

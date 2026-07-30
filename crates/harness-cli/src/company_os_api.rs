@@ -9,10 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
-    MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, PendingInteractionStatus,
-    Relation, RiskTier, TeamMessageKind, TypedRecord, ValidateCompanyOs, View, WorkItem,
+    Approval, ApprovalStatus, Assignment, AssignmentDeliveryState, AuditEvent, AuditEventKind,
+    Block, BusinessModule, Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage,
+    Document, EntityKind, MemberRunStatus, MemberStatus, Milestone, OrgUnit,
+    OrganizationMembership, Payment, PendingInteractionStatus, Relation, RiskTier,
+    TeamDeliveryStatus, TeamMessageKind, TypedRecord, ValidateCompanyOs, View, WorkItem,
     WorkItemStatus, WorkQuery,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
@@ -214,6 +215,10 @@ pub fn snapshot_with_execution(
         assignments: standing_assignments,
         conflicts: standing_assignment_conflicts,
     } = standing_assignment_projection(store, execution_store)?;
+    let AssignmentExecutionProjection {
+        links: assignment_execution_links,
+        health: assignment_execution_health,
+    } = assignment_execution_projection(store, execution_store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -252,6 +257,8 @@ pub fn snapshot_with_execution(
         "work_items": store.latest_work_items()?,
         "work": store.work_projection(&WorkQuery::default())?,
         "assignments": store.latest_assignments()?,
+        "assignment_execution_links": assignment_execution_links,
+        "assignment_execution_health": assignment_execution_health,
         "standing_assignments": standing_assignments,
         "standing_assignment_conflicts": standing_assignment_conflicts,
         "approvals": store.latest_approvals()?,
@@ -292,6 +299,263 @@ pub fn snapshot_with_execution(
 pub(crate) struct StandingAssignmentProjection {
     pub(crate) assignments: Vec<Value>,
     pub(crate) conflicts: Vec<Value>,
+}
+
+pub(crate) struct AssignmentExecutionProjection {
+    pub(crate) links: Vec<Value>,
+    pub(crate) health: Vec<Value>,
+}
+
+/// Join Company routing to execution only through the explicit durable bridge.
+///
+/// `Assignment.delivery_evidence_ref` must name one exact TeamMessage
+/// assignment. Correlation, actor display name, provider, role, and timestamps
+/// are insufficient by themselves. The Company recipient must also own an
+/// explicit StandingAgent -> AgentMember link, and the TeamMessage must address
+/// the MemberRun for that AgentMember.
+fn assignment_execution_projection(
+    company_store: &HarnessStore,
+    execution_store: &HarnessStore,
+) -> Result<AssignmentExecutionProjection, StoreError> {
+    assignment_execution_projection_with_override(company_store, execution_store, None)
+}
+
+/// The same canonical bridge projection with one optional, non-persisted
+/// TeamMessage candidate. CLI reconciliation uses this to validate
+/// `--team-message` before appending it as `delivery_evidence_ref`; Dashboard
+/// and HTTP snapshots call the no-override wrapper above.
+pub(crate) fn assignment_execution_projection_with_override(
+    company_store: &HarnessStore,
+    execution_store: &HarnessStore,
+    team_message_override: Option<(&str, &str)>,
+) -> Result<AssignmentExecutionProjection, StoreError> {
+    let standing_agents = company_store
+        .latest_standing_agents()?
+        .into_iter()
+        .map(|agent| (agent.id.clone(), agent))
+        .collect::<BTreeMap<_, _>>();
+    let member_runs =
+        execution_store
+            .member_runs()?
+            .into_iter()
+            .fold(BTreeMap::new(), |mut latest, member| {
+                latest.insert(member.id.clone(), member);
+                latest
+            });
+    let team_runs =
+        execution_store
+            .team_runs()?
+            .into_iter()
+            .fold(BTreeMap::new(), |mut latest, run| {
+                latest.insert(run.id.clone(), run);
+                latest
+            });
+    let messages = execution_store.team_messages()?.into_iter().fold(
+        BTreeMap::new(),
+        |mut latest, message| {
+            latest.insert(message.id.clone(), message);
+            latest
+        },
+    );
+
+    let mut links = Vec::new();
+    let mut health = Vec::new();
+    for assignment in company_store.latest_assignments()? {
+        if assignment.recipient.actor_type != ActorType::Agent {
+            continue;
+        }
+        let Some(standing_agent) = standing_agents.get(&assignment.recipient.actor_id) else {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:missing-standing-agent", assignment.id),
+                "kind": "company_assignment_recipient_not_standing_agent",
+                "severity": "warning",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "actor_id": assignment.recipient.actor_id,
+            }));
+            continue;
+        };
+        let Some(agent_member_id) = standing_agent.execution_agent_member_ref.as_deref() else {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:missing-agent-member-link", assignment.id),
+                "kind": "company_assignment_recipient_missing_execution_link",
+                "severity": "warning",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "standing_agent_id": standing_agent.id,
+            }));
+            continue;
+        };
+        let message_id = team_message_override
+            .filter(|(assignment_id, _)| *assignment_id == assignment.id)
+            .map(|(_, message_id)| message_id)
+            .or(assignment.delivery_evidence_ref.as_deref());
+        let Some(message_id) = message_id else {
+            if matches!(
+                assignment.delivery_state,
+                AssignmentDeliveryState::Declined
+                    | AssignmentDeliveryState::Failed
+                    | AssignmentDeliveryState::Cancelled
+            ) {
+                continue;
+            }
+            let candidates = messages
+                .values()
+                .filter(|message| {
+                    message.kind == TeamMessageKind::Assignment
+                        && message.correlation_id == assignment.correlation_id
+                })
+                .map(|message| message.id.clone())
+                .collect::<Vec<_>>();
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:missing-message-link", assignment.id),
+                "kind": "company_assignment_missing_team_message_link",
+                "severity": "warning",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "correlation_id": assignment.correlation_id,
+                "same_correlation_candidates": candidates,
+                "detail": "delivery_evidence_ref must name the exact TeamMessage assignment; correlation alone is not ownership",
+            }));
+            continue;
+        };
+        let Some(message) = messages.get(message_id) else {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:missing-message", assignment.id),
+                "kind": "company_assignment_team_message_missing",
+                "severity": "error",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "team_message_id": message_id,
+            }));
+            continue;
+        };
+        if message.kind != TeamMessageKind::Assignment
+            || message.correlation_id != assignment.correlation_id
+        {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:message-mismatch", assignment.id),
+                "kind": "company_assignment_team_message_mismatch",
+                "severity": "error",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "team_message_id": message.id,
+                "company_correlation_id": assignment.correlation_id,
+                "team_correlation_id": message.correlation_id,
+                "team_message_kind": message.kind,
+            }));
+            continue;
+        }
+        let matching_members = member_runs
+            .values()
+            .filter(|member| {
+                member.agent_member_id.as_deref() == Some(agent_member_id)
+                    && member.team_run_id == message.team_run_id
+                    && message
+                        .to_member_ids
+                        .iter()
+                        .any(|recipient| recipient == &member.id)
+            })
+            .collect::<Vec<_>>();
+        if matching_members.len() != 1 {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:member-mismatch", assignment.id),
+                "kind": "company_assignment_member_run_mismatch",
+                "severity": "error",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "team_message_id": message.id,
+                "agent_member_id": agent_member_id,
+                "matching_member_run_ids": matching_members.iter().map(|member| member.id.clone()).collect::<Vec<_>>(),
+            }));
+            continue;
+        }
+        let member = matching_members[0];
+        let team_delivery = message
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.member_id == member.id);
+        let team_delivery_proven = team_delivery.is_some_and(|delivery| {
+            matches!(
+                delivery.status,
+                TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged
+            )
+        });
+        let handoff_message_ids = messages
+            .values()
+            .filter(|candidate| {
+                candidate.kind == TeamMessageKind::Handoff
+                    && candidate.from_member_id == member.id
+                    && candidate.correlation_id == assignment.correlation_id
+            })
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
+        let team_run = team_runs.get(&member.team_run_id);
+        links.push(json!({
+            "id": format!("assignment-execution-link:{}", assignment.id),
+            "assignment_id": assignment.id,
+            "work_item_id": assignment.work_item_id,
+            "standing_agent_id": standing_agent.id,
+            "agent_member_id": agent_member_id,
+            "team_run_id": member.team_run_id,
+            "team_message_id": message.id,
+            "correlation_id": assignment.correlation_id,
+            "member_run_id": member.id,
+            "member_status": member.status,
+            "native_session": member.native_session,
+            "handoff_message_ids": handoff_message_ids,
+            "team_delivery": team_delivery,
+            "team_delivery_proven": team_delivery_proven,
+            "team_status": team_run.map(|run| run.status),
+            "delivery_state": assignment.delivery_state,
+        }));
+        if assignment.delivery_state == AssignmentDeliveryState::Pending && team_delivery_proven {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:delivered-pending", assignment.id),
+                "kind": "team_message_delivered_company_assignment_pending",
+                "severity": "warning",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "team_message_id": message.id,
+                "member_run_id": member.id,
+                "detail": "The exact TeamMessage reached the MemberRun while Company Assignment delivery is still pending; reconcile explicitly without transitioning Work",
+            }));
+        }
+        if matches!(
+            assignment.delivery_state,
+            AssignmentDeliveryState::Delivered | AssignmentDeliveryState::Acknowledged
+        ) && !team_delivery_proven
+        {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:company-ahead-of-team", assignment.id),
+                "kind": "company_assignment_delivery_ahead_of_team_message",
+                "severity": "error",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "team_message_id": message.id,
+                "member_run_id": member.id,
+                "detail": "Company Assignment claims delivered or acknowledged, but the exact TeamMessage has no delivered/acknowledged recipient receipt",
+            }));
+        }
+        if matches!(
+            member.status,
+            MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+        ) && assignment.delivery_state == AssignmentDeliveryState::Pending
+        {
+            health.push(json!({
+                "id": format!("assignment-execution-health:{}:terminal-pending", assignment.id),
+                "kind": "terminal_execution_pending_company_assignment",
+                "severity": "warning",
+                "assignment_id": assignment.id,
+                "work_item_id": assignment.work_item_id,
+                "member_run_id": member.id,
+                "detail": "Member execution is terminal while Company Assignment delivery is pending; reconcile explicitly and never auto-complete Work",
+            }));
+        }
+    }
+    links.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    health.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    Ok(AssignmentExecutionProjection { links, health })
 }
 
 /// Read-only join from durable Organization identity to explicitly linked
@@ -589,7 +853,9 @@ fn display_money(amount: &str, currency: &str) -> String {
 #[cfg(test)]
 mod projection_tests {
     use super::*;
-    use harness_core::{AgentTeamRun, MemberRun, StandingAgent, TeamMessage};
+    use harness_core::{
+        AgentTeamRun, AssignmentDeliveryState, MemberRun, StandingAgent, TeamMessage,
+    };
 
     fn standing(id: &str, execution_ref: Option<&str>) -> StandingAgent {
         serde_json::from_value(json!({
@@ -605,6 +871,121 @@ mod projection_tests {
             "native_session_refs": [], "created_at": "1", "updated_at": "1"
         }))
         .unwrap()
+    }
+
+    fn assignment(state: AssignmentDeliveryState) -> Assignment {
+        Assignment {
+            id: "assignment".into(),
+            work_item_id: "work".into(),
+            recipient: ActorRef {
+                actor_type: ActorType::Agent,
+                actor_id: "recipient".into(),
+            },
+            sender: ActorRef {
+                actor_type: ActorType::Agent,
+                actor_id: "sender".into(),
+            },
+            assigned_role: "reviewer".into(),
+            scope: Some("Review result".into()),
+            delivery_state: state,
+            delivery_policy_ref: "work.assignment.default".into(),
+            correlation_id: "corr".into(),
+            delivery_evidence_ref: None,
+            assigned_at: "1".into(),
+            delivered_at: None,
+            acknowledged_at: None,
+        }
+    }
+
+    fn assignment_command(requested_by: &str) -> ActionCommand {
+        serde_json::from_value(json!({
+            "id": "command",
+            "command_name": "assignment.append",
+            "subject_ref": {"kind": "work_item", "id": "work"},
+            "requested_by": {"actor_type": "agent", "actor_id": requested_by},
+            "payload": {},
+            "required_permission": "company.records.write",
+            "policy_ref": "policy",
+            "risk_tier": "r1",
+            "requires_human_approval": false,
+            "approval_refs": [],
+            "status": "requested",
+            "audit_event_refs": [],
+            "requested_at": "1",
+            "completed_at": null
+        }))
+        .unwrap()
+    }
+
+    fn force_assignment_row(store: &HarnessStore, value: &Assignment) {
+        use std::io::Write as _;
+
+        let path = store.root().join("company_os_assignments.jsonl");
+        let mut ledger = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open assignment ledger");
+        writeln!(ledger, "{}", serde_json::to_string(value).unwrap())
+            .expect("append assignment row");
+    }
+
+    #[test]
+    fn assignment_delivery_revisions_are_monotonic_and_actor_scoped() {
+        let root = std::env::temp_dir().join(format!(
+            "company-assignment-revision-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().unwrap();
+        force_assignment_row(&store, &assignment(AssignmentDeliveryState::Pending));
+
+        let mut delivered = assignment(AssignmentDeliveryState::Delivered);
+        delivered.delivery_evidence_ref = Some("team-message".into());
+        delivered.delivered_at = Some("2".into());
+        validate_assignment_append(
+            &store,
+            &assignment_command("sender"),
+            &serde_json::to_value(&delivered).unwrap(),
+        )
+        .expect("sender may record delivery");
+
+        let mut mismatched = delivered.clone();
+        mismatched.correlation_id = "other".into();
+        assert!(
+            validate_assignment_append(
+                &store,
+                &assignment_command("sender"),
+                &serde_json::to_value(&mismatched).unwrap(),
+            )
+            .is_err(),
+            "a revision must never replace the Assignment correlation"
+        );
+
+        force_assignment_row(&store, &delivered);
+        let mut acknowledged = delivered;
+        acknowledged.delivery_state = AssignmentDeliveryState::Acknowledged;
+        acknowledged.acknowledged_at = Some("3".into());
+        assert!(
+            validate_assignment_append(
+                &store,
+                &assignment_command("sender"),
+                &serde_json::to_value(&acknowledged).unwrap(),
+            )
+            .is_err(),
+            "the sender cannot impersonate recipient acknowledgement"
+        );
+        validate_assignment_append(
+            &store,
+            &assignment_command("recipient"),
+            &serde_json::to_value(&acknowledged).unwrap(),
+        )
+        .expect("recipient may acknowledge delivery");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -674,6 +1055,21 @@ mod projection_tests {
         assert!(
             projected.conflicts.is_empty(),
             "a healthy store must report an empty conflict list"
+        );
+        let mut company_assignment = assignment(AssignmentDeliveryState::Pending);
+        company_assignment.recipient.actor_id = "standing-linked".into();
+        company_assignment.delivery_evidence_ref = Some("assignment-1".into());
+        force_assignment_row(&store, &company_assignment);
+        let execution_projection = assignment_execution_projection(&store, &store).unwrap();
+        assert_eq!(execution_projection.links.len(), 1);
+        assert_eq!(
+            execution_projection.links[0]["team_message_id"],
+            "assignment-1"
+        );
+        assert_eq!(execution_projection.links[0]["member_run_id"], "run-linked");
+        assert!(
+            execution_projection.health.is_empty(),
+            "an idle explicitly linked MemberRun is healthy even while delivery remains pending"
         );
 
         let mut revised = store
@@ -1157,7 +1553,7 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
         validate_work_item_create(store, &command, &record)?;
     }
     if command.command_name == "assignment.append" {
-        validate_assignment_create(store, &command, &record)?;
+        validate_assignment_append(store, &command, &record)?;
     }
     if command.command_name == "commitment.propose" {
         validate_commitment_proposal(store, &command, &record)?;
@@ -1878,7 +2274,7 @@ fn validate_work_item_update(
     Ok(())
 }
 
-fn validate_assignment_create(
+fn validate_assignment_append(
     store: &HarnessStore,
     command: &ActionCommand,
     record: &Value,
@@ -1891,15 +2287,78 @@ fn validate_assignment_create(
             "assignment.append subject must be its WorkItem",
         ));
     }
-    if store
+    let Some(previous) = store
         .latest_assignments()?
-        .iter()
-        .any(|row| row.id == assignment.id)
+        .into_iter()
+        .find(|row| row.id == assignment.id)
+    else {
+        return Ok(());
+    };
+
+    if previous.work_item_id != assignment.work_item_id
+        || previous.recipient != assignment.recipient
+        || previous.sender != assignment.sender
+        || previous.assigned_role != assignment.assigned_role
+        || previous.scope != assignment.scope
+        || previous.delivery_policy_ref != assignment.delivery_policy_ref
+        || previous.correlation_id != assignment.correlation_id
+        || previous.assigned_at != assignment.assigned_at
     {
+        return Err(ApiError::conflict(
+            "assignment.append revision cannot change assignment identity, responsibility, scope, policy, correlation, or assigned_at",
+        ));
+    }
+
+    let valid_transition = previous.delivery_state == assignment.delivery_state
+        || matches!(
+            (previous.delivery_state, assignment.delivery_state),
+            (
+                AssignmentDeliveryState::Pending,
+                AssignmentDeliveryState::Delivered
+                    | AssignmentDeliveryState::Declined
+                    | AssignmentDeliveryState::Failed
+                    | AssignmentDeliveryState::Cancelled
+            ) | (
+                AssignmentDeliveryState::Delivered,
+                AssignmentDeliveryState::Acknowledged
+                    | AssignmentDeliveryState::Declined
+                    | AssignmentDeliveryState::Failed
+                    | AssignmentDeliveryState::Cancelled
+            )
+        );
+    if !valid_transition {
         return Err(ApiError::conflict(format!(
-            "Assignment {} already exists",
-            assignment.id
+            "invalid Assignment delivery transition: {:?} -> {:?}",
+            previous.delivery_state, assignment.delivery_state
         )));
+    }
+
+    let evidence_preserved = previous.delivery_evidence_ref.is_none()
+        || previous.delivery_evidence_ref == assignment.delivery_evidence_ref;
+    let delivered_at_preserved =
+        previous.delivered_at.is_none() || previous.delivered_at == assignment.delivered_at;
+    let acknowledged_at_preserved = previous.acknowledged_at.is_none()
+        || previous.acknowledged_at == assignment.acknowledged_at;
+    if !evidence_preserved || !delivered_at_preserved || !acknowledged_at_preserved {
+        return Err(ApiError::conflict(
+            "assignment.append revision cannot replace delivery evidence or delivery/acknowledgement timestamps",
+        ));
+    }
+
+    if assignment.delivery_state == AssignmentDeliveryState::Acknowledged
+        && command.requested_by != assignment.recipient
+    {
+        return Err(ApiError::forbidden(
+            "only the Assignment recipient may acknowledge delivery",
+        ));
+    }
+    if assignment.delivery_state != AssignmentDeliveryState::Acknowledged
+        && command.requested_by != assignment.sender
+        && command.requested_by != assignment.recipient
+    {
+        return Err(ApiError::forbidden(
+            "only the Assignment sender or recipient may reconcile delivery",
+        ));
     }
     Ok(())
 }
