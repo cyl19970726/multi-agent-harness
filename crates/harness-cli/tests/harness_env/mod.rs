@@ -10,8 +10,10 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+static SERVE_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct TempHome {
     base: PathBuf,
@@ -140,6 +142,13 @@ impl ServeHandle {
         extra_args: &[&str],
         extra_env: &[(&str, &str)],
     ) -> Self {
+        // `free_port` necessarily releases its probe listener before the real
+        // server binds. Serialize that short allocation-to-readiness window
+        // across parallel tests in this binary so two ServeHandles cannot both
+        // observe and race for the same just-released ephemeral port.
+        let _spawn_guard = SERVE_SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let port = free_port();
         let addr = format!("127.0.0.1:{port}");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
