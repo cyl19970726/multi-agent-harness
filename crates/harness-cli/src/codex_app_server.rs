@@ -129,24 +129,24 @@ pub(crate) struct CodexAppServerClient {
     collaboration_mode: &'static str,
 }
 
+pub(crate) struct CodexAppServerSpawnOptions<'a> {
+    pub(crate) model: Option<&'a str>,
+    pub(crate) reasoning_effort: Option<&'a str>,
+    pub(crate) service_tier: Option<&'a str>,
+    pub(crate) resume_thread_id: Option<&'a str>,
+    pub(crate) member_name: &'a str,
+    pub(crate) collaboration_env: &'a [(String, String)],
+    pub(crate) plan_mode: bool,
+}
+
 impl CodexAppServerClient {
-    pub(crate) fn spawn(
-        cwd: &Path,
-        model: Option<&str>,
-        reasoning_effort: Option<&str>,
-        service_tier: Option<&str>,
-        _workspace_write: bool,
-        resume_thread_id: Option<&str>,
-        member_name: &str,
-        collaboration_env: &[(String, String)],
-        plan_mode: bool,
-    ) -> CliResult<Self> {
+    pub(crate) fn spawn(cwd: &Path, options: CodexAppServerSpawnOptions<'_>) -> CliResult<Self> {
         let mut command = Command::new("codex");
         command
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")
-            .envs(collaboration_env.iter().cloned())
+            .envs(options.collaboration_env.iter().cloned())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -225,7 +225,7 @@ impl CodexAppServerClient {
             model: String::new(),
             reasoning_effort: None,
             service_tier: None,
-            collaboration_mode: if plan_mode { "plan" } else { "default" },
+            collaboration_mode: if options.plan_mode { "plan" } else { "default" },
         };
         client.request_blocking(
             "initialize",
@@ -243,13 +243,18 @@ impl CodexAppServerClient {
         // Temporary development policy: interactive Agent Team members receive
         // the same full execution permission as batch Codex members. Owned paths
         // remain a coordination/acceptance boundary, not a provider sandbox.
-        let method = if resume_thread_id.is_some() {
+        let method = if options.resume_thread_id.is_some() {
             "thread/resume"
         } else {
             "thread/start"
         };
-        let params =
-            thread_open_params(cwd, model, reasoning_effort, service_tier, resume_thread_id);
+        let params = thread_open_params(
+            cwd,
+            options.model,
+            options.reasoning_effort,
+            options.service_tier,
+            options.resume_thread_id,
+        );
         let response = client.request_blocking(method, params, HANDSHAKE_TIMEOUT)?;
         client.thread_id = response
             .pointer("/result/thread/id")
@@ -268,13 +273,17 @@ impl CodexAppServerClient {
         client.service_tier = effective_thread_service_tier(&response);
         require_requested_setting(
             "reasoning effort",
-            reasoning_effort,
+            options.reasoning_effort,
             client.reasoning_effort.as_deref(),
         )?;
-        require_requested_setting("service tier", service_tier, client.service_tier.as_deref())?;
+        require_requested_setting(
+            "service tier",
+            options.service_tier,
+            client.service_tier.as_deref(),
+        )?;
         client.request_blocking(
             "thread/name/set",
-            thread_name_params(&client.thread_id, member_name),
+            thread_name_params(&client.thread_id, options.member_name),
             HANDSHAKE_TIMEOUT,
         )?;
         Ok(client)

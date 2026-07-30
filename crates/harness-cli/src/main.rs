@@ -14058,21 +14058,22 @@ fn run_codex_member(
     let collaboration_env = envelope.environment();
     let mut app_server = codex_app_server::CodexAppServerClient::spawn(
         cwd,
-        member.model.as_deref(),
-        member
-            .provider_controls
-            .reasoning_effort
-            .requested
-            .as_deref(),
-        member.provider_controls.service_tier.requested.as_deref(),
-        !member.owned_paths.is_empty(),
-        member
-            .native_session
-            .as_ref()
-            .map(|session| session.native_session_id.as_str()),
-        &member.name,
-        &collaboration_env,
-        false,
+        codex_app_server::CodexAppServerSpawnOptions {
+            model: member.model.as_deref(),
+            reasoning_effort: member
+                .provider_controls
+                .reasoning_effort
+                .requested
+                .as_deref(),
+            service_tier: member.provider_controls.service_tier.requested.as_deref(),
+            resume_thread_id: member
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str()),
+            member_name: &member.name,
+            collaboration_env: &collaboration_env,
+            plan_mode: false,
+        },
     )?;
     member_row.provider_controls.model.mark_effective(
         Some(app_server.model().to_string()),
