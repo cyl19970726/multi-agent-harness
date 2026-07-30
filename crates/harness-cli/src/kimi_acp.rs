@@ -4,14 +4,17 @@
 //! JSON-RPC over stdio (verified live against kimi 0.27.0). The wire dance is:
 //!
 //! 1. `initialize` — protocol/capability handshake (10s timeout).
-//! 2. `session/new` — opens a session rooted at a cwd; the returned
-//!    `sessionId` is the handle every later frame carries.
+//! 2. `session/new` opens a session rooted at a cwd. Reattachment prefers
+//!    `session/resume` (no history replay) and falls back to `session/load`
+//!    only when an older ACP server reports method-not-found.
 //! 3. `session/prompt` — streams `session/update` notifications
 //!    (`agent_message_chunk`, `agent_thought_chunk`, `tool_call`,
 //!    `tool_call_update`, ...) and finishes with the request's response
 //!    (`result.stopReason`).
-//! 4. `session/cancel` — asks the agent to abort the in-flight prompt; a
-//!    wedged process is killed as a fallback.
+//! 4. `session/cancel` is a JSON-RPC notification (no request id). It asks the
+//!    agent to abort the in-flight prompt; a wedged process is killed as a
+//!    fallback. Host Close remains distinct and terminates only the
+//!    Harness-owned ACP runtime.
 //!
 //! Two deliberate v0 decisions:
 //!
@@ -53,6 +56,12 @@ pub(crate) struct PromptOutcome {
     /// `result.stopReason` as reported by the agent (`end_turn`, `cancelled`,
     /// `refusal`, `max_tokens`, ...); `"unknown"` when the frame omitted it.
     pub(crate) stop_reason: String,
+}
+
+pub(crate) enum PromptControl {
+    Continue,
+    Cancel,
+    TerminateRuntime,
 }
 
 /// One `kimi acp` child process speaking line-delimited JSON-RPC. Not `Sync`:
@@ -227,7 +236,12 @@ impl KimiAcpClient {
         Ok(())
     }
 
-    /// `initialize` + `session/new`, each with a 10s response timeout.
+    /// `initialize` plus one session attach operation, each with a 10s
+    /// response timeout. A known session prefers the lightweight
+    /// `session/resume` contract added by current Kimi ACP. Older reviewed
+    /// servers may expose only `session/load`; that path is retained as an
+    /// explicit method-not-found fallback and its replay notifications are
+    /// drained before a new Harness prompt begins.
     fn handshake(&mut self, cwd: &Path, resume_session_id: Option<&str>) -> CliResult<()> {
         let initialize = self.request(
             "initialize",
@@ -250,26 +264,44 @@ impl KimiAcpClient {
             .and_then(|version| version.as_str())
             .map(str::to_string);
 
-        let (method, params) = match resume_session_id {
-            Some(session_id) => (
-                "session/load",
-                serde_json::json!({
-                    "sessionId": session_id,
-                    "cwd": cwd.to_string_lossy(),
-                    "mcpServers": [],
-                }),
-            ),
-            None => (
-                "session/new",
-                serde_json::json!({
-                    "cwd": cwd.to_string_lossy(),
-                    "mcpServers": [],
-                }),
-            ),
+        let session_params = |session_id: &str| {
+            serde_json::json!({
+                "sessionId": session_id,
+                "cwd": cwd.to_string_lossy(),
+                "mcpServers": [],
+            })
         };
-        let response = self.request(method, params)?;
-        let frame = await_response(response, HANDSHAKE_TIMEOUT, method)
-            .inspect_err(|_| self.kill_quiet())?;
+        let (method, frame) = match resume_session_id {
+            Some(session_id) => {
+                let resume = self.request("session/resume", session_params(session_id))?;
+                let resume_frame = await_response(resume, HANDSHAKE_TIMEOUT, "session/resume")
+                    .inspect_err(|_| self.kill_quiet())?;
+                if acp_method_not_found(&resume_frame) {
+                    let load = self.request("session/load", session_params(session_id))?;
+                    (
+                        "session/load",
+                        await_response(load, HANDSHAKE_TIMEOUT, "session/load")
+                            .inspect_err(|_| self.kill_quiet())?,
+                    )
+                } else {
+                    ("session/resume", resume_frame)
+                }
+            }
+            None => {
+                let response = self.request(
+                    "session/new",
+                    serde_json::json!({
+                        "cwd": cwd.to_string_lossy(),
+                        "mcpServers": [],
+                    }),
+                )?;
+                (
+                    "session/new",
+                    await_response(response, HANDSHAKE_TIMEOUT, "session/new")
+                        .inspect_err(|_| self.kill_quiet())?,
+                )
+            }
+        };
         if let Some(error) = frame.get("error") {
             self.kill_quiet();
             return Err(CliError::Usage(format!(
@@ -287,6 +319,12 @@ impl KimiAcpClient {
             .and_then(|id| id.as_str())
             .map(str::to_string)
             .or_else(|| resume_session_id.map(str::to_string));
+        // `session/load` replays historical session/update records before its
+        // response. They are provider-native history, not activity from the
+        // next Harness round. The stdout reader preserves wire order, so the
+        // matching response proves every preceding replay frame is already in
+        // this queue and can be discarded deterministically.
+        self.drain_attach_updates();
         match session_id {
             Some(session_id) => {
                 self.session_id = Some(session_id);
@@ -299,6 +337,10 @@ impl KimiAcpClient {
                 )))
             }
         }
+    }
+
+    fn drain_attach_updates(&mut self) {
+        while self.updates.try_recv().is_ok() {}
     }
 
     /// Apply the requested Kimi model to the newly-created ACP session. A
@@ -380,6 +422,20 @@ impl KimiAcpClient {
         Ok((id, rx))
     }
 
+    /// Write one JSON-RPC notification frame. ACP defines `session/cancel` as
+    /// a notification, so adding a request id changes dispatch semantics and
+    /// makes a conforming server report method-not-found.
+    fn notify(&mut self, method: &str, params: serde_json::Value) -> CliResult<()> {
+        write_frame(
+            &mut self.stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            }),
+        )
+    }
+
     /// Run one `session/prompt` turn to completion.
     ///
     /// `on_update` fires for every `session/update` notification, passed the
@@ -397,7 +453,7 @@ impl KimiAcpClient {
         mut on_accepted: impl FnMut(&str) -> CliResult<()>,
         mut on_update: impl FnMut(&serde_json::Value),
         mut on_request: impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
-        mut should_cancel: impl FnMut() -> CliResult<bool>,
+        mut control: impl FnMut() -> CliResult<PromptControl>,
     ) -> CliResult<PromptOutcome> {
         let session_id = self
             .session_id
@@ -421,9 +477,21 @@ impl KimiAcpClient {
         let mut last_activity = Instant::now();
         let mut cancelled_at: Option<Instant> = None;
         loop {
-            if cancelled_at.is_none() && should_cancel()? {
-                self.cancel()?;
-                cancelled_at = Some(Instant::now());
+            if cancelled_at.is_none() {
+                match control()? {
+                    PromptControl::Continue => {}
+                    PromptControl::Cancel => {
+                        self.cancel()?;
+                        cancelled_at = Some(Instant::now());
+                    }
+                    PromptControl::TerminateRuntime => {
+                        self.kill_quiet();
+                        lock(&self.pending).remove(&prompt_id);
+                        return Ok(PromptOutcome {
+                            stop_reason: "harness_runtime_closed".to_string(),
+                        });
+                    }
+                }
             }
             // Response FIRST: the reader thread can deliver the terminal
             // response and immediately hit EOF (child exit), which disconnects
@@ -540,21 +608,18 @@ impl KimiAcpClient {
         Ok(())
     }
 
-    /// Send `session/cancel` for the current session (request form, per the
-    /// verified wire trace). Does not wait for the response: the caller's
-    /// prompt loop is already in its cancel-grace window.
+    /// Send the ACP `session/cancel` notification for the current session.
+    /// There is no cancel response: the caller keeps waiting for the terminal
+    /// `session/prompt` response during its cancel-grace window.
     pub(crate) fn cancel(&mut self) -> CliResult<()> {
         let session_id = self
             .session_id
             .clone()
             .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
-        // Register the pending entry so a response is consumed (then dropped)
-        // instead of leaking in the map.
-        let (_id, _rx) = self.request(
+        self.notify(
             "session/cancel",
             serde_json::json!({ "sessionId": session_id }),
-        )?;
-        Ok(())
+        )
     }
 
     /// Kill the process group and reap the child; joins the reader thread.
@@ -636,6 +701,13 @@ fn config_option_supports(
 /// buffer/map where a panicking writer cannot leave a lie behind.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn acp_method_not_found(frame: &serde_json::Value) -> bool {
+    frame
+        .pointer("/error/code")
+        .and_then(|value| value.as_i64())
+        == Some(-32601)
 }
 
 /// Write one frame as a single line + flush (the agent reads line-delimited).

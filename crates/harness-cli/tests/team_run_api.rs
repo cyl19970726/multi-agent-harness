@@ -2183,13 +2183,17 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
     let _project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let cancel_marker = home.base().join("kimi-cancel-marker.log");
+    let cancel_marker_value = cancel_marker.display().to_string();
     let serve = ServeHandle::spawn_with_env(
         &home,
         home.base(),
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.31.0"),
             ("FAKE_KIMI_WAIT", "1"),
+            ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
         ],
     );
     let (status, created) = serve.post_json(
@@ -2258,6 +2262,101 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
     assert!(
         idle,
         "Kimi ACP interrupt stopped the Member instead of only its turn"
+    );
+    let cancel_frame = std::fs::read_to_string(&cancel_marker).expect("cancel notification");
+    assert!(cancel_frame.contains(r#""method":"session/cancel""#));
+    assert!(
+        !cancel_frame.contains(r#""id":"#),
+        "ACP session/cancel must be a notification without a request id: {cancel_frame}"
+    );
+}
+
+#[test]
+fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
+    let home = TempHome::new("team-run-kimi-0310-close");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let cancel_marker = home.base().join("kimi-close-cancel-marker.log");
+    let cancel_marker_value = cancel_marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_WAIT", "1"),
+            ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Close a Kimi runtime without claiming native cancel",
+            "members": [{"name": "kimi-close", "role": "observer", "provider": "kimi", "model": "k2.5"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    let mut running = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        running = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if running {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(running, "Kimi 0.31.0 member never became live");
+
+    let (status, closed) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"requested_by": "host", "reason": "lane accepted"}),
+    );
+    assert_eq!(status, 200, "body: {closed}");
+    assert_eq!(
+        closed["result"]["provider_ack"].as_str(),
+        Some("harness_runtime_termination_requested")
+    );
+    let mut stopped = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+            });
+        if stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(stopped, "Host close did not stop Kimi 0.31.0 runtime");
+    assert!(
+        !cancel_marker.exists(),
+        "Host close must terminate the owned runtime directly, not masquerade as Interrupt"
     );
 }
 
@@ -2396,6 +2495,286 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
 }
 
 #[test]
+fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
+    let home = TempHome::new("team-run-kimi-busy-mail");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let ready = home.base().join("kimi-first-prompt-ready");
+    let release = home.base().join("kimi-first-prompt-release");
+    let prompts = home.base().join("kimi-prompts.jsonl");
+    let ready_value = ready.display().to_string();
+    let release_value = release.display().to_string();
+    let prompts_value = prompts.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            ("FAKE_KIMI_FIRST_PROMPT_READY", ready_value.as_str()),
+            ("FAKE_KIMI_FIRST_PROMPT_RELEASE", release_value.as_str()),
+            ("FAKE_KIMI_PROMPT_MARKER", prompts_value.as_str()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Exercise Kimi safe-boundary batching",
+            "members": [{"name": "kimi-busy", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment = &created["result"]["assignment_messages"][0];
+    let assignment_id = assignment["id"].as_str().unwrap().to_string();
+    let correlation = assignment["correlation_id"].as_str().unwrap().to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    for _ in 0..200 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready.exists(), "first Kimi prompt did not enter busy state");
+
+    let (status, first) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "body": "BUSY_CORRECTION_ONE",
+            "correlation_id": correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {first}");
+    let first_id = first["result"]["id"].as_str().unwrap().to_string();
+    let (status, second) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "body": "BUSY_CORRECTION_TWO",
+            "correlation_id": correlation,
+            "causation_id": first_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {second}");
+    let second_id = second["result"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        first["result"]["deliveries"][0]["status"].as_str(),
+        Some("queued")
+    );
+    assert_eq!(
+        second["result"]["deliveries"][0]["status"].as_str(),
+        Some("queued")
+    );
+    std::fs::write(&release, b"release").expect("release first Kimi prompt");
+
+    let mut accepted = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let messages = snapshot["team_messages"].as_array().unwrap();
+        let delivery = |id: &str| {
+            messages
+                .iter()
+                .find(|message| message["id"].as_str() == Some(id))
+                .map(|message| &message["deliveries"][0])
+        };
+        let first_delivery = delivery(&first_id);
+        let second_delivery = delivery(&second_id);
+        let handoffs = messages
+            .iter()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .collect::<Vec<_>>();
+        let receipts_match =
+            first_delivery
+                .zip(second_delivery)
+                .is_some_and(|(first_delivery, second_delivery)| {
+                    first_delivery["status"].as_str() == Some("delivered")
+                        && second_delivery["status"].as_str() == Some("delivered")
+                        && first_delivery["attempt"].as_u64() == Some(1)
+                        && second_delivery["attempt"].as_u64() == Some(1)
+                        && first_delivery["provider_receipt_id"].as_str()
+                            == second_delivery["provider_receipt_id"].as_str()
+                });
+        accepted = receipts_match
+            && handoffs.len() == 1
+            && handoffs[0]["causation_id"].as_str() == Some(second_id.as_str())
+            && snapshot["member_actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|action| {
+                    action["member_run_id"].as_str() == Some(member_id.as_str())
+                        && action["action_type"].as_str() == Some("continued")
+                });
+        if accepted {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        accepted,
+        "Kimi busy-turn messages were not batched exactly once or stale Handoff was exposed"
+    );
+    let prompt_log = std::fs::read_to_string(&prompts).expect("Kimi prompt log");
+    let first_position = prompt_log
+        .find("BUSY_CORRECTION_ONE")
+        .expect("first correction in provider prompt");
+    let second_position = prompt_log
+        .find("BUSY_CORRECTION_TWO")
+        .expect("second correction in provider prompt");
+    assert!(
+        first_position < second_position,
+        "safe-boundary mail order changed"
+    );
+}
+
+#[test]
+fn crashed_kimi_transport_resumes_same_session_without_replaying_assignment() {
+    let home = TempHome::new("team-run-kimi-crash-recovery");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let crash_once = home.base().join("kimi-crashed-once");
+    let attach = home.base().join("kimi-attach.log");
+    let prompts = home.base().join("kimi-recovery-prompts.jsonl");
+    let crash_value = crash_once.display().to_string();
+    let attach_value = attach.display().to_string();
+    let prompts_value = prompts.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_RESULT", "done"),
+            ("FAKE_KIMI_CRASH_ONCE_MARKER", crash_value.as_str()),
+            ("FAKE_KIMI_ATTACH_MARKER", attach_value.as_str()),
+            ("FAKE_KIMI_PROMPT_MARKER", prompts_value.as_str()),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Recover a Kimi member after provider transport loss",
+            "members": [{"name": "kimi-recover", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment_id = created["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut recovered = false;
+    for _ in 0..400 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let member_idle = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+                    && member["native_session"]["native_session_id"]
+                        .as_str()
+                        .is_some_and(|session| session.starts_with("session_fake_"))
+            });
+        let assignment_once = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["id"].as_str() == Some(assignment_id.as_str()))
+            .is_some_and(|message| {
+                message["deliveries"][0]["status"].as_str() == Some("delivered")
+                    && message["deliveries"][0]["attempt"].as_u64() == Some(1)
+            });
+        let handoff = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+                    && message["causation_id"].as_str() == Some(assignment_id.as_str())
+            });
+        let disconnected = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("disconnected")
+            });
+        let runtime_recovery = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("runtime_recovery")
+            });
+        recovered = member_idle && assignment_once && handoff && disconnected && runtime_recovery;
+        if recovered {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        recovered,
+        "Kimi runtime generation did not recover the accepted assignment"
+    );
+    let attach_log = std::fs::read_to_string(&attach).expect("attach log");
+    assert!(
+        attach_log
+            .lines()
+            .any(|line| line.starts_with("resume session_fake_")),
+        "0.31.0 recovery did not use lightweight session/resume: {attach_log}"
+    );
+    assert!(
+        !attach_log.lines().any(|line| line.starts_with("load ")),
+        "0.31.0 unexpectedly replayed native history"
+    );
+    let prompt_log = std::fs::read_to_string(&prompts).expect("prompt log");
+    assert!(
+        prompt_log.contains("RUNTIME RECOVERY"),
+        "restarted adapter did not ask Kimi to inspect and continue safely"
+    );
+}
+
+#[test]
 fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     let home = TempHome::new("team-run-codex-question");
     let _project_id = init_project(&home, "alpha");
@@ -2490,6 +2869,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.31.0"),
             ("FAKE_KIMI_ASK", "1"),
         ],
     );
@@ -2566,112 +2946,6 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
     assert!(
         idle_with_cancelled_interaction,
         "interrupt did not cancel the waiting interaction and return the Member to idle"
-    );
-}
-
-#[test]
-fn kimi_0291_interrupt_fails_before_false_cancel_ack_or_interaction_mutation() {
-    let home = TempHome::new("team-run-kimi-0291-no-cancel");
-    let _project_id = init_project(&home, "alpha");
-    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
-    let fake_kimi = fake_bin.join("kimi").display().to_string();
-    let cancel_marker = home.base().join("kimi-cancel-marker.log");
-    let cancel_marker_value = cancel_marker.display().to_string();
-    let serve = ServeHandle::spawn_with_env(
-        &home,
-        home.base(),
-        &[],
-        &[
-            ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.29.1"),
-            ("FAKE_KIMI_ASK", "1"),
-            ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
-        ],
-    );
-    let (_, created) = serve.post_json(
-        "/v1/team-runs",
-        &serde_json::json!({
-            "objective": "Prove unsupported Kimi cancellation fails closed",
-            "members": [{"name": "kimi-0291", "role": "observer", "provider": "kimi", "model": "k2.5"}]
-        }),
-    );
-    let run_id = created["result"]["team_run"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let member_id = created["result"]["member_runs"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let (status, started) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/start"),
-        &serde_json::json!({}),
-    );
-    assert_eq!(status, 202, "body: {started}");
-
-    let mut waiting_snapshot = serde_json::Value::Null;
-    for _ in 0..100 {
-        let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let waiting = snapshot["member_runs"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|member| {
-                member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("waiting")
-                    && member["provider_profile"]["provider_version"].as_str() == Some("0.29.1")
-                    && member["provider_profile"]["supports_cancel"].as_bool() == Some(false)
-            });
-        if waiting {
-            waiting_snapshot = snapshot;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_ne!(
-        waiting_snapshot,
-        serde_json::Value::Null,
-        "Kimi 0.29.1 never exposed its fail-closed capability profile"
-    );
-
-    let (status, interrupted) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
-        &serde_json::json!({"reason": "must fail closed", "requested_by": "operator"}),
-    );
-    assert_eq!(status, 400, "body: {interrupted}");
-    assert!(
-        interrupted["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("does not support provider-native cancellation")),
-        "body: {interrupted}"
-    );
-
-    let (_, after) = serve.get_json("/v1/snapshot");
-    assert!(
-        after["pending_interactions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|interaction| {
-                interaction["member_run_id"].as_str() == Some(member_id.as_str())
-                    && interaction["status"].as_str() == Some("pending")
-            }),
-        "unsupported Interrupt mutated the pending interaction: {after}"
-    );
-    assert!(
-        !after["member_actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|action| {
-                action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("interrupt_requested")
-            }),
-        "unsupported Interrupt recorded a false cancel request: {after}"
-    );
-    assert!(
-        !cancel_marker.exists(),
-        "unsupported Interrupt reached ACP session/cancel"
     );
 }
 

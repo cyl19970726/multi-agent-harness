@@ -148,10 +148,13 @@ prompts or treating an unreviewed binary as compatible.
   versions;
 - a fake/new version produces `review_required` and `--fail-on-review` fails;
 - MemberRun snapshots and Dashboard expose compatibility state;
-- deterministic acceptance proves `turn/steer`, `turn/interrupt`, Kimi
-  `session/cancel`, and streamed activity against generated schemas from the
-  installed Codex version;
+- deterministic acceptance proves Codex `turn/steer`/`turn/interrupt`,
+  streamed activity, and each Kimi operation that the exact reviewed version
+  actually implements. ACP `session/cancel` must be sent as a notification
+  without a JSON-RPC request id, and Interrupt acceptance must be backed by the
+  terminal prompt response rather than an invented cancel response;
 - provider request routing is durable through PendingInteraction;
-- restart-time Codex `thread/resume`/`exec resume` and Kimi `session/load` use
-  explicit `NativeSessionRef` bindings and fail rather than silently opening a
-  fresh session.
+- restart-time Codex `thread/resume`/`exec resume` and Kimi
+  `session/resume` (with an explicit older-server `session/load` fallback) use
+  `NativeSessionRef` bindings and fail rather than silently opening a fresh
+  session.

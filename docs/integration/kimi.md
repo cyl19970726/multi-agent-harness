@@ -18,10 +18,11 @@ requested/effective controls, busy-turn mailbox behavior, Interrupt, restart,
 and native-session resume are defined in the focused
 [Kimi ACP Agent Team runtime](kimi-agent-team.md) contract.
 
-The installed Kimi Code probe is 0.29.1 while `kimi-acp-v1` remains reviewed
-only for 0.27.0, so compatibility stays `review_required`. A successful
-model/`thinking` setting receipt does not promote that separate compatibility
-claim.
+The installed Kimi Code probe is 0.31.0. Following the Human-approved upgrade,
+`kimi-acp-v1` is reviewed for prompt delivery, model/`thinking` control,
+same-session resume, next-round batched mail, and cooperative Interrupt.
+`session/cancel` is an ACP notification without a JSON-RPC request id; sending
+it as a request produces method-not-found and is not a valid capability probe.
 
 ## Install and login
 
@@ -211,7 +212,10 @@ For Agent Team (ADR
 [0025](../decisions/0025-agent-team-run-control-plane.md)) the kimi member drive surface is the
 ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode:
 
-`initialize -> session/new -> session/prompt`; `session/cancel` requires a reviewed capability for the detected version.
+`initialize -> session/new|session/resume -> session/prompt`; `session/load` is
+the compatibility fallback when an older server rejects `session/resume`.
+`session/cancel` requires a separately reviewed capability for the detected
+version.
 
 - The ACP `sessionId` is stored through the mode-aware
   `MemberRun.native_session` and reused for follow-up rounds. The locator,
@@ -229,12 +233,14 @@ ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode
   Plan Review routes to Lead. Company-level legal, financial, permission, and
   organization effects remain subject to their native Human Approval contract.
 - Cancellation is execution-mode **and reviewed-version specific**. The
-  historical reviewed Kimi ACP 0.27.0 path used `session/cancel`, waited for
-  terminal `stopReason=cancelled`, and only then returned the MemberRun to
-  `idle`. Live Kimi 0.29.1 returned `-32601 Method not found` for `session/cancel`,
-  so its profile reports `supports_cancel=false`.
-  Interrupt must reject before changing a PendingInteraction, writing
-  `interrupt_requested`, or returning a false `cancel_requested` acknowledgement.
+  reviewed Kimi ACP 0.31.0 path sends `session/cancel` as a JSON-RPC
+  notification, waits for terminal `stopReason=cancelled`, and only then
+  returns the MemberRun to `idle`. An earlier canary incorrectly sent the
+  notification as a request and received `-32601 Method not found`; that was a
+  Harness framing defect, not evidence that 0.31.0 lacked cancellation.
+  Explicit Host Close instead latches terminal intent and terminates the
+  Harness-owned ACP process; it does not claim a provider-native close or
+  cancellation receipt.
   Kimi ACP still does not support same-turn steer, so
   ordinary Message is queued for the next provider round. An attempted Steer
   fails rather than being silently converted. Only explicit Member Close
@@ -244,8 +250,11 @@ ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode
   live; failed preflight leaves mail queued and reconnects the recorded
   session. `delivered` is recorded only after ACP returns its native
   request/session receipt. An uncertain post-crash claim requires explicit
-  reconciliation and is never blindly replayed. Explicit Close is durably
-  latched before process teardown.
+  reconciliation and is never blindly replayed. A delivered trigger without a
+  Handoff resumes the same native session with a recovery prompt that asks the
+  Member to inspect its native state and workspace; the Assignment is not
+  replayed as a new attempt. Explicit Close is durably latched before process
+  teardown.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.
 - Kimi-native Agent/AgentSwarm/background-task and hook events are not yet
@@ -268,11 +277,13 @@ session binding and coordination above it. Process transport is short-lived:
 
 `run_kimi_delivery` does not retain Kimi stdout/stderr/NDJSON as Harness history.
 
-## Native Multi-Agent Features
+## Native Goal and multi-Agent features
 
-Kimi Code 0.27 exposes native Agent/AgentSwarm, background tasks, hooks, session
-recovery, context compaction, MCP, modes, and model/thinking configuration. That
-provider-native inventory is not the same as current Adapter coverage.
+Kimi Code 0.31 exposes persistent Goals, built-in `coder`, `explore`, and
+`plan` agents, background/nested subagents, Markdown custom agents at user,
+project, and Plugin scopes, hooks, session recovery, context compaction, MCP,
+modes, and model/thinking configuration. That provider-native inventory is not
+the same as current Adapter coverage.
 
 Doctrine:
 
@@ -281,12 +292,16 @@ Doctrine:
 For the current `kimi_acp` Team Member mode:
 
 - native subagents remain implementation details of the invoking MemberRun;
+- a native Goal may help the Member continue internally across turns, but ACP
+  does not yet give Harness a reviewed inspect/replace/cancel/terminal contract
+  for that Goal, so Kimi remains `host_driven`;
 - no native child is promoted into a MemberRun;
 - no lifecycle control is claimed without a provider child identifier and
   tested interrupt/resume/close path;
 - hook/background/session files may contain prompts, command output, paths, and
   credentials and must not be copied into public evidence without redaction;
-- Kimi plan updates are explicit provider state and may be mapped later;
+- Kimi plan updates are provider-native execution aids. A Host-requested plan
+  is still an ordinary correlated Markdown conversation, not a Plan Gate;
   provider thinking remains transient-only.
 
 ## Evidence and Report Extraction
@@ -425,7 +440,8 @@ against Moonshot pricing or a future live usage frame before spend decisions are
 - [ ] Assistant reply extraction works for string content and array block content.
 - [ ] ACP `sessionId` is bound to a mode-aware `NativeSessionRef` and native
       activity is read from Kimi's own session store.
-- [ ] ACP `session/load` resume is covered; schema and cost remain explicitly
+- [ ] ACP reattachment prefers `session/resume`; method-not-found falls back to
+      `session/load`, drains replayed history, and keeps schema/cost explicitly
       degraded where the selected Kimi mode does not expose them.
 - [ ] `supported_provider_names()` includes `kimi`.
 - [ ] Codex and Claude paths remain regression-clean.

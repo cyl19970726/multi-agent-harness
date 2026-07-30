@@ -91,6 +91,16 @@ returns its real request/turn/session receipt. A crash between claim and receipt
 leaves an uncertain claim. Recovery must reconcile it against Provider-native
 state or require an explicit operator choice. It does not silently requeue.
 
+If a receipt is durable but the correlated Handoff is absent, the next
+generation resumes the same native session and sends a recovery instruction:
+inspect provider-native state and the workspace, then complete or restate the
+Assignment. It does not append a second delivery attempt for the accepted
+Assignment. Mail still `queued` is delivered normally after reconnect.
+
+A Handoff is rejected while newer same-correlation input addressed to that
+Member is `queued` or `claimed`. The provider must first accept the correction
+and produce a Handoff causally linked to the latest input.
+
 Acknowledgement proves recipient intake only. Correlated reply, Handoff,
 review, Host acceptance, and Mission closeout remain separate facts.
 
