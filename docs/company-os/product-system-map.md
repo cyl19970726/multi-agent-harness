@@ -15,9 +15,12 @@ contracts fit together and which layer owns each decision.
 Star Harness is an AI Company OS for turning durable company context into
 governed work and returning accepted outcomes to company memory. Its two
 primary product systems are **Docs** and **Organization**. Work and Finance are
-first-class operating systems connected to them. Mission/Wave, Agent Team,
-Dynamic Workflow, Host execution, providers, plugins, and MCP are the shared
-execution foundation rather than a second company model.
+first-class operating systems connected to them. AgentOS is the programmable
+operating layer that lets Standing Agents use skills, MCP tools, plugins,
+connectors, custom pages, and execution substrates without turning those tools
+into company authority. Mission/Wave, Agent Team, Dynamic Workflow, Host
+execution, providers, plugins, and MCP are the shared execution foundation
+rather than a second company model.
 
 The product-level subject is an **Agent Company Workspace**: a company-like
 operating boundary where humans, Standing Agents, Docs, Work, Organization,
@@ -34,6 +37,7 @@ flowchart LR
   F["Finance<br/>monetary state and evidence"]
   E["Execution Space<br/>Mission/Wave · Agent Team · Workflow · Host"]
   P["Project Bindings<br/>repos · worktrees · delivery refs"]
+  G["Plugins / Gateways<br/>actions · connectors · view extensions"]
 
   D -->|"creates context and requests"| W
   O -->|"supplies accountable and assigned Actors"| W
@@ -42,6 +46,9 @@ flowchart LR
   E -->|"returns outcome, artifacts and evidence"| W
   E -->|"runs against explicit resources"| P
   P -->|"source and delivery evidence"| D
+  G -->|"syncs external facts and evidence"| D
+  G -->|"submits follow-up commitments"| W
+  O -->|"authorizes Actors and services"| G
   W -->|"writes accepted result"| D
   F -->|"projects authorized financial truth"| D
 ```
@@ -99,6 +106,7 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Organization | ActorRef, HumanMember, AgentMember, external/service actors, OrgUnit | identity, reporting, permission, authority and explicit availability/capacity |
 | Work | WorkItem, Milestone, WorkType, Assignment, Approval links, execution/delivery refs | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
+| Plugins / Gateways | GatewayPlugin manifest, GatewayAction, GatewayEvent, connector sync records, view-extension declarations, evidence refs | platform capabilities, external state synchronization, and presentation extensions; never approval or business truth |
 | Execution Space | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
 | Project Binding / external source | ProjectBinding, ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how repositories, worktrees, GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are selected or mapped |
 
@@ -115,6 +123,39 @@ not the owner of the Company Store. One Agent Company Workspace may contain
 multiple operating areas, such as Wanchengwanling and AgentOS / Star Harness,
 while mapping several repositories.
 
+## AgentOS plugin and connector layer
+
+AgentOS capabilities should enter Company OS through plugins rather than
+platform-specific core commands. A plugin can package:
+
+- Skill instructions for the Agent using the capability;
+- a selected operation transport such as an existing CLI, MCP tool,
+  plugin-owned CLI adapter, official API, browser automation, or phone
+  automation;
+- connector sync for external account, issue, message, order, logistics,
+  payment, or metric state;
+- view extensions that declare how synced records appear in Docs, Work,
+  Organization, and Agent detail surfaces; and
+- a manifest naming actions, risk class, required permissions, idempotency,
+  evidence, fallback views, and policy gates.
+
+This layer is the right place for GitHub, WeCom, Xiaohongshu, Douyin, WeChat
+Channels, ecommerce, logistics, and future integrations. The core `harness`
+CLI may provide generic Company OS object and Action commands plus a small
+readiness/bootstrap probe, but it should not hard-code platform page flows,
+API quirks, or business-specific automation. Whether an operation is invoked
+through an existing tool such as `gh`, MCP, a plugin CLI, API, browser
+automation, or phone automation is an implementation choice; the durable effect
+must return to Docs, WorkItems, Organization actors, metrics, evidence, and
+Finance/Approval records when protected actions or money are involved.
+
+The first AgentOS connector to implement should be **GitHub** because this
+repository is the dogfood system. Development WorkItems need a reliable bridge
+to issues, branches, pull requests, review status, checks, preview/deployment
+evidence, and software PRD source snapshots. Social, WeCom, ecommerce, and
+logistics plugins should follow the same action + connector + view pattern
+after the GitHub path proves the contract.
+
 ## Current delivery truth
 
 | Area | Current truth | Next product gap |
@@ -126,6 +167,7 @@ while mapping several repositories.
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
 | Governance Agents | canonical roles and decision contracts exist | durable definitions, permissions, queues, and Org/HR lifecycle Actions |
 | Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
+| AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
 
 “Implemented” never follows from a generated image. The visual inventory
 separates baseline, Expected, Actual, historical, and deferred-reference assets.
@@ -140,9 +182,10 @@ separates baseline, Expected, Actual, historical, and deferred-reference assets.
 6. [Document system](document-system.md) and [financial relations](financial-relations.md)
 7. [Governance Agent workspaces](governance-agent-workspaces.md)
 8. [External project product sources](external-project-product-sources.md)
-9. [Frontend information architecture](frontend-information-architecture.md)
-10. [Execution foundation](execution-foundation.md)
-11. [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md)
+9. [External Gateway and Plugin Intake](external-gateway-and-plugins.md)
+10. [Frontend information architecture](frontend-information-architecture.md)
+11. [Execution foundation](execution-foundation.md)
+12. [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md)
 
 Detailed schemas, Actions, examples, and implementation audits remain linked
 from [the Company OS index](README.md). If a detailed document conflicts with

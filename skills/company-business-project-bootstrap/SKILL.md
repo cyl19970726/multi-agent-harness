@@ -323,6 +323,12 @@ otherwise:
 - IP/Product Design: bracelet, magnet, main IP character, AR animation assets,
   store-facing material, and social content assets are first-class project
   records.
+- Platform operations: Xiaohongshu, Douyin, WeChat Channels, WeCom, ecommerce,
+  and logistics integrations should be modeled as gateway plugins. A plugin
+  may provide Skill instructions, MCP tools, plugin-owned CLI adapters,
+  connector sync, and view extensions, but the project truth still returns to
+  Docs, WorkItems, Organization actors, metrics, evidence, and Finance/Approval
+  records when money or protected actions are involved.
 
 ## Handoff format
 

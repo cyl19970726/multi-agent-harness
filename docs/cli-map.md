@@ -105,10 +105,12 @@ Store identity introduced by ADR 0042.
 
 | Capability | Current surface | Status | Notes |
 | --- | --- | --- | --- |
-| Social platform readiness | `company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]` | Implemented / read-only | Observes Android package/focus readiness for Xiaohongshu, Douyin, and WeChat Channels slots. It returns data suitable for `social_platform_account` records but does not write Store truth, log in, publish, delete, pay, or export messages. |
-| GitHub source observation | `company docs source sync` | Implemented for local worktree observation | Writes external software source TypedRecords; GitHub webhook/API delivery remains next. |
+| Social platform readiness | `company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]` | Implemented / read-only core bootstrap | Observes Android package/focus readiness for Xiaohongshu, Douyin, and WeChat Channels slots. It returns data suitable for `social_platform_account` records but does not write Store truth, log in, publish, delete, pay, or export messages. |
+| GitHub source observation | `company docs source sync` | Implemented for local worktree observation | Writes external software source TypedRecords. First GitHub connector should be sync/projection-first and may call existing `gh`/Git rather than adding GitHub-specific core CLI. GitHub webhook/API delivery remains next. |
+| GitHub issue/PR/check connector | connector sync using existing `gh`/GitHub API/webhook; Company OS receives delivery refs and views | Planned / first connector priority | Sync issues, PRs, reviews, checks, branches, and source snapshots into WorkItem delivery panels, Agent detail development queues, and Docs source mapping views. No new MCP/plugin CLI is required for the first slice. |
 | WeCom merchant gateway | docs/WorkItems only | Planned | Needs schema/API/CLI/Agent inbox implementation. |
-| Social publication / metric evidence | Docs TypedRecords + WorkItems now; dedicated connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, and metric snapshots. Dedicated publish/metrics commands must remain policy-gated. |
+| Social plugin actions/connectors/views | plugin Skill + MCP or plugin-owned CLI adapter; Company OS receives governed Actions/TypedRecords/Relations/WorkItems/evidence | Planned | Upload, title/body/topic fill, publish submit, comment/private-message sync, profile management, paid-promotion preparation, account sync, metrics sync, and view extensions should live in platform plugins rather than `harness-cli` core. |
+| Social publication / metric evidence | Docs TypedRecords + WorkItems now; plugin connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, external message threads, and metric snapshots. Dedicated publish/message/metrics/plugin commands must remain policy-gated and write back through Company OS records. |
 
 ### Company OS API resources with no equivalent dedicated CLI
 

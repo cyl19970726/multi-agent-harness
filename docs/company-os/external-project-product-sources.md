@@ -27,6 +27,15 @@ This contract defines how an external repository such as
 - GitHub webhooks or polling may create sync events and review queues, but
   they do not silently overwrite Company OS knowledge.
 
+This is the first AgentOS connector priority. The GitHub connector should
+initially be a sync/projection connector, not a new command surface. Agents can
+already use `gh` and normal Git commands for issue, branch, pull request, and
+review operations. The Company OS gap is to synchronize issue/PR/check/source
+facts into typed records, delivery refs, WorkItem links, and views so Docs,
+Work, Organization, and Agent detail pages can see the same delivery state.
+Dedicated MCP tools or plugin-owned CLI commands are optional later, only when
+they reduce variance or add a governed operation that `gh` cannot safely cover.
+
 ADR 0042 separates the long-term identities involved here:
 
 ```text
@@ -80,8 +89,9 @@ Company OS should support two sync modes.
 
 ### 1. Manual or scheduled pull
 
-An Agent or scheduled job runs a read-only sync against a registered repo and
-branch:
+An Agent, scheduled job, or GitHub connector runs a read-only sync against a
+registered repo and branch. The first implementation may call `git` and `gh`
+under the hood rather than adding new GitHub-specific Harness CLI commands:
 
 ```bash
 harness --project <current-compat-project-selector> \
@@ -113,10 +123,11 @@ side-effect of the sync command. A sync must not change commercial policy,
 operating plans, Organization authority, Finance state, or delivery status
 without an explicit governed Action.
 
-### 2. GitHub webhook
+### 2. GitHub webhook / connector event
 
 GitHub can send `push`, `pull_request`, `issues`, `check_suite`, and release
-events to a Company OS endpoint. The webhook path should be deliberately small:
+events to a Company OS endpoint or connector worker. The webhook path should be
+deliberately small:
 
 ```text
 GitHub webhook
@@ -131,6 +142,12 @@ GitHub webhook
 Webhook delivery is a notification and evidence mechanism. It is not a
 permission to mutate business records, approve spending, publish content,
 submit legal filings, or grant Organization authority.
+
+The connector's views should render GitHub facts where they help operation:
+Development WorkItem delivery panel, PR/check/review table, Docs source mapping
+panel, stale-source queue, and Development Agent detail panel. Each view reads
+Company OS records and delivery refs; it does not use GitHub state to infer
+Company OS completion or acceptance.
 
 ## Mapping policy
 
