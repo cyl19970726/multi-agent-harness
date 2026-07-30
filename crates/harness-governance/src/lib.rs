@@ -940,6 +940,12 @@ fn walk_md(root: &Path, rel: &str, out: &mut Vec<String>) {
     }
     if abs.is_dir() {
         for entry in sorted_dir(&abs) {
+            // Dependency and VCS trees are not project documentation. They may
+            // exist only on developer machines, so scanning them makes the
+            // same checkout pass in CI but fail after a local install.
+            if matches!(entry.as_str(), ".git" | "node_modules" | "target") {
+                continue;
+            }
             walk_md(root, &format!("{rel}/{entry}"), out);
         }
     } else if rel.ends_with(".md") {
@@ -1550,6 +1556,31 @@ mod tests {
         assert!(!is_valid_date("2026-13-01"));
         assert!(!is_valid_date("2026-6-1"));
         assert!(!is_valid_date("not-a-date"));
+    }
+
+    #[test]
+    fn markdown_walk_skips_dependency_build_and_vcs_directories() {
+        let root = tmp("markdown-walk-ignore");
+        write(&root, "apps/product.md", "# Product");
+        write(
+            &root,
+            "apps/node_modules/vendor/README.md",
+            "[missing](./not-shipped.md)",
+        );
+        write(
+            &root,
+            "apps/target/generated/README.md",
+            "[missing](./not-shipped.md)",
+        );
+        write(
+            &root,
+            "apps/.git/internal/README.md",
+            "[missing](./not-shipped.md)",
+        );
+        let files = collect_markdown(&root, &["apps".into()]);
+        assert_eq!(files, vec!["apps/product.md"]);
+        let links = check_links(&root, &["apps".into()]);
+        assert!(links.failures.is_empty(), "got {:?}", links.failures);
     }
 
     /// The permanent regression gate (design "self-host"): the harness exercises

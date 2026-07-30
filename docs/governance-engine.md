@@ -83,6 +83,9 @@ drops the `[registry]` block and keeps `links` + `size`.
 The ports are faithful 1:1 (same roots, rules, and messages), with two
 deliberate refinements: directory entries are sorted (deterministic output,
 unlike Node's `readdirSync`), and a missing root is skipped rather than throwing.
+The Markdown walker also ignores `.git`, `node_modules`, and `target` directory
+trees: installed dependencies and generated build output are not Company Docs
+and must not make a local checkout fail a gate that passes in clean CI.
 On a repo where every root exists, the four ported gates retain the legacy
 behavior. `retired_vocabulary` is an opt-in native extension: it uses the
 registry to scan only active documents, so migration and archive evidence remain

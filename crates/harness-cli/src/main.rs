@@ -15442,6 +15442,7 @@ fn run_claude_agent_sdk_team_member(
     let mut turn_text = String::new();
     let mut final_status = MemberRunStatus::Idle;
     let mut final_summary = String::new();
+    let mut carried_evidence_refs = Vec::<String>::new();
     let mut closing = false;
     let mut closed_by_host = false;
     let mut closed_cleanly = false;
@@ -15617,6 +15618,11 @@ fn run_claude_agent_sdk_team_member(
                         .flatten()
                         .filter_map(|value| value.as_str().map(str::to_string))
                         .collect();
+                    for evidence_ref in turn_evidence_refs {
+                        if !carried_evidence_refs.contains(&evidence_ref) {
+                            carried_evidence_refs.push(evidence_ref);
+                        }
+                    }
                     let trigger_message_id = data
                         .get("triggerMessageId")
                         .and_then(|value| value.as_str());
@@ -15636,11 +15642,15 @@ fn run_claude_agent_sdk_team_member(
                         assignment: active_assignment.as_ref(),
                         trigger: trigger.as_ref(),
                         final_text: &turn_text,
-                        evidence_refs: &turn_evidence_refs,
+                        evidence_refs: &carried_evidence_refs,
                         round,
                         handoffs_before_round: &handoffs_before_round,
                     };
-                    let (status, summary) = record_member_round(ledger, &mut member_row, &record)?;
+                    let (status, summary, handoff_recorded) =
+                        record_member_round(ledger, &mut member_row, &record)?;
+                    if handoff_recorded {
+                        carried_evidence_refs.clear();
+                    }
                     final_status = status;
                     final_summary = summary;
                     turn_text.clear();
@@ -15947,16 +15957,17 @@ fn record_member_round(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
     record: &MemberRoundRecord<'_>,
-) -> CliResult<(MemberRunStatus, String)> {
+) -> CliResult<(MemberRunStatus, String, bool)> {
     let handoff = record_round_handoff(ledger, member_row, record)?;
 
-    let (action_type, action_status, action_summary) = match handoff {
+    let (action_type, action_status, action_summary, handoff_recorded) = match handoff {
         RoundHandoffRecord::Deferred { pending_count } => (
             "continued",
             MemberActionStatus::Progress,
             format!(
                 "provider round ended, but {pending_count} newer inbound message(s) require a follow-up round before Handoff"
             ),
+            false,
         ),
         RoundHandoffRecord::Recorded(message) => {
             let (action_type, action_status) = match parse_round_result(record.final_text) {
@@ -15969,6 +15980,7 @@ fn record_member_round(
                 action_status,
                 extract_report_section(record.final_text, "RESULT")
                     .unwrap_or_else(|| format!("handoff {}", message.id)),
+                true,
             )
         }
     };
@@ -16000,7 +16012,7 @@ fn record_member_round(
             .collect::<Vec<_>>()
             .join("\n")
     });
-    Ok((MemberRunStatus::Idle, summary))
+    Ok((MemberRunStatus::Idle, summary, handoff_recorded))
 }
 
 #[allow(dead_code)] // retained for historical claude_cli record diagnostics
@@ -16516,7 +16528,7 @@ fn run_kimi_member(
                 ));
             }
         } else {
-            let (_, summary) = record_member_round(
+            let (_, summary, _) = record_member_round(
                 ledger,
                 &mut member_row,
                 &MemberRoundRecord {

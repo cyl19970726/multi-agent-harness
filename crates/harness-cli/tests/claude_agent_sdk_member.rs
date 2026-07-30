@@ -42,12 +42,16 @@ fn write_fake_runner(dir: &Path, follow_up_after_first_turn: bool) -> std::path:
     let script = format!(
         r#"
 import {{ spawnSync }} from "node:child_process";
+import {{ existsSync, writeFileSync }} from "node:fs";
 import {{ createInterface }} from "node:readline";
 
 const FOLLOW_UP = {follow_up};
+const SESSION_STATE = new URL("./fake-native-session-0001.state", import.meta.url);
 let cfg = null;
-let turns = 0;
-let sentFollowUp = false;
+// The provider-native Session, not the transport process, owns continuation
+// state. A transport generation may restart and resume this same Session.
+let turns = existsSync(SESSION_STATE) ? 1 : 0;
+let sentFollowUp = existsSync(SESSION_STATE);
 
 const emit = (event, data) => process.stdout.write(JSON.stringify({{ event, data }}) + "\n");
 
@@ -95,7 +99,9 @@ for await (const line of rl) {{
         "--json",
       ], {{ encoding: "utf8" }});
       if (sent.status !== 0) throw new Error(sent.stderr);
-      JSON.parse(sent.stdout);
+      // Persist the native-session side effect before this transport can die.
+      // A resumed runner must not repeat it merely because process memory reset.
+      writeFileSync(SESSION_STATE, JSON.stringify({{ turns, sentFollowUp }}));
     }}
   }} else if (command === "close") {{
     emit("member_closed", {{ reason: payload?.reason ?? "closed", undelivered: [] }});
@@ -247,12 +253,15 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let body = String::from_utf8_lossy(&inbox.stdout);
     let handoffs = body.matches("\"handoff\"").count();
 
-    // Two rounds means the member was still alive when the late message
-    // arrived. Under `claude_cli` this is 1: the member is gone by then.
-    assert_eq!(
-        handoffs, 2,
-        "expected the member to survive the empty queue and take a second \
-         round without duplicate Adapter handoffs, got {handoffs}.\ninbox: {body}"
+    // The member must execute two provider rounds. If the follow-up reaches the
+    // durable queue before round one's Handoff is appended, Harness correctly
+    // suppresses that stale intermediate Handoff; otherwise both Handoffs are
+    // visible. More than two means a transport resume repeated a native-session
+    // side effect.
+    assert!(
+        (1..=2).contains(&handoffs),
+        "expected one final Handoff plus at most one non-stale intermediate \
+         Handoff, got {handoffs}.\ninbox: {body}"
     );
     assert!(
         body.contains("turn-2"),
@@ -285,6 +294,17 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let member_outbox = detail_json["mailbox"]["outbox"]
         .as_array()
         .expect("member outbox");
+    assert!(
+        detail_json["actions"]
+            .as_array()
+            .is_some_and(|actions| actions.iter().any(|action| {
+                action["title"]
+                    .as_str()
+                    .is_some_and(|title| title.starts_with("round 2 "))
+            })),
+        "late mail must produce a second provider round even when the stale \
+         round-one Handoff is suppressed"
+    );
     let assignment = member_inbox
         .iter()
         .find(|message| message["kind"] == "assignment")
@@ -293,15 +313,20 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
         .iter()
         .find(|message| message["body"] == "late follow-up")
         .expect("follow-up");
-    let first_handoff = member_outbox
-        .iter()
-        .find(|message| {
-            message["kind"] == "handoff"
-                && message["body"]
-                    .as_str()
-                    .is_some_and(|body| body.contains("turn-1"))
-        })
-        .expect("first handoff");
+    assert_eq!(
+        member_inbox
+            .iter()
+            .filter(|message| message["body"] == "late follow-up")
+            .count(),
+        1,
+        "native-session continuation must not repeat the first-turn side effect"
+    );
+    let first_handoff = member_outbox.iter().find(|message| {
+        message["kind"] == "handoff"
+            && message["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("turn-1"))
+    });
     let second_handoff = member_outbox
         .iter()
         .find(|message| {
@@ -311,10 +336,12 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
                     .is_some_and(|body| body.contains("turn-2"))
         })
         .expect("second handoff");
-    assert_eq!(
-        first_handoff["causation_id"], assignment["id"],
-        "round one is caused by the Assignment"
-    );
+    if let Some(first_handoff) = first_handoff {
+        assert_eq!(
+            first_handoff["causation_id"], assignment["id"],
+            "a non-stale round-one Handoff is caused by the Assignment"
+        );
+    }
     assert_eq!(
         second_handoff["causation_id"], follow_up["id"],
         "round two is caused by the exact follow-up TeamMessage"

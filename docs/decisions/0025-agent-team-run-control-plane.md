@@ -141,6 +141,15 @@ correlation. Invalid or cross-run lineage is rejected before a message append.
 Messages that omit both fields retain an opaque generated correlation and make
 no claim of assignment ownership.
 
+If newer inbound mail in the same correlation reaches the durable queue before
+an Adapter appends the preceding round's automatic Handoff, the preceding
+Handoff is stale and must be withheld. Its useful evidence references are
+carried into the next non-stale Handoff; transport-generation restart must not
+discard them or repeat provider-native Session side effects. Depending on this
+race, two completed provider rounds may therefore produce one final Handoff or
+two ordered Handoffs. Provider-native Session records remain the turn-level
+truth in both cases.
+
 ### Delegation guardrails
 
 Two delegation modes are valid:

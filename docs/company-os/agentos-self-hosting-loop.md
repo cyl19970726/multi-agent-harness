@@ -236,6 +236,12 @@ The live run also found the current acceptance gaps:
   Handoffs, batches ordered mail exactly once, and resumes the same native
   session after a Supervisor/process failure. A `claimed` message remains an
   explicit reconciliation case rather than being replayed;
+- the Assignment-delivery bridge CI canary exposed a Claude Agent SDK timing
+  race: a late message may make the preceding automatic Handoff stale, and a
+  transport generation may resume the same native Session. The accepted
+  contract permits one final Handoff or two ordered Handoffs for two provider
+  rounds, carries evidence from a suppressed stale Handoff into the final one,
+  and forbids the resumed transport from repeating Session-owned side effects;
 - installed Kimi 0.31.0 is reviewed for K3 model/thinking controls, persistent
   ACP prompt delivery, next-round mail, session resume, and cooperative
   Interrupt. ACP `session/cancel` is a notification without a request id; the
