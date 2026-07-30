@@ -121,16 +121,25 @@ a durable Organization actor, not a MemberRun.
 ## Gateway-facing Standing Agents
 
 Business-facing Standing Agents may receive input through external gateways
-such as WeCom, GitHub, email, or future plugins. Organization owns the durable
-Agent identity, role, permissions, tools, skill refs, maintained Docs, and
+such as WeCom, GitHub, email, social platforms, ecommerce/logistics systems, or
+future plugins. Organization owns the durable Agent identity, role,
+permissions, tools, skill refs, maintained Docs, accepted WorkTypes, and
 escalation policy. The gateway service is an intake adapter or service actor;
 it does not grant authority to the Agent.
 
 An Agent detail workspace should show Org identity, current WorkItems, maintained
-Docs, permission/capability refs, and recent gateway summaries. Agent-specific
-knowledge such as merchant FAQ, reply policy, customer requests, or evidence
-should remain in Docs/Relations and be loaded as context, not stored as a
-different Agent-specific database.
+Docs, permission/capability refs, plugin capabilities, account/message/order
+or metric summaries, and recent gateway events. Agent-specific knowledge such
+as merchant FAQ, reply policy, content guidelines, customer requests, or
+evidence should remain in Docs/Relations and be loaded as context, not stored
+as a different Agent-specific database.
+
+Plugin view extensions may add an Agent detail panel such as "merchant inbox",
+"social account status", "content performance", or "logistics blockers". The
+panel must render Company OS records or scoped connector projections and link
+back to source Documents, WorkItems, and evidence. It must not infer authority
+from a logged-in platform account, phone session, profile card, or plugin
+installation.
 
 ## Current interface state
 

@@ -92,15 +92,26 @@ without `work_item.transition` / `close` and result provenance.
 ## Gateway and dogfood intake
 
 External gateways and plugins create Work only when a message or event requires
-follow-up. A gateway-created WorkItem must still include source document,
-business module, WorkType, Milestone when known, requester, submitter,
-accountable owner, assignee, priority, and result/evidence return path. The
-gateway event itself is evidence/source context, not Work completion.
+follow-up. A plugin may expose actions through MCP or a plugin-owned CLI
+adapter, and it may sync external state through a connector, but Work remains
+the durable commitment layer. A gateway-created WorkItem must still include
+source document, business module, WorkType, Milestone when known, requester,
+submitter, accountable owner, assignee, priority, and result/evidence return
+path. The gateway event itself is evidence/source context, not Work completion.
 
 For Wanchengwanling merchant intake, WeCom messages should route to Merchant
 Ops Agent for answerable questions and to Work Governance for follow-up
 WorkItems. Finance, Organization, and legal effects remain owned by their
 systems.
+
+For social/content plugins, publication, media upload, comment/private-message
+reply, profile update, paid promotion, metric sync, and inbox sync are not
+separate Work models. They produce or update WorkItems only when there is a
+company commitment: prepare a post, review a draft, submit a gated
+publication, answer a merchant/customer question, perform a daily retrospective,
+or request a paid-promotion approval. Synced account, post, metric, and message
+records should be linked as context/evidence rather than copied into the
+WorkItem description.
 
 ## Current interface state
 

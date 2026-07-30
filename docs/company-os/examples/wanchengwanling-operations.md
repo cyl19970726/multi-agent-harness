@@ -413,7 +413,7 @@ The first content motion is owned-channel growth, not paid KOL dependency:
 publish high-quality AR effects, explain why the project upgrades physical
 check-in into AR check-in, show user photo/video moments, and use the 8/12
 reward thresholds to pull users into the route. Platform accounts and posts are
-modeled as Social Content Gateway records:
+modeled as Social Content Gateway records provided by platform plugins:
 
 | Record | Required fields | Return path |
 | --- | --- | --- |
@@ -422,12 +422,17 @@ modeled as Social Content Gateway records:
 | `social_post_plan` | platform, account, hook, copy brief, asset refs, target time, approval state, source WorkItem | Work board and content page |
 | `social_post_publication` | platform post id/URL, screenshot/evidence, publisher, published time, source WorkItem | Source post plan and campaign |
 | `social_metric_snapshot` | views, likes, comments, shares, saves, follows, conversion signals, collected time | Daily review and next WorkItems |
+| `external_message_thread` | comment/private/business-message scope, external participant refs when known, summary, sensitivity, last sync, evidence refs, follow-up WorkItems | Content Growth or Merchant Ops inbox view and Agent detail panel |
 
-Human-approved platform sessions may be operated by the Agent through API,
-browser, or phone automation. Login, posting, deleting, buying promotion,
-account setting changes, and private-message export remain governed actions
-with explicit WorkItem context and evidence. A logged-in phone is execution
-access; it is not Organization authority.
+Human-approved platform sessions may be operated by the Agent through a plugin
+Skill plus MCP or plugin-owned CLI adapter, using API, browser, phone
+automation, or another reviewed transport. The plugin also owns connector sync
+and view extensions for account status, content calendar, performance table,
+inbox/follow-up queue, and Agent detail panels. Login, posting, deleting,
+buying promotion, account setting changes, external replies, and
+private-message export remain governed actions with explicit WorkItem context,
+policy, and evidence. A logged-in phone is execution access; it is not
+Organization authority.
 
 ## Agent operating structure
 

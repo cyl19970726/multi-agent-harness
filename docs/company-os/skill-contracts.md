@@ -54,11 +54,29 @@ commercial operating truth must remain in Company OS records through Docs,
 Work, Organization, Finance, source-sync records, and custom page definitions.
 
 Social/content platforms follow the same rule. Xiaohongshu, WeChat Channels,
-Douyin, and future channels enter through gateway observations, platform-account
-TypedRecords, content campaign/post records, WorkItems, and evidence refs.
+Douyin, WeCom, ecommerce, logistics, and future channels enter through
+gateway observations, platform-account TypedRecords, content campaign/post
+records, WorkItems, and evidence refs. Platform-specific operations should be
+packaged as plugins that provide:
+
+- a Skill for Agent operating procedure and policy boundaries;
+- a selected transport for concrete actions, such as an existing CLI (`gh`),
+  MCP tool, plugin-owned CLI adapter, official API, browser automation, or
+  phone automation;
+- a connector for syncing external account/message/order/logistics/metric
+  state into Company OS records; and
+- view extensions that declare how synced records appear in Docs, Work,
+  Organization, and Agent detail surfaces.
+
 `harness company gateway social readiness` is a read-only device/API readiness
-probe; it does not log in, publish, delete, pay for promotion, export private
-messages, or mutate Company Store truth by itself.
+probe retained as a core bootstrap. It does not log in, publish, delete, pay
+for promotion, export private messages, or mutate Company Store truth by
+itself. Full social operations such as media upload, title/body/topic fill,
+publication submit, comment/private-message sync, profile management, paid
+promotion preparation, and analytics sync belong in platform plugins. They may
+be invoked through MCP or through plugin-owned CLI commands, but their durable
+effects must return as governed Company OS Actions, typed records, relations,
+WorkItems, metrics, and evidence.
 
 ## Company Store selection
 
@@ -285,6 +303,55 @@ These skills must:
 No skill gets a general store-write client. Any write it initiates uses
 declared, policy-checked commands, and any required Approval remains a real
 first-class decision.
+
+## Gateway plugin operator contract
+
+Gateway plugins are optional capability packages, not Company OS authority.
+They may include Skills, connector daemons/jobs, view declarations, and one or
+more operation transports. A transport can be an existing tool such as `gh`,
+an MCP tool, a plugin-owned CLI adapter, official API calls, browser
+automation, or phone automation. A plugin should expose a manifest naming:
+
+- external platform and supported transports (`mcp`, `plugin_cli`,
+  `existing_cli`, `phone_automation`, `browser_automation`, `official_api`, or
+  another reviewed transport);
+- supported actions and whether each action writes external state, reads
+  private data, or implies financial/legal/security risk;
+- Company OS record types and relation types it emits;
+- required Actor permissions and Human/Finance/Approval gates;
+- idempotency keys, evidence outputs, failure semantics, and rollback/retry
+  boundaries; and
+- view extensions and their fallback standard Views.
+
+The operation path is:
+
+```text
+Agent reads Docs/Work/Org context
+  -> uses platform Skill
+  -> calls the selected transport: existing CLI, MCP tool, plugin CLI, API,
+     browser automation, or phone automation
+  -> plugin action/connector returns structured observation or effect
+  -> Company OS writes governed records / relations / WorkItems / evidence
+  -> Docs, Work, Org, and Agent detail views render those records
+```
+
+For GitHub specifically, the first priority is connector sync and views. Agents
+already have a mature `gh`/Git operation path, so the plugin should first use
+`gh` or GitHub API/webhook observation to sync issues, PRs, checks, reviews,
+and source snapshots into Company OS. A new MCP server or dedicated plugin CLI
+is optional later, not a prerequisite for the first GitHub connector slice.
+
+A plugin view extension is presentation over Company OS truth. It can provide
+an account overview, inbox queue, content calendar, post performance table,
+merchant/order/logistics panel, or Agent detail gateway panel. It cannot own
+business facts, store an alternate task list, hide required approvals, or
+mutate external systems without an explicit Action and policy gate.
+
+Private-message, merchant-chat, customer-data, account-settings, publication,
+delete, paid-promotion, order, payment, and logistics actions must declare
+their risk class. The default is prepare/sync/review first; submission,
+external reply, publish, paid promotion, payment, and destructive changes
+remain gated unless the account and Actor policy explicitly allow automation.
 
 ## `company-docs-operator`
 
