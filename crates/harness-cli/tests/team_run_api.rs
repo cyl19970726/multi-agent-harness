@@ -2005,6 +2005,29 @@ fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
         steered["result"]["message"]["causation_id"].as_str(),
         Some(explicit_handoff_id.as_str())
     );
+    let steer_message_id = steered["result"]["message"]["id"]
+        .as_str()
+        .expect("Steer control message")
+        .to_string();
+    let (status, duplicate_handoff) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_kind": "member_run",
+            "sender_id": member_id,
+            "to_member_ids": ["host"],
+            "kind": "handoff",
+            "body": "## RESULT\ndone\n## SUMMARY\ninvalid post-Steer sibling",
+            "correlation_id": assignment_correlation,
+            "causation_id": steer_message_id,
+        }),
+    );
+    assert_eq!(status, 400, "body: {duplicate_handoff}");
+    assert!(
+        duplicate_handoff["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("already handed off")),
+        "post-Steer sibling must be rejected atomically: {duplicate_handoff}"
+    );
 
     let mut converged = false;
     for _ in 0..100 {

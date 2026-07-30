@@ -71,6 +71,21 @@ create a sibling Handoff when the turn ends. An ordinary correlated message
 sent after the Member returns to idle still starts the next round; that later
 round's Handoff names the ordinary message it consumed.
 
+The active Codex adapter keeps the Assignment correlation, exact consumed
+trigger, and pre-turn Handoff baseline only in process. It does not add provider
+turn ownership to `TeamMessage`. A post-baseline Handoff can anchor Steer or
+suppress fallback only when it keeps that Assignment correlation and names the
+exact trigger, or names a delivered `Inject` control whose causation validates
+the same continuation. A Handoff for another delivered Assignment or an older
+same-correlation cause is not current-turn convergence evidence.
+
+Explicit Handoff convergence is also enforced atomically under the store lock.
+Two Handoffs from the same Member with the same Assignment correlation and
+cause cannot both append. After post-Handoff Steer, a second Handoff caused by
+the delivered `Inject` control is likewise rejected because that control points
+to the already-durable Handoff. These checks use existing kind, correlation,
+causation, and delivery facts rather than a new lifecycle field.
+
 Reading `harness team-run inbox` or `harness member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 

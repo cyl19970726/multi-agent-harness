@@ -14444,6 +14444,7 @@ fn run_codex_member(
         round += 1;
         active_assignment =
             active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
+        let round_trigger = accepted_messages.last().cloned();
         let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let turn = {
             let _turn_lease = turn_leases.acquire();
@@ -14457,11 +14458,18 @@ fn run_codex_member(
                     ledger,
                     controls: &live_control,
                     accepted_messages: &accepted_messages,
-                    handoffs_before_round: &handoffs_before_round,
+                    lineage: MemberTurnLineage {
+                        assignment_correlation_id: active_assignment
+                            .as_ref()
+                            .map(|message| message.correlation_id.as_str()),
+                        consumed_trigger_id: round_trigger
+                            .as_ref()
+                            .map(|message| message.id.as_str()),
+                        handoffs_before_round: &handoffs_before_round,
+                    },
                 },
             )?
         };
-        let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
@@ -14626,7 +14634,7 @@ struct CodexTeamTurnContext<'a> {
     ledger: &'a TeamRunLedger,
     controls: &'a ControlReceiver<MemberControlCommand>,
     accepted_messages: &'a [TeamMessage],
-    handoffs_before_round: &'a HashSet<String>,
+    lineage: MemberTurnLineage<'a>,
 }
 
 fn project_codex_team_event_live(
@@ -14709,7 +14717,7 @@ fn run_codex_app_server_turn(
         ledger,
         controls,
         accepted_messages,
-        handoffs_before_round,
+        lineage,
     } = context;
     let mut turn_id = client.start_turn(prompt)?;
     for message in accepted_messages {
@@ -14739,12 +14747,7 @@ fn run_codex_app_server_turn(
                     // native turn. If Steer succeeds, the control record can
                     // join that exact Assignment chain without inventing a
                     // new round or matching an older idle-round Handoff.
-                    let result = latest_member_handoff_since(
-                        ledger,
-                        &member.id,
-                        handoffs_before_round,
-                        None,
-                    )
+                    let result = latest_member_handoff_for_turn(ledger, &member.id, &lineage)
                     .and_then(|handoff| {
                         let handoff_lineage =
                             handoff.map(|handoff| (handoff.correlation_id, handoff.id));
@@ -15796,18 +15799,78 @@ fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<
         .collect())
 }
 
-fn latest_member_handoff_since(
+#[derive(Clone, Copy)]
+struct MemberTurnLineage<'a> {
+    assignment_correlation_id: Option<&'a str>,
+    consumed_trigger_id: Option<&'a str>,
+    handoffs_before_round: &'a HashSet<String>,
+}
+
+fn handoff_has_valid_turn_lineage(
+    messages: &[TeamMessage],
+    message: &TeamMessage,
+    member_run_id: &str,
+    lineage: &MemberTurnLineage<'_>,
+) -> bool {
+    let (Some(correlation_id), Some(trigger_id)) = (
+        lineage.assignment_correlation_id,
+        lineage.consumed_trigger_id,
+    ) else {
+        return false;
+    };
+    if message.from_member_id != member_run_id
+        || message.kind != TeamMessageKind::Handoff
+        || message.correlation_id != correlation_id
+        || lineage.handoffs_before_round.contains(&message.id)
+    {
+        return false;
+    }
+    let Some(causation_id) = message.causation_id.as_deref() else {
+        return false;
+    };
+    if causation_id == trigger_id {
+        return true;
+    }
+    let Some(control) = messages.iter().find(|candidate| {
+        candidate.id == causation_id
+            && candidate.kind == TeamMessageKind::Control
+            && candidate.correlation_id == correlation_id
+            && candidate.deliveries.iter().any(|delivery| {
+                delivery.member_id == member_run_id
+                    && delivery.policy == TeamDeliveryPolicy::Inject
+                    && matches!(
+                        delivery.status,
+                        TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged
+                    )
+            })
+    }) else {
+        return false;
+    };
+    let Some(control_cause_id) = control.causation_id.as_deref() else {
+        return false;
+    };
+    control_cause_id == trigger_id
+        || messages.iter().any(|candidate| {
+            candidate.id == control_cause_id
+                && candidate.from_member_id == member_run_id
+                && candidate.kind == TeamMessageKind::Handoff
+                && candidate.correlation_id == correlation_id
+                && candidate.causation_id.as_deref() == Some(trigger_id)
+                && !lineage.handoffs_before_round.contains(&candidate.id)
+        })
+}
+
+fn latest_member_handoff_for_turn(
     ledger: &TeamRunLedger,
     member_run_id: &str,
-    handoffs_before_round: &HashSet<String>,
-    correlation_id: Option<&str>,
+    lineage: &MemberTurnLineage<'_>,
 ) -> CliResult<Option<TeamMessage>> {
-    Ok(ledger.team_messages()?.into_iter().rev().find(|message| {
-        message.from_member_id == member_run_id
-            && message.kind == TeamMessageKind::Handoff
-            && correlation_id.is_none_or(|correlation_id| message.correlation_id == correlation_id)
-            && !handoffs_before_round.contains(&message.id)
-    }))
+    let messages = ledger.team_messages()?;
+    Ok(messages
+        .iter()
+        .rev()
+        .find(|message| handoff_has_valid_turn_lineage(&messages, message, member_run_id, lineage))
+        .cloned())
 }
 
 struct MemberRoundRecord<'a> {
@@ -15849,11 +15912,16 @@ fn record_round_handoff(
             pending_count: pending.len(),
         });
     }
-    if let Some(mut explicit) = latest_member_handoff_since(
+    if let Some(mut explicit) = latest_member_handoff_for_turn(
         ledger,
         &member_row.id,
-        record.handoffs_before_round,
-        Some(&correlation_id),
+        &MemberTurnLineage {
+            assignment_correlation_id: record
+                .assignment
+                .map(|message| message.correlation_id.as_str()),
+            consumed_trigger_id: record.trigger.map(|message| message.id.as_str()),
+            handoffs_before_round: record.handoffs_before_round,
+        },
     )? {
         let mut changed = false;
         for evidence_ref in record.evidence_refs {
@@ -35285,6 +35353,131 @@ package:com.tencent.mm
             replacement_causation.as_deref(),
             Some(replacement.id.as_str())
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_turn_handoff_ignores_another_assignment_and_an_older_same_correlation_cause() {
+        let (store, root) = temp_store("member-turn-lineage-negative");
+        let created = create_two_member_team_run(&store);
+        let member = &created.member_runs[0];
+        let mut assignment = created.assignment_messages[0].clone();
+        let deliver = |store: &HarnessStore, message: &mut TeamMessage| {
+            let delivery = message
+                .deliveries
+                .iter_mut()
+                .find(|delivery| delivery.member_id == member.id)
+                .expect("member delivery");
+            delivery.status = TeamDeliveryStatus::Delivered;
+            delivery.attempt = 1;
+            delivery.provider_receipt_id = Some(format!("native-receipt:{}", message.id));
+            delivery.updated_at = now_string();
+            store
+                .append_team_message(message)
+                .expect("persist provider receipt");
+        };
+        deliver(&store, &mut assignment);
+
+        let mut older = send_team_message(
+            &store,
+            &created.team_run.id,
+            "host",
+            vec![member.id.clone()],
+            TeamMessageKind::Message,
+            "Older same-correlation context",
+            Some(assignment.correlation_id.clone()),
+            Some(assignment.id.clone()),
+            None,
+        )
+        .expect("older message");
+        deliver(&store, &mut older);
+        let mut trigger = send_team_message(
+            &store,
+            &created.team_run.id,
+            "host",
+            vec![member.id.clone()],
+            TeamMessageKind::Message,
+            "Exact message consumed for this turn",
+            Some(assignment.correlation_id.clone()),
+            Some(older.id.clone()),
+            None,
+        )
+        .expect("turn trigger");
+        deliver(&store, &mut trigger);
+        let mut other_assignment = send_team_message(
+            &store,
+            &created.team_run.id,
+            "host",
+            vec![member.id.clone()],
+            TeamMessageKind::Assignment,
+            "Another delivered Assignment must not own the active turn",
+            None,
+            None,
+            None,
+        )
+        .expect("other Assignment");
+        deliver(&store, &mut other_assignment);
+
+        let ledger = TeamRunLedger::without_supervisor(&store, &created.team_run.id);
+        let handoffs_before_round =
+            member_handoff_ids(&ledger, &member.id).expect("Handoff baseline");
+        let wrong_assignment_handoff = send_team_message(
+            &store,
+            &created.team_run.id,
+            &member.id,
+            vec!["host".into()],
+            TeamMessageKind::Handoff,
+            "Wrong Assignment result",
+            Some(other_assignment.correlation_id.clone()),
+            Some(other_assignment.id.clone()),
+            None,
+        )
+        .expect("other Assignment Handoff");
+        let older_cause_handoff = send_team_message(
+            &store,
+            &created.team_run.id,
+            &member.id,
+            vec!["host".into()],
+            TeamMessageKind::Handoff,
+            "Stale same-correlation result",
+            Some(assignment.correlation_id.clone()),
+            Some(older.id.clone()),
+            None,
+        )
+        .expect("older-cause Handoff");
+        let lineage = MemberTurnLineage {
+            assignment_correlation_id: Some(&assignment.correlation_id),
+            consumed_trigger_id: Some(&trigger.id),
+            handoffs_before_round: &handoffs_before_round,
+        };
+        assert!(
+            latest_member_handoff_for_turn(&ledger, &member.id, &lineage)
+                .expect("select Handoff")
+                .is_none(),
+            "Steer must not inherit another Assignment or an older same-correlation cause"
+        );
+
+        let recorded = record_round_handoff(
+            &ledger,
+            member,
+            &MemberRoundRecord {
+                assignment: Some(&assignment),
+                trigger: Some(&trigger),
+                final_text: "## RESULT\ndone\n## SUMMARY\nfallback for exact trigger",
+                evidence_refs: &[],
+                round: 2,
+                handoffs_before_round: &handoffs_before_round,
+            },
+        )
+        .expect("record fallback");
+        let RoundHandoffRecord::Recorded(fallback) = recorded else {
+            panic!("exact-trigger fallback must not be deferred");
+        };
+        assert_ne!(fallback.id, wrong_assignment_handoff.id);
+        assert_ne!(fallback.id, older_cause_handoff.id);
+        assert_eq!(fallback.correlation_id, assignment.correlation_id);
+        assert_eq!(fallback.causation_id.as_deref(), Some(trigger.id.as_str()));
+
         let _ = std::fs::remove_dir_all(root);
     }
 

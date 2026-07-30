@@ -204,6 +204,7 @@ while IFS= read -r line; do
           --kind handoff \
           --body "## RESULT\ncompleted\n## SUMMARY\nexplicit handoff during active ACP turn" \
           --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+          --causation-id "$HARNESS_ASSIGNMENT_MESSAGE_ID" \
           > "${FAKE_KIMI_HANDOFF_MARKER:?}" 2>&1
       fi
       if [ "$ask" = "1" ]; then

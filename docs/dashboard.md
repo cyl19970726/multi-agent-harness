@@ -102,8 +102,12 @@ exact TeamMessage consumed for that provider round. Manual CLI, HTTP, and MCP
 sends can reuse that assignment correlation or inherit it from a validated
 same-run cause. A successful same-turn Steer after a durable Handoff reuses
 that correlation and points causation at the Handoff without opening another
-round. The UI should render these structural joins and label messages with
-omitted lineage as unanchored rather than fabricating ownership.
+round. Current-turn qualification uses the adapter's transient Assignment
+correlation, exact consumed trigger, and Handoff baseline; `TeamMessage` does
+not acquire provider-turn ownership. The store atomically rejects an exact
+same-cause sibling and a post-Handoff `Inject` continuation sibling. The UI
+should render these structural joins and label messages with omitted lineage
+as unanchored rather than fabricating ownership.
 
 ## Data Requirements
 

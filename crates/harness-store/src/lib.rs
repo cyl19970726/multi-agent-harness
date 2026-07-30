@@ -9,10 +9,11 @@ use harness_core::{
     AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery,
     MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
-    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLease, TeamSupervisorLeaseStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -740,6 +741,53 @@ impl HarnessStore {
                 "correlation_id `{}` already identifies an assignment in team run {}",
                 value.correlation_id, value.team_run_id
             )));
+        }
+        if value.kind == TeamMessageKind::Handoff {
+            let existing_handoffs = messages
+                .values()
+                .filter(|message| {
+                    message.team_run_id == value.team_run_id
+                        && message.from_member_id == value.from_member_id
+                        && message.kind == TeamMessageKind::Handoff
+                        && message.correlation_id == value.correlation_id
+                })
+                .collect::<Vec<_>>();
+            let duplicate_trigger = value.causation_id.as_deref().is_some_and(|causation_id| {
+                existing_handoffs
+                    .iter()
+                    .any(|message| message.causation_id.as_deref() == Some(causation_id))
+            });
+            let duplicate_inject_continuation =
+                value.causation_id.as_deref().is_some_and(|causation_id| {
+                    messages.get(causation_id).is_some_and(|control| {
+                        control.team_run_id == value.team_run_id
+                            && control.kind == TeamMessageKind::Control
+                            && control.correlation_id == value.correlation_id
+                            && control.deliveries.iter().any(|delivery| {
+                                delivery.member_id == value.from_member_id
+                                    && delivery.policy == TeamDeliveryPolicy::Inject
+                                    && matches!(
+                                        delivery.status,
+                                        TeamDeliveryStatus::Delivered
+                                            | TeamDeliveryStatus::Acknowledged
+                                    )
+                            })
+                            && control
+                                .causation_id
+                                .as_deref()
+                                .is_some_and(|control_cause_id| {
+                                    existing_handoffs
+                                        .iter()
+                                        .any(|message| message.id == control_cause_id)
+                                })
+                    })
+                });
+            if duplicate_trigger || duplicate_inject_continuation {
+                return Err(StoreError::Conflict(format!(
+                    "MemberRun {} already handed off correlation `{}` for this provider turn",
+                    value.from_member_id, value.correlation_id
+                )));
+            }
         }
         if value.kind == harness_core::TeamMessageKind::Handoff
             && messages.values().any(|message| {
@@ -2751,6 +2799,106 @@ mod tests {
         store
             .append_team_message_checked(&handoff)
             .expect("handoff is valid after provider receipt");
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_same_turn_handoffs_allow_exactly_one_append() {
+        let root = team_test_root("same-turn-handoff");
+        let store = Arc::new(HarnessStore::new(&root));
+        let assignment = TeamMessage {
+            id: "tm-assignment".into(),
+            team_run_id: "tr-converge".into(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["mr-codex".into()],
+            kind: TeamMessageKind::Assignment,
+            body: "Own the convergence fix".into(),
+            correlation_id: "corr-converge".into(),
+            causation_id: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "mr-codex".into(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("codex-turn-1".into()),
+                updated_at: "unix-ms:1".into(),
+            }],
+            created_at: "unix-ms:1".into(),
+        };
+        store
+            .append_team_message_checked(&assignment)
+            .expect("append Assignment");
+        let handoff = TeamMessage {
+            id: "tm-handoff-a".into(),
+            team_run_id: assignment.team_run_id.clone(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "mr-codex".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["host".into()],
+            kind: TeamMessageKind::Handoff,
+            body: "## RESULT\ndone".into(),
+            correlation_id: assignment.correlation_id.clone(),
+            causation_id: Some(assignment.id.clone()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".into(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("harness-control-plane".into()),
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = ["tm-handoff-a", "tm-handoff-b"]
+            .into_iter()
+            .map(|id| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                let mut candidate = handoff.clone();
+                candidate.id = id.into();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.append_team_message_checked(&candidate)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("handoff writer"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let conflict = results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .expect("one same-turn conflict");
+        assert!(conflict.to_string().contains("already handed off"));
+        assert_eq!(
+            store
+                .team_messages()
+                .expect("messages")
+                .into_iter()
+                .filter(|message| message.kind == TeamMessageKind::Handoff)
+                .count(),
+            1
+        );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }

@@ -422,6 +422,7 @@ pub fn run_harness_with_env(
         .envs(home.envs())
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
         .env_remove("HARNESS_COMPANY");
     for (key, value) in extra_env {
         command.env(key, value);

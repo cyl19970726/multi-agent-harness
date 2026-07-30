@@ -122,6 +122,10 @@ fn start_with_fake_runner(
         .env("HARNESS_CLAUDE_MEMBER_RUNNER", runner)
         .env("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS", grace_ms)
         .env("HARNESS_BIN", env!("CARGO_BIN_EXE_harness"))
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .output()
         .expect("team-run start")
 }

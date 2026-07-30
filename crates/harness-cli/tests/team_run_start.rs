@@ -386,6 +386,7 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
         .output()
         .expect("start fake kimi team");
     assert!(
@@ -437,6 +438,10 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
             .as_str()
             .is_some_and(|body| body.contains("explicit handoff during active ACP turn")),
         "the member-authored handoff is authoritative: {handoffs:?}"
+    );
+    assert_eq!(
+        handoffs[0]["causation_id"], assignment["id"],
+        "explicit Handoff must name the exact consumed Assignment"
     );
 }
 
