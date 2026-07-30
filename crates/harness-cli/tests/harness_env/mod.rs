@@ -198,7 +198,7 @@ impl ServeHandle {
             "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
         )?;
         let mut raw = String::new();
-        stream.read_to_string(&mut raw)?;
+        read_http_to_string(&mut stream, &mut raw)?;
         Ok(split_status_body(&raw))
     }
 
@@ -223,7 +223,7 @@ impl ServeHandle {
         )
         .expect("write get");
         let mut raw = String::new();
-        stream.read_to_string(&mut raw).expect("read get");
+        read_http_to_string(&mut stream, &mut raw).expect("read get");
         (split_status_body(&raw).0, raw)
     }
 
@@ -263,7 +263,7 @@ impl ServeHandle {
         )
         .expect("write post");
         let mut raw = String::new();
-        stream.read_to_string(&mut raw).expect("read post");
+        read_http_to_string(&mut stream, &mut raw).expect("read post");
         let (status, text) = split_status_body(&raw);
         let json = serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("POST {path} body not JSON ({e}): {text}"));
@@ -347,6 +347,40 @@ fn free_port() -> u16 {
         .local_addr()
         .expect("local addr")
         .port()
+}
+
+/// Linux may report `ECONNRESET` after the server has already written a
+/// complete `Connection: close` response. Accept that transport ending only
+/// when the declared Content-Length is fully present; never retry a mutation.
+fn read_http_to_string(stream: &mut TcpStream, raw: &mut String) -> std::io::Result<()> {
+    match stream.read_to_string(raw) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::ConnectionReset
+                && complete_http_response(raw) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn complete_http_response(raw: &str) -> bool {
+    let Some((headers, body)) = raw
+        .split_once("\r\n\r\n")
+        .or_else(|| raw.split_once("\n\n"))
+    else {
+        return false;
+    };
+    let Some(content_length) = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    }) else {
+        return false;
+    };
+    body.len() >= content_length
 }
 
 /// Split a raw HTTP response into (status_code, body). Tolerant of either CRLF or
