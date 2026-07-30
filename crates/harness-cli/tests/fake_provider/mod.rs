@@ -336,7 +336,7 @@ if [ "$1" = "app-server" ]; then
           continue
         fi
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
-        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ]; then
+        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ] || { [ "${FAKE_CODEX_AUTO_COMPLETE_AFTER_STEER:-0}" = "1" ] && [ "$turn_seq" -gt "1" ]; }; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then

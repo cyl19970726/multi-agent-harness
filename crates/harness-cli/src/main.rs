@@ -14457,6 +14457,7 @@ fn run_codex_member(
                     ledger,
                     controls: &live_control,
                     accepted_messages: &accepted_messages,
+                    handoffs_before_round: &handoffs_before_round,
                 },
             )?
         };
@@ -14625,6 +14626,7 @@ struct CodexTeamTurnContext<'a> {
     ledger: &'a TeamRunLedger,
     controls: &'a ControlReceiver<MemberControlCommand>,
     accepted_messages: &'a [TeamMessage],
+    handoffs_before_round: &'a HashSet<String>,
 }
 
 fn project_codex_team_event_live(
@@ -14707,6 +14709,7 @@ fn run_codex_app_server_turn(
         ledger,
         controls,
         accepted_messages,
+        handoffs_before_round,
     } = context;
     let mut turn_id = client.start_turn(prompt)?;
     for message in accepted_messages {
@@ -14732,20 +14735,36 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = client.steer(&turn_id, &content).and_then(|active_turn| {
-                        turn_id = active_turn;
-                        ledger.append_action(
-                            &member.id,
-                            "steered",
-                            MemberActionStatus::Succeeded,
-                            "active Codex turn steered",
-                            &format!("{requested_by} injected {} characters", content.len()),
-                        )?;
-                        Ok(serde_json::json!({
-                            "member_run_id": member.id,
-                            "turn_id": turn_id,
-                            "delivery": "steered",
-                        }))
+                    // Snapshot only a Handoff that was already durable in this
+                    // native turn. If Steer succeeds, the control record can
+                    // join that exact Assignment chain without inventing a
+                    // new round or matching an older idle-round Handoff.
+                    let result = latest_member_handoff_since(
+                        ledger,
+                        &member.id,
+                        handoffs_before_round,
+                        None,
+                    )
+                    .and_then(|handoff| {
+                        let handoff_lineage =
+                            handoff.map(|handoff| (handoff.correlation_id, handoff.id));
+                        client.steer(&turn_id, &content).and_then(|active_turn| {
+                            turn_id = active_turn;
+                            ledger.append_action(
+                                &member.id,
+                                "steered",
+                                MemberActionStatus::Succeeded,
+                                "active Codex turn steered",
+                                &format!("{requested_by} injected {} characters", content.len()),
+                            )?;
+                            Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "turn_id": turn_id,
+                                "delivery": "steered",
+                                "correlation_id": handoff_lineage.as_ref().map(|lineage| &lineage.0),
+                                "causation_id": handoff_lineage.as_ref().map(|lineage| &lineage.1),
+                            }))
+                        })
                     });
                     let _ = reply.send(result);
                 }
@@ -15777,6 +15796,20 @@ fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<
         .collect())
 }
 
+fn latest_member_handoff_since(
+    ledger: &TeamRunLedger,
+    member_run_id: &str,
+    handoffs_before_round: &HashSet<String>,
+    correlation_id: Option<&str>,
+) -> CliResult<Option<TeamMessage>> {
+    Ok(ledger.team_messages()?.into_iter().rev().find(|message| {
+        message.from_member_id == member_run_id
+            && message.kind == TeamMessageKind::Handoff
+            && correlation_id.is_none_or(|correlation_id| message.correlation_id == correlation_id)
+            && !handoffs_before_round.contains(&message.id)
+    }))
+}
+
 struct MemberRoundRecord<'a> {
     assignment: Option<&'a TeamMessage>,
     trigger: Option<&'a TeamMessage>,
@@ -15816,12 +15849,12 @@ fn record_round_handoff(
             pending_count: pending.len(),
         });
     }
-    if let Some(mut explicit) = ledger.team_messages()?.into_iter().rev().find(|message| {
-        message.from_member_id == member_row.id
-            && message.kind == TeamMessageKind::Handoff
-            && message.correlation_id == correlation_id
-            && !record.handoffs_before_round.contains(&message.id)
-    }) {
+    if let Some(mut explicit) = latest_member_handoff_since(
+        ledger,
+        &member_row.id,
+        record.handoffs_before_round,
+        Some(&correlation_id),
+    )? {
         let mut changed = false;
         for evidence_ref in record.evidence_refs {
             if !explicit.evidence_refs.contains(evidence_ref) {
@@ -19558,6 +19591,8 @@ fn steer_team_member_value(
             requested_by: requested_by.clone(),
         },
     )?;
+    let correlation_id = json_string(&result, "correlation_id");
+    let causation_id = json_string(&result, "causation_id");
     let mut message = send_team_message_as(
         store,
         team_run_id,
@@ -19570,8 +19605,8 @@ fn steer_team_member_value(
         vec![member_run_id.to_string()],
         TeamMessageKind::Control,
         &content,
-        None,
-        None,
+        correlation_id,
+        causation_id,
         json_string(body, "origin_wave_id"),
     )?;
     for delivery in &mut message.deliveries {

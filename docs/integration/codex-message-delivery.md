@@ -64,6 +64,13 @@ observed evidence references and does not append a second Handoff from the
 provider's final reply. If no explicit Handoff exists, the final reply becomes
 the automatic fallback Handoff.
 
+If a real same-turn Steer succeeds after that durable Handoff, its control
+message reuses the Assignment correlation and names the Handoff as its direct
+cause. The Steer continues the current native turn and therefore does not
+create a sibling Handoff when the turn ends. An ordinary correlated message
+sent after the Member returns to idle still starts the next round; that later
+round's Handoff names the ordinary message it consumed.
+
 Reading `harness team-run inbox` or `harness member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 
