@@ -413,20 +413,28 @@ pub fn run_harness_with_env(
     args: &[&str],
     extra_env: &[(&str, &str)],
 ) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+    let mut cmd = isolated_harness_command(home, cwd);
     for a in args {
         cmd.arg(a);
     }
-    let command = cmd
-        .current_dir(cwd)
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("run harness")
+}
+
+/// Build a child command whose store selectors are isolated from the developer
+/// or dogfood Supervisor environment. Tests may add an explicit selector after
+/// this helper returns, but they never inherit one accidentally.
+fn isolated_harness_command(home: &TempHome, cwd: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harness"));
+    cmd.current_dir(cwd)
         .envs(home.envs())
         .env_remove("HARNESS_ROOT")
         .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
         .env_remove("HARNESS_COMPANY");
-    for (key, value) in extra_env {
-        command.env(key, value);
-    }
-    command.output().expect("run harness")
+    cmd
 }
 
 /// Read the current project id from the registry written under `home`.
@@ -438,4 +446,27 @@ pub fn current_project_id(home: &TempHome) -> String {
         .as_str()
         .expect("current_project_id")
         .to_string()
+}
+
+#[test]
+fn spawned_harness_commands_clear_parent_store_selectors() {
+    let home = TempHome::new("isolated-command-env");
+    let command = isolated_harness_command(&home, home.base());
+    let envs = command
+        .get_envs()
+        .map(|(key, value)| (key.to_string_lossy().to_string(), value.is_some()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for key in [
+        "HARNESS_ROOT",
+        "HARNESS_PROJECT",
+        "HARNESS_SPACE",
+        "HARNESS_COMPANY",
+    ] {
+        assert_eq!(
+            envs.get(key),
+            Some(&false),
+            "{key} must be removed from spawned harness commands"
+        );
+    }
 }
