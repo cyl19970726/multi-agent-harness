@@ -209,7 +209,7 @@ own version-specific evidence.
 | --- | --- | --- | --- |
 | Codex `codex_app_server` | thread-native Goal | `host_driven` until native Goal ownership, permission inheritance and inspection are verified together | Never call an independent `turn/start` while the Goal owns continuation. |
 | Claude `claude_agent_sdk` | Claude Code `/goal`, implemented as a session-scoped Stop hook in supported versions | `host_driven` until the SDK Adapter has a reviewed native-goal canary | `/goal` starts work immediately and does not itself change permissions. |
-| Kimi `kimi_acp` | no reviewed native continuation contract | `host_driven` | Native plan updates do not imply native continuation. |
+| Kimi `kimi_acp` | native Goals persist across turns, but ACP has no reviewed Goal inspect/replace/cancel/terminal contract | `host_driven` | Goals and built-in/custom subagents remain Member-internal; native plan updates do not imply Harness-owned continuation. |
 | Future provider | optional | `host_driven` | Add native continuation only after capability and lifecycle review. |
 
 “Initial driver posture” is the required product routing. Current Agent Team

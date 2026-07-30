@@ -741,6 +741,25 @@ impl HarnessStore {
                 value.correlation_id, value.team_run_id
             )));
         }
+        if value.kind == harness_core::TeamMessageKind::Handoff
+            && messages.values().any(|message| {
+                message.team_run_id == value.team_run_id
+                    && message.correlation_id == value.correlation_id
+                    && message.from_member_id != value.from_member_id
+                    && message.deliveries.iter().any(|delivery| {
+                        delivery.member_id == value.from_member_id
+                            && matches!(
+                                delivery.status,
+                                TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed
+                            )
+                    })
+            })
+        {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} cannot hand off correlation `{}` while newer inbound mail is queued or claimed",
+                value.from_member_id, value.correlation_id
+            )));
+        }
         self.append_jsonl_unlocked("team_messages.jsonl", value)
     }
 
@@ -2359,6 +2378,99 @@ mod tests {
         assert!(sparse.causation_id.is_none());
         assert!(sparse.evidence_refs.is_empty());
         assert!(sparse.deliveries.is_empty());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn handoff_is_fenced_until_newer_same_correlation_mail_reaches_provider() {
+        let root = team_test_root("handoff-mail-fence");
+        let store = HarnessStore::new(&root);
+        let correction = TeamMessage {
+            id: "tm-correction".into(),
+            team_run_id: "tr-fence".into(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["mr-kimi".into()],
+            kind: TeamMessageKind::Message,
+            body: "Use the corrected requirement".into(),
+            correlation_id: "corr-fence".into(),
+            causation_id: Some("tm-assignment".into()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "mr-kimi".into(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                updated_at: "unix-ms:1".into(),
+            }],
+            created_at: "unix-ms:1".into(),
+        };
+        store
+            .append_team_message_checked(&correction)
+            .expect("append correction");
+        let handoff = TeamMessage {
+            id: "tm-handoff".into(),
+            team_run_id: "tr-fence".into(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "mr-kimi".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["host".into()],
+            kind: TeamMessageKind::Handoff,
+            body: "done".into(),
+            correlation_id: "corr-fence".into(),
+            causation_id: Some("tm-assignment".into()),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".into(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("harness-control-plane".into()),
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        let queued_error = store
+            .append_team_message_checked(&handoff)
+            .expect_err("queued correction must fence stale handoff");
+        assert!(queued_error.to_string().contains("queued or claimed"));
+
+        let mut claimed = correction.clone();
+        claimed.deliveries[0].status = TeamDeliveryStatus::Claimed;
+        claimed.deliveries[0].claim_id = Some("claim-1".into());
+        store
+            .append_team_message(&claimed)
+            .expect("persist claim projection");
+        let claimed_error = store
+            .append_team_message_checked(&handoff)
+            .expect_err("uncertain claimed correction must also fence handoff");
+        assert!(claimed_error.to_string().contains("queued or claimed"));
+
+        let mut delivered = claimed;
+        delivered.deliveries[0].status = TeamDeliveryStatus::Delivered;
+        delivered.deliveries[0].attempt = 1;
+        delivered.deliveries[0].provider_receipt_id = Some("kimi-session:turn-2".into());
+        store
+            .append_team_message(&delivered)
+            .expect("persist provider receipt");
+        store
+            .append_team_message_checked(&handoff)
+            .expect("handoff is valid after provider receipt");
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }

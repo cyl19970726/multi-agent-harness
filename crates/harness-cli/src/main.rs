@@ -9847,10 +9847,16 @@ fn team_member_provider_profile_for_mode(
             execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("kimi-acp-v1".to_string()),
-            reviewed_provider_versions: vec!["0.27.0".to_string()],
+            reviewed_provider_versions: vec!["0.27.0".to_string(), "0.31.0".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-07-21".to_string()),
-            compatibility_note: Some("Version is checked again after the ACP initialize handshake.".to_string()),
+            adapter_reviewed_at: Some("2026-07-30".to_string()),
+            compatibility_note: Some(
+                "Kimi Code 0.31.0 is reviewed for prompt delivery, model and \
+                 reasoning-effort selection, native-session resume, and \
+                 next-round batched mail. ACP session/cancel is sent as a \
+                 JSON-RPC notification and provides cooperative Interrupt."
+                    .to_string(),
+            ),
             interaction_mode: ProviderInteractionMode::PauseAndResume,
             ordinary_message_boundary: OrdinaryMessageBoundary::NextRoundBatched,
             plan_mode: ProviderFeatureMode::Native,
@@ -9943,12 +9949,23 @@ fn apply_provider_version(
     provider_version: Option<String>,
 ) {
     profile.provider_version = provider_version;
-    // Kimi Code 0.29.1 accepts the ACP initialize/session handshake but does
-    // not implement `session/cancel` (the live server returns JSON-RPC
-    // Method not found). Capability claims are version-specific: fail closed
-    // before an operator can receive a false `cancel_requested` acknowledgement.
-    if profile.provider == "kimi" && profile.provider_version.as_deref() == Some("0.29.1") {
-        profile.supports_cancel = false;
+    // Kimi capability claims are version-specific. ACP defines
+    // session/cancel as a JSON-RPC notification, not a request. The reviewed
+    // 0.27.0 and 0.31.0 paths support that notification; unknown versions
+    // fail closed rather than inheriting a stale cancellation claim.
+    if profile.provider == "kimi" {
+        profile.supports_cancel = matches!(
+            profile.provider_version.as_deref(),
+            Some("0.27.0" | "0.31.0")
+        );
+        // Kimi 0.31 adds a real provider-native Goal lifecycle. Harness does
+        // not drive it through ACP yet: execution_driver remains host_driven
+        // until inspect/replace/cancel/terminal operations are reviewed.
+        profile.goal_mode = if profile.provider_version.as_deref() == Some("0.31.0") {
+            ProviderFeatureMode::Native
+        } else {
+            ProviderFeatureMode::Emulated
+        };
     }
     profile.compatibility_status = match profile.provider_version.as_deref() {
         None => ProviderCompatibilityStatus::Unavailable,
@@ -9965,12 +9982,23 @@ fn apply_provider_version(
         }
         Some(_) => ProviderCompatibilityStatus::ReviewRequired,
     };
-    profile.compatibility_note = Some(match profile.compatibility_status {
-        ProviderCompatibilityStatus::Current => "Installed provider version matches an adapter-reviewed version.".to_string(),
-        ProviderCompatibilityStatus::ReviewRequired => "Installed provider version has not been reviewed against this adapter contract; regenerate protocol schemas and run provider acceptance before promotion.".to_string(),
-        ProviderCompatibilityStatus::Unavailable => "Provider version could not be detected.".to_string(),
-        ProviderCompatibilityStatus::Incompatible => "Provider version is known to be incompatible with this adapter contract.".to_string(),
-        ProviderCompatibilityStatus::Unknown => "No reviewed provider version is registered for this execution mode.".to_string(),
+    profile.compatibility_note = Some(match (
+        profile.provider.as_str(),
+        profile.provider_version.as_deref(),
+        profile.compatibility_status,
+    ) {
+        ("kimi", Some("0.31.0"), ProviderCompatibilityStatus::Current) => {
+            "Kimi Code 0.31.0 is adapter-reviewed for persistent ACP prompt \
+             delivery, model/reasoning-effort selection, native-session resume, \
+             next-round batched mail, and cooperative Interrupt through the ACP \
+             session/cancel notification."
+                .to_string()
+        }
+        (_, _, ProviderCompatibilityStatus::Current) => "Installed provider version matches an adapter-reviewed version.".to_string(),
+        (_, _, ProviderCompatibilityStatus::ReviewRequired) => "Installed provider version has not been reviewed against this adapter contract; regenerate protocol schemas and run provider acceptance before promotion.".to_string(),
+        (_, _, ProviderCompatibilityStatus::Unavailable) => "Provider version could not be detected.".to_string(),
+        (_, _, ProviderCompatibilityStatus::Incompatible) => "Provider version is known to be incompatible with this adapter contract.".to_string(),
+        (_, _, ProviderCompatibilityStatus::Unknown) => "No reviewed provider version is registered for this execution mode.".to_string(),
     });
 }
 
@@ -12203,6 +12231,29 @@ fn team_run_command(
                 print_json(&message)?;
             } else {
                 println!("{}", message.id);
+                let members = latest_member_runs_in_append_order(store)?
+                    .into_iter()
+                    .map(|member| (member.id.clone(), member))
+                    .collect::<HashMap<_, _>>();
+                for delivery in &message.deliveries {
+                    if delivery.status != TeamDeliveryStatus::Queued {
+                        continue;
+                    }
+                    let Some(member) = members.get(&delivery.member_id) else {
+                        continue;
+                    };
+                    let boundary = member
+                        .provider_profile
+                        .as_ref()
+                        .map(|profile| serde_snake_label(&profile.ordinary_message_boundary))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    if boundary == "next_round_batched" {
+                        eprintln!(
+                            "delivery durable only: {} queued for {} ({}); provider receipt pending until the next safe provider round",
+                            message.id, member.name, boundary
+                        );
+                    }
+                }
             }
         }
         "add-member" => {
@@ -13412,6 +13463,31 @@ impl TeamRunLedger {
                 message.deliveries.iter().any(|delivery| {
                     delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
                 })
+            })
+            .collect())
+    }
+
+    /// Inbound mail that the provider has not accepted yet. `claimed` remains
+    /// uncertain until a provider receipt or explicit reconciliation, so it
+    /// fences semantic Handoff just like `queued`.
+    fn pending_messages_for_correlation(
+        &self,
+        member_id: &str,
+        correlation_id: &str,
+    ) -> CliResult<Vec<TeamMessage>> {
+        Ok(self
+            .team_messages()?
+            .into_iter()
+            .filter(|message| {
+                message.from_member_id != member_id
+                    && message.correlation_id == correlation_id
+                    && message.deliveries.iter().any(|delivery| {
+                        delivery.member_id == member_id
+                            && matches!(
+                                delivery.status,
+                                TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed
+                            )
+                    })
             })
             .collect())
     }
@@ -15509,13 +15585,36 @@ struct MemberRoundRecord<'a> {
     handoffs_before_round: &'a HashSet<String>,
 }
 
+enum RoundHandoffRecord {
+    Recorded(Box<TeamMessage>),
+    Deferred { pending_count: usize },
+}
+
 fn record_round_handoff(
     ledger: &TeamRunLedger,
     member_row: &MemberRun,
     record: &MemberRoundRecord<'_>,
-) -> CliResult<TeamMessage> {
+) -> CliResult<RoundHandoffRecord> {
     let (origin_wave_id, correlation_id, causation_id) =
         member_round_lineage(record.assignment, record.trigger);
+    let pending = ledger.pending_messages_for_correlation(&member_row.id, &correlation_id)?;
+    if !pending.is_empty() {
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member_row.id.clone()),
+            "handoff",
+            &member_row.id,
+            "deferred",
+            &format!(
+                "withheld stale handoff from {} because {} inbound message(s) still await provider delivery",
+                member_row.name,
+                pending.len()
+            ),
+        )?;
+        return Ok(RoundHandoffRecord::Deferred {
+            pending_count: pending.len(),
+        });
+    }
     if let Some(mut explicit) = ledger.team_messages()?.into_iter().rev().find(|message| {
         message.from_member_id == member_row.id
             && message.kind == TeamMessageKind::Handoff
@@ -15532,7 +15631,7 @@ fn record_round_handoff(
         if changed {
             ledger.save_message(&explicit)?;
         }
-        return Ok(explicit);
+        return Ok(RoundHandoffRecord::Recorded(Box::new(explicit)));
     }
     let handoff = TeamMessage {
         id: generated_id("tmsg"),
@@ -15565,7 +15664,10 @@ fn record_round_handoff(
         }],
         created_at: now_string(),
     };
-    ledger.save_message(&handoff)?;
+    {
+        let _guard = ledger.write_lock();
+        store_conflict_as_usage(ledger.store.append_team_message_checked(&handoff))?;
+    }
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member_row.id.clone()),
@@ -15577,7 +15679,7 @@ fn record_round_handoff(
             member_row.name, record.round
         ),
     )?;
-    Ok(handoff)
+    Ok(RoundHandoffRecord::Recorded(Box::new(handoff)))
 }
 
 /// Ledger writes for one completed member round: handoff to Host, action row,
@@ -15587,21 +15689,36 @@ fn record_member_round(
     member_row: &mut MemberRun,
     record: &MemberRoundRecord<'_>,
 ) -> CliResult<(MemberRunStatus, String)> {
-    record_round_handoff(ledger, member_row, record)?;
+    let handoff = record_round_handoff(ledger, member_row, record)?;
 
-    let (action_type, action_status) = match parse_round_result(record.final_text) {
-        MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
-        MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
-        MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
+    let (action_type, action_status, action_summary) = match handoff {
+        RoundHandoffRecord::Deferred { pending_count } => (
+            "continued",
+            MemberActionStatus::Progress,
+            format!(
+                "provider round ended, but {pending_count} newer inbound message(s) require a follow-up round before Handoff"
+            ),
+        ),
+        RoundHandoffRecord::Recorded(message) => {
+            let (action_type, action_status) = match parse_round_result(record.final_text) {
+                MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
+                MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
+                MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
+            };
+            (
+                action_type,
+                action_status,
+                extract_report_section(record.final_text, "RESULT")
+                    .unwrap_or_else(|| format!("handoff {}", message.id)),
+            )
+        }
     };
-    let result_section =
-        extract_report_section(record.final_text, "RESULT").unwrap_or_else(|| "done".to_string());
     let action = ledger.append_action(
         &member_row.id,
         action_type,
         action_status,
         &format!("round {} {action_type}", record.round),
-        &result_section,
+        &action_summary,
     )?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
@@ -15820,6 +15937,14 @@ fn run_kimi_member(
     let idle_timeout = context.idle_timeout;
     let live_sink = context.live_sink.clone();
     let turn_leases = &context.turn_leases;
+    let recovering_runtime = member.native_session.is_some()
+        && matches!(
+            member.status,
+            MemberRunStatus::Starting
+                | MemberRunStatus::Running
+                | MemberRunStatus::Waiting
+                | MemberRunStatus::Disconnected
+        );
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
     member_row.last_event_at = Some(now_string());
@@ -15838,8 +15963,17 @@ fn run_kimi_member(
     )?;
 
     let assignment = latest_queued_assignment(ledger, &member.id)?;
-    let mut active_assignment = assignment.clone();
-    let assignment_body = assignment
+    let recovery_trigger = if assignment.is_none() && recovering_runtime {
+        latest_unhanded_delivered_trigger(ledger, &member.id)?
+    } else {
+        None
+    };
+    let recovered_assignment = match recovery_trigger.as_ref() {
+        Some(trigger) => assignment_for_correlation(ledger, &trigger.correlation_id)?,
+        None => None,
+    };
+    let mut active_assignment = assignment.clone().or(recovered_assignment);
+    let assignment_body = active_assignment
         .as_ref()
         .map(|message| message.body.clone())
         .unwrap_or_else(|| objective.to_string());
@@ -15849,7 +15983,7 @@ fn run_kimi_member(
         project_id,
         project_selector,
         &member_row,
-        assignment.as_ref(),
+        active_assignment.as_ref(),
     )?;
     let collaboration_env = envelope.environment();
     let mut client = kimi_acp::KimiAcpClient::spawn(
@@ -15866,7 +16000,7 @@ fn run_kimi_member(
             .map(|session| session.native_session_id.as_str()),
         &collaboration_env,
     )?;
-    member_row.status = if assignment.is_some() {
+    member_row.status = if assignment.is_some() || recovery_trigger.is_some() {
         MemberRunStatus::Running
     } else {
         MemberRunStatus::Idle
@@ -15925,10 +16059,37 @@ fn run_kimi_member(
     )?;
     let mut round = 0u32;
     let mut prompt_text;
-    let mut accepted_messages = assignment.iter().cloned().collect::<Vec<_>>();
+    let mut accepted_messages = assignment
+        .iter()
+        .chain(recovery_trigger.iter())
+        .cloned()
+        .collect::<Vec<_>>();
     let mut final_summary = String::new();
     if assignment.is_some() {
         prompt_text = contract_prompt(objective, &member_row, &assignment_body, &envelope);
+    } else if let Some(trigger) = recovery_trigger.as_ref() {
+        prompt_text = member_runtime_recovery_prompt(&member_row, trigger);
+        let action = ledger.append_action(
+            &member.id,
+            "runtime_recovery",
+            MemberActionStatus::Progress,
+            "resuming provider-accepted work after transport loss",
+            &format!(
+                "same MemberRun and native session; correlation {}, trigger {}",
+                trigger.correlation_id, trigger.id
+            ),
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!(
+                "{} resumed provider-accepted work after runtime generation loss",
+                member.name
+            ),
+        )?;
     } else {
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
             client.ensure_transport_alive()
@@ -15986,7 +16147,7 @@ fn run_kimi_member(
                 |update| mapper.handle(update),
                 |request| handle_kimi_provider_request(ledger, &member_row, request),
                 || {
-                    let mut cancel = false;
+                    let mut control = kimi_acp::PromptControl::Continue;
                     while let Ok(command) = live_control.try_recv() {
                         match command {
                             MemberControlCommand::Interrupt {
@@ -16001,7 +16162,7 @@ fn run_kimi_member(
                                     "Kimi cancellation requested",
                                     &format!("{requested_by}: {reason}"),
                                 )?;
-                                cancel = true;
+                                control = kimi_acp::PromptControl::Cancel;
                                 let _ = reply.send(Ok(serde_json::json!({
                                     "member_run_id": member.id,
                                     "status": "cancel_requested",
@@ -16025,16 +16186,16 @@ fn run_kimi_member(
                                     &format!("{requested_by}: {reason}"),
                                 )?;
                                 close_requested = true;
-                                cancel = true;
+                                control = kimi_acp::PromptControl::TerminateRuntime;
                                 let _ = reply.send(Ok(serde_json::json!({
                                     "member_run_id": member.id,
                                     "status": "close_requested",
-                                    "provider_ack": "session_cancel_requested",
+                                    "provider_ack": "harness_runtime_termination_requested",
                                 })));
                             }
                         }
                     }
-                    Ok(cancel)
+                    Ok(control)
                 },
             )?
         };
@@ -16042,7 +16203,24 @@ fn run_kimi_member(
         accepted_messages.clear();
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
-        if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
+        if outcome.stop_reason == "harness_runtime_closed" && close_requested {
+            member_row.status = MemberRunStatus::Stopped;
+            member_row.finished_at = Some(now_string());
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.append_action(
+                &member.id,
+                "closed",
+                MemberActionStatus::Cancelled,
+                "Kimi member runtime closed",
+                "Harness terminated its owned ACP process without claiming a provider-native session close or cancellation acknowledgement.",
+            )?;
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Stopped,
+                "Kimi member runtime closed by Host".to_string(),
+            ));
+        } else if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
             member_row.status = if close_requested {
                 MemberRunStatus::Stopped
             } else {
@@ -16079,12 +16257,9 @@ fn run_kimi_member(
                 ));
             }
         } else {
-            let result = parse_round_result(&final_text);
-
-            // Handoff to the host: the full final report, manual-ack delivery.
-            record_round_handoff(
+            let (_, summary) = record_member_round(
                 ledger,
-                &member_row,
+                &mut member_row,
                 &MemberRoundRecord {
                     assignment: active_assignment.as_ref(),
                     trigger: round_trigger.as_ref(),
@@ -16094,34 +16269,6 @@ fn run_kimi_member(
                     handoffs_before_round: &handoffs_before_round,
                 },
             )?;
-
-            let (action_type, action_status) = match result {
-                MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
-                MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
-                MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
-            };
-            let result_section =
-                extract_report_section(&final_text, "RESULT").unwrap_or_else(|| "done".to_string());
-            let action = ledger.append_action(
-                &member.id,
-                action_type,
-                action_status,
-                &format!("round {round} {action_type}"),
-                &result_section,
-            )?;
-            ledger.fold_event(
-                TeamRunEventSourceKind::Member,
-                Some(member.id.clone()),
-                "action",
-                &action.id,
-                "created",
-                &format!("{} round {round}: {action_type}", member.name),
-            )?;
-
-            member_row.status = MemberRunStatus::Idle;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
             ledger.fold_event(
                 TeamRunEventSourceKind::Member,
                 Some(member.id.clone()),
@@ -16133,8 +16280,7 @@ fn run_kimi_member(
                     member.name, outcome.stop_reason
                 ),
             )?;
-            final_summary = extract_report_section(&final_text, "SUMMARY")
-                .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+            final_summary = summary;
         }
 
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
@@ -16257,6 +16403,68 @@ fn latest_queued_assignment(
         Some(message) => ledger.claim_message(&message.id, member_id),
         None => Ok(None),
     }
+}
+
+/// Return the newest provider-accepted inbound message that has not produced a
+/// Host-facing Handoff yet.
+///
+/// This is deliberately narrower than "latest delivered message". It is used
+/// only when a durable MemberRun says its provider generation disappeared
+/// while work may still have been in flight. A `claimed` delivery is excluded:
+/// Harness cannot know whether the provider accepted it and requires explicit
+/// reconciliation instead of guessing or replaying side effects.
+fn latest_unhanded_delivered_trigger(
+    ledger: &TeamRunLedger,
+    member_id: &str,
+) -> CliResult<Option<TeamMessage>> {
+    let messages = ledger.team_messages()?;
+    let handed_off_causes = messages
+        .iter()
+        .filter(|message| {
+            message.from_member_id == member_id && message.kind == TeamMessageKind::Handoff
+        })
+        .filter_map(|message| message.causation_id.clone())
+        .collect::<HashSet<_>>();
+    Ok(messages.into_iter().rfind(|message| {
+        message.from_member_id != member_id
+            && !handed_off_causes.contains(&message.id)
+            && message.deliveries.iter().any(|delivery| {
+                delivery.member_id == member_id
+                    && matches!(
+                        delivery.status,
+                        TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged
+                    )
+            })
+    }))
+}
+
+fn assignment_for_correlation(
+    ledger: &TeamRunLedger,
+    correlation_id: &str,
+) -> CliResult<Option<TeamMessage>> {
+    Ok(ledger.team_messages()?.into_iter().rfind(|message| {
+        message.kind == TeamMessageKind::Assignment && message.correlation_id == correlation_id
+    }))
+}
+
+fn member_runtime_recovery_prompt(member: &MemberRun, trigger: &TeamMessage) -> String {
+    format!(
+        "RUNTIME RECOVERY for your existing Agent Team assignment.\n\
+The previous provider transport generation ended after Harness recorded that \
+you accepted the coordination message below, but before a Host-facing Handoff \
+was durably recorded.\n\n\
+Do NOT blindly repeat irreversible or externally visible side effects. Inspect \
+your provider-native session and current Workspace first. Continue only the \
+unfinished work, or report the already-completed result with evidence. Then \
+respond in the normal ## RESULT / ## SUMMARY / ## FILES / ## CHECKS format.\n\n\
+MemberRun: {}\nMessage: {}\nCorrelation: {}\nKind: {}\nFrom: {}\n\n{}",
+        member.id,
+        trigger.id,
+        trigger.correlation_id,
+        team_message_kind_label(&trigger.kind),
+        trigger.from_member_id,
+        trigger.body
+    )
 }
 
 /// Flip every queued delivery of `message` addressed to `member_id` to
@@ -19215,6 +19423,13 @@ fn require_member_interrupt_capability(
             "member run {member_run_id} has no provider capability snapshot"
         ))
     })?;
+    if profile.compatibility_status != ProviderCompatibilityStatus::Current {
+        let version = profile.provider_version.as_deref().unwrap_or("unknown");
+        return Err(CliError::Usage(format!(
+            "Interrupt unavailable: {} {} in {} is not adapter-reviewed for this control",
+            profile.provider, version, profile.execution_mode
+        )));
+    }
     if !profile.supports_cancel {
         let version = profile.provider_version.as_deref().unwrap_or("unknown");
         return Err(CliError::Usage(format!(
@@ -33266,6 +33481,23 @@ package:com.tencent.mm
             method_missing.compatibility_status,
             ProviderCompatibilityStatus::ReviewRequired
         );
+
+        let mut current = team_member_provider_profile("kimi");
+        apply_provider_version(&mut current, Some("0.31.0".to_string()));
+        assert!(current.supports_cancel);
+        assert_eq!(current.goal_mode, ProviderFeatureMode::Native);
+        assert_eq!(
+            current.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut future = team_member_provider_profile("kimi");
+        apply_provider_version(&mut future, Some("0.32.0".to_string()));
+        assert!(!future.supports_cancel);
+        assert_eq!(
+            future.compatibility_status,
+            ProviderCompatibilityStatus::ReviewRequired
+        );
     }
 
     fn make_member(id: &str) -> AgentMember {
@@ -34703,7 +34935,7 @@ package:com.tencent.mm
             .append_team_message(&delivered_assignment)
             .expect("deliver first member assignment");
 
-        send_team_message(
+        let mut peer_message = send_team_message(
             &store,
             &created.team_run.id,
             &second.id,
@@ -34715,6 +34947,18 @@ package:com.tencent.mm
             None,
         )
         .expect("peer message");
+        let peer_delivery = peer_message
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == first.id)
+            .expect("peer delivery");
+        peer_delivery.status = TeamDeliveryStatus::Delivered;
+        peer_delivery.attempt = 1;
+        peer_delivery.provider_receipt_id = Some("native-peer-receipt".into());
+        peer_delivery.updated_at = now_string();
+        store
+            .append_team_message(&peer_message)
+            .expect("deliver peer message");
         send_team_message(
             &store,
             &created.team_run.id,

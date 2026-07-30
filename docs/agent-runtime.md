@@ -230,6 +230,21 @@ separate facts. The claim must be visible to later dispatchers and to the
 Dashboard. If transport health fails before claim, mail stays queued and the
 Supervisor must reconnect the recorded native session before retrying.
 
+Crash recovery depends on the last durable boundary:
+
+- `queued` means the provider has not accepted the message; reconnect before
+  claiming it;
+- `claimed` means provider acceptance is uncertain; reconcile explicitly and
+  never blindly replay it;
+- `delivered` without a correlated Handoff means the provider accepted the
+  input but semantic completion is missing. Resume the same native session and
+  ask the Member to inspect its native state/workspace and finish or restate
+  the result without duplicating the Assignment.
+
+A Member cannot write a Handoff while newer same-correlation input is `queued`
+or `claimed`. This fence preserves the difference between a pre-correction
+result and the result that actually absorbed the Host's latest instruction.
+
 Closed, closing, or retired members cannot be revived by delivery. A provider
 may expose an explicit reopen operation later, but normal message delivery and
 runtime start must fail visibly for those states. Close intent is durably

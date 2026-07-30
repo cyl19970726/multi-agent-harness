@@ -115,6 +115,7 @@ if [ "$1" != "acp" ]; then
 fi
 session_id="session_fake_$$"
 mode="default"
+prompt_count=0
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
@@ -127,6 +128,23 @@ while IFS= read -r line; do
       ;;
     *'"method":"session/load"'*)
       session_id=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
+      if [ -n "${FAKE_KIMI_ATTACH_MARKER:-}" ]; then
+        printf 'load %s\n' "$session_id" >> "$FAKE_KIMI_ATTACH_MARKER"
+      fi
+      if [ "${FAKE_KIMI_LOAD_REPLAY:-0}" = "1" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"STALE_HISTORY_REPLAY"}}}}\n' "$session_id"
+      fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
+      ;;
+    *'"method":"session/resume"'*)
+      if [ "${FAKE_KIMI_RESUME_UNSUPPORTED:-0}" = "1" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+        continue
+      fi
+      session_id=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
+      if [ -n "${FAKE_KIMI_ATTACH_MARKER:-}" ]; then
+        printf 'resume %s\n' "$session_id" >> "$FAKE_KIMI_ATTACH_MARKER"
+      fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
       ;;
     *'"method":"session/set_config_option"'*)
@@ -148,6 +166,18 @@ while IFS= read -r line; do
       ;;
     *'"method":"session/prompt"'*)
       prompt_id="$id"
+      prompt_count=$((prompt_count + 1))
+      if [ -n "${FAKE_KIMI_PROMPT_MARKER:-}" ]; then
+        printf '%s\n' "$line" >> "$FAKE_KIMI_PROMPT_MARKER"
+      fi
+      if [ "$prompt_count" = "1" ] && [ -n "${FAKE_KIMI_FIRST_PROMPT_READY:-}" ]; then
+        : > "$FAKE_KIMI_FIRST_PROMPT_READY"
+      fi
+      if [ "$prompt_count" = "1" ] && [ -n "${FAKE_KIMI_FIRST_PROMPT_RELEASE:-}" ]; then
+        while [ ! -e "$FAKE_KIMI_FIRST_PROMPT_RELEASE" ]; do
+          sleep 0.02
+        done
+      fi
       if [ "${FAKE_KIMI_WAIT:-0}" = "1" ]; then
         continue
       fi
@@ -158,6 +188,10 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ -n "${FAKE_KIMI_CRASH_ONCE_MARKER:-}" ] && [ ! -e "$FAKE_KIMI_CRASH_ONCE_MARKER" ]; then
+        : > "$FAKE_KIMI_CRASH_ONCE_MARKER"
+        exit 7
+      fi
       if [ "${FAKE_KIMI_HANDOFF_DURING_TURN:-0}" = "1" ]; then
         # Give the Harness reader a deterministic chance to consume the first
         # ACP frame and publish its provider receipt before this bound member
@@ -202,11 +236,10 @@ while IFS= read -r line; do
       if [ -n "${FAKE_KIMI_CANCEL_MARKER:-}" ]; then
         printf '%s\n' "$line" >> "$FAKE_KIMI_CANCEL_MARKER"
       fi
-      if [ "$version" = "0.29.1" ]; then
+      if printf '%s' "$line" | grep -q '"id":'; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
         continue
       fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
       if [ -n "${prompt_id:-}" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt_id"
       fi

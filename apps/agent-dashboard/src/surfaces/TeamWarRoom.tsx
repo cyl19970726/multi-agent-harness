@@ -1269,7 +1269,7 @@ function toActivityItems(
       const actorMember = message.sender?.kind === "member_run" || !message.sender
         ? (message.from_member_id ? members.get(message.from_member_id) : undefined)
         : undefined;
-      const deliverySummary = summarizeDeliveries(message);
+      const deliverySummary = summarizeDeliveries(message, members);
       return {
         id: item.id,
         kind: message.kind === "blocker" ? "blocker" : message.kind === "review_result" ? "decision" : evidenceRefs.length ? "evidence" : "message",
@@ -1320,14 +1320,28 @@ function toActivityItems(
   });
 }
 
-function summarizeDeliveries(message: TeamMessage): string | undefined {
+function summarizeDeliveries(message: TeamMessage, members: Map<string, MemberRun>): string | undefined {
   const deliveries = message.deliveries ?? [];
   if (!deliveries.length) return undefined;
   const acknowledged = deliveries.filter((delivery) => delivery.status === "acknowledged").length;
   const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length;
   const queued = deliveries.filter((delivery) => delivery.status === "queued").length;
+  const claimed = deliveries.filter((delivery) => delivery.status === "claimed").length;
+  const nextRoundBatched = deliveries.filter((delivery) =>
+    delivery.status === "queued"
+    && delivery.member_id
+    && members.get(delivery.member_id)?.provider_profile?.ordinary_message_boundary === "next_round_batched"
+  ).length;
   if (acknowledged === deliveries.length) return `ACK ${acknowledged}/${deliveries.length}`;
-  if (queued) return `${queued} queued${delivered || acknowledged ? ` · ${delivered + acknowledged} received` : ""}`;
+  if (claimed) return `${claimed} provider receipt pending${queued ? ` · ${queued} queued` : ""}`;
+  if (queued) {
+    const queuedLabel = nextRoundBatched === queued
+      ? `${queued} deferred · next provider round`
+      : nextRoundBatched
+        ? `${queued} queued · ${nextRoundBatched} next-round`
+        : `${queued} queued`;
+    return `${queuedLabel}${delivered || acknowledged ? ` · ${delivered + acknowledged} received` : ""}`;
+  }
   return `${delivered} delivered${acknowledged ? ` · ${acknowledged} ACK` : ""}`;
 }
 

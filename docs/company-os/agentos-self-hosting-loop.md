@@ -231,10 +231,16 @@ The live run also found the current acceptance gaps:
 - Kimi ACP ordinary messages use a next-round boundary rather than live steer.
   [Issue #274](https://github.com/cyl19970726/multi-agent-harness/issues/274)
   showed that queued mid-turn corrections can be mistaken for provider
-  delivery and can leave a stale handoff visible.
-  `work-agentos-kimi-mid-turn-delivery-v1` owns explicit deferred status,
-  safe-boundary pumping, stale-handoff fencing, ordered exactly-once delivery,
-  and the restart/resume canary;
+  delivery and can leave a stale handoff visible. The accepted implementation
+  labels durable-only deferral, pumps the next safe boundary, fences stale
+  Handoffs, batches ordered mail exactly once, and resumes the same native
+  session after a Supervisor/process failure. A `claimed` message remains an
+  explicit reconciliation case rather than being replayed;
+- installed Kimi 0.31.0 is reviewed for K3 model/thinking controls, persistent
+  ACP prompt delivery, next-round mail, session resume, and cooperative
+  Interrupt. ACP `session/cancel` is a notification without a request id; the
+  earlier method-not-found canary exposed a Harness framing defect that is now
+  covered by a deterministic notification-shape regression;
 - governed organization-change proposal/provisioning is not implemented;
 - generic reporting relations and module-scoped authority remain planned;
 - the same-contract restart/resume path is proven manually, while runtime
