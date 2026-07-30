@@ -1533,10 +1533,7 @@ fn company_gateway_social_readiness_command(args: &[String]) -> CliResult<()> {
             }));
         }
     };
-    let has_device = devices
-        .lines()
-        .any(|line| line.contains("\tdevice") && !line.starts_with("List of devices"));
-    if !has_device {
+    if !android_devices_has_authorized_device(&devices) {
         return print_json(&serde_json::json!({
             "ok": true,
             "command": "harness company gateway social readiness",
@@ -1595,6 +1592,13 @@ fn run_command_text(program: &str, args: &[String]) -> CliResult<String> {
     Ok(text)
 }
 
+fn android_devices_has_authorized_device(devices: &str) -> bool {
+    devices
+        .lines()
+        .filter(|line| !line.starts_with("List of devices"))
+        .any(|line| line.split_whitespace().nth(1) == Some("device"))
+}
+
 fn platform_readiness_without_device(platforms: &[String]) -> Vec<serde_json::Value> {
     platforms
         .iter()
@@ -1619,7 +1623,7 @@ fn social_platform_readiness(platform: &str, packages: &str, focus: &str) -> ser
         && packages
             .lines()
             .any(|line| line.trim() == format!("package:{package}"));
-    let focused = known && focus.contains(package);
+    let focused = known && current_android_focus_package(focus).as_deref() == Some(package);
     let readiness_state = if !known {
         "unknown_platform"
     } else if installed && focused {
@@ -1652,6 +1656,21 @@ fn social_platform_readiness(platform: &str, packages: &str, focus: &str) -> ser
             "visible_metric_read"
         ]
     })
+}
+
+fn current_android_focus_package(window_dump: &str) -> Option<String> {
+    window_dump
+        .lines()
+        .find(|line| line.contains("mCurrentFocus="))
+        .and_then(|line| {
+            let activity = line
+                .split_whitespace()
+                .find(|part| part.contains('/') && !part.starts_with("Window{"))?;
+            activity
+                .split_once('/')
+                .map(|(package, _)| package.trim().to_string())
+        })
+        .filter(|package| !package.is_empty())
 }
 
 fn social_platform_package(platform: &str) -> (&'static str, &'static str, &'static str) {
@@ -32899,6 +32918,47 @@ mod tests {
         ))
         .expect_err("unsafe deep-link value must fail closed");
         assert!(unsafe_id.to_string().contains("unsafe native session id"));
+    }
+
+    #[test]
+    fn social_readiness_detects_whitespace_separated_authorized_android_device() {
+        let huawei_adb_output = "\
+List of devices attached
+48FYD25403400924       device usb:34603008X product:JUY-AL00 model:JUY_AL00 device:HWJUY-H transport_id:1
+";
+        assert!(android_devices_has_authorized_device(huawei_adb_output));
+
+        let unauthorized_adb_output = "\
+List of devices attached
+48FYD25403400924       unauthorized usb:34603008X product:JUY-AL00
+";
+        assert!(!android_devices_has_authorized_device(
+            unauthorized_adb_output
+        ));
+    }
+
+    #[test]
+    fn social_readiness_uses_current_focus_package_only() {
+        let window_dump = "\
+  mCurrentFocus=Window{7f8a209 u0 com.tencent.mm/com.tencent.mm.plugin.finder.ui.FinderHomeAffinityUI}
+  mFocusedApp=AppWindowToken{825f583 token=Token{8443a27 ActivityRecord{825f505 u0 com.ss.android.ugc.aweme/.account.business.login.DYLoginActivity t67}}}
+";
+        assert_eq!(
+            current_android_focus_package(window_dump).as_deref(),
+            Some("com.tencent.mm")
+        );
+
+        let packages = "\
+package:com.xingin.xhs
+package:com.ss.android.ugc.aweme
+package:com.tencent.mm
+";
+        let wechat = social_platform_readiness("wechat_channels", packages, window_dump);
+        let douyin = social_platform_readiness("douyin", packages, window_dump);
+        assert_eq!(wechat["focused"], true);
+        assert_eq!(wechat["readiness_state"], "installed_currently_focused");
+        assert_eq!(douyin["focused"], false);
+        assert_eq!(douyin["readiness_state"], "installed_not_focused");
     }
 
     #[test]
