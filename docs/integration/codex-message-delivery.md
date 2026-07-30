@@ -86,6 +86,13 @@ the delivered `Inject` control is likewise rejected because that control points
 to the already-durable Handoff. These checks use existing kind, correlation,
 causation, and delivery facts rather than a new lifecycle field.
 
+After the provider acknowledges Steer, Harness constructs the final
+`Control(Inject, Delivered)` row and publishes it exactly once through the
+checked append before folding its event. No queued Control revision is exposed,
+so an Inject-descendant sibling cannot enter between two Control publications.
+The broader provider-effect-before-Control crash reservation gap remains a
+follow-up; this bounded convergence rule does not claim that gap is closed.
+
 Reading `harness team-run inbox` or `harness member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 

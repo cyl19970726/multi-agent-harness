@@ -10995,6 +10995,12 @@ fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TeamMessageDeliveryMode {
+    Routed,
+    InjectDelivered,
+}
+
 /// Route a message inside a team run and fold it into the event log. Shared
 /// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
 /// does not drive the member state machine: a handoff/blocker from a member is
@@ -11042,6 +11048,34 @@ fn send_team_message_as(
     correlation_id: Option<String>,
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
+) -> CliResult<TeamMessage> {
+    let message = prepare_team_message_as(
+        store,
+        team_run_id,
+        &sender,
+        to_member_ids,
+        kind,
+        body,
+        correlation_id,
+        causation_id,
+        origin_wave_id,
+        TeamMessageDeliveryMode::Routed,
+    )?;
+    publish_team_message(store, &sender, message)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_team_message_as(
+    store: &HarnessStore,
+    team_run_id: &str,
+    sender: &TeamActorRef,
+    to_member_ids: Vec<String>,
+    kind: TeamMessageKind,
+    body: &str,
+    correlation_id: Option<String>,
+    causation_id: Option<String>,
+    origin_wave_id: Option<String>,
+    delivery_mode: TeamMessageDeliveryMode,
 ) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
@@ -11182,20 +11216,32 @@ fn send_team_message_as(
                 // The Host control plane receives member-originated mail at
                 // creation time. Provider members, by contrast, consume
                 // ordinary coordination mail at their next available round.
-                policy: if member_id == "host" && sender.kind != TeamActorKind::Host {
-                    TeamDeliveryPolicy::ManualAck
-                } else {
-                    TeamDeliveryPolicy::Queue
+                policy: match delivery_mode {
+                    TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryPolicy::Inject,
+                    TeamMessageDeliveryMode::Routed
+                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                    {
+                        TeamDeliveryPolicy::ManualAck
+                    }
+                    TeamMessageDeliveryMode::Routed => TeamDeliveryPolicy::Queue,
                 },
-                status: if member_id == "host" && sender.kind != TeamActorKind::Host {
-                    TeamDeliveryStatus::Delivered
-                } else {
-                    TeamDeliveryStatus::Queued
+                status: match delivery_mode {
+                    TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryStatus::Delivered,
+                    TeamMessageDeliveryMode::Routed
+                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                    {
+                        TeamDeliveryStatus::Delivered
+                    }
+                    TeamMessageDeliveryMode::Routed => TeamDeliveryStatus::Queued,
                 },
-                attempt: if member_id == "host" && sender.kind != TeamActorKind::Host {
-                    1
-                } else {
-                    0
+                attempt: match delivery_mode {
+                    TeamMessageDeliveryMode::InjectDelivered => 1,
+                    TeamMessageDeliveryMode::Routed
+                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                    {
+                        1
+                    }
+                    TeamMessageDeliveryMode::Routed => 0,
                 },
                 claim_id: None,
                 claimed_by_supervisor_id: None,
@@ -11208,18 +11254,26 @@ fn send_team_message_as(
             .collect(),
         created_at: now_string(),
     };
+    Ok(message)
+}
+
+fn publish_team_message(
+    store: &HarnessStore,
+    sender: &TeamActorRef,
+    message: TeamMessage,
+) -> CliResult<TeamMessage> {
     store_conflict_as_usage(store.append_team_message_checked(&message))?;
-    let seq = next_team_run_seq(store, team_run_id)?;
+    let seq = next_team_run_seq(store, &message.team_run_id)?;
     append_team_run_event(
         store,
-        team_run_id,
+        &message.team_run_id,
         seq,
-        team_event_source_for_actor(&sender),
+        team_event_source_for_actor(sender),
         matches!(
             sender.kind,
             TeamActorKind::MemberRun | TeamActorKind::AgentMember
         )
-        .then(|| from_member_id.clone()),
+        .then(|| message.from_member_id.clone()),
         "message",
         &message.id,
         "created",
@@ -11227,7 +11281,7 @@ fn send_team_message_as(
             "{} from {} to [{}]",
             team_message_kind_label(&message.kind),
             sender.id,
-            to_member_ids.join(",")
+            message.to_member_ids.join(",")
         ),
     )?;
     Ok(message)
@@ -19661,28 +19715,25 @@ fn steer_team_member_value(
     )?;
     let correlation_id = json_string(&result, "correlation_id");
     let causation_id = json_string(&result, "causation_id");
-    let mut message = send_team_message_as(
+    let sender = TeamActorRef {
+        kind: TeamActorKind::Operator,
+        id: requested_by,
+        display_name: None,
+        authn_source: Some("http_control".to_string()),
+    };
+    let message = prepare_team_message_as(
         store,
         team_run_id,
-        TeamActorRef {
-            kind: TeamActorKind::Operator,
-            id: requested_by.clone(),
-            display_name: None,
-            authn_source: Some("http_control".to_string()),
-        },
+        &sender,
         vec![member_run_id.to_string()],
         TeamMessageKind::Control,
         &content,
         correlation_id,
         causation_id,
         json_string(body, "origin_wave_id"),
+        TeamMessageDeliveryMode::InjectDelivered,
     )?;
-    for delivery in &mut message.deliveries {
-        delivery.policy = TeamDeliveryPolicy::Inject;
-        delivery.status = TeamDeliveryStatus::Delivered;
-        delivery.updated_at = now_string();
-    }
-    store.append_team_message(&message)?;
+    let message = publish_team_message(store, &sender, message)?;
     Ok(serde_json::json!({"control": result, "message": message}))
 }
 

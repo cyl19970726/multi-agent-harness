@@ -1888,7 +1888,7 @@ fn codex_app_server_member_can_be_steered_in_place() {
 #[test]
 fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
     let home = TempHome::new("team-run-codex-post-handoff-steer");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin =
         fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-post-handoff"));
     let path = format!(
@@ -1989,6 +1989,48 @@ fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
         .to_string();
 
     let control_client = ServeHandle::spawn(&home, home.base(), &[]);
+    let descendant_client = ServeHandle::spawn(&home, home.base(), &[]);
+    let observer_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let observer_ready = std::sync::Arc::clone(&observer_barrier);
+    let observer_run_id = run_id.clone();
+    let observer_member_id = member_id.clone();
+    let observer_correlation = assignment_correlation.clone();
+    let observer = std::thread::spawn(move || {
+        observer_ready.wait();
+        for _ in 0..200 {
+            let (_, snapshot) = descendant_client.get_json("/v1/snapshot");
+            let control = snapshot["team_messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|message| {
+                    message["kind"].as_str() == Some("control")
+                        && message["correlation_id"].as_str() == Some(observer_correlation.as_str())
+                        && message["body"].as_str()
+                            == Some("incorporate the correction before ending this turn")
+                });
+            if let Some(control) = control {
+                let control_id = control["id"].as_str().expect("Control id").to_string();
+                let observed_delivery = control["deliveries"][0].clone();
+                let (status, body) = descendant_client.post_json(
+                    &format!("/v1/team-runs/{observer_run_id}/messages"),
+                    &serde_json::json!({
+                        "sender_kind": "member_run",
+                        "sender_id": observer_member_id,
+                        "to_member_ids": ["host"],
+                        "kind": "handoff",
+                        "body": "## RESULT\ndone\n## SUMMARY\ninvalid Inject descendant",
+                        "correlation_id": observer_correlation,
+                        "causation_id": control_id,
+                    }),
+                );
+                return (control_id, observed_delivery, status, body);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("concurrent observer never saw the Steer Control")
+    });
+    observer_barrier.wait();
     let (status, steered) = control_client.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
         &serde_json::json!({
@@ -2009,24 +2051,40 @@ fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
         .as_str()
         .expect("Steer control message")
         .to_string();
-    let (status, duplicate_handoff) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/messages"),
-        &serde_json::json!({
-            "sender_kind": "member_run",
-            "sender_id": member_id,
-            "to_member_ids": ["host"],
-            "kind": "handoff",
-            "body": "## RESULT\ndone\n## SUMMARY\ninvalid post-Steer sibling",
-            "correlation_id": assignment_correlation,
-            "causation_id": steer_message_id,
-        }),
-    );
+    let (observed_control_id, observed_delivery, status, duplicate_handoff) =
+        observer.join().expect("concurrent Control observer");
+    assert_eq!(observed_control_id, steer_message_id);
+    assert_eq!(observed_delivery["policy"], "inject");
+    assert_eq!(observed_delivery["status"], "delivered");
     assert_eq!(status, 400, "body: {duplicate_handoff}");
     assert!(
         duplicate_handoff["error"]
             .as_str()
             .is_some_and(|error| error.contains("already handed off")),
         "post-Steer sibling must be rejected atomically: {duplicate_handoff}"
+    );
+    let physical_control_rows = std::fs::read_to_string(
+        home.spaces_dir()
+            .join(&project_id)
+            .join("team_messages.jsonl"),
+    )
+    .expect("read physical TeamMessage rows")
+    .lines()
+    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    .filter(|message| message["id"].as_str() == Some(steer_message_id.as_str()))
+    .collect::<Vec<_>>();
+    assert_eq!(
+        physical_control_rows.len(),
+        1,
+        "Steer Control must be published exactly once: {physical_control_rows:?}"
+    );
+    assert_eq!(
+        physical_control_rows[0]["deliveries"][0]["policy"],
+        "inject"
+    );
+    assert_eq!(
+        physical_control_rows[0]["deliveries"][0]["status"],
+        "delivered"
     );
 
     let mut converged = false;
