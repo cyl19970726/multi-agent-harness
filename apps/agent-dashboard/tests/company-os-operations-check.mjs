@@ -17,10 +17,11 @@ function check(condition, message) {
 }
 
 async function main() {
-  const [pages, fixture, workOperatingPage, router, docsUrl] = await Promise.all([
+  const [pages, fixture, workOperatingPage, workProjectionSource, router, docsUrl] = await Promise.all([
     readFile(resolve(operations, "pages.tsx"), "utf8"),
     readFile(fixturePath, "utf8").then(JSON.parse),
     readFile(resolve(root, "src/company-os/work/WorkOperatingPage.tsx"), "utf8"),
+    readFile(resolve(root, "src/company-os/work/projection.ts"), "utf8"),
     readFile(resolve(root, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
     readFile(resolve(root, "src/company-os/docs/url.ts"), "utf8"),
   ]);
@@ -36,6 +37,7 @@ async function main() {
   const adapterTarget = resolve(adapterDirectory, "fixture.mjs");
   const approvalActionTarget = resolve(adapterDirectory, "approvalAction.mjs");
   const workItemActionTarget = resolve(adapterDirectory, "workItemAction.mjs");
+  const workProjectionTarget = resolve(adapterDirectory, "workProjection.mjs");
   await writeFile(adapterTarget, ts.transpileModule(fixtureAdapter, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
@@ -45,16 +47,32 @@ async function main() {
   await writeFile(workItemActionTarget, ts.transpileModule(workItemAction, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
+  await writeFile(workProjectionTarget, ts.transpileModule(workProjectionSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+  }).outputText, "utf8");
   const adapterModule = await import(pathToFileURL(adapterTarget).href);
   const approvalActionModule = await import(pathToFileURL(approvalActionTarget).href);
   const workItemActionModule = await import(pathToFileURL(workItemActionTarget).href);
+  const workProjectionModule = await import(pathToFileURL(workProjectionTarget).href);
   const required = ["OrganizationPage", "HumanMemberFocus", "StandingAgentFocus", "WorkboardPage", "WorkItemFocus", "ApprovalFocus", "FinancePage", "GovernanceProposalFocus", "BusinessModuleFocus"];
   check(required.every((name) => pages.includes(`function ${name}`)), "exports all nine Company OS operations pages");
   check(router.includes('<WorkOperatingPage source={resolved.value} />') && workOperatingPage.includes('data-work-operating-system="v1"'), "routes Work to the native multi-view operating workspace");
   check(["overview", "board", "all", "milestones", "timeline", "workload"].every((view) => workOperatingPage.includes(`id: "${view}"`)), "Work workspace exposes six projections over one WorkItem ledger");
   check(workOperatingPage.includes('useState<WorkView>("overview")') && workOperatingPage.includes("model.board.map") && !workOperatingPage.includes('const columns = ["submitted"'), "Work opens on overview and renders only Store aggregate board columns");
   check(workOperatingPage.includes('Object.prototype.hasOwnProperty.call(root, "work")') && workOperatingPage.includes("hasAggregate ? objects(projection.work_items)") && workOperatingPage.includes("hasAggregate ? objects(projection.milestones)"), "Work treats an explicit company_os.work aggregate as authoritative even when its lists are empty");
-  check(['dimension("board")', 'dimension("business_lines")', 'dimension("work_types")', "objects(projection.workload)", "summaryValue"].every((contract) => workOperatingPage.includes(contract)), "Work consumes aggregate board, business-line, type, workload, and summary truth");
+  check(['dimension("board")', "projectBusinessLineDimensions", 'dimension("work_types")', "objects(projection.workload)", "summaryValue"].every((contract) => workOperatingPage.includes(contract)), "Work consumes aggregate board, business-line, type, workload, and summary truth");
+  const neutralAcceptanceStatuses = ["submitted", "in_progress", "in_review"];
+  check(neutralAcceptanceStatuses.every((status) => {
+    const presentation = workProjectionModule.acceptanceCriteriaPresentation(3, status);
+    return presentation.label === "3 acceptance criteria"
+      && presentation.semantic === "criteria_count"
+      && presentation.tone === "neutral"
+      && presentation.workItemStatus === status;
+  })
+    && workOperatingPage.includes("data-work-acceptance-semantic")
+    && workOperatingPage.includes("text-muted-foreground")
+    && !workOperatingPage.slice(workOperatingPage.indexOf("function AcceptanceCriteriaCount"), workOperatingPage.indexOf("function Board")).includes("text-status-good"),
+  "submitted, in-progress, and in-review WorkItems render acceptance criteria as a neutral count rather than success evidence");
   check(workOperatingPage.includes('"No milestone"') && workOperatingPage.includes('"Unclassified"') && workOperatingPage.includes("Unassigned lane"), "Work views preserve missing Milestone, business-line, and assignment truth");
   check(workOperatingPage.includes("workItemHref(item.id)") && workOperatingPage.includes('aria-label={`Open WorkItem ${item.title}`}'), "Work overview and board cards deep-link to selected WorkItem truth");
   check(workOperatingPage.includes("No governed WorkItem creation transport is connected") && workOperatingPage.includes("opacity-60"), "unavailable Work creation looks and reads as disabled");
@@ -191,6 +209,18 @@ async function main() {
   check(aggregateAdapted.workItem.id === "work-aggregate-selected"
     && aggregateAdapted.work.selection.status === "resolved",
   "selected WorkItem detail resolves only by its explicit id inside company_os.work");
+  const mismatchedBusinessLines = workProjectionModule.projectBusinessLineDimensions(
+    { "module-a": ["work-b"] },
+    [{ id: "work-b", businessLineId: "module-b" }],
+    new Map([["module-a", "Module A"], ["module-b", "Module B"]]),
+  );
+  check(mismatchedBusinessLines.dimensions[0]?.id === "module-a"
+    && mismatchedBusinessLines.dimensions[0]?.label === "Module A"
+    && mismatchedBusinessLines.dimensions[0]?.workItemIds.join(",") === "work-b"
+    && mismatchedBusinessLines.integrityFindings.length === 1
+    && mismatchedBusinessLines.integrityFindings[0].includes("business_module_ref is module-b")
+    && !workOperatingPage.includes("linked[0]?.businessLine"),
+  "business-line dimensions retain their exact aggregate/module identity and flag module-a=[work-b/module-b] mismatches");
   const missingSelected = adapterModule.adaptTrademarkOperationsProjection(aggregateProjection, { workItemId: "work-not-present" });
   check(missingSelected.work.selection.status === "not_found"
     && missingSelected.workItem.id === "work-not-present"
@@ -409,6 +439,18 @@ async function main() {
   check(brandUnit?.agentLeadActorId === undefined && pages.includes("unit.agentLeadActorId === actor.id") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "membership role and actor naming cannot invent an Agent lead when OrgUnit.agent_lead_actor_ref is absent");
   check(canonicalProjection.actors["actor-agent-document-architecture"]?.availability === "available" && !canonicalProjection.actors["actor-agent-finance"]?.availability, "availability remains explicit rather than inferred from runtime or membership");
   check(pages.includes("OrganizationUnitBranch") && pages.includes("ExplicitUnitLeads") && pages.includes("All memberships"), "organization surface is a recursive forest with explicit leads and complete membership branches");
+  check(pages.includes("data-organization-membership-grid")
+    && pages.includes("repeat(auto-fit,minmax(min(100%,18rem),1fr))")
+    && pages.includes("data-org-depth={depth}")
+    && pages.includes("depth={depth + 1}")
+    && pages.includes('depth === 1')
+    && pages.includes('"border-l-0 pl-0"'),
+  "nested Organization branches use container-aware membership grids and cap recursive indentation without flattening");
+  check(pages.includes("membership.id}</code>")
+    && pages.includes("assignment.memberRunId}</code>")
+    && pages.includes("break-all font-mono")
+    && !pages.slice(pages.indexOf("function OrgActorCard"), pages.indexOf("function OrgActorCardBody")).includes("truncate"),
+  "Organization membership, AgentMember, and MemberRun canonical ids wrap instead of truncating");
   check(pages.includes("Propose agent") && pages.includes("Create org unit") && pages.includes("disabled"), "organization actions are visibly disabled until a governed action path exists");
   check(pages.includes("unplacedUnitIds") && pages.includes("Actors without OrganizationMembership"), "unplaced units and unassigned actors remain visible as integrity state rather than entering the primary forest");
   check(pages.includes("<PageFrame dense") && components.includes('dense ? "py-5" : "py-8"') && components.includes('dense ? "mb-4 pb-4" : "mb-7 pb-6"'), "Organization opts into compact vertical rhythm without changing the default page frame");
