@@ -214,6 +214,8 @@ pub fn snapshot_with_execution(
         assignments: standing_assignments,
         conflicts: standing_assignment_conflicts,
     } = standing_assignment_projection(store, execution_store)?;
+    let work_assignment_execution_chains =
+        work_assignment_execution_projection(store, execution_store, now_unix_millis())?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -254,6 +256,7 @@ pub fn snapshot_with_execution(
         "assignments": store.latest_assignments()?,
         "standing_assignments": standing_assignments,
         "standing_assignment_conflicts": standing_assignment_conflicts,
+        "work_assignment_execution_chains": work_assignment_execution_chains,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
         "commitments": commitments,
@@ -282,6 +285,119 @@ pub fn snapshot_with_execution(
         "projection": "latest_row_wins",
     });
     Ok(projection)
+}
+
+fn work_assignment_execution_projection(
+    company_store: &HarnessStore,
+    execution_store: &HarnessStore,
+    now_ms: u128,
+) -> Result<Vec<Value>, StoreError> {
+    let assignments = company_store
+        .latest_assignments()?
+        .into_iter()
+        .map(|v| json!(v))
+        .collect();
+    let agents = company_store
+        .latest_standing_agents()?
+        .into_iter()
+        .map(|v| json!(v))
+        .collect();
+    let members = execution_store
+        .member_runs()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut m, v| {
+            m.insert(v.id.clone(), json!(v));
+            m
+        })
+        .into_values()
+        .collect();
+    let messages = execution_store
+        .team_messages()?
+        .into_iter()
+        .fold(BTreeMap::new(), |mut m, v| {
+            m.insert(v.id.clone(), json!(v));
+            m
+        })
+        .into_values()
+        .collect();
+    let records = company_store
+        .latest_typed_records()?
+        .into_iter()
+        .map(|v| json!(v))
+        .collect();
+    Ok(build_work_assignment_execution_chains(
+        assignments,
+        agents,
+        members,
+        messages,
+        records,
+        now_ms,
+    ))
+}
+
+fn value_text<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn record_text<'a>(value: &'a Value, key: &str) -> &'a str {
+    let direct = value_text(value, key);
+    if direct.is_empty() {
+        value
+            .get("fields")
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    } else {
+        direct
+    }
+}
+
+fn build_work_assignment_execution_chains(
+    assignments: Vec<Value>,
+    agents: Vec<Value>,
+    members: Vec<Value>,
+    messages: Vec<Value>,
+    records: Vec<Value>,
+    now_ms: u128,
+) -> Vec<Value> {
+    assignments.into_iter().map(|assignment| {
+        let assignment_id = value_text(&assignment, "id");
+        let work_item_id = value_text(&assignment, "work_item_id");
+        let correlation = value_text(&assignment, "correlation_id");
+        let evidence_ref = value_text(&assignment, "delivery_evidence_ref");
+        let recipient_id = assignment.get("recipient").and_then(|v| v.get("actor_id")).and_then(Value::as_str).unwrap_or("");
+        let agent_member = agents.iter().find(|v| value_text(v, "id") == recipient_id)
+            .and_then(|v| v.get("execution_agent_member_ref")).and_then(Value::as_str);
+        let exact_message = messages.iter().find(|v| value_text(v, "id") == evidence_ref);
+        let correlation_matches = exact_message.map(|v| value_text(v, "correlation_id") == correlation && value_text(v, "kind") == "assignment").unwrap_or(false);
+        let member = if correlation_matches {
+            exact_message.and_then(|message| message.get("to_member_ids")).and_then(Value::as_array)
+                .and_then(|ids| ids.iter().filter_map(Value::as_str).find_map(|id| members.iter().find(|m| value_text(m, "id") == id && m.get("agent_member_id").and_then(Value::as_str) == agent_member)))
+        } else { None };
+        let link_status = if evidence_ref.is_empty() || exact_message.is_none() || agent_member.is_none() { "unavailable" } else if !correlation_matches || member.is_none() { "mismatch" } else { "linked" };
+        let team_message = member.and_then(|member| exact_message.map(|message| {
+            let member_id = value_text(member, "id");
+            let delivery = message.get("deliveries").and_then(Value::as_array).and_then(|v| v.iter().find(|d| value_text(d, "member_id") == member_id));
+            json!({"id": evidence_ref, "delivery_state": delivery.map(|d| value_text(d, "status")).unwrap_or("unavailable"), "provider_receipt_id": delivery.and_then(|d| d.get("provider_receipt_id")).cloned()})
+        }));
+        let member_run = member.map(|v| {
+            let native = v.get("native_session");
+            json!({"id": value_text(v, "id"), "status": value_text(v, "status"), "native_session_id": native.and_then(|n| n.get("native_session_id")).cloned(), "native_session_availability": native.map(|n| value_text(n, "availability")).filter(|v| !v.is_empty()).unwrap_or("unavailable")})
+        });
+        let handoffs = member.map(|m| messages.iter().filter(|v| value_text(v, "kind") == "handoff" && value_text(v, "correlation_id") == correlation && value_text(v, "from_member_id") == value_text(m, "id")).map(|v| json!({"id": value_text(v, "id"), "body": value_text(v, "body"), "created_at": value_text(v, "created_at"), "evidence_refs": v.get("evidence_refs").cloned().unwrap_or(json!([]))})).collect::<Vec<_>>()).unwrap_or_default();
+        let external_observations = records.iter().filter_map(|record| {
+            let kind = value_text(record, "record_type");
+            if kind != "github_pull_request_ref" && kind != "github_check_snapshot" { return None; }
+            if record_text(record, "work_item_id") != work_item_id { return None; }
+            let explicitly_linked = record_text(record, "assignment_id") == assignment_id || (!correlation.is_empty() && record_text(record, "correlation_id") == correlation);
+            if !explicitly_linked { return None; }
+            let observed = record_text(record, "observed_unix_ms").parse::<u128>().ok();
+            let ttl = record_text(record, "freshness_ttl_ms").parse::<u128>().unwrap_or(3_600_000);
+            let freshness = observed.map(|at| if now_ms.saturating_sub(at) <= ttl {"fresh"} else {"stale"}).unwrap_or("unavailable");
+            Some(json!({"id": value_text(record, "id"), "kind": if kind == "github_check_snapshot" {"check"} else {"pull_request"}, "label": value_text(record, "title"), "url": record_text(record, "url"), "head_sha": record_text(record, "head_sha"), "state": record_text(record, "state"), "observed_at": record_text(record, "observed_at"), "freshness": freshness}))
+        }).collect::<Vec<_>>();
+        json!({"assignment_id": assignment_id, "work_item_id": work_item_id, "assignment_state": value_text(&assignment, "delivery_state"), "correlation_id": correlation, "link_status": link_status, "detail": match link_status {"linked" => "Exact Assignment message, correlation, and explicit AgentMember binding resolve.", "mismatch" => "Explicit evidence exists but its correlation or AgentMember binding does not match.", _ => "Required explicit execution-link evidence is unavailable."}, "team_message": team_message, "member_run": member_run, "handoffs": handoffs, "external_observations": external_observations})
+    }).collect()
 }
 
 /// Standing Agent participation join plus any locally degraded link conflicts.
@@ -605,6 +721,65 @@ mod projection_tests {
             "native_session_refs": [], "created_at": "1", "updated_at": "1"
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn work_execution_chain_requires_exact_links_and_reports_freshness() {
+        let assignment = |id: &str, correlation: &str, evidence: &str| {
+            json!({
+                "id": id, "work_item_id": "work-1", "recipient": {"actor_type": "agent", "actor_id": "standing-1"},
+                "delivery_state": "acknowledged", "correlation_id": correlation, "delivery_evidence_ref": evidence
+            })
+        };
+        let agents =
+            vec![json!({"id": "standing-1", "execution_agent_member_ref": "agent-member-1"})];
+        let members = vec![
+            json!({"id": "member-exact", "agent_member_id": "agent-member-1", "name": "Builder", "status": "active", "native_session": {"native_session_id": "session-1"}}),
+            json!({"id": "member-name-only", "name": "Builder", "provider": "codex", "status": "active"}),
+        ];
+        let messages = vec![
+            json!({"id": "message-exact", "kind": "assignment", "correlation_id": "corr-exact", "to_member_ids": ["member-exact"], "deliveries": [{"member_id": "member-exact", "status": "acknowledged", "provider_receipt_id": "receipt-1"}]}),
+            json!({"id": "message-wrong-correlation", "kind": "assignment", "correlation_id": "other", "to_member_ids": ["member-exact"]}),
+            json!({"id": "message-name-only", "kind": "assignment", "correlation_id": "corr-name", "to_member_ids": ["member-name-only"]}),
+            json!({"id": "handoff-1", "kind": "handoff", "correlation_id": "corr-exact", "from_member_id": "member-exact", "body": "done", "created_at": "2026-07-31T00:00:00Z", "evidence_refs": ["check-1"]}),
+        ];
+        let records = vec![
+            json!({"id": "pr-fresh", "record_type": "github_pull_request_ref", "title": "PR", "fields": {"work_item_id": "work-1", "assignment_id": "assignment-exact", "observed_unix_ms": "9900", "freshness_ttl_ms": "200"}}),
+            json!({"id": "check-stale", "record_type": "github_check_snapshot", "title": "CI", "fields": {"work_item_id": "work-1", "correlation_id": "corr-exact", "observed_unix_ms": "9000", "freshness_ttl_ms": "200"}}),
+            json!({"id": "check-unavailable", "record_type": "github_check_snapshot", "title": "Unknown", "fields": {"work_item_id": "work-1", "assignment_id": "assignment-exact"}}),
+        ];
+        let chains = build_work_assignment_execution_chains(
+            vec![
+                assignment("assignment-exact", "corr-exact", "message-exact"),
+                assignment(
+                    "assignment-correlation",
+                    "corr-wanted",
+                    "message-wrong-correlation",
+                ),
+                assignment("assignment-name", "corr-name", "message-name-only"),
+            ],
+            agents,
+            members,
+            messages,
+            records,
+            10_000,
+        );
+        assert_eq!(chains[0]["link_status"], "linked");
+        assert_eq!(chains[0]["member_run"]["native_session_id"], "session-1");
+        assert_eq!(chains[0]["handoffs"][0]["id"], "handoff-1");
+        assert_eq!(chains[0]["external_observations"][0]["freshness"], "fresh");
+        assert_eq!(chains[0]["external_observations"][1]["freshness"], "stale");
+        assert_eq!(
+            chains[0]["external_observations"][2]["freshness"],
+            "unavailable"
+        );
+        assert_eq!(chains[1]["link_status"], "mismatch");
+        assert!(chains[1]["member_run"].is_null());
+        assert_eq!(
+            chains[2]["link_status"], "mismatch",
+            "matching names/providers must not bind identity"
+        );
+        assert!(chains[2]["member_run"].is_null());
     }
 
     #[test]
