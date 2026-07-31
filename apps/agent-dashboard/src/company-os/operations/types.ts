@@ -91,15 +91,21 @@ export interface WorkAssignmentExecutionChain {
   detail: string;
   teamMessage?: { id: string; deliveryState: string; providerReceiptId?: string };
   memberRun?: { id: string; status: string; nativeSessionId?: string; nativeSessionAvailability: string };
-  handoffs: Array<{ id: string; body: string; createdAt: string; evidenceRefs: string[] }>;
+  handoffs: Array<{ id: string; result?: string; body: string; createdAt: string; evidenceRefs: string[] }>;
   externalObservations: Array<{
     id: string;
     kind: "pull_request" | "check";
     label: string;
+    repository?: string;
+    pullRequestNumber?: string;
+    headRef?: string;
     url?: string;
     headSha?: string;
+    baseRef?: string;
     state?: string;
     observedAt?: string;
+    sourceUpdatedAt?: string;
+    sourceCompletedAt?: string;
     freshness: EvidenceFreshness;
   }>;
 }

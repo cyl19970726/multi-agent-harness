@@ -85,6 +85,43 @@ async function main() {
   snapshotProjection.financial_records[0].display_amount = "¥4,200";
   const adapted = adapterModule.adaptTrademarkOperationsProjection(snapshotProjection);
   check(adapted.workItem.title === "Snapshot trademark filing" && adapted.commitment.amount === "¥4,200" && adapted.workItem.accountableOwner.name === "Snapshot Brand Owner", "adapter renders snapshot projection facts instead of static fixture values");
+  const provenanceProjection = structuredClone(fixture);
+  provenanceProjection.work_assignment_execution_chains = [{
+    assignment_id: "assignment-provenance",
+    work_item_id: provenanceProjection.work_items[0].id,
+    assignment_state: "acknowledged",
+    correlation_id: "corr-provenance",
+    link_status: "linked",
+    detail: "Exact durable chain.",
+    handoffs: [{ id: "handoff-provenance", result: "completed", body: "RESULT: completed\nEvidence attached.", created_at: "2026-07-31T00:00:00Z", evidence_refs: ["evidence-provenance"] }],
+    external_observations: [{
+      id: "pr-provenance", kind: "pull_request", label: "PR #42",
+      repository: "owner/repo", pull_request_number: "42", head_ref: "codex/fix",
+      head_sha: "abc123", base_ref: "master", url: "https://example.test/pr/42",
+      state: "open", observed_at: "2026-07-31T00:00:00Z",
+      source_updated_at: "2026-07-30T23:00:00Z", source_completed_at: "2026-07-31T00:30:00Z",
+      freshness: "fresh",
+    }],
+  }];
+  const provenance = adapterModule.adaptTrademarkOperationsProjection(provenanceProjection);
+  const provenanceChain = provenance.workAssignmentExecutionChains[0];
+  check(
+    provenanceChain.handoffs[0].result === "completed"
+      && provenanceChain.handoffs[0].body.includes("Evidence attached")
+      && provenanceChain.handoffs[0].evidenceRefs[0] === "evidence-provenance",
+    "adapter preserves visible Handoff result, body, and evidence refs",
+  );
+  check(
+    provenanceChain.externalObservations[0].repository === "owner/repo"
+      && provenanceChain.externalObservations[0].pullRequestNumber === "42"
+      && provenanceChain.externalObservations[0].headRef === "codex/fix"
+      && provenanceChain.externalObservations[0].baseRef === "master"
+      && provenanceChain.externalObservations[0].url === "https://example.test/pr/42"
+      && provenanceChain.externalObservations[0].observedAt === "2026-07-31T00:00:00Z"
+      && provenanceChain.externalObservations[0].sourceUpdatedAt === "2026-07-30T23:00:00Z"
+      && provenanceChain.externalObservations[0].sourceCompletedAt === "2026-07-31T00:30:00Z",
+    "adapter preserves stable repository, PR, branch, URL, observation, and source timestamps",
+  );
   const internalCommandProjection = structuredClone(fixture);
   internalCommandProjection.approvals[0].title = "Authorize commitment.append to enter the trademark fee into Human review";
   internalCommandProjection.approvals[0].action_summary = "Authorize commitment.append; legal submission remains blocked.";
@@ -250,7 +287,7 @@ async function main() {
   check(pages.includes("BoardFact label=\"Requested by\"") && pages.includes("BoardFact label=\"Submitted by\"") && pages.includes("actor={workItem.submittedBy}"), "workboard keeps requester and submitter visible as distinct full actor facts");
   check(pages.indexOf('Panel title="Durable Work truth"') < pages.indexOf('Panel title="Responsibility"') && pages.includes("approvalTitle") && pages.includes("break-words text-sm leading-6"), "WorkItem focus moves durable evidence into the first viewport and wraps a human-readable approval summary");
   check(types.includes("interface WorkAssignmentExecutionChain") && fixtureAdapter.includes("root.work_assignment_execution_chains"), "adapter exposes the explicit Company Assignment execution-link projection");
-  check(pages.includes('Panel title="Computed execution & delivery evidence"') && pages.includes("data-observation-freshness") && pages.includes("do not accept or transition this WorkItem"), "WorkItem focus separates computed delivery observations from durable Company acceptance");
+  check(pages.includes('Panel title="Computed execution & delivery evidence"') && pages.includes("data-observation-freshness") && pages.includes("data-handoff-result") && pages.includes("handoff.body") && pages.includes("handoff.evidenceRefs.map") && pages.includes("observation.repository") && pages.includes("observation.pullRequestNumber") && pages.includes("observation.baseRef") && pages.includes("observation.url") && pages.includes("observation.observedAt") && pages.includes("observation.sourceUpdatedAt") && pages.includes("observation.sourceCompletedAt") && pages.includes("do not accept or transition this WorkItem"), "WorkItem focus renders complete Handoff and external observation evidence separately from durable Company acceptance");
   check(pages.includes("FinanceRecordTable") && ["Record type", "Amount", "Cost context", "Source", "Approval status"].every((label) => pages.includes(`\"${label}\"`)) && !pages.includes("\"Project\""), "finance renders auditable record fields without reintroducing a Project object");
   check(pages.includes("data-standing-agent-workspace") && pages.includes('mainLabel="Standing Agent work and activity"') && pages.includes("<ActivityStream") && !pages.includes('kind: "thinking"'), "Standing Agent focus has a central projection-backed work/activity surface without thinking persistence");
   check(types.includes("interface StandingExecutionAssignment") && fixtureAdapter.includes("root.standing_assignments"), "Company OS adapter exposes the explicit standing Agent Team assignment projection");
