@@ -20,7 +20,8 @@ use std::{
 };
 
 use harness_core::{
-    TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus,
+    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLeaseStatus, WaveStatus,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -715,10 +716,28 @@ fn tool_team_run_status(
         visible_member_actions_in_append_order(store).map_err(|error| error.to_string())?;
     let messages =
         latest_team_messages_in_append_order(store).map_err(|error| error.to_string())?;
+    // Only genuinely pending interactions belong in a status snapshot. A
+    // persistent run accumulates resolved approvals without bound; measured on
+    // team-run-1785417151179 the unfiltered list was 69 resolved records =
+    // 60,342 of 68,213 response chars (88% dead payload) growing monotonically
+    // with run age. History stays available behind `include_resolved`.
+    let include_resolved = arguments
+        .get("include_resolved")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut resolved_interactions = 0usize;
     let pending_interactions: Vec<_> = latest_pending_interactions_in_append_order(store)
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|interaction| interaction.team_run_id == id)
+        .filter(|interaction| {
+            if interaction.status == PendingInteractionStatus::Pending {
+                true
+            } else {
+                resolved_interactions += 1;
+                include_resolved
+            }
+        })
         .collect();
     let members: Vec<Value> = member_runs
         .iter()
@@ -750,6 +769,7 @@ fn tool_team_run_status(
         "wave_index": wave_index,
         "members": members,
         "pending_interactions": pending_interactions,
+        "resolved_interactions": resolved_interactions,
         "unacked_messages": unacked_messages,
         "supervisor": {
             "lease": supervisor,
@@ -1181,11 +1201,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_status",
-            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions including exact option ids, compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL.",
+            "description": "Show one team run: the run row, every member run with its latest MemberAction, provider PendingInteractions that are still pending (resolved history behind include_resolved; resolved_interactions always carries the count), compatibility field unacked_messages (the count of messages with at least one delivered manual_ack delivery awaiting acknowledgement), and the live dashboard URL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."}
+                    "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."},
+                    "include_resolved": {"type": "boolean", "default": false, "description": "Include resolved PendingInteraction history; the unbounded resolved list is excluded by default."}
                 },
                 "required": ["team_run_id"]
             }
