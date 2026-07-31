@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dogfood Company OS"
+  short_description: "Run repeatable Docs, Work, Org, and delivery self-hosting loops."
+  default_prompt: "Use $dogfood-company-os to run the next evidence-backed self-hosting cycle for this Company."

@@ -45,6 +45,10 @@ When the WorkItem starts from or returns to company memory, also read:
 - `docs/company-os/document-system.md`
 - `docs/company-os/collaboration-and-agent-work.md`
 
+When software work is sourced from or delivered through GitHub, use
+`$connect-github-company-os` to observe and reconcile the external objects.
+This Skill still owns the Company WorkItem, acceptance, and result.
+
 If repository files, schemas, API code, or acceptance checks conflict with this
 skill, the canonical implementation contract wins.
 
@@ -112,6 +116,62 @@ publication, answer a merchant/customer question, perform a daily retrospective,
 or request a paid-promotion approval. Synced account, post, metric, and message
 records should be linked as context/evidence rather than copied into the
 WorkItem description.
+
+For GitHub delivery, an Issue, PR, commit, check, review, comment, or release is
+an external source/delivery fact. Link it through explicit refs and stable
+external identity; do not make GitHub labels or PR state the Work lifecycle.
+A merged PR and green checks may satisfy delivery criteria, but the accountable
+reviewer must still accept the WorkItem and return its result to Docs.
+
+## Continuous intake, triage, and replan
+
+Treat Human requests and Company observations as continuous intake, not as a
+batch that waits for a Human to manually operate every step:
+
+```text
+Human Principal intent / Docs gap / gateway or GitHub observation
+  -> Supervisor preserves requester/source/time identity and routes once
+  -> durable source context
+  -> Company Lead triage: accept, reject, clarify, deduplicate, or defer
+  -> priority and capacity decision
+  -> Domain Lead accountability
+  -> one bounded Company Assignment and delegated execution
+  -> evidence, review, acceptance, and result return
+  -> Company Lead replan from changed facts and remaining capacity
+```
+
+The Supervisor owns faithful intake delivery and emergency runtime control
+mechanics. It does not create, accept, reprioritize, assign, or approve Company
+Work. Ordinary intake goes to the Company Lead rather than broadcasting to
+every Member or interrupting active execution.
+
+The Company Lead owns Company-wide priority, capacity conflicts, and replan.
+The Domain Lead owns delivery decomposition and autonomous delegation inside
+its Organization ceiling. Work must preserve the original requester and
+submitter, one accountable owner, explicit assignees, acceptance criteria, and
+the return location even when several executions or lower Agents contribute.
+
+Human review is exception-driven. Put an item in a Human queue only when its
+policy requires a named Human approver, it requests finance/legal/credential/
+permission/organization or other protected authority, the source is ambiguous
+enough to change the commitment, or no bounded actor can safely proceed.
+Do not manufacture Human approvals for ordinary routing or low-risk progress,
+and do not let an empty Human queue imply that all Work is complete.
+
+Current implemented truth includes WorkItem requester/submitter/source,
+responsibility, priority/risk, `work_item.update`, lifecycle transitions, and
+native Assignment delivery. Target support still missing includes a general
+Company Lead Inbox / `WorkIntakeEnvelope`, typed intake idempotency and
+disposition, requested urgency versus accepted priority, emergency-override
+audit, a governed atomic triage Action, and a dedicated capacity/dependency
+health model. Use existing fields and Actions honestly; do not claim the target
+bridge exists or replace it with a task graph.
+
+An emergency override must be explicit, targeted, policy-checked, and audited
+with requester, reason, scope, affected Work/intake, expiry/release condition,
+and terminal control acknowledgement. “Urgent” prose is not an override, and
+changed delivery timing never bypasses Company Assignment, delegated ceilings,
+protected-action Approval, review, or durable triage.
 
 ## Current interface state
 
@@ -222,6 +282,12 @@ WorkItem responsibility chain changed.
    Work/Approval path. A comment or model answer is not an Approval.
 8. On completion, return durable result and evidence to the originating Docs
    record/module. Closing a WorkItem without result provenance is incomplete.
+9. For externally delivered software work, read the remote GitHub object again
+   before acceptance and preserve repo, number/SHA, URL, checks/reviews,
+   observation time, and connector freshness.
+10. Re-read open Work and actor capacity after material delivery, blockage, or
+    priority change. Replan through explicit Work updates/assignments; never
+    rewrite history or use executor-local plans as the Company queue.
 
 ## Validation checklist
 
