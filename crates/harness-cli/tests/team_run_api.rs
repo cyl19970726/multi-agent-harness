@@ -16,7 +16,23 @@ use harness_store::HarnessStore;
 
 mod fake_provider;
 mod harness_env;
-use harness_env::{collect_sse_data, current_project_id, run_harness, ServeHandle, TempHome};
+use harness_env::{
+    collect_sse_data, current_project_id, run_harness, run_harness_with_env, ServeHandle, TempHome,
+};
+
+const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
+    ("HARNESS_ROOT", ""),
+    ("HARNESS_PROJECT", ""),
+    ("HARNESS_PROJECT_ID", ""),
+    ("HARNESS_SPACE", ""),
+    ("HARNESS_COMPANY", ""),
+    ("HARNESS_MISSION_ID", ""),
+    ("HARNESS_ORIGIN_WAVE_ID", ""),
+    ("HARNESS_TEAM_RUN_ID", ""),
+    ("HARNESS_MEMBER_RUN_ID", ""),
+    ("HARNESS_ASSIGNMENT_MESSAGE_ID", ""),
+    ("HARNESS_ASSIGNMENT_CORRELATION_ID", ""),
+];
 
 fn wait_for_file(path: &std::path::Path, context: &str) {
     for _ in 0..500 {
@@ -84,6 +100,14 @@ fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, 
         })
         .count();
     (member_rows, actions, handoffs)
+}
+
+fn init_project_selector_clean(home: &TempHome, name: &str) -> String {
+    let root = home.base().join(name);
+    std::fs::create_dir_all(&root).unwrap();
+    let out = run_harness_with_env(home, &root, &["init"], NATIVE_SELECTOR_CLEAN_ENV);
+    assert!(out.status.success(), "init {name} failed: {out:?}");
+    current_project_id(home)
 }
 
 /// `harness init` a project rooted at `<base>/<name>` and return its derived id.
@@ -2277,7 +2301,7 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
 #[test]
 fn codex_terminal_frame_is_fenced_before_stale_semantic_writes() {
     let home = TempHome::new("team-run-codex-terminal-fence");
-    let project_id = init_project(&home, "alpha");
+    let project_id = init_project_selector_clean(&home, "alpha");
     let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin"));
     let path = format!(
         "{}:{}",
@@ -2288,25 +2312,22 @@ fn codex_terminal_frame_is_fenced_before_stale_semantic_writes() {
     let release = home.base().join("codex-terminal-release");
     let ready_value = ready.display().to_string();
     let release_value = release.display().to_string();
-    let serve = ServeHandle::spawn_with_env(
-        &home,
-        home.base(),
-        &[],
-        &[
-            ("PATH", path.as_str()),
-            ("FAKE_CODEX_AUTO_COMPLETE", "1"),
-            (
-                "HARNESS_TEST_CODEX_TERMINAL_RECEIVED_READY",
-                ready_value.as_str(),
-            ),
-            (
-                "HARNESS_TEST_CODEX_TERMINAL_RECEIVED_RELEASE",
-                release_value.as_str(),
-            ),
-            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
-            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
-        ],
-    );
+    let mut serve_env = vec![
+        ("PATH", path.as_str()),
+        ("FAKE_CODEX_AUTO_COMPLETE", "1"),
+        (
+            "HARNESS_TEST_CODEX_TERMINAL_RECEIVED_READY",
+            ready_value.as_str(),
+        ),
+        (
+            "HARNESS_TEST_CODEX_TERMINAL_RECEIVED_RELEASE",
+            release_value.as_str(),
+        ),
+        ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+        ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+    ];
+    serve_env.extend(NATIVE_SELECTOR_CLEAN_ENV.iter().copied());
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &serve_env);
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -2352,32 +2373,29 @@ fn codex_terminal_frame_is_fenced_before_stale_semantic_writes() {
 #[test]
 fn kimi_terminal_frame_is_fenced_before_stale_semantic_writes() {
     let home = TempHome::new("team-run-kimi-terminal-fence");
-    let project_id = init_project(&home, "alpha");
+    let project_id = init_project_selector_clean(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let ready = home.base().join("kimi-terminal-received");
     let release = home.base().join("kimi-terminal-release");
     let ready_value = ready.display().to_string();
     let release_value = release.display().to_string();
-    let serve = ServeHandle::spawn_with_env(
-        &home,
-        home.base(),
-        &[],
-        &[
-            ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_RESULT", "done"),
-            (
-                "HARNESS_TEST_KIMI_TERMINAL_RECEIVED_READY",
-                ready_value.as_str(),
-            ),
-            (
-                "HARNESS_TEST_KIMI_TERMINAL_RECEIVED_RELEASE",
-                release_value.as_str(),
-            ),
-            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
-            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
-        ],
-    );
+    let mut serve_env = vec![
+        ("KIMI_CODE_BIN", fake_kimi.as_str()),
+        ("FAKE_KIMI_RESULT", "done"),
+        (
+            "HARNESS_TEST_KIMI_TERMINAL_RECEIVED_READY",
+            ready_value.as_str(),
+        ),
+        (
+            "HARNESS_TEST_KIMI_TERMINAL_RECEIVED_RELEASE",
+            release_value.as_str(),
+        ),
+        ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+        ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+    ];
+    serve_env.extend(NATIVE_SELECTOR_CLEAN_ENV.iter().copied());
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &serve_env);
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -2422,7 +2440,7 @@ fn kimi_terminal_frame_is_fenced_before_stale_semantic_writes() {
 #[test]
 fn heartbeat_failure_latch_rejects_close_while_durable_lease_is_current() {
     let home = TempHome::new("team-run-heartbeat-latch-control-fence");
-    let project_id = init_project(&home, "alpha");
+    let project_id = init_project_selector_clean(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let prompt_ready = home.base().join("kimi-prompt-ready");
@@ -2433,26 +2451,23 @@ fn heartbeat_failure_latch_rejects_close_while_durable_lease_is_current() {
     let prompt_release_value = prompt_release.display().to_string();
     let heartbeat_failed_value = heartbeat_failed.display().to_string();
     let cancel_marker_value = cancel_marker.display().to_string();
-    let serve = ServeHandle::spawn_with_env(
-        &home,
-        home.base(),
-        &[],
-        &[
-            ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_FIRST_PROMPT_READY", prompt_ready_value.as_str()),
-            (
-                "FAKE_KIMI_FIRST_PROMPT_RELEASE",
-                prompt_release_value.as_str(),
-            ),
-            ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
-            (
-                "HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY",
-                heartbeat_failed_value.as_str(),
-            ),
-            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
-            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
-        ],
-    );
+    let mut serve_env = vec![
+        ("KIMI_CODE_BIN", fake_kimi.as_str()),
+        ("FAKE_KIMI_FIRST_PROMPT_READY", prompt_ready_value.as_str()),
+        (
+            "FAKE_KIMI_FIRST_PROMPT_RELEASE",
+            prompt_release_value.as_str(),
+        ),
+        ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
+        (
+            "HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY",
+            heartbeat_failed_value.as_str(),
+        ),
+        ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+        ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+    ];
+    serve_env.extend(NATIVE_SELECTOR_CLEAN_ENV.iter().copied());
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &serve_env);
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
