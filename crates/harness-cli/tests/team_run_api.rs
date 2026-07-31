@@ -18,6 +18,74 @@ mod fake_provider;
 mod harness_env;
 use harness_env::{collect_sse_data, current_project_id, run_harness, ServeHandle, TempHome};
 
+fn wait_for_file(path: &std::path::Path, context: &str) {
+    for _ in 0..500 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {context}: {}", path.display());
+}
+
+fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn replace_supervisor_lease(store: &HarnessStore, run_id: &str) {
+    let lease = store
+        .latest_team_supervisor_lease(run_id)
+        .expect("read current lease")
+        .expect("current lease");
+    store
+        .release_team_supervisor_lease(
+            run_id,
+            &lease.supervisor_id,
+            lease.generation,
+            current_unix_ms(),
+        )
+        .expect("release current lease");
+    store
+        .acquire_team_supervisor_lease(
+            run_id,
+            "terminal-frame-fencing-supervisor",
+            std::process::id(),
+            "tcp://127.0.0.1:1",
+            current_unix_ms(),
+            15_000,
+        )
+        .expect("replace current lease");
+}
+
+fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, usize, usize) {
+    let member_rows = store
+        .member_runs()
+        .expect("member rows")
+        .into_iter()
+        .filter(|member| member.id == member_id)
+        .count();
+    let actions = store
+        .member_actions()
+        .expect("member actions")
+        .into_iter()
+        .filter(|action| action.member_run_id == member_id)
+        .count();
+    let handoffs = store
+        .team_messages()
+        .expect("team messages")
+        .into_iter()
+        .filter(|message| {
+            message.from_member_id == member_id
+                && message.kind == harness_core::TeamMessageKind::Handoff
+        })
+        .count();
+    (member_rows, actions, handoffs)
+}
+
 /// `harness init` a project rooted at `<base>/<name>` and return its derived id.
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
@@ -2203,6 +2271,250 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
             .count(),
         1,
         "successor must resume the provider-accepted boundary once"
+    );
+}
+
+#[test]
+fn codex_terminal_frame_is_fenced_before_stale_semantic_writes() {
+    let home = TempHome::new("team-run-codex-terminal-fence");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_codex_team_shim(&home.base().join("fakebin"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let ready = home.base().join("codex-terminal-received");
+    let release = home.base().join("codex-terminal-release");
+    let ready_value = ready.display().to_string();
+    let release_value = release.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_AUTO_COMPLETE", "1"),
+            (
+                "HARNESS_TEST_CODEX_TERMINAL_RECEIVED_READY",
+                ready_value.as_str(),
+            ),
+            (
+                "HARNESS_TEST_CODEX_TERMINAL_RECEIVED_RELEASE",
+                release_value.as_str(),
+            ),
+            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Fence a Codex terminal frame",
+            "members": [{
+                "name": "codex-terminal-fence",
+                "role": "runtime_reliability",
+                "provider": "codex",
+                "execution_mode": "codex_app_server"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {body}");
+    wait_for_file(&ready, "Codex terminal receive barrier");
+
+    let store = HarnessStore::new(home.spaces_dir().join(project_id));
+    let before = member_semantic_row_counts(&store, &member_id);
+    assert_eq!(before.2, 0, "terminal frame was processed before barrier");
+    replace_supervisor_lease(&store, &run_id);
+    std::fs::write(&release, b"release stale terminal").expect("release Codex terminal");
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert_eq!(
+        member_semantic_row_counts(&store, &member_id),
+        before,
+        "stale Codex terminal result wrote native-session/member/action/Handoff state"
+    );
+}
+
+#[test]
+fn kimi_terminal_frame_is_fenced_before_stale_semantic_writes() {
+    let home = TempHome::new("team-run-kimi-terminal-fence");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let ready = home.base().join("kimi-terminal-received");
+    let release = home.base().join("kimi-terminal-release");
+    let ready_value = ready.display().to_string();
+    let release_value = release.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            (
+                "HARNESS_TEST_KIMI_TERMINAL_RECEIVED_READY",
+                ready_value.as_str(),
+            ),
+            (
+                "HARNESS_TEST_KIMI_TERMINAL_RECEIVED_RELEASE",
+                release_value.as_str(),
+            ),
+            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Fence a Kimi terminal frame",
+            "members": [{
+                "name": "kimi-terminal-fence",
+                "role": "runtime_reliability",
+                "provider": "kimi"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {body}");
+    wait_for_file(&ready, "Kimi terminal receive barrier");
+
+    let store = HarnessStore::new(home.spaces_dir().join(project_id));
+    let before = member_semantic_row_counts(&store, &member_id);
+    assert_eq!(before.2, 0, "terminal frame was processed before barrier");
+    replace_supervisor_lease(&store, &run_id);
+    std::fs::write(&release, b"release stale terminal").expect("release Kimi terminal");
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert_eq!(
+        member_semantic_row_counts(&store, &member_id),
+        before,
+        "stale Kimi terminal result wrote native-session/member/action/Handoff state"
+    );
+}
+
+#[test]
+fn heartbeat_failure_latch_rejects_close_while_durable_lease_is_current() {
+    let home = TempHome::new("team-run-heartbeat-latch-control-fence");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let prompt_ready = home.base().join("kimi-prompt-ready");
+    let prompt_release = home.base().join("kimi-prompt-release");
+    let heartbeat_failed = home.base().join("heartbeat-failed");
+    let cancel_marker = home.base().join("kimi-cancel");
+    let prompt_ready_value = prompt_ready.display().to_string();
+    let prompt_release_value = prompt_release.display().to_string();
+    let heartbeat_failed_value = heartbeat_failed.display().to_string();
+    let cancel_marker_value = cancel_marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_FIRST_PROMPT_READY", prompt_ready_value.as_str()),
+            (
+                "FAKE_KIMI_FIRST_PROMPT_RELEASE",
+                prompt_release_value.as_str(),
+            ),
+            ("FAKE_KIMI_CANCEL_MARKER", cancel_marker_value.as_str()),
+            (
+                "HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY",
+                heartbeat_failed_value.as_str(),
+            ),
+            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "10000"),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Fence control after heartbeat failure",
+            "members": [{
+                "name": "kimi-control-fence",
+                "role": "runtime_reliability",
+                "provider": "kimi"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {body}");
+    wait_for_file(&prompt_ready, "live Kimi prompt");
+    wait_for_file(&heartbeat_failed, "injected heartbeat failure");
+
+    let store = HarnessStore::new(home.spaces_dir().join(project_id));
+    let lease = store
+        .latest_team_supervisor_lease(&run_id)
+        .expect("read durable lease")
+        .expect("durable lease");
+    assert_eq!(
+        lease.status,
+        harness_core::TeamSupervisorLeaseStatus::Active,
+        "failure injection must leave the durable row apparently current"
+    );
+    assert!(
+        lease.expires_unix_ms > current_unix_ms(),
+        "durable lease expired before the local-latch assertion"
+    );
+
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({
+            "reason": "must be rejected by local supervisor latch",
+            "requested_by": "test"
+        }),
+    );
+    assert_ne!(status, 200, "locally invalid Supervisor accepted Close");
+    assert!(
+        store
+            .team_member_close_requests()
+            .expect("close requests")
+            .into_iter()
+            .all(|request| request.member_run_id != member_id),
+        "rejected Close persisted a durable close request"
+    );
+    assert!(
+        !cancel_marker.exists(),
+        "rejected Close reached the provider control transport"
     );
 }
 

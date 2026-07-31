@@ -13129,6 +13129,17 @@ fn latch_supervisor_lease_lost(
     supervisor_lease_lost_error(team_run_id)
 }
 
+fn supervisor_test_heartbeat_failure() -> Option<String> {
+    let ready = std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")?;
+    let ready = PathBuf::from(ready);
+    match fs::write(&ready, b"heartbeat renewal failure injected") {
+        Ok(()) => Some("test-injected heartbeat renewal/store failure".to_string()),
+        Err(error) => Some(format!(
+            "test-injected heartbeat renewal/store failure marker failed: {error}"
+        )),
+    }
+}
+
 fn reserve_team_supervisor(
     store: &HarnessStore,
     team_run_id: &str,
@@ -13183,6 +13194,16 @@ fn reserve_team_supervisor(
             if heartbeat_stop_thread.load(Ordering::Acquire) {
                 break;
             }
+            if let Some(reason) = supervisor_test_heartbeat_failure() {
+                let _ = latch_supervisor_lease_lost(
+                    &heartbeat_valid_thread,
+                    &heartbeat_team_run_id,
+                    &heartbeat_supervisor_id,
+                    generation,
+                    &reason,
+                );
+                break;
+            }
             if let Err(error) = heartbeat_store.renew_team_supervisor_lease(
                 &heartbeat_team_run_id,
                 &heartbeat_supervisor_id,
@@ -13207,6 +13228,7 @@ fn reserve_team_supervisor(
     let control_supervisor_id = supervisor_id.clone();
     let control_generation = lease.generation;
     let control_stop_thread = Arc::clone(&control_stop);
+    let control_valid_thread = Arc::clone(&heartbeat_valid);
     let control_thread = std::thread::spawn(move || {
         while !control_stop_thread.load(Ordering::Acquire) {
             match control_listener.accept() {
@@ -13217,6 +13239,7 @@ fn reserve_team_supervisor(
                         &control_team_run_id,
                         &control_supervisor_id,
                         control_generation,
+                        &control_valid_thread,
                     );
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -13333,12 +13356,16 @@ fn dispatch_local_live_member_control(
     store: &HarnessStore,
     supervisor_id: &str,
     generation: u64,
+    supervisor_valid: &AtomicBool,
     request: LiveMemberControlRequest,
 ) -> CliResult<serde_json::Value> {
     let team_run_id = request.team_run_id().to_string();
     let member_run_id = request.member_run_id().to_string();
     let is_close = matches!(&request, LiveMemberControlRequest::Close { .. });
     // Fence immediately before touching the process-local provider handle.
+    if !supervisor_valid.load(Ordering::Acquire) {
+        return Err(supervisor_lease_lost_error(&team_run_id));
+    }
     require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
     if let LiveMemberControlRequest::Close {
         reason,
@@ -13455,6 +13482,7 @@ fn handle_live_member_control_connection(
     team_run_id: &str,
     supervisor_id: &str,
     generation: u64,
+    supervisor_valid: &AtomicBool,
 ) {
     let response = (|| -> CliResult<serde_json::Value> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -13475,7 +13503,13 @@ fn handle_live_member_control_connection(
                 request.team_run_id()
             )));
         }
-        dispatch_local_live_member_control(store, supervisor_id, generation, request)
+        dispatch_local_live_member_control(
+            store,
+            supervisor_id,
+            generation,
+            supervisor_valid,
+            request,
+        )
     })();
     let envelope = match response {
         Ok(result) => LiveMemberControlResponse {
@@ -13978,27 +14012,67 @@ struct MemberRuntimeContext {
 }
 
 /// `std::process::Child` does not terminate a still-running process on drop.
-/// Provider transports must not outlive a stale Supervisor generation, so the
-/// Claude runner is always killed and reaped when its orchestration scope ends.
-struct ProviderChildGuard(std::process::Child);
+/// Provider transports must not outlive a stale Supervisor generation. The
+/// guard is disarmed after a normal wait and only signals a child/group that
+/// remains active.
+struct ProviderChildGuard {
+    child: std::process::Child,
+    armed: bool,
+}
+
+fn isolate_provider_child_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
+impl ProviderChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self { child, armed: true }
+    }
+
+    fn wait_and_disarm(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let status = self.child.wait()?;
+        self.armed = false;
+        Ok(status)
+    }
+}
 
 impl std::ops::Deref for ProviderChildGuard {
     type Target = std::process::Child;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.child
     }
 }
 
 impl std::ops::DerefMut for ProviderChildGuard {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.child
     }
 }
 
 impl Drop for ProviderChildGuard {
     fn drop(&mut self) {
-        kill_worker_tree(&mut self.0);
+        if !self.armed {
+            return;
+        }
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                self.armed = false;
+            }
+            Ok(None) => {
+                kill_worker_tree(&mut self.child);
+                self.armed = false;
+            }
+            Err(_) => {
+                // An error does not prove the pid still belongs to this child;
+                // never risk signalling a recycled process group.
+                self.armed = false;
+            }
+        }
     }
 }
 
@@ -14622,6 +14696,11 @@ fn run_codex_member(
                 },
             )?
         };
+        // Fence the caller as well: no native-session, Handoff, action, or
+        // MemberRun write may follow a terminal transport result from a stale
+        // Supervisor generation.
+        ledger.require_supervisor_lease()?;
+        let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
@@ -14855,6 +14934,32 @@ fn project_codex_team_event_live(
     }
 }
 
+fn supervisor_test_terminal_receive_barrier(provider: &str) -> CliResult<()> {
+    let provider = provider.to_ascii_uppercase();
+    let ready_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_READY");
+    let release_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let Some(ready) = std::env::var_os(&ready_key) else {
+        return Ok(());
+    };
+    let release = std::env::var_os(&release_key).ok_or_else(|| {
+        CliError::Usage(format!(
+            "{ready_key} requires the bounded test release selector {release_key}"
+        ))
+    })?;
+    fs::write(PathBuf::from(ready), b"terminal provider frame received")?;
+    let release = PathBuf::from(release);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !release.exists() {
+        if Instant::now() >= deadline {
+            return Err(CliError::Usage(format!(
+                "timed out waiting for {release_key}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 /// Drive one turn on the persistent Codex app-server session. Unlike
 /// `codex exec`, this transport can inject user input into the active turn and
 /// interrupt it without killing an unrelated host process.
@@ -14986,8 +15091,14 @@ fn run_codex_app_server_turn(
 
         match client.recv(Duration::from_millis(50)) {
             Ok(frame) => {
-                last_activity = Instant::now();
                 let method = frame.get("method").and_then(|value| value.as_str());
+                if method == Some("turn/completed") {
+                    supervisor_test_terminal_receive_barrier("codex")?;
+                }
+                // The receive above is blocking. Re-fence before interpreting
+                // even a terminal frame or projecting any semantic state.
+                ledger.require_supervisor_lease()?;
+                last_activity = Instant::now();
                 let params = frame.get("params").unwrap_or(&frame);
                 // app-server may emit notifications for another turn on the
                 // same thread (for example an interrupted turn flushing its
@@ -15464,23 +15575,22 @@ fn run_claude_agent_sdk_team_member(
     // session. ProviderChildGuard guarantees a lease-loss return cannot orphan
     // the runner after this point.
     ledger.require_supervisor_lease()?;
-    let mut child = ProviderChildGuard(
-        Command::new("node")
-            .arg(&runner)
-            .current_dir(cwd)
-            .envs(envelope.environment().iter().cloned())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                CliError::Usage(format!(
-                    "failed to spawn claude_agent_sdk runner for {}: {error}. \
+    let mut command = Command::new("node");
+    command
+        .arg(&runner)
+        .current_dir(cwd)
+        .envs(envelope.environment().iter().cloned())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_provider_child_process_group(&mut command);
+    let mut child = ProviderChildGuard::new(command.spawn().map_err(|error| {
+        CliError::Usage(format!(
+            "failed to spawn claude_agent_sdk runner for {}: {error}. \
                  The runner needs `node` on PATH.",
-                    member.name
-                ))
-            })?,
-    );
+            member.name
+        ))
+    })?);
 
     let mut stdin = child
         .stdin
@@ -15889,9 +15999,10 @@ fn run_claude_agent_sdk_team_member(
     }
 
     drop(stdin);
-    let _ = child.wait();
+    let _ = child.wait_and_disarm();
     let _ = stdout_reader.join();
     let stderr_text = stderr_reader.join().unwrap_or_default();
+    ledger.require_supervisor_lease()?;
     if round == 0 {
         if closed_by_host {
             member_row.status = MemberRunStatus::Stopped;
@@ -16690,6 +16801,11 @@ fn run_kimi_member(
                 },
             )?
         };
+        // `prompt` owns its blocking receive loop. Its terminal result can
+        // arrive after the last control callback, so barrier then fence before
+        // consuming the result or writing any semantic state.
+        supervisor_test_terminal_receive_barrier("kimi")?;
+        ledger.require_supervisor_lease()?;
         let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         let final_text = mapper.text().to_string();
@@ -33701,6 +33817,79 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn process_group_command(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        isolate_provider_child_process_group(&mut command);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_guard_kills_stale_active_process_group() {
+        let marker = std::env::temp_dir().join(format!(
+            "harness-provider-child-group-{}-{}",
+            std::process::id(),
+            current_unix_ms()
+        ));
+        let mut command = process_group_command(r#"sleep 30 & echo $! > "$1"; wait"#);
+        command.arg("provider-child-test").arg(&marker);
+        let child = command.spawn().expect("spawn provider child group");
+        let leader_pid = child.id();
+        let guard = ProviderChildGuard::new(child);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let descendant_pid = fs::read_to_string(&marker)
+            .expect("descendant pid marker")
+            .trim()
+            .parse::<u32>()
+            .expect("descendant pid");
+
+        drop(guard);
+
+        assert!(
+            !process_exists(leader_pid),
+            "group leader survived guard drop"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_exists(descendant_pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !process_exists(descendant_pid),
+            "provider descendant survived stale guard teardown"
+        );
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_guard_disarms_after_normal_completion() {
+        let child = process_group_command("exit 0")
+            .spawn()
+            .expect("spawn normally completing provider child");
+        let pid = child.id();
+        let mut guard = ProviderChildGuard::new(child);
+
+        let status = guard.wait_and_disarm().expect("normal provider wait");
+
+        assert!(status.success());
+        assert!(!guard.armed, "normal wait must disarm teardown");
+        drop(guard);
+        assert!(
+            !process_exists(pid),
+            "normally reaped provider child survived"
+        );
+    }
 
     fn native_open_test_member(provider: &str, mode: &str, session_id: &str) -> MemberRun {
         MemberRun {
