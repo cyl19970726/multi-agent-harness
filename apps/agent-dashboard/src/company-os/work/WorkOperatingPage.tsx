@@ -21,6 +21,7 @@ import {
 
 import { ActorAvatar, ObjectEmblem } from "../visuals";
 import { preserveCompanyOsWorkbenchContext } from "../docs/url";
+import { acceptanceCriteriaPresentation, projectBusinessLineDimensions } from "./projection";
 
 type Json = Record<string, unknown>;
 type WorkView = "overview" | "board" | "all" | "milestones" | "timeline" | "workload";
@@ -78,10 +79,31 @@ interface MilestoneRow {
   progress: number;
 }
 
+interface WorkDimensionRow {
+  id: string;
+  label: string;
+  workItemIds: string[];
+}
+
+interface WorkloadRow {
+  actorId: string;
+  actor?: ActorRow;
+  accountable: number;
+  assigned: number;
+  active: number;
+  workItemIds: string[];
+}
+
 interface WorkModel {
+  provenance: "company_os.work" | "legacy_raw_records";
+  integrity: string[];
   items: WorkRow[];
   milestones: MilestoneRow[];
   actors: ActorRow[];
+  board: WorkDimensionRow[];
+  businessLines: WorkDimensionRow[];
+  workTypes: WorkDimensionRow[];
+  workload: WorkloadRow[];
   summary: {
     total: number;
     active: number;
@@ -106,6 +128,18 @@ function unbox(value: Json): Json {
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function object(value: unknown): Json {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((entry) => text(entry)).filter(Boolean) : [];
 }
 
 function refId(value: unknown): string {
@@ -149,7 +183,12 @@ function priorityWeight(priority?: string): number {
 
 function buildModel(source: unknown): WorkModel {
   const root = source && typeof source === "object" && !Array.isArray(source) ? source as Json : {};
-  const projection = root.work && typeof root.work === "object" && !Array.isArray(root.work) ? root.work as Json : {};
+  const hasAggregate = Object.prototype.hasOwnProperty.call(root, "work");
+  const projection = object(root.work);
+  const integrity: string[] = [];
+  if (hasAggregate && Object.keys(projection).length === 0 && root.work !== undefined) {
+    integrity.push("company_os.work is present but is not a readable aggregate object.");
+  }
   const actorRecords = objects(root.actors).map(unbox);
   const actorMap = new Map<string, ActorRow>();
   for (const actor of actorRecords) {
@@ -165,13 +204,13 @@ function buildModel(source: unknown): WorkModel {
   const resolveActor = (value: unknown): ActorRow | undefined => {
     const id = refId(value);
     if (!id) return undefined;
-    return actorMap.get(id) ?? { id, name: humanize(id.replace(/^actor-/, "")), kind: text((value as Json | undefined)?.actor_type, "service"), role: "Linked actor" };
+    return actorMap.get(id) ?? { id, name: id, kind: text((value as Json | undefined)?.actor_type, "service"), role: "Unresolved actor reference" };
   };
   const modules = new Map(objects(root.business_modules).map(unbox).map((record) => [text(record.id), text(record.name, text(record.title, text(record.id))) ]));
   const documents = new Map(objects(root.documents).map(unbox).map((record) => [text(record.id), text(record.title, text(record.id))]));
   const approvals = new Map(objects(root.approvals).map(unbox).map((record) => [text(record.id), text(record.status, "unknown")]));
-  const rawItems = objects(projection.work_items).length > 0 ? objects(projection.work_items) : objects(root.work_items);
-  const rawMilestones = objects(projection.milestones).length > 0 ? objects(projection.milestones) : objects(root.milestones);
+  const rawItems = hasAggregate ? objects(projection.work_items) : objects(root.work_items);
+  const rawMilestones = hasAggregate ? objects(projection.milestones) : objects(root.milestones);
 
   const milestoneRecords = rawMilestones.map((entry) => {
     const boxed = entry.milestone && typeof entry.milestone === "object" && !Array.isArray(entry.milestone)
@@ -221,8 +260,8 @@ function buildModel(source: unknown): WorkModel {
   const milestones = milestoneRecords.map(({ boxed, derived }): MilestoneRow => {
     const id = text(boxed.id, "unresolved-milestone");
     const linked = items.filter((item) => item.milestoneId === id);
-    const total = Number(derived.total_work_items ?? linked.length);
-    const completed = Number(derived.completed_work_items ?? linked.filter((item) => item.status === "completed").length);
+    const total = hasAggregate ? finiteNumber(derived.total_work_items) ?? 0 : linked.length;
+    const completed = hasAggregate ? finiteNumber(derived.completed_work_items) ?? 0 : linked.filter((item) => item.status === "completed").length;
     return {
       id,
       title: text(boxed.title, "Untitled milestone"),
@@ -232,23 +271,95 @@ function buildModel(source: unknown): WorkModel {
       accountable: resolveActor(boxed.accountable_owner),
       total,
       completed,
-      blocked: Number(derived.blocked_work_items ?? linked.filter((item) => item.status === "blocked").length),
-      waiting: Number(derived.waiting_for_approval_work_items ?? linked.filter((item) => item.status === "waiting_for_approval").length),
-      progress: Number(derived.progress_percent ?? (total > 0 ? Math.floor(completed * 100 / total) : 0)),
+      blocked: hasAggregate ? finiteNumber(derived.blocked_work_items) ?? 0 : linked.filter((item) => item.status === "blocked").length,
+      waiting: hasAggregate ? finiteNumber(derived.waiting_for_approval_work_items) ?? 0 : linked.filter((item) => item.status === "waiting_for_approval").length,
+      progress: hasAggregate ? finiteNumber(derived.progress_percent) ?? 0 : (total > 0 ? Math.floor(completed * 100 / total) : 0),
     };
   });
-  const summaryRecord = projection.summary && typeof projection.summary === "object" ? projection.summary as Json : {};
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const dimension = (name: "board" | "work_types"): WorkDimensionRow[] => {
+    if (!hasAggregate) {
+      const keyFor = (item: WorkRow) => name === "board"
+        ? item.status
+        : item.workType;
+      const grouped = new Map<string, string[]>();
+      for (const item of items) {
+        const key = keyFor(item);
+        const refs = grouped.get(key) ?? [];
+        refs.push(item.id);
+        grouped.set(key, refs);
+      }
+      return [...grouped].map(([id, workItemIds]) => ({ id, label: id, workItemIds }));
+    }
+    const raw = object(projection[name]);
+    return Object.entries(raw).map(([id, refs]) => {
+      const workItemIds = stringArray(refs);
+      for (const workItemId of workItemIds) {
+        if (!itemById.has(workItemId)) integrity.push(`${name}.${id} references missing WorkItem ${workItemId}.`);
+      }
+      return { id, label: id, workItemIds };
+    });
+  };
+  const board = dimension("board");
+  const rawBusinessLines = hasAggregate
+    ? object(projection.business_lines)
+    : items.reduce<Record<string, string[]>>((lines, item) => {
+        const id = item.businessLineId ?? "unclassified";
+        (lines[id] ??= []).push(item.id);
+        return lines;
+      }, {});
+  const businessLineProjection = projectBusinessLineDimensions(rawBusinessLines, items, modules);
+  integrity.push(...businessLineProjection.integrityFindings);
+  const businessLines = businessLineProjection.dimensions;
+  const workTypes = dimension("work_types");
+  const workload = hasAggregate
+    ? objects(projection.workload).map((entry): WorkloadRow => {
+        const actorId = refId(entry.actor);
+        const workItemIds = stringArray(entry.work_item_refs);
+        if (!actorId) integrity.push("company_os.work workload row lacks an actor reference.");
+        for (const workItemId of workItemIds) {
+          if (!itemById.has(workItemId)) integrity.push(`workload ${actorId || "unknown"} references missing WorkItem ${workItemId}.`);
+        }
+        return {
+          actorId,
+          actor: resolveActor(entry.actor),
+          accountable: finiteNumber(entry.accountable_count) ?? 0,
+          assigned: finiteNumber(entry.assigned_count) ?? 0,
+          active: finiteNumber(entry.active_count) ?? 0,
+          workItemIds,
+        };
+      }).filter((entry) => entry.actorId)
+    : [];
+  const summaryRecord = object(projection.summary);
+  const summaryValue = (key: string, legacy: number): number => {
+    if (!hasAggregate) return legacy;
+    const value = finiteNumber(summaryRecord[key]);
+    if (value === undefined) {
+      integrity.push(`company_os.work summary.${key} is unavailable.`);
+      return 0;
+    }
+    return value;
+  };
+  if (hasAggregate && finiteNumber(summaryRecord.total) !== undefined && finiteNumber(summaryRecord.total) !== items.length) {
+    integrity.push(`company_os.work summary.total=${summaryRecord.total} does not match ${items.length} projected WorkItems.`);
+  }
   return {
+    provenance: hasAggregate ? "company_os.work" : "legacy_raw_records",
+    integrity,
     items,
     milestones,
     actors: [...actorMap.values()],
+    board,
+    businessLines,
+    workTypes,
+    workload,
     summary: {
-      total: Number(summaryRecord.total ?? items.length),
-      active: Number(summaryRecord.active ?? items.filter((item) => isActiveWork(item.status)).length),
-      completed: Number(summaryRecord.completed ?? items.filter((item) => item.status === "completed").length),
-      blocked: Number(summaryRecord.blocked ?? items.filter((item) => item.status === "blocked").length),
-      waiting: Number(summaryRecord.waiting_for_approval ?? items.filter((item) => item.status === "waiting_for_approval").length),
-      unassigned: Number(summaryRecord.unassigned ?? items.filter((item) => item.assignees.length === 0).length),
+      total: summaryValue("total", items.length),
+      active: summaryValue("active", items.filter((item) => isActiveWork(item.status)).length),
+      completed: summaryValue("completed", items.filter((item) => item.status === "completed").length),
+      blocked: summaryValue("blocked", items.filter((item) => item.status === "blocked").length),
+      waiting: summaryValue("waiting_for_approval", items.filter((item) => item.status === "waiting_for_approval").length),
+      unassigned: summaryValue("unassigned", items.filter((item) => item.assignees.length === 0).length),
     },
   };
 }
@@ -268,12 +379,12 @@ export function WorkOperatingPage({ source }: { source: unknown }) {
   const [query, setQuery] = useState("");
   const visible = model.items.filter((item) => `${item.title} ${item.objective} ${item.description ?? ""} ${item.acceptanceCriteria.join(" ")} ${item.businessLine} ${item.workType} ${item.milestone}`.toLowerCase().includes(query.toLowerCase()));
   return (
-    <main className="h-full w-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_78%_-5%,hsl(var(--primary)/0.09),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--muted)/0.24))]" data-work-operating-system="v1" data-work-view={activeView}>
+    <main className="h-full w-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto bg-[radial-gradient(circle_at_78%_-5%,hsl(var(--primary)/0.09),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--muted)/0.24))]" data-work-operating-system="v1" data-work-view={activeView} data-work-provenance={model.provenance}>
       <header className="sticky top-0 z-20 w-full min-w-0 max-w-full overflow-hidden border-b border-border/80 bg-background/90 px-4 py-4 backdrop-blur-xl sm:px-7">
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-end justify-between gap-4">
           <div className="flex items-center gap-4">
             <ObjectEmblem kind="work" className="size-12 rounded-2xl shadow-sm" />
-            <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">Company operating ledger</p><h1 className="company-editorial-title mt-1 text-3xl">Work</h1><p className="mt-1 max-w-64 text-xs leading-5 text-muted-foreground sm:max-w-none">One WorkItem truth across business lines, milestones, people, and Agents.</p></div>
+            <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">Company operating ledger · {model.provenance === "company_os.work" ? "Store aggregate" : "Prototype compatibility"}</p><h1 className="company-editorial-title mt-1 text-3xl">Work</h1><p className="mt-1 max-w-64 text-xs leading-5 text-muted-foreground sm:max-w-none">One WorkItem truth across business lines, milestones, people, and Agents.</p></div>
           </div>
           <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
             <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-card/80 px-3 text-sm shadow-sm sm:min-w-56"><Search className="size-4 shrink-0 text-muted-foreground" /><span className="sr-only">Search work</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search WorkItems…" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground" /></label>
@@ -284,7 +395,8 @@ export function WorkOperatingPage({ source }: { source: unknown }) {
         <nav className="mx-auto mt-4 flex w-full min-w-0 max-w-[1500px] gap-1 overflow-x-auto" aria-label="Work views">{viewOptions.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setActiveView(id)} className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition ${activeView === id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"}`} aria-current={activeView === id ? "page" : undefined}><Icon className="size-3.5" />{label}</button>)}</nav>
       </header>
       <div className="mx-auto w-full min-w-0 max-w-[1500px] overflow-hidden p-4 sm:p-7">
-        {model.items.length === 0 ? <EmptyWork /> : activeView === "overview" ? <Overview model={model} items={visible} /> : activeView === "board" ? <Board items={visible} /> : activeView === "all" ? <AllWork items={visible} /> : activeView === "milestones" ? <Milestones milestones={model.milestones} items={visible} /> : activeView === "timeline" ? <Timeline items={visible} /> : <Workload items={visible} />}
+        {model.integrity.length > 0 && <WorkIntegrity findings={model.integrity} />}
+        {model.items.length === 0 ? <EmptyWork provenance={model.provenance} /> : activeView === "overview" ? <Overview model={model} items={visible} /> : activeView === "board" ? <Board model={model} items={visible} /> : activeView === "all" ? <AllWork items={visible} /> : activeView === "milestones" ? <Milestones milestones={model.milestones} items={visible} /> : activeView === "timeline" ? <Timeline items={visible} /> : <Workload model={model} items={visible} />}
       </div>
     </main>
   );
@@ -293,15 +405,22 @@ export function WorkOperatingPage({ source }: { source: unknown }) {
 function Overview({ model, items }: { model: WorkModel; items: WorkRow[] }) {
   const attention = items.filter((item) => item.status === "blocked" || item.status === "waiting_for_approval" || item.assignees.length === 0);
   const activeItems = items.filter((item) => isActiveWork(item.status));
+  const itemById = new Map(items.map((item) => [item.id, item]));
   const operatingQueue = (attention.length > 0 ? attention : activeItems)
     .sort((left, right) => priorityWeight(right.priority) - priorityWeight(left.priority) || right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 10);
-  const businessLines = [...new Set(items.map((item) => item.businessLine))]
-    .map((line) => ({ line, count: items.filter((item) => item.businessLine === line).length, active: activeItems.filter((item) => item.businessLine === line).length }))
-    .sort((left, right) => right.active - left.active || left.line.localeCompare(right.line));
-  const workTypes = [...new Set(items.map((item) => item.workType))]
-    .map((type) => ({ type, count: items.filter((item) => item.workType === type).length }))
-    .sort((left, right) => right.count - left.count || left.type.localeCompare(right.type));
+  const businessLines = model.businessLines.map((dimension) => {
+    const linked = dimension.workItemIds.map((id) => itemById.get(id)).filter((item): item is WorkRow => Boolean(item));
+    return {
+      line: dimension.label,
+      count: linked.length,
+      active: linked.filter((item) => isActiveWork(item.status)).length,
+    };
+  }).filter((dimension) => dimension.count > 0);
+  const workTypes = model.workTypes.map((dimension) => ({
+    type: dimension.id,
+    count: dimension.workItemIds.filter((id) => itemById.has(id)).length,
+  })).filter((dimension) => dimension.count > 0);
   const activeMilestones = [...model.milestones].sort((left, right) => {
     const statusWeight = (status: string) => status === "active" ? 3 : status === "at_risk" ? 2 : status === "planned" ? 1 : 0;
     return statusWeight(right.status) - statusWeight(left.status) || right.total - left.total;
@@ -329,21 +448,26 @@ function SectionTitle({ eyebrow, title, detail }: { eyebrow: string; title: stri
 }
 
 function WorkListRow({ item }: { item: WorkRow }) {
-  return <a href={workItemHref(item.id)} aria-label={`Open WorkItem ${item.title}`} className="group grid gap-4 p-5 transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto]" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Status status={item.status} /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{humanize(item.workType)}</span><span className="text-[10px] text-muted-foreground">· {item.businessLine}</span>{item.acceptanceCriteria.length > 0 && <span className="text-[10px] text-status-good">· {item.acceptanceCriteria.length} acceptance</span>}{item.approvalId && <span data-company-os-ref={item.approvalId} className="text-[10px] text-status-warn">· {item.approval === "requested" ? "Human approval" : humanize(item.approval)}</span>}</div><h3 className="mt-2 truncate font-semibold">{item.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.description || item.objective || `${item.milestone} · ${item.source}`}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.milestone} · {item.source}{item.contextRefs.length > 0 ? ` · ${item.contextRefs.length} context refs` : ""}{item.deliverableRefs.length > 0 ? ` · ${item.deliverableRefs.length} deliverables` : ""}</p></div><div className="flex items-center gap-4"><ActorStack actors={[item.accountable, ...item.assignees, ...item.contributors, item.reviewer]} /><div className="hidden text-right sm:block"><p className="text-xs font-medium">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.approval === "requested" ? "Human approval" : humanize(item.execution)}</p></div><ArrowUpRight className="size-4 text-muted-foreground transition group-hover:text-primary" /></div></a>;
+  return <a href={workItemHref(item.id)} aria-label={`Open WorkItem ${item.title}`} className="group grid gap-4 p-5 transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto]" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Status status={item.status} /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{humanize(item.workType)}</span><span className="text-[10px] text-muted-foreground">· {item.businessLine}</span><AcceptanceCriteriaCount item={item} prefix="· " />{item.approvalId && <span data-company-os-ref={item.approvalId} className="text-[10px] text-status-warn">· {item.approval === "requested" ? "Human approval" : humanize(item.approval)}</span>}</div><h3 className="mt-2 truncate font-semibold">{item.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.description || item.objective || `${item.milestone} · ${item.source}`}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.milestone} · {item.source}{item.contextRefs.length > 0 ? ` · ${item.contextRefs.length} context refs` : ""}{item.deliverableRefs.length > 0 ? ` · ${item.deliverableRefs.length} deliverables` : ""}</p></div><div className="flex items-center gap-4"><ActorStack actors={[item.accountable, ...item.assignees, ...item.contributors, item.reviewer]} /><div className="hidden text-right sm:block"><p className="text-xs font-medium">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.approval === "requested" ? "Human approval" : humanize(item.execution)}</p></div><ArrowUpRight className="size-4 text-muted-foreground transition group-hover:text-primary" /></div></a>;
 }
 
-function Board({ items }: { items: WorkRow[] }) {
-  const columns = ["submitted", "accepted", "in_progress", "blocked", "in_review", "waiting_for_approval", "completed"];
-  const labels: Record<string, string> = { submitted: "Inbox", accepted: "Accepted", in_progress: "In progress", blocked: "Blocked", in_review: "In review", waiting_for_approval: "Waiting for approval", completed: "Completed" };
-  return <div className="w-full overflow-x-auto pb-4"><div className="grid min-w-[1180px] grid-cols-7 gap-3">{columns.map((status) => { const rows = items.filter((item) => item.status === status || (status === "submitted" && ["draft", "triaged"].includes(item.status))); return <section key={status} className="min-h-[610px] rounded-xl border border-border/80 bg-card/35 p-2.5"><header className="flex items-center justify-between px-1 pb-2.5"><div className="flex items-center gap-2"><span className={`size-1.5 rounded-full ${status === "blocked" ? "bg-destructive" : status === "completed" ? "bg-status-good" : status === "waiting_for_approval" ? "bg-status-warn" : "bg-primary/70"}`} /><h2 className="text-[11px] font-semibold">{labels[status]}</h2></div><span className="text-[10px] text-muted-foreground">{rows.length}</span></header><div className="space-y-2.5">{rows.map((item) => <WorkCard key={item.id} item={item} />)}{rows.length === 0 && <div className="rounded-lg border border-dashed border-border/70 p-4 text-center text-[10px] text-muted-foreground">No work</div>}</div></section>; })}</div></div>;
+function AcceptanceCriteriaCount({ item, prefix = "", className = "" }: { item: WorkRow; prefix?: string; className?: string }) {
+  if (item.acceptanceCriteria.length === 0) return null;
+  const presentation = acceptanceCriteriaPresentation(item.acceptanceCriteria.length, item.status);
+  return <span data-work-acceptance-semantic={presentation.semantic} data-work-item-status={presentation.workItemStatus} data-work-acceptance-tone={presentation.tone} className={`text-[10px] text-muted-foreground ${className}`}>{prefix}{presentation.label}</span>;
+}
+
+function Board({ model, items }: { model: WorkModel; items: WorkRow[] }) {
+  const visibleById = new Map(items.map((item) => [item.id, item]));
+  return <div className="w-full overflow-x-auto pb-4"><div className="grid min-w-max gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, model.board.length)}, minmax(10.5rem, 1fr))` }}>{model.board.map((column) => { const rows = column.workItemIds.map((id) => visibleById.get(id)).filter((item): item is WorkRow => Boolean(item)); const status = column.id; return <section key={status} data-work-board-column={status} className="min-h-[610px] w-[11rem] rounded-xl border border-border/80 bg-card/35 p-2.5 sm:w-[12rem]"><header className="flex items-center justify-between px-1 pb-2.5"><div className="flex items-center gap-2"><span className={`size-1.5 rounded-full ${status === "blocked" ? "bg-destructive" : status === "completed" ? "bg-status-good" : status === "waiting_for_approval" ? "bg-status-warn" : "bg-primary/70"}`} /><h2 className="text-[11px] font-semibold">{humanize(status)}</h2></div><span className="text-[10px] text-muted-foreground">{rows.length}</span></header><div className="space-y-2.5">{rows.map((item) => <WorkCard key={item.id} item={item} />)}{rows.length === 0 && <div className="rounded-lg border border-dashed border-border/70 p-4 text-center text-[10px] text-muted-foreground">No matching work</div>}</div></section>; })}{model.board.length === 0 && <EmptyPanel title="No board columns" body="company_os.work.board is empty; the UI does not invent lifecycle lanes." />}</div></div>;
 }
 
 function WorkCard({ item }: { item: WorkRow }) {
-  return <a href={workItemHref(item.id)} aria-label={`Open WorkItem ${item.title}`} className="block rounded-lg border border-border bg-card p-3 shadow-[0_1px_2px_hsl(var(--foreground)/0.04)] transition hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="flex items-center justify-between gap-2"><span className="rounded-md border border-primary/15 bg-primary/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-primary">{humanize(item.workType)}</span>{item.priority && <span className="text-[9px] text-muted-foreground">{humanize(item.priority)}</span>}</div><h3 className="mt-2.5 text-[13px] font-semibold leading-[1.35]">{item.title}</h3><p className="mt-2 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{item.description || item.objective || item.businessLine}</p><div className="mt-3 border-t border-border/70 pt-3"><p className="text-[9px] uppercase tracking-wide text-muted-foreground">Accountable</p><div className="mt-1.5 flex items-center justify-between gap-2"><ActorStack actors={[item.accountable, ...item.assignees]} /><span className="max-w-20 truncate text-[9px] text-muted-foreground">{item.accountable?.name ?? "Unassigned"}</span></div><div className="mt-2 space-y-1 text-[9px] text-muted-foreground"><p className="truncate">⚑ {item.milestone}</p><p>□ {dateLabel(item.dueAt)}</p>{item.acceptanceCriteria.length > 0 && <p>{item.acceptanceCriteria.length} acceptance criteria</p>}{item.approvalId && <p data-company-os-ref={item.approvalId} className="text-status-warn">Human approval</p>}</div></div></a>;
+  return <a href={workItemHref(item.id)} aria-label={`Open WorkItem ${item.title}`} className="block rounded-lg border border-border bg-card p-3 shadow-[0_1px_2px_hsl(var(--foreground)/0.04)] transition hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="flex items-center justify-between gap-2"><span className="rounded-md border border-primary/15 bg-primary/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-primary">{humanize(item.workType)}</span>{item.priority && <span className="text-[9px] text-muted-foreground">{humanize(item.priority)}</span>}</div><h3 className="mt-2.5 text-[13px] font-semibold leading-[1.35]">{item.title}</h3><p className="mt-2 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{item.description || item.objective || item.businessLine}</p><div className="mt-3 border-t border-border/70 pt-3"><p className="text-[9px] uppercase tracking-wide text-muted-foreground">Accountable</p><div className="mt-1.5 flex items-center justify-between gap-2"><ActorStack actors={[item.accountable, ...item.assignees]} /><span className="max-w-20 truncate text-[9px] text-muted-foreground">{item.accountable?.name ?? "Unassigned"}</span></div><div className="mt-2 space-y-1 text-[9px] text-muted-foreground"><p className="truncate">⚑ {item.milestone}</p><p>□ {dateLabel(item.dueAt)}</p><AcceptanceCriteriaCount item={item} className="block text-[9px]" />{item.approvalId && <p data-company-os-ref={item.approvalId} className="text-status-warn">Human approval</p>}</div></div></a>;
 }
 
 function AllWork({ items }: { items: WorkRow[] }) {
-  return <section className="overflow-hidden rounded-2xl border border-border bg-card/90 shadow-sm"><SectionTitle eyebrow="Canonical ledger" title="All WorkItems" detail={`${items.length} records · sortable projection`} /><div className="overflow-x-auto"><table className="min-w-[1380px] w-full text-left text-xs"><thead className="bg-muted/45 text-[10px] uppercase tracking-wider text-muted-foreground"><tr>{["WorkItem", "Detail", "Type", "Business line", "Milestone", "Status", "Accountable", "Assignees", "Acceptance", "Refs", "Due", "Execution"].map((label) => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead><tbody className="divide-y divide-border">{items.map((item) => <tr key={item.id} className="hover:bg-muted/25" data-company-os-ref={item.id}><td className="max-w-xs px-4 py-4"><a href={workItemHref(item.id)} className="font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{item.title}</a><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.source}</p></td><td className="max-w-sm px-4 py-4 text-muted-foreground"><p className="line-clamp-2">{item.description || item.objective || "No detail supplied"}</p></td><td className="px-4 py-4">{humanize(item.workType)}</td><td className="px-4 py-4">{item.businessLine}</td><td className="px-4 py-4">{item.milestone}</td><td className="px-4 py-4"><Status status={item.status} /></td><td className="px-4 py-4">{item.accountable?.name ?? "Unassigned"}</td><td className="px-4 py-4">{item.assignees.map((actor) => actor.name).join(", ") || "Unassigned"}</td><td className="px-4 py-4">{item.acceptanceCriteria.length || "—"}</td><td className="px-4 py-4">{item.contextRefs.length || item.deliverableRefs.length ? `${item.contextRefs.length} context / ${item.deliverableRefs.length} deliverable` : "—"}</td><td className="px-4 py-4">{dateLabel(item.dueAt)}</td><td className="px-4 py-4">{humanize(item.execution)}</td></tr>)}</tbody></table></div></section>;
+  return <section className="overflow-hidden rounded-2xl border border-border bg-card/90 shadow-sm"><SectionTitle eyebrow="Canonical ledger" title="All WorkItems" detail={`${items.length} records · sortable projection`} /><div className="overflow-x-auto"><table className="min-w-[1380px] w-full text-left text-xs"><thead className="bg-muted/45 text-[10px] uppercase tracking-wider text-muted-foreground"><tr>{["WorkItem", "Detail", "Type", "Business line", "Milestone", "Status", "Accountable", "Assignees", "Acceptance", "Refs", "Due", "Execution"].map((label) => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead><tbody className="divide-y divide-border">{items.map((item) => <tr key={item.id} className="hover:bg-muted/25" data-company-os-ref={item.id}><td className="max-w-xs px-4 py-4"><a href={workItemHref(item.id)} className="font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{item.title}</a><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.source}</p></td><td className="max-w-sm px-4 py-4 text-muted-foreground"><p className="line-clamp-2">{item.description || item.objective || "No detail supplied"}</p></td><td className="px-4 py-4">{humanize(item.workType)}</td><td className="px-4 py-4">{item.businessLine}</td><td className="px-4 py-4">{item.milestone}</td><td className="px-4 py-4"><Status status={item.status} /></td><td className="px-4 py-4">{item.accountable?.name ?? "Unassigned"}</td><td className="px-4 py-4">{item.assignees.map((actor) => actor.name).join(", ") || "Unassigned"}</td><td className="px-4 py-4">{item.acceptanceCriteria.length > 0 ? <AcceptanceCriteriaCount item={item} /> : "—"}</td><td className="px-4 py-4">{item.contextRefs.length || item.deliverableRefs.length ? `${item.contextRefs.length} context / ${item.deliverableRefs.length} deliverable` : "—"}</td><td className="px-4 py-4">{dateLabel(item.dueAt)}</td><td className="px-4 py-4">{humanize(item.execution)}</td></tr>)}</tbody></table></div></section>;
 }
 
 function Milestones({ milestones, items }: { milestones: MilestoneRow[]; items: WorkRow[] }) {
@@ -356,14 +480,13 @@ function Timeline({ items }: { items: WorkRow[] }) {
   return <section className="rounded-2xl border border-border bg-card/90 p-5 shadow-sm"><div className="relative ml-3 border-l border-border pl-7">{dated.map((item) => <article key={item.id} className="relative pb-7 last:pb-0"><span className="absolute -left-[2.1rem] top-1 grid size-4 place-items-center rounded-full border-2 border-card bg-primary"><span className="size-1 rounded-full bg-primary-foreground" /></span><div className="grid gap-3 rounded-xl border border-border bg-background/70 p-4 sm:grid-cols-[8rem_minmax(0,1fr)_auto]"><div><p className="text-xs font-semibold">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.milestone}</p></div><div><h3 className="font-semibold">{item.title}</h3><p className="mt-1 text-xs text-muted-foreground">{item.businessLine} · {humanize(item.workType)}</p></div><div className="flex items-center gap-3"><Status status={item.status} /><ActorStack actors={[item.accountable, ...item.assignees]} /></div></div></article>)}</div></section>;
 }
 
-function Workload({ items }: { items: WorkRow[] }) {
-  const actors = new Map<string, { actor: ActorRow; accountable: number; assigned: number; active: WorkRow[] }>();
-  for (const item of items) {
-    if (item.accountable) { const row = actors.get(item.accountable.id) ?? { actor: item.accountable, accountable: 0, assigned: 0, active: [] }; row.accountable += 1; row.active.push(item); actors.set(item.accountable.id, row); }
-    for (const assignee of item.assignees) { const row = actors.get(assignee.id) ?? { actor: assignee, accountable: 0, assigned: 0, active: [] }; row.assigned += 1; if (!row.active.some((work) => work.id === item.id)) row.active.push(item); actors.set(assignee.id, row); }
-  }
-  const unassigned = items.filter((item) => item.assignees.length === 0);
-  return <div className="grid gap-5 xl:grid-cols-2">{[...actors.values()].map((row) => <section key={row.actor.id} className="rounded-2xl border border-border bg-card/90 p-5 shadow-sm"><header className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><ActorAvatar identity={`${row.actor.id} ${row.actor.role}`} name={row.actor.name} size="lg" /><div><h2 className="font-semibold">{row.actor.name}</h2><p className="mt-1 text-xs text-muted-foreground">{row.actor.role}</p></div></div><div className="text-right"><p className="company-editorial-title text-2xl">{row.active.length}</p><p className="text-[10px] text-muted-foreground">active links</p></div></header><div className="mt-4 grid grid-cols-2 gap-2 text-xs"><div className="rounded-lg bg-muted/50 p-3"><span className="text-muted-foreground">Accountable</span><strong className="float-right">{row.accountable}</strong></div><div className="rounded-lg bg-muted/50 p-3"><span className="text-muted-foreground">Assigned</span><strong className="float-right">{row.assigned}</strong></div></div><div className="mt-4 space-y-2">{row.active.slice(0, 3).map((item) => <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-xs"><span className="truncate font-medium">{item.title}</span><Status status={item.status} /></div>)}</div></section>)}{unassigned.length > 0 && <section className="rounded-2xl border border-dashed border-status-warn/40 bg-status-warn/[0.04] p-5"><div className="flex items-center gap-2 text-status-warn"><AlertTriangle className="size-4" /><h2 className="font-semibold">Unassigned lane</h2></div><p className="mt-2 text-xs text-muted-foreground">{unassigned.length} WorkItems need an explicit executor.</p></section>}</div>;
+function Workload({ model, items }: { model: WorkModel; items: WorkRow[] }) {
+  const visibleById = new Map(items.map((item) => [item.id, item]));
+  return <div className="grid gap-5 xl:grid-cols-2">{model.workload.map((row) => {
+    const actor = row.actor ?? { id: row.actorId, name: row.actorId, kind: "service", role: "Unresolved actor reference" };
+    const linked = row.workItemIds.map((id) => visibleById.get(id)).filter((item): item is WorkRow => Boolean(item));
+    return <section key={row.actorId} data-workload-actor={row.actorId} className="rounded-2xl border border-border bg-card/90 p-5 shadow-sm"><header className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size="lg" /><div><h2 className="font-semibold">{actor.name}</h2><p className="mt-1 text-xs text-muted-foreground">{actor.role}</p></div></div><div className="text-right"><p className="company-editorial-title text-2xl">{row.active}</p><p className="text-[10px] text-muted-foreground">aggregate active</p></div></header><div className="mt-4 grid grid-cols-2 gap-2 text-xs"><div className="rounded-lg bg-muted/50 p-3"><span className="text-muted-foreground">Accountable</span><strong className="float-right">{row.accountable}</strong></div><div className="rounded-lg bg-muted/50 p-3"><span className="text-muted-foreground">Assigned</span><strong className="float-right">{row.assigned}</strong></div></div><div className="mt-4 space-y-2">{linked.slice(0, 3).map((item) => <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-xs"><span className="truncate font-medium">{item.title}</span><Status status={item.status} /></div>)}{linked.length === 0 && <p className="text-xs text-muted-foreground">No linked WorkItems match the current filter.</p>}</div></section>;
+  })}{model.summary.unassigned > 0 && <section className="rounded-2xl border border-dashed border-status-warn/40 bg-status-warn/[0.04] p-5"><div className="flex items-center gap-2 text-status-warn"><AlertTriangle className="size-4" /><h2 className="font-semibold">Unassigned lane</h2></div><p className="mt-2 text-xs text-muted-foreground">{model.summary.unassigned} WorkItems are unassigned in aggregate truth.</p></section>}{model.workload.length === 0 && model.summary.unassigned === 0 && <EmptyPanel title="No workload rows" body="company_os.work.workload is empty; responsibility is not inferred from names or display order." />}</div>;
 }
 
 function Status({ status }: { status: string }) {
@@ -376,5 +499,6 @@ function ActorStack({ actors }: { actors: Array<ActorRow | undefined> }) {
   return <div className="flex -space-x-2">{unique.map((actor) => <span key={actor.id} data-company-os-ref={actor.id} data-actor-type={actor.kind} className="rounded-full"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size="sm" ring={actor.kind === "human" ? "warm" : actor.kind === "agent" ? "good" : "neutral"} /></span>)}</div>;
 }
 
-function EmptyWork() { return <EmptyPanel title="No WorkItems yet" body="Create work from a durable document or typed business record. Work will appear here without creating a Project or task graph." />; }
+function WorkIntegrity({ findings }: { findings: string[] }) { return <div role="alert" data-work-integrity-count={findings.length} className="mb-5 rounded-xl border border-status-warn/35 bg-status-warn/[0.05] p-4"><div className="flex items-center gap-2 text-sm font-semibold text-status-warn"><AlertTriangle className="size-4" />Work projection integrity ({findings.length})</div><ul className="mt-3 space-y-1 text-xs leading-5 text-muted-foreground">{findings.map((finding) => <li key={finding}>{finding}</li>)}</ul></div>; }
+function EmptyWork({ provenance }: { provenance: WorkModel["provenance"] }) { return <EmptyPanel title="No WorkItems in aggregate truth" body={provenance === "company_os.work" ? "company_os.work is empty. Raw WorkItem rows are not used as a first-row or list fallback." : "The prototype projection contains no WorkItems; no company commitment is invented."} />; }
 function EmptyPanel({ title, body }: { title: string; body: string }) { return <div className="grid min-h-80 place-items-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center"><div><Bot className="mx-auto size-8 text-primary" /><h2 className="company-editorial-title mt-4 text-2xl">{title}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">{body}</p></div></div>; }

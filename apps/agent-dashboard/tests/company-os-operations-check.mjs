@@ -17,10 +17,11 @@ function check(condition, message) {
 }
 
 async function main() {
-  const [pages, fixture, workOperatingPage, router, docsUrl] = await Promise.all([
+  const [pages, fixture, workOperatingPage, workProjectionSource, router, docsUrl] = await Promise.all([
     readFile(resolve(operations, "pages.tsx"), "utf8"),
     readFile(fixturePath, "utf8").then(JSON.parse),
     readFile(resolve(root, "src/company-os/work/WorkOperatingPage.tsx"), "utf8"),
+    readFile(resolve(root, "src/company-os/work/projection.ts"), "utf8"),
     readFile(resolve(root, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
     readFile(resolve(root, "src/company-os/docs/url.ts"), "utf8"),
   ]);
@@ -36,6 +37,7 @@ async function main() {
   const adapterTarget = resolve(adapterDirectory, "fixture.mjs");
   const approvalActionTarget = resolve(adapterDirectory, "approvalAction.mjs");
   const workItemActionTarget = resolve(adapterDirectory, "workItemAction.mjs");
+  const workProjectionTarget = resolve(adapterDirectory, "workProjection.mjs");
   await writeFile(adapterTarget, ts.transpileModule(fixtureAdapter, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
@@ -45,15 +47,32 @@ async function main() {
   await writeFile(workItemActionTarget, ts.transpileModule(workItemAction, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText, "utf8");
+  await writeFile(workProjectionTarget, ts.transpileModule(workProjectionSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+  }).outputText, "utf8");
   const adapterModule = await import(pathToFileURL(adapterTarget).href);
   const approvalActionModule = await import(pathToFileURL(approvalActionTarget).href);
   const workItemActionModule = await import(pathToFileURL(workItemActionTarget).href);
+  const workProjectionModule = await import(pathToFileURL(workProjectionTarget).href);
   const required = ["OrganizationPage", "HumanMemberFocus", "StandingAgentFocus", "WorkboardPage", "WorkItemFocus", "ApprovalFocus", "FinancePage", "GovernanceProposalFocus", "BusinessModuleFocus"];
   check(required.every((name) => pages.includes(`function ${name}`)), "exports all nine Company OS operations pages");
   check(router.includes('<WorkOperatingPage source={resolved.value} />') && workOperatingPage.includes('data-work-operating-system="v1"'), "routes Work to the native multi-view operating workspace");
   check(["overview", "board", "all", "milestones", "timeline", "workload"].every((view) => workOperatingPage.includes(`id: "${view}"`)), "Work workspace exposes six projections over one WorkItem ledger");
-  check(workOperatingPage.includes('useState<WorkView>("overview")') && workOperatingPage.includes('"submitted", "accepted", "in_progress", "blocked", "in_review", "waiting_for_approval", "completed"'), "Work opens on the operating overview while preserving the seven-lane board lifecycle order");
-  check(workOperatingPage.includes("root.work") && workOperatingPage.includes("projection.work_items") && workOperatingPage.includes("projection.milestones"), "Work workspace consumes native Work and Milestone projections before raw fallback records");
+  check(workOperatingPage.includes('useState<WorkView>("overview")') && workOperatingPage.includes("model.board.map") && !workOperatingPage.includes('const columns = ["submitted"'), "Work opens on overview and renders only Store aggregate board columns");
+  check(workOperatingPage.includes('Object.prototype.hasOwnProperty.call(root, "work")') && workOperatingPage.includes("hasAggregate ? objects(projection.work_items)") && workOperatingPage.includes("hasAggregate ? objects(projection.milestones)"), "Work treats an explicit company_os.work aggregate as authoritative even when its lists are empty");
+  check(['dimension("board")', "projectBusinessLineDimensions", 'dimension("work_types")', "objects(projection.workload)", "summaryValue"].every((contract) => workOperatingPage.includes(contract)), "Work consumes aggregate board, business-line, type, workload, and summary truth");
+  const neutralAcceptanceStatuses = ["submitted", "in_progress", "in_review"];
+  check(neutralAcceptanceStatuses.every((status) => {
+    const presentation = workProjectionModule.acceptanceCriteriaPresentation(3, status);
+    return presentation.label === "3 acceptance criteria"
+      && presentation.semantic === "criteria_count"
+      && presentation.tone === "neutral"
+      && presentation.workItemStatus === status;
+  })
+    && workOperatingPage.includes("data-work-acceptance-semantic")
+    && workOperatingPage.includes("text-muted-foreground")
+    && !workOperatingPage.slice(workOperatingPage.indexOf("function AcceptanceCriteriaCount"), workOperatingPage.indexOf("function Board")).includes("text-status-good"),
+  "submitted, in-progress, and in-review WorkItems render acceptance criteria as a neutral count rather than success evidence");
   check(workOperatingPage.includes('"No milestone"') && workOperatingPage.includes('"Unclassified"') && workOperatingPage.includes("Unassigned lane"), "Work views preserve missing Milestone, business-line, and assignment truth");
   check(workOperatingPage.includes("workItemHref(item.id)") && workOperatingPage.includes('aria-label={`Open WorkItem ${item.title}`}'), "Work overview and board cards deep-link to selected WorkItem truth");
   check(workOperatingPage.includes("No governed WorkItem creation transport is connected") && workOperatingPage.includes("opacity-60"), "unavailable Work creation looks and reads as disabled");
@@ -72,7 +91,8 @@ async function main() {
   check(components.includes("data-financial-record-type") && components.includes("data-financial-status") && components.includes("data-company-os-ref={record.id}"), "visible financial cards expose canonical type, state and record references");
   check(components.includes("recordRef?: string") && components.includes("data-company-os-ref={recordRef}"), "visible linked records retain canonical source references");
   check(pages.includes("data-work-item-status") && pages.includes("data-company-os-ref={workItem.id}"), "workboard and WorkItem focus expose the actual WorkItem record");
-  check(pages.includes("view.organization.company.id") && pages.includes("view.organization.brandUnit.id"), "organization chart exposes real Company and Brand & IP units from the projection");
+  check(pages.includes("view.organization.rootUnitIds.map") && pages.includes("candidate.parentId === unit.id") && pages.includes("view.organization.memberships.filter"), "Organization renders the exact rooted OrgUnit forest and every unit membership");
+  check(!pages.includes("Cross-unit Standing Agent capability roster") && !pages.includes("Primary operating unit"), "Organization never substitutes a flattened cross-unit roster for the hierarchy");
   check(pages.includes("view.evidence.map") && fixtureAdapter.includes("evidence_refs"), "approval and WorkItem surfaces expose both linked evidence records from the projection");
   check(pages.includes("view.businessModule.id") && pages.includes("view.governanceProposal.id"), "module and governance surfaces expose their actual linked records");
   check(pages.includes("view.julySpendMetric.id"), "finance overview exposes the shared July spend metric record");
@@ -130,36 +150,176 @@ async function main() {
   const emptyAuthoritativeProjection = adapterModule.adaptTrademarkOperationsProjection({});
   const emptyTruth = JSON.stringify(emptyAuthoritativeProjection);
   check(!emptyTruth.includes("CN-2026-018") && !emptyTruth.includes("¥3,000") && !emptyTruth.includes("Brand Owner"), "an explicit empty authoritative projection never falls back to prototype trademark facts");
+  const aggregateProjection = structuredClone(fixture);
+  const aggregateWorkItem = {
+    ...structuredClone(fixture.work_items[0]),
+    id: "work-aggregate-selected",
+    title: "Aggregate selected detail",
+    status: "in_review",
+    work_type: "audit",
+    business_module_ref: "module-trademark-management",
+    milestone_ref: "milestone-aggregate",
+  };
+  aggregateProjection.work = {
+    query: {},
+    summary: {
+      total: 1,
+      active: 7,
+      completed: 3,
+      blocked: 2,
+      waiting_for_approval: 4,
+      unassigned: 5,
+      without_milestone: 6,
+      without_business_line: 8,
+    },
+    work_items: [aggregateWorkItem],
+    milestones: [{
+      milestone: {
+        id: "milestone-aggregate",
+        title: "Aggregate milestone",
+        status: "active",
+      },
+      total_work_items: 9,
+      completed_work_items: 2,
+      blocked_work_items: 1,
+      waiting_for_approval_work_items: 3,
+      progress_percent: 22,
+    }],
+    board: { review_queue: ["work-aggregate-selected"] },
+    business_lines: { "module-trademark-management": ["work-aggregate-selected"] },
+    work_types: { audit: ["work-aggregate-selected"] },
+    workload: [{
+      actor: { actor_type: "agent", actor_id: "actor-agent-document-architecture" },
+      accountable_count: 11,
+      assigned_count: 12,
+      active_count: 13,
+      work_item_refs: ["work-aggregate-selected"],
+    }],
+  };
+  const aggregateAdapted = adapterModule.adaptTrademarkOperationsProjection(aggregateProjection, { workItemId: "work-aggregate-selected" });
+  check(
+    aggregateAdapted.work.provenance === "company_os.work"
+      && aggregateAdapted.work.summary.active === 7
+      && aggregateAdapted.work.board.review_queue.join(",") === "work-aggregate-selected"
+      && aggregateAdapted.work.workTypes.audit.join(",") === "work-aggregate-selected"
+      && aggregateAdapted.work.workload[0].activeCount === 13
+      && aggregateAdapted.work.milestones[0].progressPercent === 22,
+    "shared adapter preserves every company_os.work aggregate dimension without recomputing supplied counts",
+  );
+  check(aggregateAdapted.workItem.id === "work-aggregate-selected"
+    && aggregateAdapted.work.selection.status === "resolved",
+  "selected WorkItem detail resolves only by its explicit id inside company_os.work");
+  const mismatchedBusinessLines = workProjectionModule.projectBusinessLineDimensions(
+    { "module-a": ["work-b"] },
+    [{ id: "work-b", businessLineId: "module-b" }],
+    new Map([["module-a", "Module A"], ["module-b", "Module B"]]),
+  );
+  check(mismatchedBusinessLines.dimensions[0]?.id === "module-a"
+    && mismatchedBusinessLines.dimensions[0]?.label === "Module A"
+    && mismatchedBusinessLines.dimensions[0]?.workItemIds.join(",") === "work-b"
+    && mismatchedBusinessLines.integrityFindings.length === 1
+    && mismatchedBusinessLines.integrityFindings[0].includes("business_module_ref is module-b")
+    && !workOperatingPage.includes("linked[0]?.businessLine"),
+  "business-line dimensions retain their exact aggregate/module identity and flag module-a=[work-b/module-b] mismatches");
+  const missingSelected = adapterModule.adaptTrademarkOperationsProjection(aggregateProjection, { workItemId: "work-not-present" });
+  check(missingSelected.work.selection.status === "not_found"
+    && missingSelected.workItem.id === "work-not-present"
+    && missingSelected.workItem.title === "WorkItem not found",
+  "missing selected WorkItem fails closed without falling back to the first aggregate row");
+  const emptyAggregateProjection = structuredClone(fixture);
+  emptyAggregateProjection.work = {
+    query: {},
+    summary: { total: 0, active: 0, completed: 0, blocked: 0, waiting_for_approval: 0, unassigned: 0, without_milestone: 0, without_business_line: 0 },
+    work_items: [],
+    milestones: [],
+    board: {},
+    business_lines: {},
+    work_types: {},
+    workload: [],
+  };
+  const emptyAggregate = adapterModule.adaptTrademarkOperationsProjection(emptyAggregateProjection, { workItemId: fixture.work_items[0].id });
+  check(emptyAggregate.workItems.length === 0
+    && emptyAggregate.work.selection.status === "empty"
+    && emptyAggregate.work.summary.total === 0,
+  "an explicit empty company_os.work aggregate never falls back to populated raw work_items");
+  check(!pages.includes('value="1" detail="From current projection"')
+    && pages.includes("view.work.summary.active")
+    && pages.includes('view.work.selection.status !== "resolved"'),
+  "operations surfaces remove the hardcoded open count and first-row detail fallback");
   const canonicalProjection = adapterModule.adaptTrademarkOperationsProjection(fixture);
   const agentosOrganizationProjection = structuredClone(fixture);
   agentosOrganizationProjection.organization.org_units = [
     {
       id: "orgunit-agentos-root",
       name: "AgentOS",
-      parent_id: null,
+      parent_unit_id: null,
       human_lead_actor_ref: { actor_type: "human", actor_id: "actor-human-brand-owner" },
     },
     {
       id: "orgunit-agentos-governance",
-      name: "AgentOS Governance",
-      parent_id: "orgunit-agentos-root",
+      name: "Any label",
+      parent_unit_id: "orgunit-agentos-root",
       agent_lead_actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" },
+    },
+    {
+      id: "orgunit-agentos-child",
+      name: "Nested child",
+      parent_unit_id: "orgunit-agentos-governance",
+    },
+    {
+      id: "orgunit-independent-root",
+      name: "Independent root",
+      parent_unit_id: null,
     },
   ];
   agentosOrganizationProjection.organization.memberships = [
-    { actor_id: "actor-human-brand-owner", org_unit_id: "orgunit-agentos-root", membership_role: "owner" },
-    { actor_id: "actor-agent-document-architecture", org_unit_id: "orgunit-agentos-governance", membership_role: "lead" },
-    { actor_id: "actor-agent-organization-governance", org_unit_id: "orgunit-agentos-governance", membership_role: "member" },
-    { actor_id: "actor-agent-content-strategy", org_unit_id: "orgunit-agentos-governance", membership_role: "member" },
+    { id: "membership-owner", actor_ref: { actor_type: "human", actor_id: "actor-human-brand-owner" }, org_unit_id: "orgunit-agentos-root", membership_role: "lead" },
+    { id: "membership-docs-lead", actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" }, org_unit_id: "orgunit-agentos-governance", membership_role: "lead" },
+    { id: "membership-docs-child", actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" }, org_unit_id: "orgunit-agentos-child", membership_role: "advisor" },
+    { id: "membership-org", actor_ref: { actor_type: "agent", actor_id: "actor-agent-organization-governance" }, org_unit_id: "orgunit-agentos-governance", membership_role: "member" },
+    { id: "membership-strategy", actor_ref: { actor_type: "agent", actor_id: "actor-agent-content-strategy" }, org_unit_id: "orgunit-agentos-child", membership_role: "member" },
   ];
   const agentosOrganization = adapterModule.adaptTrademarkOperationsProjection(agentosOrganizationProjection);
   check(
-    agentosOrganization.organization.company.id === "orgunit-agentos-root"
-      && agentosOrganization.organization.brandUnit.id === "orgunit-agentos-governance"
+    agentosOrganization.organization.rootUnitIds.join(",") === "orgunit-agentos-root,orgunit-independent-root"
+      && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-child")?.parentId === "orgunit-agentos-governance"
       && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-governance")?.agentLeadActorId === "actor-agent-document-architecture",
-    "organization projection discovers the explicit AgentOS root and lead unit without trademark ids or an exact Governance label",
+    "organization projection preserves every explicit root, parent_unit_id edge, and Agent lead without label or first-row selection",
   );
-  check(!fixtureAdapter.includes('pick(units, "org-company")') && !pages.includes('.label.toLowerCase() === "governance"'), "Organization has no hard-coded fixture root, primary unit, or governance label selector");
+  check(agentosOrganization.organization.memberships.filter((membership) => membership.actorId === "actor-agent-document-architecture").length === 2
+    && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-governance")?.actorIds.includes("actor-agent-document-architecture")
+    && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-child")?.actorIds.includes("actor-agent-document-architecture"),
+  "organization projection preserves all memberships when one actor belongs to multiple units");
+  check(!fixtureAdapter.includes("membershipAgentLead")
+    && !fixtureAdapter.includes("legacyRoleAgentLead")
+    && !fixtureAdapter.includes("primaryOperatingUnit")
+    && !pages.includes('/lead/i.test')
+    && !pages.includes("actorList[0]"),
+  "Organization contains no membership-role, label, name, order, or first-actor lead/root heuristic");
+  const brokenOrganizationProjection = structuredClone(fixture);
+  brokenOrganizationProjection.organization.org_units = [
+    { id: "root", name: "Root", parent_unit_id: null, human_lead_actor_ref: { actor_type: "human", actor_id: "actor-agent-finance" } },
+    { id: "orphan", name: "Orphan", parent_unit_id: "missing-parent" },
+    { id: "cycle-a", name: "Cycle A", parent_unit_id: "cycle-b" },
+    { id: "cycle-b", name: "Cycle B", parent_unit_id: "cycle-a" },
+  ];
+  brokenOrganizationProjection.organization.memberships = [
+    { id: "duplicate-a", actor_ref: { actor_type: "agent", actor_id: "actor-agent-finance" }, org_unit_id: "root", membership_role: "member" },
+    { id: "duplicate-b", actor_ref: { actor_type: "agent", actor_id: "actor-agent-finance" }, org_unit_id: "root", membership_role: "advisor" },
+    { id: "missing-unit", actor_ref: { actor_type: "agent", actor_id: "actor-agent-trademark" }, org_unit_id: "absent-unit", membership_role: "member" },
+    { id: "missing-actor", actor_ref: { actor_type: "agent", actor_id: "actor-missing" }, org_unit_id: "root", membership_role: "member" },
+  ];
+  const brokenOrganization = adapterModule.adaptTrademarkOperationsProjection(brokenOrganizationProjection);
+  const findingKinds = new Set(brokenOrganization.organization.integrityFindings.map((finding) => finding.kind));
+  check(["orphan_parent", "parent_cycle", "unknown_membership_unit", "unknown_membership_actor", "duplicate_membership", "invalid_human_lead"].every((kind) => findingKinds.has(kind))
+    && brokenOrganization.organization.unplacedUnitIds.includes("orphan")
+    && brokenOrganization.organization.unplacedUnitIds.includes("cycle-a"),
+  "organization adapter deterministically surfaces orphan, cycle, membership, duplicate, and explicit-lead integrity failures");
+  check(pages.includes("data-organization-integrity-count")
+    && pages.includes("data-org-parent-unit-id")
+    && pages.includes("AgentMember / runtime binding")
+    && pages.includes("assignment.agentMemberId === actor.executionAgentMemberRef"),
+  "Organization renders integrity evidence and exact StandingAgent → AgentMember → MemberRun/runtime bindings");
   const nonFinancialProjection = structuredClone(fixture);
   nonFinancialProjection.work_items.push({
     id: "work-agentos-loop",
@@ -276,12 +436,23 @@ async function main() {
     "both the Organization overview and the Standing Agent focus surface the withheld-participation conflict banner");
   const brandUnit = canonicalProjection.organization.units.find((unit) => unit.id === "org-brand-ip");
   check(brandUnit?.actorIds.length === 4 && canonicalProjection.governanceProposal.proposedById === "actor-agent-document-architecture", "adapter retains the actual Brand & IP membership branch and governance proposal author");
-  check(brandUnit?.agentLeadActorId === "actor-agent-ip-lead" && pages.includes("leadUnit.actorIds") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "Lead direct reports come from the governed organization unit instead of actor ordering");
+  check(brandUnit?.agentLeadActorId === undefined && pages.includes("unit.agentLeadActorId === actor.id") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "membership role and actor naming cannot invent an Agent lead when OrgUnit.agent_lead_actor_ref is absent");
   check(canonicalProjection.actors["actor-agent-document-architecture"]?.availability === "available" && !canonicalProjection.actors["actor-agent-finance"]?.availability, "availability remains explicit rather than inferred from runtime or membership");
-  check(pages.includes("OrganizationNode") && pages.includes("OrganizationMember") && pages.includes("membersForUnit"), "organization surface is a connected tree with projection-backed member branches");
+  check(pages.includes("OrganizationUnitBranch") && pages.includes("ExplicitUnitLeads") && pages.includes("All memberships"), "organization surface is a recursive forest with explicit leads and complete membership branches");
+  check(pages.includes("data-organization-membership-grid")
+    && pages.includes("repeat(auto-fit,minmax(min(100%,18rem),1fr))")
+    && pages.includes("data-org-depth={depth}")
+    && pages.includes("depth={depth + 1}")
+    && pages.includes('depth === 1')
+    && pages.includes('"border-l-0 pl-0"'),
+  "nested Organization branches use container-aware membership grids and cap recursive indentation without flattening");
+  check(pages.includes("membership.id}</code>")
+    && pages.includes("assignment.memberRunId}</code>")
+    && pages.includes("break-all font-mono")
+    && !pages.slice(pages.indexOf("function OrgActorCard"), pages.indexOf("function OrgActorCardBody")).includes("truncate"),
+  "Organization membership, AgentMember, and MemberRun canonical ids wrap instead of truncating");
   check(pages.includes("Propose agent") && pages.includes("Create org unit") && pages.includes("disabled"), "organization actions are visibly disabled until a governed action path exists");
-  check(pages.includes("actor.id === view.workItem.assignees[0]?.id") && pages.includes("linkedDocument"), "proposed agent branch visibly links its actual work source document");
-  check(!pages.includes("remainingUnits") && pages.includes("Other explicit organization units"), "unrelated units are secondary explicit projection data, not a generic primary card grid");
+  check(pages.includes("unplacedUnitIds") && pages.includes("Actors without OrganizationMembership"), "unplaced units and unassigned actors remain visible as integrity state rather than entering the primary forest");
   check(pages.includes("<PageFrame dense") && components.includes('dense ? "py-5" : "py-8"') && components.includes('dense ? "mb-4 pb-4" : "mb-7 pb-6"'), "Organization opts into compact vertical rhythm without changing the default page frame");
   check(pages.includes("<LinkedRecord wrapLabel") && components.includes("wrapLabel ? \"whitespace-normal leading-5\" : \"truncate\""), "governance proposal title is allowed to wrap instead of truncating in the context rail");
   check(pages.includes("BoardFact label=\"Requested by\"") && pages.includes("BoardFact label=\"Submitted by\"") && pages.includes("actor={workItem.submittedBy}"), "workboard keeps requester and submitter visible as distinct full actor facts");
@@ -298,7 +469,7 @@ async function main() {
     && pages.includes("Boolean(assignment.correlationId)")
     && pages.includes("assignment.correlationId!"),
   "assignment-less Agent Team participation stays out of current work and current cards require a real correlation");
-  check(pages.includes("onOpen={onSelectionChange") && router.includes("onSelectionChange={onSelectionChange}"), "Organization actor cards route through the shared selection state");
+  check(pages.includes("selectionForActor") && pages.includes("onOpen={selectionForActor") && router.includes("onSelectionChange={onSelectionChange}"), "Organization actor cards route through the shared selection state");
   check(pages.includes("authoredProposal") && pages.includes("proposal-${authoredProposal.id}") && pages.includes('title="Maintained Docs"'), "Standing Agent distinguishes authored proposal activity from related durable Docs");
   check(pages.includes('title="Prompt, tools & skills"') && pages.includes('title="Permissions"') && pages.includes('title="Work routing"'), "Standing Agent composes native configuration and authority modules in the context rail");
   check(pages.includes("view.workItems ?? [view.workItem]") && pages.includes("view.assignments ?? []"), "Standing Agent workspace consumes all projected WorkItems and native Assignments");
@@ -309,7 +480,7 @@ async function main() {
   check(pages.includes('Panel title="Impact surfaces"') && pages.includes('Panel title="Governed actions"') && pages.includes("Approve proposal") && pages.includes("Request changes"), "governance proposal shows impacts, proposed structure, and honestly disabled governed actions");
   check(pages.includes('decide("approved")') && pages.includes('GovernedActionButton label="Request changes"') && pages.includes('decide("rejected")'), "approval focus has explicit governed approve/reject controls and an honest request-changes boundary");
   check(pages.includes("action={decisionControls}") && pages.includes('aria-label="Approval decision controls"'), "approval decision controls stay in the first-viewport page header");
-  check(pages.includes("data-actor-kind={kind}") && pages.includes("data-actor-type={kind}") && pages.includes("BoardFact label=\"Finance reviewer\""), "workboard actor facts preserve canonical actor references and kinds for capture evidence");
+  check(pages.includes("data-actor-kind={kind}") && pages.includes("data-actor-type={kind}") && pages.includes("BoardFact label=\"Reviewer\""), "workboard actor facts preserve canonical actor references and kinds for capture evidence");
   check(pages.includes("data-financial-record-type={record.type}") && pages.includes("data-financial-status={record.status}") && pages.includes("FinanceRecordTable"), "finance audit table preserves commitment reference, type, and state evidence");
   check(pages.includes('ImpactSurface label="Financial commitment" financialRecord={view.commitment}') && pages.includes("<FinancialRecordCard record={financialRecord} />"), "governance financial impact preserves the linked commitment semantic marker");
   check(fixtureAdapter.includes("approvalPresentation") && fixtureAdapter.includes("financialBusinessLabel") && !fixtureAdapter.includes("title: text(approvalRecord.title"), "approval and finance presentation remove internal command names from primary business copy");
