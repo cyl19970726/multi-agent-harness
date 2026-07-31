@@ -119,6 +119,25 @@ fn init_project(home: &TempHome, name: &str) -> String {
     current_project_id(home)
 }
 
+fn install_codex_rebound_steer_shim(home: &TempHome) -> std::path::PathBuf {
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-rebound-steer"));
+    let shim = fake_bin.join("codex");
+    let script = std::fs::read_to_string(&shim).expect("read fake Codex shim");
+    let steer_response = r###"      *'"method":"turn/steer"'*)
+        printf '{"id":%s,"result":{"turnId":"%s"}}\n' "$id" "$turn_id""###;
+    let rebound_response = r###"      *'"method":"turn/steer"'*)
+        turn_id="turn_fake_codex_steer_accepted"
+        printf '{"id":%s,"result":{"turnId":"%s"}}\n' "$id" "$turn_id""###;
+    let rebound = script.replacen(steer_response, rebound_response, 1);
+    assert_ne!(
+        rebound, script,
+        "fake Codex shim no longer contains the expected Steer response"
+    );
+    std::fs::write(&shim, rebound).expect("write rebound Steer shim");
+    fake_bin
+}
+
 /// Seed the native Mission/Wave ledgers directly so the public team-run
 /// surfaces can prove their optional joins without depending on a separate
 /// Mission authoring command in this integration suite.
@@ -2627,6 +2646,98 @@ fn codex_app_server_member_can_be_steered_in_place() {
 }
 
 #[test]
+fn codex_app_server_steer_adopts_provider_returned_active_turn_without_started_event() {
+    let home = TempHome::new("team-run-codex-rebound-steer");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = install_codex_rebound_steer_shim(&home);
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Adopt the provider-returned active Codex turn",
+            "members": [{
+                "name": "codex-rebound-steer",
+                "role": "implementer",
+                "provider": "codex",
+                "execution_mode": "codex_app_server"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut live = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        live = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(live, "app-server member never became live");
+
+    let control_client = ServeHandle::spawn(&home, home.base(), &[]);
+    let (status, steered) = control_client.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
+        &serde_json::json!({
+            "content": "finish on the provider-selected active turn",
+            "requested_by": "operator"
+        }),
+    );
+    assert_eq!(status, 200, "body: {steered}");
+    assert_eq!(
+        steered["result"]["control"]["turn_id"].as_str(),
+        Some("turn_fake_codex_steer_accepted")
+    );
+
+    let mut idle = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        idle = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+            });
+        if idle {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        idle,
+        "terminal frame for the provider-returned Steer turn was rejected as foreign"
+    );
+}
+
+#[test]
 fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
     let home = TempHome::new("team-run-codex-post-handoff-steer");
     let project_id = init_project(&home, "alpha");
@@ -3718,6 +3829,17 @@ fn crashed_kimi_transport_resumes_same_session_without_replaying_assignment() {
     let mut recovered = false;
     for _ in 0..400 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let supervisor_identity = snapshot["team_supervisor_leases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|lease| lease["team_run_id"].as_str() == Some(run_id.as_str()))
+            .and_then(|lease| {
+                Some((
+                    lease["supervisor_id"].as_str()?.to_string(),
+                    lease["generation"].as_u64()?,
+                ))
+            });
         let member_idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
@@ -3747,23 +3869,38 @@ fn crashed_kimi_transport_resumes_same_session_without_replaying_assignment() {
                     && message["kind"].as_str() == Some("handoff")
                     && message["causation_id"].as_str() == Some(assignment_id.as_str())
             });
-        let disconnected = snapshot["member_actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|action| {
-                action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("disconnected")
-            });
-        let runtime_recovery = snapshot["member_actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|action| {
-                action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("runtime_recovery")
-            });
-        recovered = member_idle && assignment_once && handoff && disconnected && runtime_recovery;
+        let disconnect_and_recovery_projection =
+            supervisor_identity
+                .as_ref()
+                .is_some_and(|(supervisor_id, generation)| {
+                    let exact_supervisor =
+                        format!("supervisor {supervisor_id} generation {generation}");
+                    let disconnected = snapshot["member_actions"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|action| {
+                            action["member_run_id"].as_str() == Some(member_id.as_str())
+                                && action["action_type"].as_str() == Some("disconnected")
+                                && action["summary"].as_str().is_some_and(|summary| {
+                                    summary.contains(&exact_supervisor)
+                                        && summary.contains("adapter restart attempt 1")
+                                })
+                        });
+                    let runtime_recovery = snapshot["member_actions"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|action| {
+                            action["member_run_id"].as_str() == Some(member_id.as_str())
+                                && action["action_type"].as_str() == Some("runtime_recovery")
+                                && action["summary"]
+                                    .as_str()
+                                    .is_some_and(|summary| summary.contains(&exact_supervisor))
+                        });
+                    disconnected && runtime_recovery
+                });
+        recovered = member_idle && assignment_once && handoff && disconnect_and_recovery_projection;
         if recovered {
             break;
         }

@@ -14413,7 +14413,7 @@ fn run_member_orchestration(
     member: MemberRun,
     context: MemberRuntimeContext,
 ) -> MemberOutcome {
-    let mut generation = 0u64;
+    let mut adapter_restart_attempt = 0u64;
     loop {
         let mut current = ledger
             .latest_member_run(&member.id)
@@ -14446,7 +14446,7 @@ fn run_member_orchestration(
                 "member runtime closed".to_string(),
             );
         }
-        generation += 1;
+        adapter_restart_attempt += 1;
         let execution_mode = current
             .provider_profile
             .as_ref()
@@ -14495,7 +14495,7 @@ fn run_member_orchestration(
                     journal_member_failure(ledger, &latest, &reason);
                     return MemberOutcome::new(&latest, MemberRunStatus::Failed, reason);
                 }
-                journal_member_disconnected(ledger, &latest, generation, &reason);
+                journal_member_disconnected(ledger, &latest, adapter_restart_attempt, &reason);
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
@@ -15014,23 +15014,32 @@ fn run_codex_app_server_turn(
                         ledger
                             .require_supervisor_lease()
                             .and_then(|()| client.steer(&turn_id, &content))
-                            .and_then(|active_turn| {
-                            turn_id = active_turn;
-                            ledger.append_action(
-                                &member.id,
-                                "steered",
-                                MemberActionStatus::Succeeded,
-                                "active Codex turn steered",
-                                &format!("{requested_by} injected {} characters", content.len()),
-                            )?;
-                            Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "turn_id": turn_id,
-                                "delivery": "steered",
-                                "correlation_id": handoff_lineage.as_ref().map(|lineage| &lineage.0),
-                                "causation_id": handoff_lineage.as_ref().map(|lineage| &lineage.1),
-                            }))
-                        })
+                            .and_then(|steered_turn_id| {
+                                // turn/steer may return the provider's current
+                                // active id without a later turn/started frame.
+                                // Adopt that acknowledgement for both controls
+                                // and frame fencing or its valid terminal frame
+                                // would be discarded as foreign.
+                                active_turn_id.clone_from(&steered_turn_id);
+                                turn_id = steered_turn_id;
+                                ledger.append_action(
+                                    &member.id,
+                                    "steered",
+                                    MemberActionStatus::Succeeded,
+                                    "active Codex turn steered",
+                                    &format!(
+                                        "{requested_by} injected {} characters",
+                                        content.len()
+                                    ),
+                                )?;
+                                Ok(serde_json::json!({
+                                    "member_run_id": member.id,
+                                    "turn_id": turn_id,
+                                    "delivery": "steered",
+                                    "correlation_id": handoff_lineage.as_ref().map(|lineage| &lineage.0),
+                                    "causation_id": handoff_lineage.as_ref().map(|lineage| &lineage.1),
+                                }))
+                            })
                     });
                     let _ = reply.send(result);
                 }
@@ -16671,8 +16680,11 @@ fn run_kimi_member(
             MemberActionStatus::Progress,
             "resuming provider-accepted work after transport loss",
             &format!(
-                "same MemberRun and native session; correlation {}, trigger {}",
-                trigger.correlation_id, trigger.id
+                "same MemberRun and native session under supervisor {} generation {}; correlation {}, trigger {}",
+                ledger.supervisor_id,
+                ledger.supervisor_generation,
+                trigger.correlation_id,
+                trigger.id
             ),
         )?;
         ledger.fold_event(
@@ -16682,8 +16694,8 @@ fn run_kimi_member(
             &action.id,
             "created",
             &format!(
-                "{} resumed provider-accepted work after runtime generation loss",
-                member.name
+                "{} resumed provider-accepted work under supervisor {} generation {} after adapter restart",
+                member.name, ledger.supervisor_id, ledger.supervisor_generation
             ),
         )?;
     } else {
@@ -16960,7 +16972,7 @@ fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &s
 fn journal_member_disconnected(
     ledger: &TeamRunLedger,
     member: &MemberRun,
-    generation: u64,
+    adapter_restart_attempt: u64,
     reason: &str,
 ) {
     let mut disconnected = ledger
@@ -16980,7 +16992,10 @@ fn journal_member_disconnected(
         "disconnected",
         MemberActionStatus::Progress,
         "provider transport disconnected; supervisor will resume",
-        &format!("runtime generation {generation}: {reason}"),
+        &format!(
+            "supervisor {} generation {}, adapter restart attempt {adapter_restart_attempt}: {reason}",
+            ledger.supervisor_id, ledger.supervisor_generation
+        ),
     );
     let _ = ledger.fold_event(
         TeamRunEventSourceKind::Member,
@@ -16989,8 +17004,8 @@ fn journal_member_disconnected(
         &member.id,
         "updated",
         &format!(
-            "member {} disconnected in runtime generation {generation}; native session retained",
-            member.name
+            "member {} disconnected under supervisor {} generation {} at adapter restart attempt {adapter_restart_attempt}; native session retained",
+            member.name, ledger.supervisor_id, ledger.supervisor_generation
         ),
     );
 }

@@ -363,11 +363,7 @@ impl CodexAppServerClient {
             }),
             HANDSHAKE_TIMEOUT,
         )?;
-        Ok(response
-            .pointer("/result/turnId")
-            .and_then(|value| value.as_str())
-            .unwrap_or(turn_id)
-            .to_string())
+        steer_turn_id(&response, turn_id)
     }
 
     pub(crate) fn interrupt(&mut self, turn_id: &str) -> CliResult<()> {
@@ -461,6 +457,23 @@ impl CodexAppServerClient {
             )
         }
     }
+}
+
+fn steer_turn_id(response: &serde_json::Value, expected_turn_id: &str) -> CliResult<String> {
+    let Some(turn_id) = response
+        .pointer("/result/turnId")
+        .and_then(|value| value.as_str())
+    else {
+        // Older compatible app-server builds acknowledge Steer without echoing
+        // the active id. Preserve the caller's exact expected-turn fallback.
+        return Ok(expected_turn_id.to_string());
+    };
+    if turn_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "codex turn/steer returned an empty active turn id".to_string(),
+        ));
+    }
+    Ok(turn_id.to_string())
 }
 
 impl Drop for CodexAppServerClient {
@@ -579,5 +592,26 @@ mod tests {
         assert!(
             require_requested_setting("service tier", Some("priority"), Some("default")).is_err()
         );
+    }
+
+    #[test]
+    fn steer_turn_id_accepts_provider_rebound_and_preserves_omitted_fallback() {
+        let rebound = serde_json::json!({"result": {"turnId": "turn-rebound"}});
+        let omitted = serde_json::json!({"result": {}});
+
+        assert_eq!(
+            steer_turn_id(&rebound, "turn-expected").expect("provider active turn"),
+            "turn-rebound"
+        );
+        assert_eq!(
+            steer_turn_id(&omitted, "turn-expected").expect("expected-turn fallback"),
+            "turn-expected"
+        );
+    }
+
+    #[test]
+    fn steer_turn_id_rejects_empty_provider_active_turn() {
+        let response = serde_json::json!({"result": {"turnId": ""}});
+        assert!(steer_turn_id(&response, "turn-expected").is_err());
     }
 }
