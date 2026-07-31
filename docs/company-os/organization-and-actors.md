@@ -204,6 +204,68 @@ This permits teams such as `Trademark Agent + external lawyer + Brand Owner`
 without blurring who owns the legal record, who performs work, and who is
 authorized to approve spending or filing.
 
+## Simple Organization permission v1
+
+This first runnable surface is a fixed role-template ceiling plus explicit module envelope, with no permission lifecycle or recursive grant-graph UX.
+
+### Fixed role templates
+
+| Template id | Fixed responsibility | Maximum module verbs | May create child execution Members? |
+| --- | --- | --- | --- |
+| `company_lead` | Own company priority, capacity allocation, cross-WorkItem conflicts, and final operating acceptance inside the approved company root. | `read`, `write`, `execute`, `delegate` | Yes, inside its envelope. |
+| `domain_lead` | Own one declared domain, execute and review its Work, integrate evidence, and resolve conflicts inside that domain. | `read`, `write`, `execute`, `delegate` | Yes, inside its envelope. |
+| `execution_member` | Execute assigned work and return evidence through Work, Docs, and delivery refs. It does not own company priority or capacity. | `read`, `write`, `execute` | No. |
+
+An Actor receives only the template/envelope intersection. Titles, sessions,
+tools, Skills, memberships, and runtime state cannot expand it.
+
+### Module capability envelope
+
+The v1 vocabulary is the exact cross product below.
+
+| Module | `read` | `write` | `execute` | `delegate` |
+| --- | --- | --- | --- | --- |
+| `docs` | Inspect governed Documents, records, relations, and evidence. | Create or update reversible, in-scope Docs truth through declared Actions. | Run declared Docs operations and verification. | Give a child execution Member the same or a narrower `docs` envelope. |
+| `work` | Inspect WorkItems, Assignments, Approvals, and result refs. | Create or update reversible, in-scope Work records through declared Actions. | Accept, transition, review, or close in-scope Work when its Action policy permits. | Give a child execution Member the same or a narrower `work` envelope. |
+| `org` | Inspect Actors, OrgUnits, memberships, declared configuration, and authority projections. | Perform reversible, in-scope Organization maintenance when a declared Action permits it. | Run declared Organization review or maintenance operations. | Give a child execution Member the same or a narrower `org` envelope. |
+| `github` | Inspect the exact bound repository, branch, PR, review, check, and delivery evidence. | Create reversible development artifacts in the bound project. | Run checks and ordinary development integration allowed by repository policy. | Give a child execution Member the same or a narrower `github` envelope. |
+
+Every entry also names an exact BusinessModule, Document tree, WorkItem set,
+OrgUnit, ProjectBinding, or repository scope. `write` and `execute` still pass
+the owning Action or repository policy; neither is a Store or GitHub credential.
+`delegate` creates an execution `MemberRun`, not a Standing Agent or Org change;
+child entries must be a subset and scopes the same or children. V1 needs no
+sibling budget algebra or recursive-grant UX.
+
+### One protected-effects list
+
+An authorized action requires a named Human gate only for one of these effects:
+
+| Protected effect id | Boundary |
+| --- | --- |
+| `protected-effect/irreversible-destructive` | Irreversible or destructive effect, including unrecoverable data loss. |
+| `protected-effect/credential-root-security` | Credential creation/disclosure/rotation, root privilege, or root-security change. |
+| `protected-effect/material-finance-legal-external` | Material Finance, legal, contractual, purchase, filing, payment, or other external commitment. |
+| `protected-effect/major-public-production` | Major production effect or public publish, release, or incident action with broad blast radius. |
+| `protected-effect/cross-domain-root-expansion` | Authority or scope expansion beyond the parent envelope, across a domain boundary, or at Company root. |
+| `protected-effect/policy-unknown` | The applicable policy or effect class cannot be determined safely. |
+
+Reversible, local, in-scope, in-budget work under known policy does not wait for
+per-action Human approval. Domain Lead review, audit, separation, Action or
+repository policy, and evidence still apply; queue placement is not Approval.
+
+### Implemented truth and target boundary
+
+| Surface | Truth at base `682d4c37471377a7a80731c988ce1ea318f76d52` |
+| --- | --- |
+| Current Organization and Action policy | Actor, OrgUnit, membership, declared capability/permission refs, explicit StandingAgent-to-AgentMember linkage, and current Action policy checks are implemented. Human administrative Organization authoring remains the implemented bootstrap boundary. |
+| Accepted Organization UI candidate `ea28b908a99ce8e05ecc5fbbcd1aaee952f3382b` | Candidate-only, not master: renders Store-truth hierarchy and exact execution linkage, and separates declared configuration, unavailable effective delegated authority, and runtime state. It does not enforce this template envelope. |
+| Secure transport candidate `604bc069ab162775dcbaeddc290f2a76d260ab98` | Candidate-only, not master: carries authenticated scoped dispatch through the current Supervisor owner and fails closed when its lease latch is lost. The Supervisor remains transport/runtime, not a grantor or authority source. |
+| Simple template enforcement | **Target contract, not implemented on this base:** no Store schema, API evaluator, Action enforcement, or effective-authority projection currently evaluates these templates and envelopes. |
+
+Target enforcement evaluates template plus envelope at the Action boundary and
+projects it in Organization; richer enforcement cannot add ordinary grant UX or make Supervisor an authority.
+
 ## Lead Agent operating contract
 
 The Lead Agent is a durable organizational role, not the temporary lead member
@@ -222,8 +284,9 @@ Adding a temporary MemberRun to one execution does not change Organization.
 Adding a Standing Agent requires a role charter, reporting relation,
 responsibility scope, permissions, business-module access, cost/provider
 policy, creation rationale, and the approvals required by organization policy.
-Low-risk creation may be delegated to the Lead; financial, legal, credential,
-external-access, or organization-wide authority changes require Human approval.
+The v1 envelope lets a Lead create child execution Members without an Org
+change. Durable Standing Agent creation stays on the Human administrative path
+until template enforcement exists; then only listed protected effects gate.
 
 ### Supervising Operator and Runtime Supervisor
 
@@ -255,8 +318,9 @@ This lets a Lead Agent coordinate Governance Agents, a Docs Governance Agent
 maintain company memory, or a Development Agent route code work without turning
 every execution into a manually managed flat team.
 
-Each product system defines its own permission catalog. A parent may delegate
-Docs, Work, or Org capabilities only within the parent's declared ceiling.
+Each product system defines its own Action catalog. Under simple permission v1,
+a `company_lead` or `domain_lead` may delegate `docs`, `work`, `org`, or
+`github` capabilities only within the parent's explicit module envelope.
 Proposing a child, provisioning it, granting permissions, reviewing its work,
 and approving a sensitive effect are distinct authorities.
 
@@ -292,9 +356,9 @@ whether a capability gap should reuse an existing Actor, use temporary
 execution, engage an external collaborator, or justify a new Standing Agent.
 It may draft an `OrgChangeProposal`, provision after approval, evaluate, pause,
 and propose retirement. It must not auto-grant itself or any other actor
-authority beyond policy. A human approval is mandatory where the policy marks
-the change as financial, legal, security-sensitive, employment-related, or a
-change to organization-level authority.
+authority beyond policy. A Human approval is mandatory only when the change
+matches the protected-effects list in simple permission v1; ordinary reversible
+changes inside an existing envelope remain Lead-owned and audited.
 
 The Docs Governance Agent is a peer governance role: it proposes document
 spaces, templates, typed records, relations, and lifecycle rules when new

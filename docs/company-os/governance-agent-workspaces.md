@@ -83,6 +83,46 @@ Agents report to Org/HR and collaborate with the other Governance Agents through
 explicit Documents, WorkItems, ActorRefs, FinancialRecords, Approvals, and
 governed Actions.
 
+## Simple permission v1 in Governance workspaces
+
+The canonical operator surface is the fixed-template and module-envelope model
+in [Organization and Actors](organization-and-actors.md#simple-organization-permission-v1).
+Governance workspaces show it; they do not invent another authority model.
+
+| Workspace fact | Required presentation |
+| --- | --- |
+| Fixed role | Exact `company_lead`, `domain_lead`, or `execution_member` template id and its fixed responsibility. Company Lead owns priority and capacity; Domain Leads execute and review; execution Members deliver assigned evidence. |
+| Declared envelope | Exact scoped `docs`, `work`, `org`, and `github` entries using only `read`, `write`, `execute`, and `delegate`. Missing entries remain missing. |
+| Effective authority | Evaluated intersection of template, envelope, current Actor/Action policy, and scope. Until an evaluator exists, show `not implemented`, never declared permissions as effective. |
+| Runtime | Exact StandingAgent → AgentMember → MemberRun/native Session linkage, availability evidence, and current Supervisor generation. Runtime is neither role nor authority. |
+| Delegation | Parent Actor, child execution Member, assignment/correlation, same-or-narrower envelope, bound project/workspace, and returned evidence. No recursive grant browser is required. |
+| Protected effect | Link to the single protected-effects list in Organization and the named Human Approval when one is required. Ordinary in-envelope work stays out of the Human exception queue. |
+
+A `company_lead` or `domain_lead` with `delegate` may create child execution
+Members and give them the same or a narrower scoped module envelope. This does
+not create an OrgUnit, Standing Agent, reporting relation, permission policy, or
+Company credential. The Lead sets company priorities, capacity, and
+cross-WorkItem conflict decisions; a Domain Lead operates autonomously inside
+the delegated domain and escalates only boundary crossings or protected
+effects. Skills and tools remain capabilities, not grants.
+
+The Runtime Supervisor transports authenticated requests for the exact live
+Member and owns process leases, delivery, and control. It does not select role
+templates, issue envelopes, approve Actions, or own Company priority/capacity.
+Bearer tokens and other Company credentials must not be written into Team
+messages, MemberRun records, native transcripts, workspace reports, or UI
+projections.
+
+Implementation truth is intentionally explicit. Current master implements
+Organization identity/configuration, Human administrative Organization writes,
+and Action policy checks, but not the simple template evaluator. Accepted
+candidate `ea28b908a99ce8e05ecc5fbbcd1aaee952f3382b` separates declared
+configuration, effective-authority absence, and runtime in the Organization UI;
+secure transport candidate `604bc069ab162775dcbaeddc290f2a76d260ab98` fences scoped
+transport on the Supervisor lease latch. Neither candidate is master, and
+neither proves template Store/API enforcement. Recursive grant UX, sibling
+budget algebra, and a new permission lifecycle are outside this v1 surface.
+
 ## Capability-gap decision contract
 
 Org/HR does not create a permanent Agent merely because Lead or a WorkItem asks
@@ -93,8 +133,8 @@ and keeps the organization change separate from execution:
 | --- | --- | --- | --- |
 | Reuse an existing Actor | an accountable Human, Standing Agent or service already has the role, permission and capacity | none; create or reroute the WorkItem/Assignment | ordinary Work policy; no Organization approval |
 | Temporary execution | the need is one-off or exploratory and can run through Agent Team, Workflow or Host | none; execution refs remain attached to Work | executor gate accepts only the execution outcome, never organization membership |
-| External collaborator | expertise or legal delivery must come from outside the company | scoped external Actor/engagement with expiry and visibility limits | affected policy owner; Human approval when legal, data or external-access policy requires it |
-| New Standing Agent | the capability is recurring, durable, measurable and cannot be satisfied safely by the first three routes | `OrgChangeProposal`, membership, reporting, configuration and evaluation policy | Lead sponsorship plus Human approval for authority, credential, finance, legal or other sensitive changes |
+| External collaborator | expertise or legal delivery must come from outside the company | scoped external Actor/engagement with expiry and visibility limits | affected policy owner; Human gate only when the engagement has an effect in the canonical protected-effects list |
+| New Standing Agent | the capability is recurring, durable, measurable and cannot be satisfied safely by the first three routes | `OrgChangeProposal`, membership, reporting, configuration and evaluation policy | Current Human administrative bootstrap; target Lead sponsorship with a Human gate only for an effect in the canonical protected-effects list |
 
 An `OrgChangeProposal` must name the capability gap, rejected alternatives,
 proposed reporting line, permission ceiling, prompt/Docs references, Tools and

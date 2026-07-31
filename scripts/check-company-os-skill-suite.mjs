@@ -107,6 +107,41 @@ for (const skill of operatorSkills) {
   expect(governance.includes(`../../skills/${skill}/SKILL.md`), `governance-agent-workspaces.md missing ${skill}`);
 }
 
+const organization = read("docs/company-os/organization-and-actors.md");
+for (const template of ["company_lead", "domain_lead", "execution_member"]) {
+  expect(organization.includes(`| \`${template}\` |`), `organization-and-actors.md missing fixed role template ${template}`);
+}
+for (const moduleName of ["docs", "work", "org", "github"]) {
+  expect(organization.includes(`| \`${moduleName}\` |`), `organization-and-actors.md missing simple permission module ${moduleName}`);
+}
+for (const verb of ["read", "write", "execute", "delegate"]) {
+  expect(organization.includes(`\`${verb}\``), `organization-and-actors.md missing simple permission verb ${verb}`);
+}
+const protectedEffects = [
+  "irreversible-destructive",
+  "credential-root-security",
+  "material-finance-legal-external",
+  "major-public-production",
+  "cross-domain-root-expansion",
+  "policy-unknown",
+];
+for (const effect of protectedEffects) {
+  expect(organization.includes(`| \`protected-effect/${effect}\` |`), `organization-and-actors.md missing protected effect ${effect}`);
+}
+expect(
+  (organization.match(/^\| `protected-effect\//gm) ?? []).length === protectedEffects.length,
+  "organization-and-actors.md must contain exactly the six simple-v1 protected effects",
+);
+expect(
+  organization.includes("Target contract, not implemented on this base")
+    && governance.includes("neither proves template Store/API enforcement"),
+  "simple permission v1 must remain explicitly unimplemented in Store/API",
+);
+expect(
+  /The Runtime Supervisor transports authenticated requests[\s\S]*?It does not select role\s+templates, issue envelopes, approve Actions, or own Company priority\/capacity\./.test(governance),
+  "governance-agent-workspaces.md must keep Supervisor transport separate from Company authority",
+);
+
 const forbiddenAsImplemented = ["OrgChangeProposal"];
 for (const phrase of forbiddenAsImplemented) {
   const docsClaim = new RegExp(`${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(implemented|available|stable)`, "i");
