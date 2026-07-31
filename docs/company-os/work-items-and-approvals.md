@@ -232,17 +232,23 @@ source context, accountability, lifecycle, review, and result promotion. See
 
 New requirements enter one managed company queue. Intake preserves the
 requester, source record or message, submission actor, observation time, and
-the route by which the requirement reached Company Work. A Supervisor routes
-ordinary intake to the Company Lead for triage; it does not broadcast every
-request directly to every Agent. An explicit emergency override may interrupt
-active work. Otherwise the Lead orders the queue against existing commitments,
-dependencies, risk, and available capacity.
+the route by which the requirement reached Company Work. A Supervising
+Operator preserves that intake provenance and routes the request once to the
+Company Lead; it does not triage, prioritize, assign, or broadcast the request
+to every Agent. An explicit emergency runtime control may interrupt active
+execution, but it does not reprioritize Company Work. The Company Lead orders
+the queue against existing commitments, dependencies, risk, and available
+capacity.
 
 That ordering is an operating decision over WorkItems, not a second work
 ledger. WorkItems remain the durable intent, acceptance, constraints, risk,
-source, and result provenance. The Company Lead or delegated domain Lead owns
-cross-WorkItem capacity and resource-conflict judgment. The core does not add a
-Task Graph, Project object, or universal resource scheduler for this purpose.
+source, and result provenance. The Company Lead owns company-wide triage,
+priority, capacity arbitration, replan, and cross-WorkItem resource conflicts;
+an accountable Domain Lead owns those decisions inside its delegated domain.
+A Runtime Supervisor owns delivery and control for its bound MemberRun, native
+session, and writable workspace only. It does not allocate Company capacity or
+resolve cross-WorkItem priority. The core does not add a Task Graph, Project
+object, or universal resource scheduler for this purpose.
 
 Before routing or starting a lane, the responsible Lead must read back:
 
@@ -263,19 +269,35 @@ role proves accountability, an Assignment proves durable routing, and a native
 execution record proves observed execution; none substitutes for the others.
 Runtime availability alone grants neither Company authority nor capacity.
 
-The normal autonomy boundary routes Work to the accountable domain Lead, such
-as a CTO or Docs Lead. Within an attenuated permission, budget, risk, and
-concurrency ceiling, that Lead may create or reuse an Agent Team and coordinate
-Developer, Reviewer, QA, or other child Members without reporting each child
-step through every Organization layer. Child outcomes, evidence, blockers, and
-delivery references update the originating WorkItem directly through governed
-actions. Raw transcripts and private reasoning remain provider-native.
+Current implemented Work truth includes durable WorkItem and Assignment
+records, explicit Actor and source/result references, public Work Actions, and
+the Action policy and permission checks applied by those supported commands.
+Native execution and delivery references may be linked after they exist.
+Trusted project execution permission is an executor capability ceiling, not
+Company authority, delegation, approval, or proof of accepted Work.
 
-Routine in-scope execution is recorded in audit and digest views; it does not
+Hierarchical `ScopedPermissionGrant` attenuation, atomic budget and concurrency
+reservations, a consolidated audit/digest view, a unified Human Decision Queue,
+and template-governed child Agent or Team creation remain target-only until
+their schemas, policies, service behavior, and acceptance evidence exist. This
+contract does not claim that target runtime enforcement is implemented.
+
+The normal autonomy boundary routes Work to the accountable domain Lead, such
+as a CTO or Docs Lead. With the current interface, that Lead may route one
+durable Assignment and use an available Agent Team within configured Company
+and execution boundaries; this does not imply a scoped grant or autonomous
+template-governed child creation. Developer, Reviewer, QA, or other execution
+Members need not report each child step through every Organization layer.
+Child outcomes, evidence, blockers, and delivery references update the
+originating WorkItem directly through governed actions. Raw transcripts and
+private reasoning remain provider-native.
+
+Supported mutations produce their implemented Action and audit records; a
+consolidated digest is still target-only. Routine in-scope execution does not
 wait for synchronous Human notification or approval. Material finance, legal,
-root-security, destructive, major-public, permission-changing, or policy-unknown
-effects cross the declared escalation boundary into the Human Decision Queue.
-Scope expansion also returns to the accountable Lead or required approver.
+root-security, destructive, major-public, permission-changing, policy-unknown,
+or scope-expanding effects use the current governed Approval or escalation
+path. A unified Human Decision Queue remains target-only.
 
 ### Minimum parallel Assignment brief
 
@@ -294,12 +316,14 @@ add structured fields without changing their meaning:
   whether child Agent creation is allowed; and
 - any Lead-pinned base SHA, worktree, or branch constraint needed for safety.
 
-A pinned base and isolated worktree are Lead/Supervisor defaults when code
-lanes could conflict, not mandatory user-authored WorkItem fields. A permitted
-executor may select a clean worktree and branch, then reports the actual base,
-worktree, branch, commit, checks, and conflicts in its handoff. The Supervisor
-enforces one top-level driver per writable workspace and resolves allocation
-across active WorkItems.
+A Lead may pin a base, worktree, or branch when a known conflict requires that
+safety constraint; these are not mandatory user-authored WorkItem fields.
+Otherwise a permitted executor may choose or create an appropriate clean
+worktree and branch, then reports the actual base, worktree, branch, commit,
+checks, and conflicts in its handoff. The Runtime Supervisor does not choose
+Git resources or allocate work across WorkItems. It enforces only the real
+single-driver and runtime binding for its MemberRun, native session, and
+writable workspace.
 
 ### Queue and lifecycle readiness
 

@@ -86,10 +86,11 @@ async function main() {
   check(
     [
       "New requirements enter one managed company queue",
-      "A Supervisor routes ordinary intake to the Company Lead for triage",
-      "An explicit emergency override may interrupt active work",
+      "A Supervising Operator preserves that intake provenance and routes the request once to the Company Lead",
+      "An explicit emergency runtime control may interrupt active execution",
+      "it does not reprioritize Company Work",
     ].every((text) => normalizedWorkContract.includes(text)),
-    "Work contract preserves managed intake provenance, Lead triage, and explicit emergency override",
+    "Work contract separates intake provenance and emergency runtime control from Company Lead triage",
   );
   check(
     normalizedWorkContract.includes("explicit unknowns, not proof of unlimited capacity")
@@ -111,8 +112,25 @@ async function main() {
   check(
     normalizedWorkContract.includes("the WorkItem is never regressed to an earlier status")
       && normalizedWorkContract.includes("does not automatically complete Company Work")
-      && normalizedWorkContract.includes("cross the declared escalation boundary into the Human Decision Queue"),
-    "Work contract keeps evidence append-only, acceptance explicit, and Human escalation exception-only",
+      && normalizedWorkContract.includes("use the current governed Approval or escalation path")
+      && normalizedWorkContract.includes("A unified Human Decision Queue remains target-only"),
+    "Work contract keeps evidence append-only, acceptance explicit, and Human escalation truthful",
+  );
+  check(
+    [
+      "Current implemented Work truth includes durable WorkItem and Assignment records",
+      "Action policy and permission checks",
+      "Trusted project execution permission is an executor capability ceiling, not Company authority",
+      "Hierarchical `ScopedPermissionGrant` attenuation",
+      "atomic budget and concurrency reservations",
+      "a consolidated audit/digest view",
+      "a unified Human Decision Queue",
+      "template-governed child Agent or Team creation remain target-only",
+      "This contract does not claim that target runtime enforcement is implemented",
+      "The Runtime Supervisor does not choose Git resources or allocate work across WorkItems",
+      "It enforces only the real single-driver and runtime binding",
+    ].every((text) => normalizedWorkContract.includes(text)),
+    "Work contract separates implemented Work actions from target authority and bounded runtime enforcement",
   );
   execFileSync("cargo", ["build", "-q", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
   const root = await mkdtemp(join(tmpdir(), "company-os-work-cli-smoke-"));
