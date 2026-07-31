@@ -80,6 +80,36 @@ export interface AssignmentView {
   assignedAt: string;
 }
 
+export type EvidenceFreshness = "fresh" | "stale" | "unavailable";
+
+export interface WorkAssignmentExecutionChain {
+  assignmentId: string;
+  workItemId: string;
+  assignmentState: string;
+  correlationId: string;
+  linkStatus: "linked" | "mismatch" | "unavailable";
+  detail: string;
+  teamMessage?: { id: string; deliveryState: string; providerReceiptId?: string };
+  memberRun?: { id: string; status: string; nativeSessionId?: string; nativeSessionAvailability: string };
+  handoffs: Array<{ id: string; result?: string; body: string; createdAt: string; evidenceRefs: string[] }>;
+  externalObservations: Array<{
+    id: string;
+    kind: "pull_request" | "check";
+    label: string;
+    repository?: string;
+    pullRequestNumber?: string;
+    headRef?: string;
+    url?: string;
+    headSha?: string;
+    baseRef?: string;
+    state?: string;
+    observedAt?: string;
+    sourceUpdatedAt?: string;
+    sourceCompletedAt?: string;
+    freshness: EvidenceFreshness;
+  }>;
+}
+
 /** Read-only execution participation joined by explicit MemberRun.agent_member_id. */
 export interface StandingExecutionAssignment {
   id: string;
@@ -245,6 +275,8 @@ export interface TrademarkOperationsProjection {
   workItem: WorkItemView;
   workItems?: WorkItemView[];
   assignments?: AssignmentView[];
+  /** Computed read projection. It never changes or accepts durable Work truth. */
+  workAssignmentExecutionChains?: WorkAssignmentExecutionChain[];
   standingAssignments?: StandingExecutionAssignment[];
   /** Empty/absent means no conflict; a healthy snapshot renders nothing extra. */
   standingAssignmentConflicts?: StandingLinkConflict[];

@@ -53,9 +53,10 @@ function installLocation(search) {
 }
 
 async function main() {
-  const [shell, router, api, app] = await Promise.all([
+  const [shell, router, components, api, app] = await Promise.all([
     readFile(join(dashboardRoot, "src/app/WorkbenchShell.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/company-os/CompanyOsRouter.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/company-os/operations/components.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/app/App.tsx"), "utf8"),
   ]);
@@ -77,6 +78,14 @@ async function main() {
   check(router.includes("store-live-loading") && router.includes("prototype fixture data is suppressed") && shell.includes("livePending={livePending}"), "Company OS suppresses prototype fixtures while Store-live data is loading");
   check(router.includes("Live · Store-backed Company OS") && router.includes('data-company-os-data-mode="store-live"'), "authoritative store projections have a distinct live truth label");
   check(router.includes("adaptCompanyOsDocsProjection(resolved.value,") && router.includes("adaptTrademarkOperationsProjection(resolved.value"), "fixture and store-live routes pass the resolved projection directly into both presentation adapters");
+  const routeViewportClass = router.match(/<DataTruthBanner resolved=\{resolved\} \/>\s*<div className="([^"]+)">\{children\}<\/div>/)?.[1] ?? "";
+  const routeViewportTokens = new Set(routeViewportClass.split(/\s+/));
+  check(
+    ["h-full", "min-h-0", "min-w-0", "flex-1", "overflow-hidden"].every((token) => routeViewportTokens.has(token))
+      && components.includes('className="company-workbench h-full overflow-y-auto bg-background"')
+      && shell.includes('<div className="flex h-full min-h-0 flex-1">{surface}</div>'),
+    "full-bleed Company OS routes bound their child viewport while PageFrame owns vertical document scrolling",
+  );
   check((router.match(/actionsEnabled && resolved\.mode === "store-live"/g) ?? []).length >= 4 && router.includes("onTransition") && router.includes("onDecision") && router.includes("onCreateCorrectiveWork") && router.includes("onDocsAction") && router.includes('"X-Harness-Company-OS-Token"'), "WorkItem, Approval, Docs Health, and Document authoring transports are enabled only for Store-live truth and send the session capability in the dedicated header");
   check(api.includes("...options.headers") && api.includes("payload.detail || payload.error") && app.includes("postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, options, selectedSpaceId)"), "browser Action requests carry Company, Execution Space, and Project Binding scope, preserve server denial detail, and refresh through the existing mutation path");
   check(api.includes("fetchCompanies") && api.includes("/v1/companies") && shell.includes("CompanyPicker") && app.includes("selectedCompanyId"), "dashboard exposes a Company Store selector separate from the Project selector");

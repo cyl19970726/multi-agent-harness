@@ -395,6 +395,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const workRecords = records(root.work_items);
   const assignmentRecords = records(root.assignments);
   const standingAssignmentRecords = records(root.standing_assignments);
+  const executionChainRecords = records(root.work_assignment_execution_chains);
   const financeRecords = records(root.financial_records);
   const approvalRecords = records(root.approvals);
   const pageDefinitions = records(root.custom_page_definitions);
@@ -436,6 +437,46 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     detail: text(record.detail),
     resolutionHint: text(record.resolution_hint) || undefined,
   })).filter((conflict) => conflict.id && conflict.agentMemberId && conflict.standingAgentIds.length > 0);
+  const workAssignmentExecutionChains = executionChainRecords.map((record) => ({
+      assignmentId: text(record.assignment_id),
+      workItemId: text(record.work_item_id),
+      assignmentState: text(record.assignment_state, "unknown"),
+      correlationId: text(record.correlation_id),
+      linkStatus: text(record.link_status, "unavailable") as "linked" | "mismatch" | "unavailable",
+      detail: text(record.detail, "Execution evidence is unavailable."),
+      teamMessage: record.team_message && typeof record.team_message === "object" ? {
+        id: text((record.team_message as Record<string, unknown>).id),
+        deliveryState: text((record.team_message as Record<string, unknown>).delivery_state, "unavailable"),
+        providerReceiptId: text((record.team_message as Record<string, unknown>).provider_receipt_id) || undefined,
+      } : undefined,
+      memberRun: record.member_run && typeof record.member_run === "object" ? {
+        id: text((record.member_run as Record<string, unknown>).id),
+        status: text((record.member_run as Record<string, unknown>).status, "unknown"),
+        nativeSessionId: text((record.member_run as Record<string, unknown>).native_session_id) || undefined,
+        nativeSessionAvailability: text((record.member_run as Record<string, unknown>).native_session_availability, "unavailable"),
+      } : undefined,
+      handoffs: records(record.handoffs).map((handoff) => ({
+        id: text(handoff.id), result: text(handoff.result) || undefined,
+        body: text(handoff.body), createdAt: text(handoff.created_at),
+        evidenceRefs: stringArray(handoff.evidence_refs),
+      })),
+      externalObservations: records(record.external_observations).map((observation) => ({
+        id: text(observation.id),
+        kind: text(observation.kind) === "check" ? "check" as const : "pull_request" as const,
+        label: text(observation.label, text(observation.id)),
+        repository: text(observation.repository) || undefined,
+        pullRequestNumber: text(observation.pull_request_number) || undefined,
+        headRef: text(observation.head_ref) || undefined,
+        url: text(observation.url) || undefined,
+        headSha: text(observation.head_sha) || undefined,
+        baseRef: text(observation.base_ref) || undefined,
+        state: text(observation.state) || undefined,
+        observedAt: text(observation.observed_at) || undefined,
+        sourceUpdatedAt: text(observation.source_updated_at) || undefined,
+        sourceCompletedAt: text(observation.source_completed_at) || undefined,
+        freshness: text(observation.freshness, "unavailable") as "fresh" | "stale" | "unavailable",
+      })),
+    }));
   const metrics = [
     ...records(root.explicit_metrics),
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
@@ -677,6 +718,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     workItem,
     workItems,
     assignments,
+    workAssignmentExecutionChains: workAssignmentExecutionChains.filter((chain) => chain.workItemId === workItem.id),
     commitment,
     approval,
     evidence,
