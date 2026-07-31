@@ -4016,6 +4016,49 @@
    "truthRefs": []
   },
   {
+   "path": "docs/company-os/agentos-wave6-work-queue.md",
+   "ownerRole": "agentos-work-governance",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentOS Wave 6 WorkItem classification: covered/reconcile, genuine next, duplicate-obsolete, blocked",
+    "prioritized execution queue with owner roles, dependencies, and worktree collision boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/agentos-self-hosting-loop.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/operations.md",
+    "skills/dogfood-company-os/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "harness company work list",
+    "harness company docs health",
+    "harness governance check"
+   ],
+   "reorgTrigger": "AgentOS WorkItems are closed, reclassified, or reprioritized; Wave 6 completes; or the dogfood execution roster or rolling-reconciliation rule changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "store",
+     "ref": "harness company work list (agent-company Company Store)"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "master commit 869a870 and merged PRs #273 #276 #278 #279 #291 #292 #296"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
+    }
+   ]
+  },
+  {
    "path": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
    "ownerRole": "product-architecture",
    "status": "stable",
