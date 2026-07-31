@@ -13,10 +13,52 @@
 //! timing luck. A real provider is never invoked.
 
 use std::path::Path;
+use std::process::Command;
 
 mod harness_env;
 
-use harness_env::{current_project_id, run_harness, TempHome};
+use harness_env::{
+    clear_inherited_native_harness_env, current_project_id, run_harness, TempHome,
+    INHERITED_NATIVE_HARNESS_ENV,
+};
+
+#[test]
+fn shared_test_commands_clear_every_native_harness_selector() {
+    let mut command = Command::new("harness");
+    for key in INHERITED_NATIVE_HARNESS_ENV {
+        command.env(key, "ambient-member-value");
+    }
+
+    clear_inherited_native_harness_env(&mut command);
+    let configured = command
+        .get_envs()
+        .map(|(key, value)| (key.to_string_lossy().into_owned(), value.is_none()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    for key in INHERITED_NATIVE_HARNESS_ENV {
+        assert_eq!(
+            configured.get(*key),
+            Some(&true),
+            "{key} must be removed from spawned test processes"
+        );
+    }
+
+    let home = TempHome::new("native-selector-defaults");
+    let defaults = home
+        .envs()
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    for key in INHERITED_NATIVE_HARNESS_ENV
+        .iter()
+        .filter(|key| **key != "HARNESS_ROOT")
+    {
+        assert_eq!(
+            defaults.get(*key).map(String::as_str),
+            Some(""),
+            "{key} must be neutralized for direct test commands"
+        );
+    }
+}
 
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
@@ -83,6 +125,7 @@ for await (const line of rl) {{
     // queue by the time this lands.
     if (FOLLOW_UP && turns === 1 && !sentFollowUp) {{
       sentFollowUp = true;
+      await new Promise((resolve) => setTimeout(resolve, 250));
       const sent = spawnSync(process.env.HARNESS_BIN, [
         "team-run", "send",
         "--id", cfg.teamRunId,
@@ -122,6 +165,10 @@ fn start_with_fake_runner(
         .env("HARNESS_CLAUDE_MEMBER_RUNNER", runner)
         .env("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS", grace_ms)
         .env("HARNESS_BIN", env!("CARGO_BIN_EXE_harness"))
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .output()
         .expect("team-run start")
 }

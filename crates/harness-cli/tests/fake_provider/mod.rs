@@ -16,6 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::harness_env::clear_inherited_native_harness_env;
+
 /// Create a `bin/` dir containing an executable shim named `provider` (e.g.
 /// `codex` or `claude`) that, when run, writes its current working directory to
 /// `cwd_marker` and emits a single NDJSON line on stdout. Returns the `bin/` dir
@@ -204,6 +206,7 @@ while IFS= read -r line; do
           --kind handoff \
           --body "## RESULT\ncompleted\n## SUMMARY\nexplicit handoff during active ACP turn" \
           --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+          --causation-id "$HARNESS_ASSIGNMENT_MESSAGE_ID" \
           > "${FAKE_KIMI_HANDOFF_MARKER:?}" 2>&1
       fi
       if [ "$ask" = "1" ]; then
@@ -336,7 +339,7 @@ if [ "$1" = "app-server" ]; then
           continue
         fi
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"
-        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ]; then
+        if [ "${FAKE_CODEX_AUTO_COMPLETE:-0}" = "1" ] || { [ "${FAKE_CODEX_AUTO_COMPLETE_AFTER_STEER:-0}" = "1" ] && [ "$turn_seq" -gt "1" ]; }; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
@@ -492,16 +495,16 @@ impl DeliveryDriver {
             self.fake_bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let out = Command::new(&self.bin)
+        let mut command = Command::new(&self.bin);
+        command
             .arg("--project")
             .arg(&self.project_root)
             .args(args)
             .current_dir(&self.process_cwd)
             .envs(self.envs.iter().cloned())
-            .env("PATH", path)
-            .env_remove("HARNESS_ROOT")
-            .output()
-            .expect("run harness");
+            .env("PATH", path);
+        clear_inherited_native_harness_env(&mut command);
+        let out = command.output().expect("run harness");
         CliOutput {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),

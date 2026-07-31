@@ -1886,6 +1886,282 @@ fn codex_app_server_member_can_be_steered_in_place() {
 }
 
 #[test]
+fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
+    let home = TempHome::new("team-run-codex-post-handoff-steer");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-post-handoff"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_AUTO_COMPLETE_AFTER_STEER", "1"),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Converge one native turn after an explicit Handoff",
+            "members": [{
+                "name": "codex-convergence",
+                "role": "implementer",
+                "provider": "codex",
+                "execution_mode": "codex_app_server"
+            }]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let assignment = &created["result"]["assignment_messages"][0];
+    let assignment_id = assignment["id"]
+        .as_str()
+        .expect("assignment id")
+        .to_string();
+    let assignment_correlation = assignment["correlation_id"]
+        .as_str()
+        .expect("assignment correlation")
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut live = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let member_running = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some("thread_fake_codex_app_server")
+            });
+        let assignment_delivered = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["id"].as_str() == Some(assignment_id.as_str()))
+            .is_some_and(|message| {
+                message["deliveries"][0]["status"].as_str() == Some("delivered")
+            });
+        live = member_running && assignment_delivered;
+        if live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(live, "app-server member never became live");
+
+    let (status, explicit_handoff) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_kind": "member_run",
+            "sender_id": member_id,
+            "to_member_ids": ["host"],
+            "kind": "handoff",
+            "body": "## RESULT\ndone\n## SUMMARY\nexplicit same-turn handoff",
+            "correlation_id": assignment_correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {explicit_handoff}");
+    let explicit_handoff_id = explicit_handoff["result"]["id"]
+        .as_str()
+        .expect("handoff id")
+        .to_string();
+
+    let control_client = ServeHandle::spawn(&home, home.base(), &[]);
+    let descendant_client = ServeHandle::spawn(&home, home.base(), &[]);
+    let observer_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let observer_ready = std::sync::Arc::clone(&observer_barrier);
+    let observer_run_id = run_id.clone();
+    let observer_member_id = member_id.clone();
+    let observer_correlation = assignment_correlation.clone();
+    let observer = std::thread::spawn(move || {
+        observer_ready.wait();
+        for _ in 0..200 {
+            let (_, snapshot) = descendant_client.get_json("/v1/snapshot");
+            let control = snapshot["team_messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|message| {
+                    message["kind"].as_str() == Some("control")
+                        && message["correlation_id"].as_str() == Some(observer_correlation.as_str())
+                        && message["body"].as_str()
+                            == Some("incorporate the correction before ending this turn")
+                });
+            if let Some(control) = control {
+                let control_id = control["id"].as_str().expect("Control id").to_string();
+                let observed_delivery = control["deliveries"][0].clone();
+                let (status, body) = descendant_client.post_json(
+                    &format!("/v1/team-runs/{observer_run_id}/messages"),
+                    &serde_json::json!({
+                        "sender_kind": "member_run",
+                        "sender_id": observer_member_id,
+                        "to_member_ids": ["host"],
+                        "kind": "handoff",
+                        "body": "## RESULT\ndone\n## SUMMARY\ninvalid Inject descendant",
+                        "correlation_id": observer_correlation,
+                        "causation_id": control_id,
+                    }),
+                );
+                return (control_id, observed_delivery, status, body);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("concurrent observer never saw the Steer Control")
+    });
+    observer_barrier.wait();
+    let (status, steered) = control_client.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/steer"),
+        &serde_json::json!({
+            "content": "incorporate the correction before ending this turn",
+            "requested_by": "operator"
+        }),
+    );
+    assert_eq!(status, 200, "body: {steered}");
+    assert_eq!(
+        steered["result"]["message"]["correlation_id"].as_str(),
+        Some(assignment_correlation.as_str())
+    );
+    assert_eq!(
+        steered["result"]["message"]["causation_id"].as_str(),
+        Some(explicit_handoff_id.as_str())
+    );
+    let steer_message_id = steered["result"]["message"]["id"]
+        .as_str()
+        .expect("Steer control message")
+        .to_string();
+    let (observed_control_id, observed_delivery, status, duplicate_handoff) =
+        observer.join().expect("concurrent Control observer");
+    assert_eq!(observed_control_id, steer_message_id);
+    assert_eq!(observed_delivery["policy"], "inject");
+    assert_eq!(observed_delivery["status"], "delivered");
+    assert_eq!(status, 400, "body: {duplicate_handoff}");
+    assert!(
+        duplicate_handoff["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("already handed off")),
+        "post-Steer sibling must be rejected atomically: {duplicate_handoff}"
+    );
+    let physical_control_rows = std::fs::read_to_string(
+        home.spaces_dir()
+            .join(&project_id)
+            .join("team_messages.jsonl"),
+    )
+    .expect("read physical TeamMessage rows")
+    .lines()
+    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    .filter(|message| message["id"].as_str() == Some(steer_message_id.as_str()))
+    .collect::<Vec<_>>();
+    assert_eq!(
+        physical_control_rows.len(),
+        1,
+        "Steer Control must be published exactly once: {physical_control_rows:?}"
+    );
+    assert_eq!(
+        physical_control_rows[0]["deliveries"][0]["policy"],
+        "inject"
+    );
+    assert_eq!(
+        physical_control_rows[0]["deliveries"][0]["status"],
+        "delivered"
+    );
+
+    let mut converged = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let idle = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+            });
+        let handoffs = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .collect::<Vec<_>>();
+        converged = idle
+            && handoffs.len() == 1
+            && handoffs[0]["id"].as_str() == Some(explicit_handoff_id.as_str());
+        if converged {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        converged,
+        "same-turn Steer must not append a sibling fallback Handoff"
+    );
+
+    let (status, follow_up) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "body": "OPEN NEXT ROUND after idle",
+            "correlation_id": assignment_correlation,
+            "causation_id": explicit_handoff_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {follow_up}");
+    let follow_up_id = follow_up["result"]["id"]
+        .as_str()
+        .expect("follow-up id")
+        .to_string();
+
+    let mut next_round = false;
+    for _ in 0..150 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        next_round = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+                    && message["correlation_id"].as_str() == Some(assignment_correlation.as_str())
+                    && message["causation_id"].as_str() == Some(follow_up_id.as_str())
+            });
+        if next_round {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        next_round,
+        "ordinary post-idle correlated follow-up must open a new provider round"
+    );
+}
+
+#[test]
 fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     let home = TempHome::new("team-run-codex-interrupt");
     let _project_id = init_project(&home, "alpha");

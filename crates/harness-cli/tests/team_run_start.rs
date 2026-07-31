@@ -39,6 +39,10 @@ fn run_with_fake_kimi(
         .args(args)
         .current_dir(home.base())
         .envs(home.envs())
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", fake_result)
         .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
@@ -64,8 +68,6 @@ fn run_with_fake_kimi(
             home.base().join("claude-collaboration.env"),
         )
         .env_remove("KIMI_CODE_BIN")
-        .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT")
         .output()
         .expect("run harness")
 }
@@ -378,14 +380,16 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
         ])
         .current_dir(home.base())
         .envs(home.envs())
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", "done")
         .env("FAKE_KIMI_HANDOFF_DURING_TURN", "1")
         .env("FAKE_KIMI_HANDOFF_MARKER", &marker)
         .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .env_remove("KIMI_CODE_BIN")
-        .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT")
         .output()
         .expect("start fake kimi team");
     assert!(
@@ -437,6 +441,10 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
             .as_str()
             .is_some_and(|body| body.contains("explicit handoff during active ACP turn")),
         "the member-authored handoff is authoritative: {handoffs:?}"
+    );
+    assert_eq!(
+        handoffs[0]["causation_id"], assignment["id"],
+        "explicit Handoff must name the exact consumed Assignment"
     );
 }
 

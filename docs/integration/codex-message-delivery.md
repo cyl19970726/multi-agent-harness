@@ -64,6 +64,35 @@ observed evidence references and does not append a second Handoff from the
 provider's final reply. If no explicit Handoff exists, the final reply becomes
 the automatic fallback Handoff.
 
+If a real same-turn Steer succeeds after that durable Handoff, its control
+message reuses the Assignment correlation and names the Handoff as its direct
+cause. The Steer continues the current native turn and therefore does not
+create a sibling Handoff when the turn ends. An ordinary correlated message
+sent after the Member returns to idle still starts the next round; that later
+round's Handoff names the ordinary message it consumed.
+
+The active Codex adapter keeps the Assignment correlation, exact consumed
+trigger, and pre-turn Handoff baseline only in process. It does not add provider
+turn ownership to `TeamMessage`. A post-baseline Handoff can anchor Steer or
+suppress fallback only when it keeps that Assignment correlation and names the
+exact trigger, or names a delivered `Inject` control whose causation validates
+the same continuation. A Handoff for another delivered Assignment or an older
+same-correlation cause is not current-turn convergence evidence.
+
+Explicit Handoff convergence is also enforced atomically under the store lock.
+Two Handoffs from the same Member with the same Assignment correlation and
+cause cannot both append. After post-Handoff Steer, a second Handoff caused by
+the delivered `Inject` control is likewise rejected because that control points
+to the already-durable Handoff. These checks use existing kind, correlation,
+causation, and delivery facts rather than a new lifecycle field.
+
+After the provider acknowledges Steer, Harness constructs the final
+`Control(Inject, Delivered)` row and publishes it exactly once through the
+checked append before folding its event. No queued Control revision is exposed,
+so an Inject-descendant sibling cannot enter between two Control publications.
+The broader provider-effect-before-Control crash reservation gap remains a
+follow-up; this bounded convergence rule does not claim that gap is closed.
+
 Reading `harness team-run inbox` or `harness member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 

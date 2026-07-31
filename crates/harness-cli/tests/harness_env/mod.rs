@@ -91,13 +91,20 @@ impl TempHome {
 
     /// Env pairs to pass to a spawned `harness` process.
     pub fn envs(&self) -> Vec<(String, String)> {
-        vec![
+        let mut envs = vec![
             ("HOME".to_string(), self.home.display().to_string()),
             (
                 "HARNESS_HOME".to_string(),
                 self.harness_home.display().to_string(),
             ),
-        ]
+        ];
+        envs.extend(
+            INHERITED_NATIVE_HARNESS_ENV
+                .iter()
+                .filter(|key| **key != "HARNESS_ROOT")
+                .map(|key| ((*key).to_string(), String::new())),
+        );
+        envs
     }
 }
 
@@ -117,6 +124,27 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+
+pub const INHERITED_NATIVE_HARNESS_ENV: &[&str] = &[
+    "HARNESS_ROOT",
+    "HARNESS_PROJECT",
+    "HARNESS_PROJECT_ID",
+    "HARNESS_SPACE",
+    "HARNESS_COMPANY",
+    "HARNESS_MISSION_ID",
+    "HARNESS_ORIGIN_WAVE_ID",
+    "HARNESS_TEAM_RUN_ID",
+    "HARNESS_MEMBER_RUN_ID",
+    "HARNESS_AGENT_MEMBER_ID",
+    "HARNESS_ASSIGNMENT_MESSAGE_ID",
+    "HARNESS_ASSIGNMENT_CORRELATION_ID",
+];
+
+pub fn clear_inherited_native_harness_env(command: &mut Command) {
+    for key in INHERITED_NATIVE_HARNESS_ENV {
+        command.env_remove(key);
+    }
+}
 
 /// A spawned `harness serve` child bound to `127.0.0.1:<port>`. Killed on drop.
 pub struct ServeHandle {
@@ -147,16 +175,12 @@ impl ServeHandle {
         for a in extra_args {
             cmd.arg(a);
         }
-        cmd.current_dir(cwd)
-            .envs(home.envs())
-            .env_remove("HARNESS_ROOT")
-            .env_remove("HARNESS_PROJECT")
-            .env_remove("HARNESS_SPACE")
-            .env_remove("HARNESS_COMPANY")
-            // Production supervisors never retire an idle Member implicitly.
-            // Integration processes need a bounded escape after they have
-            // asserted the idle state so test teardown can join cleanly.
-            .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "250");
+        cmd.current_dir(cwd).envs(home.envs());
+        clear_inherited_native_harness_env(&mut cmd);
+        // Production supervisors never retire an idle Member implicitly.
+        // Integration processes need a bounded escape after they have
+        // asserted the idle state so test teardown can join cleanly.
+        cmd.env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "250");
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
@@ -417,12 +441,8 @@ pub fn run_harness_with_env(
     for a in args {
         cmd.arg(a);
     }
-    let command = cmd
-        .current_dir(cwd)
-        .envs(home.envs())
-        .env_remove("HARNESS_ROOT")
-        .env_remove("HARNESS_PROJECT")
-        .env_remove("HARNESS_COMPANY");
+    let command = cmd.current_dir(cwd).envs(home.envs());
+    clear_inherited_native_harness_env(command);
     for (key, value) in extra_env {
         command.env(key, value);
     }
