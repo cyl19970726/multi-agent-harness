@@ -142,6 +142,70 @@ expect(
   "governance-agent-workspaces.md must keep Supervisor transport separate from Company authority",
 );
 
+const orgSkill = read("skills/company-org-operator/SKILL.md");
+const simplePermissionStart = orgSkill.indexOf("## Simple permission v1 parity contract");
+const simplePermissionEnd = orgSkill.indexOf("\n## Governance model", simplePermissionStart);
+expect(
+  simplePermissionStart >= 0 && simplePermissionEnd > simplePermissionStart,
+  "company-org-operator must contain the bounded simple permission v1 parity contract",
+);
+const simplePermission = simplePermissionStart >= 0 && simplePermissionEnd > simplePermissionStart
+  ? orgSkill.slice(simplePermissionStart, simplePermissionEnd)
+  : "";
+for (const template of ["company_lead", "domain_lead", "execution_member"]) {
+  expect(
+    simplePermission.includes(`| \`${template}\` |`),
+    `company-org-operator simple permission contract missing fixed template ${template}`,
+  );
+}
+for (const moduleName of ["docs", "work", "org", "github"]) {
+  expect(
+    simplePermission.includes(`| \`${moduleName}\` | \`read\`, \`write\`, \`execute\`, \`delegate\` |`),
+    `company-org-operator simple permission contract missing exact ${moduleName} verb envelope`,
+  );
+}
+expect(
+  simplePermission.includes("may give one temporary `execution_member` the\nsame or a narrower scoped module envelope")
+    && simplePermission.includes("Equal exact scopes\nare valid"),
+  "company-org-operator must permit same-or-narrower temporary execution delegation",
+);
+expect(
+  simplePermission.includes("A future durable `ScopedPermissionGrant` must be strictly narrower")
+    && simplePermission.includes("remain target-only")
+    && simplePermission.includes("Do not apply the strict-narrowing rule\nto the temporary same-or-narrower execution envelope"),
+  "company-org-operator must reserve strict narrowing for target-only durable grants",
+);
+for (const effect of protectedEffects) {
+  expect(
+    simplePermission.includes(`- \`protected-effect/${effect}\``),
+    `company-org-operator simple permission contract missing protected effect ${effect}`,
+  );
+}
+expect(
+  (simplePermission.match(/^- `protected-effect\//gm) ?? []).length === protectedEffects.length,
+  "company-org-operator must contain exactly the six simple-v1 protected effects",
+);
+expect(
+  simplePermission.includes("Evidence refs are selectors only, never authority or caller-authored proofs")
+    && simplePermission.includes("The Store/server owns current relation and entity resolution")
+    && simplePermission.includes("before the immutable evaluator receives a\nnormalized exact-parent scope"),
+  "company-org-operator must keep selector evidence non-authoritative and Store-resolved",
+);
+expect(
+  simplePermission.includes("Wrong-kind entities, missing entities, missing\nor mismatched relations, and stale relations fail closed"),
+  "company-org-operator must fail closed for wrong-kind, missing, mismatched, and stale scope truth",
+);
+expect(
+  simplePermission.includes("`org` and\n`github` remain unresolved until canonical OrgUnit and repository entity kinds\nexist"),
+  "company-org-operator must leave Org/GitHub unresolved without canonical entity kinds",
+);
+expect(
+  simplePermission.includes("On this `ce5d83c` Skill base, the simple-permission evaluator and Action/API\nenforcement remain target-only")
+    && simplePermission.includes("`42356e05f2fb3ca0160702e0098041d0b655fbca`")
+    && simplePermission.includes("it is not master, live Action/API wiring, activation, R3, or Company authority"),
+  "company-org-operator must state the accepted local Core candidate and target-only live enforcement honestly",
+);
+
 const dogfoodCompany = read("skills/dogfood-company-os/SKILL.md");
 const hardGateStart = dogfoodCompany.indexOf("## Enforce The Company Execution Hard Gate");
 const hardGateEnd = dogfoodCompany.indexOf("\n## Run One Complete Cycle", hardGateStart);

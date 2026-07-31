@@ -231,6 +231,72 @@ Current v1 boundary:
 - A Standing Agent record is organization identity and authority context. It is
   not an Agent Team MemberRun, provider-native session, or runtime health row.
 
+## Simple permission v1 parity contract
+
+Use only these fixed role templates:
+
+| Template id | Delegation boundary |
+| --- | --- |
+| `company_lead` | May delegate bounded execution inside its declared envelope. |
+| `domain_lead` | May delegate bounded execution inside its declared domain envelope. |
+| `execution_member` | Executes assigned work and returns evidence; it cannot delegate. |
+
+The scoped module envelope has exactly this module and verb vocabulary:
+
+| Module | Allowed verb vocabulary |
+| --- | --- |
+| `docs` | `read`, `write`, `execute`, `delegate` |
+| `work` | `read`, `write`, `execute`, `delegate` |
+| `org` | `read`, `write`, `execute`, `delegate` |
+| `github` | `read`, `write`, `execute`, `delegate` |
+
+The Actor receives only the intersection of its fixed template and declared
+module envelope. Missing modules, verbs, or exact scopes stay missing. Skills,
+tools, profile fields, runtime state, and repository credentials cannot widen
+that intersection. `write` and `execute` still require the owning Action or
+repository policy; an envelope is not a Store, GitHub, or Company credential.
+
+A `company_lead` or `domain_lead` may give one temporary `execution_member` the
+same or a narrower scoped module envelope. The child may use only modules and
+verbs present in the parent envelope, the parent must hold `delegate` for each
+delegated module, and the child never receives `delegate`. Equal exact scopes
+are valid. A child scope may be narrower only when the Store resolves its
+selector to a current canonical containment relation. This operation creates
+temporary execution, not a Standing Agent, reporting relation, durable grant,
+Organization change, or Company credential.
+
+Evidence refs are selectors only, never authority or caller-authored proofs.
+The Store/server owns current relation and entity resolution: it resolves each
+selector against the current canonical entity rows and
+`scope_contains/<module>` relation before the immutable evaluator receives a
+normalized exact-parent scope. Wrong-kind entities, missing entities, missing
+or mismatched relations, and stale relations fail closed. `docs` resolves only
+canonical Document ids and `work` only canonical WorkItem ids. `org` and
+`github` remain unresolved until canonical OrgUnit and repository entity kinds
+exist; they must not borrow another entity kind or authorize by id resemblance.
+
+The only simple-v1 protected-effect ids are:
+
+- `protected-effect/irreversible-destructive`
+- `protected-effect/credential-root-security`
+- `protected-effect/material-finance-legal-external`
+- `protected-effect/major-public-production`
+- `protected-effect/cross-domain-root-expansion`
+- `protected-effect/policy-unknown`
+
+On this `ce5d83c` Skill base, the simple-permission evaluator and Action/API
+enforcement remain target-only. Accepted immutable candidate
+`42356e05f2fb3ca0160702e0098041d0b655fbca` supplies local Core/Store/schema
+semantics for fixed templates, selector resolution, and fail-closed evaluation;
+it is not master, live Action/API wiring, activation, R3, or Company authority.
+Do not claim its local checks as live enforcement.
+
+A future durable `ScopedPermissionGrant` must be strictly narrower in at least
+one authority-bearing dimension. That strict-narrowing rule, its durable grant
+evaluator/enforcement, recursive grant UX, sibling budget algebra, and new
+permission lifecycle remain target-only. Do not apply the strict-narrowing rule
+to the temporary same-or-narrower execution envelope above.
+
 ## Governance model
 
 The first Company OS layer is governance:
@@ -269,19 +335,20 @@ the right Domain Lead, and replans when evidence, blockers, or capacity
 changes.
 
 A Domain Lead may autonomously delegate operational work only inside the
-currently implemented policy and its declared responsibility, accepted
-WorkTypes, data/tool scope, budget/permission ceiling, and capacity. Recursive
-child-grant issuance and approved-template Standing Agent creation are target
-capabilities until the hierarchical grant lifecycle and authenticated
-transport are implemented and accepted.
+selected execution surface's accepted policy and its declared responsibility,
+WorkTypes, data/tool scope, budget/permission ceiling, and capacity. The
+temporary execution envelope follows the same-or-narrower v1 rule above.
+Recursive durable child-grant issuance and approved-template Standing Agent
+creation remain target capabilities until their lifecycle and authenticated
+Action/API transport are implemented and accepted.
 
-Every delegation attenuates authority: the recipient gets only the subset
-needed for the WorkItem, never broader access, spending, approval, legal,
-organization-change, or external-commitment authority than the delegator
-holds, and a child grant must be strictly narrower in at least one
-authority-bearing dimension. Delegated work keeps one accountable owner and an
-explicit Company Assignment in Work; provider subagents and MemberRuns do not
-become durable reports.
+Every delegation prevents expansion: the recipient gets no broader access,
+spending, approval, legal, organization-change, or external-commitment
+authority than the delegator holds. Temporary execution may keep the same
+bounded envelope; only a future durable child `ScopedPermissionGrant` must
+strictly narrow an authority-bearing dimension. Delegated work keeps one
+accountable owner and an explicit Company Assignment in Work; provider
+subagents and MemberRuns do not become durable reports.
 
 Current truth is the Human-admin Organization CLI v1 plus explicit
 StandingAgent ↔ AgentMember execution links. Target truth is one hierarchical
