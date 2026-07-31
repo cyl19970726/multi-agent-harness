@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarDays, Columns3, TableProperties } from "lucide-react";
+import { Archive, ArrowRight, CalendarDays, CheckCircle2, CircleAlert, Columns3, TableProperties } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +59,41 @@ function StandardViewProvenance({ view }: { view: CompanyOsStructuredViewData })
           </div>
         ))}
       </dl>
+    </section>
+  );
+}
+
+function ModuleLifecycleHealth({ view }: { view: CompanyOsStructuredViewData }) {
+  const health = view.lifecycleHealth;
+  if (!health) return null;
+  const isArchived = health.state === "archived_root";
+  const isMissing = health.state === "missing_root";
+  const Icon = isMissing ? CircleAlert : isArchived ? Archive : CheckCircle2;
+  const tone = isMissing ? "bad" as const : isArchived ? "warn" as const : "good" as const;
+  return (
+    <section
+      className={isMissing ? "rounded-lg border border-status-danger/35 bg-status-danger/[0.06] p-3" : isArchived ? "rounded-lg border border-status-warn/35 bg-status-warn/[0.07] p-3" : "rounded-lg border border-status-good/30 bg-status-good/[0.05] p-3"}
+      aria-label="BusinessModule lifecycle and provenance health"
+      data-docs-module-lifecycle-health={health.state}
+      data-docs-module-root-ref={health.rootDocumentRef}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold">Module lifecycle and provenance</h2>
+            <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">{health.summary}</p>
+          </div>
+        </div>
+        <Badge tone={tone}>{health.state.replace("_", " ")}</Badge>
+      </div>
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+        <div className="rounded-md border border-border bg-background/70 px-2.5 py-2"><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Module status</dt><dd className="mt-0.5 font-medium">{health.moduleStatus ?? "Not supplied"}</dd></div>
+        <div className="rounded-md border border-border bg-background/70 px-2.5 py-2" data-company-os-ref={health.rootDocumentRef}><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">root_document_ref</dt><dd className="mt-0.5 break-all font-medium">{health.rootDocumentRef ?? "Not declared"}</dd></div>
+        <div className="rounded-md border border-border bg-background/70 px-2.5 py-2"><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Root lifecycle</dt><dd className="mt-0.5 font-medium">{health.rootDocumentLifecycle ?? (isMissing ? "Missing" : "Not supplied")}</dd></div>
+      </dl>
+      {health.rootDocument && <RelationChips className="mt-3" links={[health.rootDocument]} emptyLabel="No root Document resolves." />}
+      {health.authoringBlocked && <p className="mt-3 text-[11px] leading-5 text-muted-foreground" data-docs-module-authoring-blocked="source-provenance">Module authoring is read-only until the exact root provenance is resolved through governed lifecycle or migration work. The projection does not rewrite root_document_ref.</p>}
     </section>
   );
 }
@@ -176,6 +211,7 @@ export function StructuredDocumentView({
   }
   const visual = useMemo(() => activeView === "table" ? <TableView view={view} /> : activeView === "board" ? <BoardView records={view.records} /> : <TimelineView records={view.records} />, [activeView, view]);
   return <section data-company-os-page="business-module-focus" data-company-os-fixture={view.fixtureId} data-company-os-ref={view.id} data-company-os-ready="true" className="h-full space-y-4 overflow-y-auto"><header className="flex flex-wrap items-end justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">{view.title}</h1>{view.description && <p className="mt-1 text-sm text-muted-foreground">{view.description}</p>}</div><div className="flex rounded-md border border-border bg-card p-0.5" role="tablist" aria-label="Record view"><>{allowed.map((kind) => { const Icon = viewIcons[kind]; return <Button key={kind} type="button" size="sm" variant={activeView === kind ? "secondary" : "ghost"} role="tab" aria-selected={activeView === kind} onClick={() => setActiveView(kind)}><Icon />{kind}</Button>; })}</></div></header>
+    <ModuleLifecycleHealth view={view} />
     <StandardViewProvenance view={view} />
     <StandardViewConfiguration view={view} />
     {view.records.length ? visual : <p role="status" className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground" data-docs-standard-view-empty="true">No records match this standard View. Empty state means the declared query returned no records; it does not delete the BusinessModule, Document, or TypedRecord truth.</p>}

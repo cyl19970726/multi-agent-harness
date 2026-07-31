@@ -144,6 +144,13 @@ function documentLink(entry: JsonRecord | undefined): CompanyOsLink | undefined 
   return entry ? { id, label: text(entry.title, "Untitled document"), kind: "document", href: docsDocumentHref(id) } : undefined;
 }
 
+function documentRefLink(id: string, entry?: JsonRecord): CompanyOsLink | undefined {
+  if (!id) return undefined;
+  return entry
+    ? documentLink(entry)
+    : { id, label: id, kind: "document" };
+}
+
 function moduleLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
   const id = text(entry?.id);
   return entry ? { id, label: text(entry.name, "Unnamed module"), kind: "module", href: docsModuleHref(id), meta: text(entry.status) ? humanize(entry.status) : undefined } : undefined;
@@ -157,6 +164,18 @@ function typedRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefin
 
 function workItemLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
   return entry ? { id: text(entry.id), label: text(entry.title, "Untitled work"), kind: "work" } : undefined;
+}
+
+function documentParentId(entry: JsonRecord | undefined): string {
+  return text(entry?.parent_document_id, text(entry?.parent_document_ref, text(entry?.parent_id)));
+}
+
+function workSourceDocumentId(entry: JsonRecord | undefined): string {
+  return text(entry?.source_document_ref, text(entry?.source_document_id));
+}
+
+function isUnfinishedWork(entry: JsonRecord): boolean {
+  return !["completed", "cancelled", "archived"].includes(text(entry.status).toLowerCase());
 }
 
 function financialRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
@@ -348,8 +367,10 @@ function buildDocumentHealthData({
   fixtureId,
   actors,
   documents,
+  allDocuments,
   blocks,
   typedRecords,
+  workItems,
   relations,
   modules,
   structureLinks,
@@ -358,15 +379,17 @@ function buildDocumentHealthData({
   fixtureId?: string;
   actors: JsonRecord[];
   documents: JsonRecord[];
+  allDocuments: JsonRecord[];
   blocks: JsonRecord[];
   typedRecords: JsonRecord[];
+  workItems: JsonRecord[];
   relations: JsonRecord[];
   modules: JsonRecord[];
   structureLinks: CompanyOsLink[];
   pageDefinitions: JsonRecord[];
 }): CompanyOsDocumentHealthData {
   const findings: CompanyOsHealthFinding[] = [];
-  const documentIds = new Set(documents.map((entry) => text(entry.id)).filter(Boolean));
+  const allDocumentIds = new Set(allDocuments.map((entry) => text(entry.id)).filter(Boolean));
   const workDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
     && definition.action_command_refs.map((value) => text(value)).includes("work_item.append"));
   const relationDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
@@ -458,8 +481,9 @@ function buildDocumentHealthData({
 
   documents.forEach((document) => {
     const documentId = text(document.id);
-    const parentId = text(document.parent_document_id, text(document.parent_document_ref, text(document.parent_id)));
-    if (parentId && !documentIds.has(parentId)) {
+    const parentId = documentParentId(document);
+    const parentDocument = record(allDocuments, parentId);
+    if (parentId && !allDocumentIds.has(parentId)) {
       findings.push({
         id: `orphan-document:${documentId}`,
         kind: "orphan_document",
@@ -470,6 +494,19 @@ function buildDocumentHealthData({
         recommendedAction: "Create a corrective WorkItem for Docs Governance, or run a governed Docs action to attach the document to a valid parent.",
         correctiveWorkLabel: "Create corrective WorkItem",
         directActionLabel: "Relink parent",
+        correctiveWorkContext: correctiveContext(document),
+      });
+    } else if (parentDocument && isArchived(parentDocument)) {
+      findings.push({
+        id: `archived-parent-document:${documentId}`,
+        kind: "document_parent_archived",
+        severity: "warning",
+        title: "Active Document has an archived parent",
+        detail: `${text(document.title, documentId)} preserves parent_document_id=${parentId}, but that parent is archived. The child remains active and must not be silently reparented.`,
+        subject: documentLink(document),
+        related: documentLink(parentDocument),
+        recommendedAction: "Review the hierarchy through a governed Docs WorkItem. Preserve the exact parent_document_id unless an explicit migration is accepted.",
+        correctiveWorkLabel: "Create hierarchy-review WorkItem",
         correctiveWorkContext: correctiveContext(document),
       });
     }
@@ -555,7 +592,22 @@ function buildDocumentHealthData({
 
   modules.forEach((entry) => {
     const rootDocumentId = text(entry.root_document_ref, text(entry.root_document_id));
-    if (rootDocumentId && documentIds.has(rootDocumentId)) return;
+    const rootDocument = record(allDocuments, rootDocumentId);
+    if (rootDocument && !isArchived(rootDocument)) return;
+    if (rootDocument && isArchived(rootDocument)) {
+      findings.push({
+        id: `archived-module-root:${text(entry.id)}`,
+        kind: "business_module_root_document_archived",
+        severity: "warning",
+        title: "BusinessModule root Document is archived",
+        detail: `${text(entry.name, "Unnamed module")} has status=${text(entry.status, "not supplied")} and root_document_ref=${rootDocumentId}, whose lifecycle_status is archived. The module stays visible while authoring is blocked; its exact root provenance is retained.`,
+        subject: moduleLink(entry),
+        related: documentLink(rootDocument),
+        recommendedAction: "Review module lifecycle and root provenance through governed Work. Do not silently migrate the module or rewrite root_document_ref.",
+        correctiveWorkLabel: "Create module-provenance WorkItem",
+      });
+      return;
+    }
     findings.push({
       id: `missing-module-root:${text(entry.id)}`,
       kind: "business_module_missing_root_document",
@@ -565,18 +617,50 @@ function buildDocumentHealthData({
         ? `${text(entry.name, "Unnamed module")} points to root document ${rootDocumentId}, but it is missing.`
         : `${text(entry.name, "Unnamed module")} does not declare a root_document_ref.`,
       subject: moduleLink(entry),
-      related: rootDocumentId ? { id: rootDocumentId, label: rootDocumentId, kind: "document" } : undefined,
-      recommendedAction: "Create or attach a root Document before agents add new records into this module.",
+      related: documentRefLink(rootDocumentId),
+      recommendedAction: "Restore the exact source or attach a replacement through an explicit governed migration before agents add new records. Do not silently rewrite root_document_ref.",
       correctiveWorkLabel: "Create module-structure WorkItem",
       directActionLabel: "Attach root Document",
-      correctiveWorkContext: correctiveContext(documents[0]),
+    });
+  });
+
+  workItems.filter(isUnfinishedWork).forEach((entry) => {
+    const workId = text(entry.id);
+    const sourceDocumentId = workSourceDocumentId(entry);
+    if (!sourceDocumentId) return;
+    const sourceDocument = record(allDocuments, sourceDocumentId);
+    if (!sourceDocument) {
+      findings.push({
+        id: `missing-unfinished-work-source:${workId}`,
+        kind: "unfinished_work_source_document_missing",
+        severity: "critical",
+        title: "Unfinished Work source Document is missing",
+        detail: `${text(entry.title, workId)} remains ${text(entry.status, "unfinished")} with source_document_ref=${sourceDocumentId}, but that exact Document is absent from the projection.`,
+        subject: workItemLink(entry),
+        related: documentRefLink(sourceDocumentId),
+        recommendedAction: "Preserve the WorkItem and exact source_document_ref while provenance is investigated. Restore the source or record an explicit governed supersession; do not silently migrate or complete the WorkItem.",
+        correctiveWorkLabel: "Create provenance-review WorkItem",
+      });
+      return;
+    }
+    if (!isArchived(sourceDocument)) return;
+    findings.push({
+      id: `archived-unfinished-work-source:${workId}`,
+      kind: "unfinished_work_source_document_archived",
+      severity: "warning",
+      title: "Unfinished Work source Document is archived",
+      detail: `${text(entry.title, workId)} remains ${text(entry.status, "unfinished")} with source_document_ref=${sourceDocumentId}; the source lifecycle_status is archived and remains readable provenance.`,
+      subject: workItemLink(entry),
+      related: documentLink(sourceDocument),
+      recommendedAction: "Keep the archived source readable and retain the exact Work link. Any source supersession or Work transition requires its own governed decision; do not silently rewrite provenance.",
+      correctiveWorkLabel: "Create provenance-review WorkItem",
     });
   });
 
   const critical = findings.filter((finding) => finding.severity === "critical").length;
   const warning = findings.filter((finding) => finding.severity === "warning").length;
   const cleanupQueue: CompanyOsDocumentHealthData["cleanupQueue"] = findings
-    .filter((finding) => ["duplicate_document_title", "oversized_document", "orphan_document", "business_module_missing_root_document", "typed_record_source_document_missing"].includes(finding.kind))
+    .filter((finding) => ["duplicate_document_title", "oversized_document", "orphan_document", "document_parent_archived", "business_module_missing_root_document", "typed_record_source_document_missing"].includes(finding.kind))
     .map((finding) => {
       const operation = finding.kind === "duplicate_document_title"
         ? "merge"
@@ -637,17 +721,12 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const actors = items(root.actors);
   const allDocuments = items(root.documents);
   const documents = allDocuments.filter((entry) => !isArchived(entry));
-  const activeDocumentIds = new Set(documents.map((entry) => text(entry.id)).filter(Boolean));
   const typedRecords = items(root.typed_records);
   const workItems = items(root.work_items);
   const financialRecords = items(root.financial_records);
   const approvals = items(root.approvals);
   const allModules = items(root.business_modules);
-  const modules = allModules.filter((entry) => {
-    if (isArchived(entry)) return false;
-    const rootDocumentRef = text(entry.root_document_ref, text(entry.root_document_id));
-    return !rootDocumentRef || activeDocumentIds.size === 0 || activeDocumentIds.has(rootDocumentRef);
-  });
+  const modules = allModules.filter((entry) => !isArchived(entry));
   const relations = items(root.relations);
   const blocks = items(root.blocks);
   const views = items(root.views);
@@ -676,7 +755,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
     ?? firstReferenced(workItems, distinct([...focusRefs, ...moduleRefs]))
     ?? workItems[0];
-  const workSourceDocument = record(documents, work?.source_document_ref);
+  const workSourceRef = workSourceDocumentId(work);
+  const workSourceDocument = record(allDocuments, workSourceRef);
   const application = typedRecords.find((entry) => ["trademarkapplication", "trademark_application"].includes(text(entry.record_type).toLowerCase()))
     ?? typedRecords.find((entry) => text(entry.source_document_ref) === text(workSourceDocument?.id ?? workspaceDocument?.id))
     ?? firstReferenced(typedRecords, distinct([...workspaceRefs, ...focusRefs, ...moduleRefs]))
@@ -695,7 +775,9 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? firstReferenced(proposals, distinct([...workspaceRefs, ...moduleRefs]))
     ?? proposals[0];
 
-  const sourceLink = documentLink(workSourceDocument ?? workspaceDocument);
+  const sourceLink = workSourceRef
+    ? documentRefLink(workSourceRef, workSourceDocument)
+    : documentLink(workspaceDocument);
   const focusLink = documentLink(focusDocument);
   const applicationLink = application
     ? { id: text(application.id), label: text(field(application, "display_id"), text(application.display_name, text(application.title, "Untitled record"))), kind: "record" as const }
@@ -799,31 +881,91 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   });
   const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })).map(([space, entries]) => {
     const sortedEntries = [...entries].sort((left, right) => text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" }));
-    return {
-      id: `space:${space}`,
-      label: space,
-      href: docsDocumentHref(text(sortedEntries[0]?.id)),
-      children: sortedEntries.map((entry) => {
+    const nodes = new Map<string, CompanyOsWorkspaceData["tree"][number]>();
+    sortedEntries.forEach((entry) => {
       const documentId = text(entry.id);
-      return {
+      const parentId = documentParentId(entry);
+      const parentDocument = record(allDocuments, parentId);
+      const parentHealth = parentId && !parentDocument
+        ? `Parent missing · ${parentId}`
+        : parentDocument && isArchived(parentDocument)
+          ? `Parent archived · ${parentId}`
+          : undefined;
+      nodes.set(documentId, {
         id: documentId,
         ref: documentId,
         label: text(entry.title, "Untitled document"),
         href: docsDocumentHref(documentId),
         selected: selected.documentId === documentId,
-      };
-    }),
+        meta: parentHealth,
+        children: [],
+      });
+    });
+    const roots: CompanyOsWorkspaceData["tree"] = [];
+    for (const entry of sortedEntries) {
+      const documentId = text(entry.id);
+      const parentId = documentParentId(entry);
+      const node = nodes.get(documentId);
+      const parentNode = nodes.get(parentId);
+      if (!node) continue;
+      let cursorId = parentId;
+      const visited = new Set([documentId]);
+      let cyclic = false;
+      while (cursorId) {
+        if (visited.has(cursorId)) {
+          cyclic = true;
+          break;
+        }
+        visited.add(cursorId);
+        cursorId = documentParentId(record(documents, cursorId));
+      }
+      if (parentNode && !cyclic) parentNode.children?.push(node);
+      else roots.push(node);
+    }
+    return {
+      id: `space:${space}`,
+      label: space,
+      href: docsDocumentHref(text(sortedEntries[0]?.id)),
+      children: roots,
     };
   });
+  const ensureSpace = (space: string) => {
+    const label = space || "Unresolved provenance";
+    const existing = workspaceTree.find((entry) => entry.label === label);
+    if (existing) return existing;
+    const created: CompanyOsWorkspaceData["tree"][number] = { id: `space:${label}`, label, children: [] };
+    workspaceTree.push(created);
+    workspaceTree.sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: "base" }));
+    return created;
+  };
   for (const candidate of modules) {
     const moduleId = text(candidate.id);
-    const rootDocument = record(documents, candidate.root_document_ref ?? candidate.root_document_id);
-    if (!rootDocument && selected.documentId) continue;
-    const moduleSpace = text(rootDocument?.space, text(rootDocument?.space_id, text(workspaceDocument?.space, text(workspaceDocument?.space_id))));
-    const parent = workspaceTree.find((entry) => entry.label === moduleSpace) ?? (!rootDocument ? workspaceTree[0] : undefined);
-    if (!moduleId || !parent) continue;
-    parent.children?.push({ id: moduleId, ref: moduleId, label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
+    const rootDocumentId = text(candidate.root_document_ref, text(candidate.root_document_id));
+    const rootDocument = record(allDocuments, rootDocumentId);
+    const moduleSpace = rootDocument
+      ? text(rootDocument.space, text(rootDocument.space_id, "Unresolved provenance"))
+      : text(candidate.space, text(candidate.space_id, "Unresolved provenance"));
+    const parent = ensureSpace(moduleSpace);
+    if (!moduleId) continue;
+    const rootHealth = !rootDocumentId || !rootDocument
+      ? `Root missing · ${rootDocumentId || "not declared"}`
+      : isArchived(rootDocument)
+        ? `Root archived · ${rootDocumentId}`
+        : undefined;
+    parent.children?.push({
+      id: moduleId,
+      ref: moduleId,
+      label: text(candidate.name, "Unnamed module"),
+      href: docsModuleHref(moduleId),
+      selected: selected.moduleId === moduleId,
+      meta: [humanize(candidate.status), rootHealth].filter(Boolean).join(" · ") || undefined,
+    });
   }
+  const sortTree = (items: CompanyOsWorkspaceData["tree"]) => {
+    items.sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: "base" }));
+    items.forEach((item) => sortTree(item.children ?? []));
+  };
+  sortTree(workspaceTree);
 
   const documentProperties = [
     owner && { label: "Owner", value: `${owner.label} · ${owner.actorType}`, ref: owner.id, actorType: owner.actorType },
@@ -943,7 +1085,29 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     }
     : undefined;
   const moduleAuthoringSourceDocumentId = text(module?.root_document_ref, text(module?.root_document_id, text(focusDocument?.id)));
-  const moduleAuthoring = module && moduleAuthoringSourceDocumentId && documentDefinition && typedRecordPolicyRef && viewPolicyRef && moduleRelationPolicyRef && documentAuthoringActor
+  const moduleRootDocumentRef = text(module?.root_document_ref, text(module?.root_document_id));
+  const moduleRootDocument = record(allDocuments, moduleRootDocumentRef);
+  const moduleRootState = !moduleRootDocumentRef || !moduleRootDocument
+    ? "missing_root" as const
+    : isArchived(moduleRootDocument)
+      ? "archived_root" as const
+      : "healthy" as const;
+  const moduleLifecycleHealth: CompanyOsStructuredViewData["lifecycleHealth"] | undefined = module
+    ? {
+        state: moduleRootState,
+        moduleStatus: text(module.status) || undefined,
+        rootDocumentRef: moduleRootDocumentRef || undefined,
+        rootDocumentLifecycle: moduleRootDocument ? text(moduleRootDocument.lifecycle_status, text(moduleRootDocument.status)) || undefined : undefined,
+        rootDocument: documentRefLink(moduleRootDocumentRef, moduleRootDocument),
+        summary: moduleRootState === "archived_root"
+          ? `Module status=${text(module.status, "not supplied")} retains root_document_ref=${moduleRootDocumentRef}; the exact root Document is archived and remains read-only provenance.`
+          : moduleRootState === "missing_root"
+            ? `Module status=${text(module.status, "not supplied")} retains root_document_ref=${moduleRootDocumentRef || "not declared"}; no matching Document is present in this projection.`
+            : `Module root_document_ref=${moduleRootDocumentRef} resolves to an active Document.`,
+        authoringBlocked: moduleRootState !== "healthy",
+      }
+    : undefined;
+  const moduleAuthoring = module && moduleRootState === "healthy" && moduleAuthoringSourceDocumentId && documentDefinition && typedRecordPolicyRef && viewPolicyRef && moduleRelationPolicyRef && documentAuthoringActor
     ? {
         definitionId: text(documentDefinition.id),
         moduleId: text(module.id),
@@ -958,8 +1122,10 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     fixtureId,
     actors,
     documents,
+    allDocuments,
     blocks,
     typedRecords,
+    workItems,
     relations,
     modules,
     structureLinks,
@@ -1133,7 +1299,23 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       description: documents.length ? "Documents, typed records, and connected operating context." : "No company documents are supplied by this projection.",
       rootSelected: true,
       tree: workspaceTree,
-      spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, href: docsDocumentHref(text(entries[0]?.id)), countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
+      spaces: workspaceTree.map((space) => {
+        const entries = docsBySpace.get(space.label) ?? [];
+        const affectedModules = modules.filter((candidate) => {
+          const rootDocument = record(allDocuments, text(candidate.root_document_ref, text(candidate.root_document_id)));
+          const moduleSpace = rootDocument
+            ? text(rootDocument.space, text(rootDocument.space_id, "Unresolved provenance"))
+            : text(candidate.space, text(candidate.space_id, "Unresolved provenance"));
+          return moduleSpace === space.label && (!rootDocument || isArchived(rootDocument));
+        });
+        return {
+          id: space.id,
+          name: space.label,
+          href: docsDocumentHref(text(entries[0]?.id)) ?? (affectedModules[0] ? docsModuleHref(text(affectedModules[0].id)) : undefined),
+          countLabel: `${entries.length} active page${entries.length === 1 ? "" : "s"}${affectedModules.length ? ` · ${affectedModules.length} module provenance finding${affectedModules.length === 1 ? "" : "s"}` : ""}`,
+          status: affectedModules.length ? "needs_attention" : undefined,
+        };
+      }),
       recentlyUpdated: linkEntries(documents.map(documentLink)),
       templates: templateLinks,
       templateRecordPolicy: templatePolicy,
@@ -1190,6 +1372,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
         sortBy: text(moduleViewQueryRecord?.sort_by) || undefined,
         query: moduleViewQueryRecord,
       },
+      lifecycleHealth: moduleLifecycleHealth,
       records: moduleRecords,
       columns: [
         { id: "title", label: "Record", cell: (entry) => entry.title },
@@ -1197,7 +1380,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
         { id: "links", label: "Connected", cell: (entry) => entry.links?.map((link) => link.label).join(", ") ?? "—" },
       ],
       availableViews: ["table", "board", "timeline"],
-      sourceLinks: linkEntries([sourceLink, applicationLink, proposalLink, ...moduleActors]),
+      sourceLinks: linkEntries([moduleLifecycleHealth?.rootDocument, sourceLink, applicationLink, proposalLink, ...moduleActors]),
       resultLinks: linkEntries([workLink, financeLink, ...moduleConnectedLinks.filter((link) => ["work", "approval", "finance"].includes(link.kind ?? ""))]),
       authoring: moduleAuthoring,
       fallback: { label: "Open standard record view", description: "The standard record view remains available if a custom module page is unavailable." },

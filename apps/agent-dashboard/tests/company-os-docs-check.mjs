@@ -21,6 +21,10 @@ function check(condition, message) {
   }
 }
 
+function flattenTree(items) {
+  return items.flatMap((item) => [item, ...flattenTree(item.children ?? [])]);
+}
+
 async function source(name) {
   return readFile(join(dashboardRoot, "src", "company-os", "docs", name), "utf8");
 }
@@ -71,6 +75,7 @@ async function main() {
   check(structured.includes('className="h-full space-y-4 overflow-y-auto"'), "standard business-module pages retain their own bounded vertical scroll owner");
   check(structured.includes("availableViews") && structured.includes("fallback") && structured.includes("BoardView") && structured.includes("TimelineView"), "structured view exposes standard table, board, timeline, and fallback paths");
   check(structured.includes("StandardViewProvenance") && structured.includes('data-docs-standard-view-provenance="true"') && structured.includes("View is presentation, not a second truth"), "structured view exposes provenance for module scope, native View, source kinds, query, and record count");
+  check(structured.includes("ModuleLifecycleHealth") && structured.includes("data-docs-module-lifecycle-health") && structured.includes("data-docs-module-root-ref") && structured.includes("data-docs-module-authoring-blocked"), "structured view exposes deterministic module root lifecycle and provenance health without rewriting source refs");
   check(structured.includes("StandardViewConfiguration") && structured.includes('data-docs-standard-view-configuration="true"') && structured.includes("Configuration is stored in native View.query") && structured.includes('aria-label="View filter field"') && structured.includes('aria-label="View group by"'), "structured view exposes saved View configuration and Store-live View query authoring controls");
   check(structured.includes('data-docs-standard-view-empty="true"') && structured.includes("declared query returned no records") && structured.includes("does not delete the BusinessModule"), "structured view empty state is explicit without fabricating module truth");
   check(structured.includes('data-docs-authoring-panel="business-module-focus"') && structured.includes("buildDocsTypedRecordCommand") && structured.includes("buildDocsViewCommand") && structured.includes("buildDocsRelationCommand"), "Structured module view exposes Store-live TypedRecord, View, and Relation authoring controls");
@@ -92,6 +97,7 @@ async function main() {
   check(home.includes("Button asChild") && home.includes("data.decisionRequired.href") && home.includes("disabled"), "Home renders a real approval link without a callback and never leaves an enabled no-op CTA");
   check(adapter.includes("adaptCompanyOsDocsProjection") && adapter.includes("financialRecordType"), "projection adapter maps financial type from an explicit record field");
   check(types.includes("documentTree?: CompanyOsWorkspaceTreeItem[]") && adapter.includes("documentTree: workspaceTree"), "projection adapter supplies the same Store-backed document tree to Document Focus without hard-coded project navigation");
+  check(types.includes("lifecycleHealth?:") && types.includes('state: "healthy" | "archived_root" | "missing_root"') && types.includes("authoringBlocked: boolean"), "Docs types expose bounded module lifecycle health for deterministic projection and authoring policy");
   check(adapter.includes("buildDocumentHealthData") && adapter.includes("missing_document_record_relation") && adapter.includes("No deletion without governed action") === false, "projection adapter computes document health without embedding UI policy copy");
   check(workspace.includes('data-docs-template-library="true"') && workspace.includes("data-docs-template-block-count") && workspace.includes("template_ref only") && workspace.includes("copy Blocks via Actions"), "Docs Workspace exposes a native template library with provenance and instantiation boundaries");
   check(workspace.includes("data-docs-template-lifecycle") && workspace.includes("harness company docs template status") && workspace.includes("archiving a template does not mutate existing Documents"), "Docs Workspace exposes template lifecycle state and governed status boundary");
@@ -151,10 +157,10 @@ async function main() {
   check(["actor-agent-content-strategy", "actor-external-lawyer"].every((id) => pages.home.decisionCollaborators?.some((actor) => actor.id === id)), "Home contributor selection retains projection-backed strategy and external legal collaborators without broad actor dumping");
   const documentHeadings = pages.document.blocks.filter((block) => block.type === "heading").map((block) => block.content);
   const documentTables = pages.document.blocks.filter((block) => block.type === "table").map((block) => block.table.caption);
-  check(pages.workspace.rootSelected === true && !pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.selected), "Docs workspace selection remains on the Company workspace root");
-  check(pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")) && pages.workspace.recentlyUpdated?.some((link) => link.href?.startsWith("?surface=docs&document=")), "Docs workspace supplies URL-addressable document links for tree and recent records");
-  check(pages.document.documentTree?.flatMap((item) => item.children ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")), "Document Focus receives URL-addressable document architecture links from the same projection-backed tree");
-  check(pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => /Trademark Management/.test(item.label) && /Proposed/.test(item.meta ?? "")), "proposed module is discoverable from the Company workspace tree");
+  check(pages.workspace.rootSelected === true && !flattenTree(pages.workspace.tree).some((item) => item.selected), "Docs workspace selection remains on the Company workspace root");
+  check(flattenTree(pages.workspace.tree).some((item) => item.href?.startsWith("?surface=docs&document=")) && pages.workspace.recentlyUpdated?.some((link) => link.href?.startsWith("?surface=docs&document=")), "Docs workspace supplies URL-addressable document links for tree and recent records");
+  check(flattenTree(pages.document.documentTree ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")), "Document Focus receives URL-addressable document architecture links from the same projection-backed tree");
+  check(flattenTree(pages.workspace.tree).some((item) => /Trademark Management/.test(item.label) && /Proposed/.test(item.meta ?? "")), "proposed module is discoverable from the Company workspace tree");
   check(pages.workspace.maintainers?.some((actor) => actor.id === "actor-agent-document-architecture" && actor.actorType === "Standing Agent"), "Docs workspace exposes projection-backed Standing Agent maintainers");
   check(pages.moduleView.provenance?.moduleId === "module-trademark-management" && pages.moduleView.provenance?.sourceKinds?.includes("typed_record") && pages.moduleView.provenance?.recordCount === pages.moduleView.records.length, "Business Module standard view provenance preserves module scope, source kinds, and record count");
   check(pages.moduleView.configuration?.mode === "table" && pages.moduleView.configuration?.sourceKinds?.includes("typed_record"), "Business Module standard view configuration preserves fallback mode and source kinds when the projection has no native View row");
@@ -283,6 +289,22 @@ async function main() {
       && !selectedDocumentPages.document.resultLinks?.some((link) => link.id === "work-selected-a"),
     "selected Document Focus scopes context rail records to the selected document",
   );
+  const recursiveHierarchyPages = adaptCompanyOsDocsProjection({
+    documents: [
+      { id: "document-hierarchy-root", title: "Hierarchy root", space_id: "operations", parent_document_id: null, lifecycle_status: "active", block_ids: [] },
+      { id: "document-hierarchy-child", title: "Hierarchy child", space_id: "operations", parent_document_id: "document-hierarchy-root", lifecycle_status: "active", block_ids: [] },
+      { id: "document-hierarchy-grandchild", title: "Hierarchy grandchild", space_id: "operations", parent_document_id: "document-hierarchy-child", lifecycle_status: "active", block_ids: [] },
+    ],
+  });
+  const hierarchyRoot = recursiveHierarchyPages.workspace.tree.find((item) => item.id === "space:operations")?.children?.find((item) => item.id === "document-hierarchy-root");
+  const hierarchyChild = hierarchyRoot?.children?.find((item) => item.id === "document-hierarchy-child");
+  const hierarchyGrandchild = hierarchyChild?.children?.find((item) => item.id === "document-hierarchy-grandchild");
+  check(
+    hierarchyRoot?.href === "?surface=docs&document=document-hierarchy-root"
+      && hierarchyChild?.href === "?surface=docs&document=document-hierarchy-child"
+      && hierarchyGrandchild?.href === "?surface=docs&document=document-hierarchy-grandchild",
+    "Docs navigation recursively follows exact parent_document_id edges through three levels without title-based grouping",
+  );
   const archivedPages = adaptCompanyOsDocsProjection({
     documents: [
       { id: "document-active-root", title: "Active Root", space_id: "agentos", parent_document_id: null, kind: "page", lifecycle_status: "active", block_ids: [] },
@@ -292,21 +314,47 @@ async function main() {
     business_modules: [
       { id: "module-active", name: "Active module", root_document_ref: "document-active-root", status: "active", default_view_refs: [] },
       { id: "module-archived-root", name: "Archived root module", root_document_ref: "document-archived-company-root", status: "active", default_view_refs: [] },
+      { id: "module-missing-root", name: "Missing root module", root_document_ref: "document-missing-company-root", status: "active", default_view_refs: [] },
+    ],
+    work_items: [
+      { id: "work-archived-source", title: "Continue archived-source work", status: "in_progress", source_document_ref: "document-archived-company-child" },
+      { id: "work-missing-source", title: "Continue missing-source work", status: "submitted", source_document_ref: "document-missing-work-source" },
+      { id: "work-completed-archived-source", title: "Completed archived-source work", status: "completed", source_document_ref: "document-archived-company-child" },
     ],
   });
-  const archivedVisibleRefs = [
-    ...archivedPages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
-    ...(archivedPages.workspace.recentlyUpdated ?? []).map((link) => link.id),
-    ...(archivedPages.health.structureLinks ?? []).map((link) => link.id),
-    ...archivedPages.moduleView.sourceLinks.map((link) => link.id),
-  ].filter(Boolean);
+  const archivedTreeNodes = flattenTree(archivedPages.workspace.tree);
   check(
     archivedPages.health.counts.documents === 1
-      && archivedPages.workspace.spaces?.every((space) => space.name !== "company")
-      && !archivedVisibleRefs.some((id) => /archived-company/.test(id))
-      && archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-active")
-      && !archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-archived-root"),
-    "Docs workspace hides archived Documents and modules whose root Document is archived from active navigation",
+      && !archivedTreeNodes.some((item) => item.id === "document-archived-company-root" || item.id === "document-archived-company-child")
+      && archivedTreeNodes.some((item) => item.id === "module-active")
+      && archivedTreeNodes.some((item) => item.id === "module-archived-root" && /Root archived/.test(item.meta ?? "") && /document-archived-company-root/.test(item.meta ?? ""))
+      && archivedTreeNodes.some((item) => item.id === "module-missing-root" && /Root missing/.test(item.meta ?? "") && /document-missing-company-root/.test(item.meta ?? ""))
+      && archivedPages.workspace.tree.find((item) => item.id === "space:Unresolved provenance")?.children?.some((item) => item.id === "module-missing-root"),
+    "active modules remain discoverable with exact archived or missing root provenance while archived Documents stay outside active document navigation",
+  );
+  check(
+    archivedPages.health.findings.some((finding) => finding.kind === "business_module_root_document_archived" && finding.subject?.id === "module-archived-root" && finding.related?.id === "document-archived-company-root")
+      && archivedPages.health.findings.some((finding) => finding.kind === "business_module_missing_root_document" && finding.subject?.id === "module-missing-root" && finding.related?.id === "document-missing-company-root")
+      && archivedPages.health.findings.some((finding) => finding.kind === "unfinished_work_source_document_archived" && finding.subject?.id === "work-archived-source" && finding.related?.id === "document-archived-company-child")
+      && archivedPages.health.findings.some((finding) => finding.kind === "unfinished_work_source_document_missing" && finding.subject?.id === "work-missing-source" && finding.related?.id === "document-missing-work-source")
+      && !archivedPages.health.findings.some((finding) => finding.id.includes("work-completed-archived-source"))
+      && archivedPages.health.findings.filter((finding) => /business_module|unfinished_work/.test(finding.kind)).every((finding) => !finding.correctiveWorkContext && !finding.relationRepairContext),
+    "Docs Health deterministically distinguishes active module and unfinished Work provenance across archived and missing Documents using exact ids",
+  );
+  const archivedModulePages = adaptCompanyOsDocsProjection({
+    documents: [
+      { id: "document-archived-module-root", title: "Archived module root", space_id: "company", parent_document_id: null, lifecycle_status: "archived", block_ids: [] },
+    ],
+    business_modules: [{ id: "module-selected-archived-root", name: "Selected archived-root module", root_document_ref: "document-archived-module-root", status: "active", default_view_refs: [] }],
+  }, { moduleId: "module-selected-archived-root" });
+  check(
+    archivedModulePages.moduleView.id === "module-selected-archived-root"
+      && archivedModulePages.moduleView.lifecycleHealth?.state === "archived_root"
+      && archivedModulePages.moduleView.lifecycleHealth.rootDocumentRef === "document-archived-module-root"
+      && archivedModulePages.moduleView.lifecycleHealth.rootDocument?.id === "document-archived-module-root"
+      && archivedModulePages.moduleView.lifecycleHealth.authoringBlocked
+      && archivedModulePages.moduleView.authoring === undefined,
+    "active archived-root module view preserves exact read-only provenance and blocks Docs authoring without mutating module lifecycle",
   );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
 
@@ -321,14 +369,14 @@ async function main() {
       ...pages.home.financeSummary.flatMap((item) => item.id ? [item.id] : []),
     ]),
     "docs-workspace": new Set([
-      ...pages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+      ...flattenTree(pages.workspace.tree).map((item) => item.ref),
       ...(pages.workspace.recentlyUpdated ?? []).map((link) => link.id),
       ...(pages.workspace.suggestions ?? []).map((link) => link.id),
       pages.workspace.proposal?.id,
     ].filter(Boolean)),
     "document-focus": new Set([
       pages.document.id,
-      ...(pages.document.documentTree ?? []).flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+      ...flattenTree(pages.document.documentTree ?? []).map((item) => item.ref),
       ...(pages.document.properties ?? []).flatMap((property) => property.ref ? [property.ref] : []),
       ...(pages.document.sourceLinks ?? []).map((link) => link.id),
       ...(pages.document.resultLinks ?? []).map((link) => link.id),

@@ -253,6 +253,15 @@ export interface CompanyOsStructuredViewData {
     recordCount?: number;
   };
   configuration?: CompanyOsStandardViewConfig;
+  lifecycleHealth?: {
+    state: "healthy" | "archived_root" | "missing_root";
+    moduleStatus?: string;
+    rootDocumentRef?: string;
+    rootDocumentLifecycle?: string;
+    rootDocument?: CompanyOsLink;
+    summary: string;
+    authoringBlocked: boolean;
+  };
   records: CompanyOsRecord[];
   columns: CompanyOsViewColumn[];
   availableViews?: CompanyOsViewKind[];
