@@ -448,6 +448,511 @@ impl ValidateCompanyOs for OrganizationMembership {
     }
 }
 
+/// Fixed Company responsibility templates for simple Organization permission v1.
+///
+/// These are ceilings, not grants. Effective permission is always the
+/// intersection of the template, an explicit [`ModuleCapability`] envelope,
+/// the owning policy, and the exact execution binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimpleRoleTemplate {
+    CompanyLead,
+    DomainLead,
+    ExecutionMember,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionModule {
+    Docs,
+    Work,
+    Org,
+    Github,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionVerb {
+    Read,
+    Write,
+    Execute,
+    Delegate,
+}
+
+impl SimpleRoleTemplate {
+    pub fn allows(self, verb: PermissionVerb) -> bool {
+        match self {
+            Self::CompanyLead | Self::DomainLead => true,
+            Self::ExecutionMember => verb != PermissionVerb::Delegate,
+        }
+    }
+}
+
+/// One module entry in an Actor's declared permission envelope.
+///
+/// Scope references are exact, server-resolved ids. No prefix, wildcard, role,
+/// display name, or inferred hierarchy has permission meaning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleCapability {
+    pub module: PermissionModule,
+    pub verbs: Vec<PermissionVerb>,
+    pub scope_refs: Vec<String>,
+}
+
+/// Server-resolved evidence that one exact scope is a direct or transitive
+/// child of another for the same module. It is evaluation input, never stored
+/// authority: callers must obtain it from the owning Docs/Work/Org/repository
+/// relation resolver rather than declaring hierarchy themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplePermissionScopeProof {
+    pub module: PermissionModule,
+    pub parent_scope_ref: String,
+    pub child_scope_ref: String,
+    pub evidence_ref: String,
+}
+
+impl ValidateCompanyOs for SimplePermissionScopeProof {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        required(
+            &self.parent_scope_ref,
+            "SimplePermissionScopeProof.parent_scope_ref",
+        )?;
+        required(
+            &self.child_scope_ref,
+            "SimplePermissionScopeProof.child_scope_ref",
+        )?;
+        required(
+            &self.evidence_ref,
+            "SimplePermissionScopeProof.evidence_ref",
+        )?;
+        if self.parent_scope_ref == self.child_scope_ref {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionScopeProof.child_scope_ref",
+                reason: "identical scopes do not require a child-scope proof".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl ValidateCompanyOs for ModuleCapability {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        if self.verbs.is_empty() {
+            return Err(CompanyOsValidationError::Required {
+                field: "ModuleCapability.verbs",
+            });
+        }
+        let verbs = self.verbs.iter().copied().collect::<BTreeSet<_>>();
+        if verbs.len() != self.verbs.len() {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "ModuleCapability.verbs",
+                reason: "must not contain duplicates".into(),
+            });
+        }
+        if self.scope_refs.is_empty() {
+            return Err(CompanyOsValidationError::Required {
+                field: "ModuleCapability.scope_refs",
+            });
+        }
+        required_strings(&self.scope_refs, "ModuleCapability.scope_refs")
+    }
+}
+
+/// The single protected-effects catalog for simple Organization permission v1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ProtectedEffect {
+    #[serde(rename = "protected-effect/irreversible-destructive")]
+    IrreversibleDestructive,
+    #[serde(rename = "protected-effect/credential-root-security")]
+    CredentialRootSecurity,
+    #[serde(rename = "protected-effect/material-finance-legal-external")]
+    MaterialFinanceLegalExternal,
+    #[serde(rename = "protected-effect/major-public-production")]
+    MajorPublicProduction,
+    #[serde(rename = "protected-effect/cross-domain-root-expansion")]
+    CrossDomainRootExpansion,
+    #[serde(rename = "protected-effect/policy-unknown")]
+    PolicyUnknown,
+}
+
+impl ProtectedEffect {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::IrreversibleDestructive => "protected-effect/irreversible-destructive",
+            Self::CredentialRootSecurity => "protected-effect/credential-root-security",
+            Self::MaterialFinanceLegalExternal => {
+                "protected-effect/material-finance-legal-external"
+            }
+            Self::MajorPublicProduction => "protected-effect/major-public-production",
+            Self::CrossDomainRootExpansion => "protected-effect/cross-domain-root-expansion",
+            Self::PolicyUnknown => "protected-effect/policy-unknown",
+        }
+    }
+}
+
+pub const SIMPLE_PERMISSION_PROTECTED_EFFECTS: [ProtectedEffect; 6] = [
+    ProtectedEffect::IrreversibleDestructive,
+    ProtectedEffect::CredentialRootSecurity,
+    ProtectedEffect::MaterialFinanceLegalExternal,
+    ProtectedEffect::MajorPublicProduction,
+    ProtectedEffect::CrossDomainRootExpansion,
+    ProtectedEffect::PolicyUnknown,
+];
+
+/// Exact non-secret runtime and Assignment evidence bound to one permission
+/// state. Every field is a selector to cross-check against Store truth; none is
+/// independently authoritative.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplePermissionExecutionBinding {
+    pub standing_agent_ref: ActorRef,
+    pub agent_member_id: String,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub native_session_id: String,
+    pub project_binding_id: String,
+    pub assignment_id: String,
+    pub assignment_team_message_id: String,
+    pub assignment_correlation_id: String,
+    pub supervisor_id: String,
+    pub supervisor_generation: u64,
+}
+
+impl ValidateCompanyOs for SimplePermissionExecutionBinding {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        self.standing_agent_ref.validate()?;
+        if self.standing_agent_ref.actor_type != ActorType::Agent {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionExecutionBinding.standing_agent_ref",
+                reason: "must reference a StandingAgent".into(),
+            });
+        }
+        for (value, field) in [
+            (
+                &self.agent_member_id,
+                "SimplePermissionExecutionBinding.agent_member_id",
+            ),
+            (
+                &self.team_run_id,
+                "SimplePermissionExecutionBinding.team_run_id",
+            ),
+            (
+                &self.member_run_id,
+                "SimplePermissionExecutionBinding.member_run_id",
+            ),
+            (
+                &self.native_session_id,
+                "SimplePermissionExecutionBinding.native_session_id",
+            ),
+            (
+                &self.project_binding_id,
+                "SimplePermissionExecutionBinding.project_binding_id",
+            ),
+            (
+                &self.assignment_id,
+                "SimplePermissionExecutionBinding.assignment_id",
+            ),
+            (
+                &self.assignment_team_message_id,
+                "SimplePermissionExecutionBinding.assignment_team_message_id",
+            ),
+            (
+                &self.assignment_correlation_id,
+                "SimplePermissionExecutionBinding.assignment_correlation_id",
+            ),
+            (
+                &self.supervisor_id,
+                "SimplePermissionExecutionBinding.supervisor_id",
+            ),
+        ] {
+            required(value, field)?;
+        }
+        if self.supervisor_generation == 0 {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionExecutionBinding.supervisor_generation",
+                reason: "must be positive".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One immutable, fail-closed permission snapshot for a bound StandingAgent.
+/// It has no activation lifecycle, grant graph, bearer secret, or recursive
+/// delegation state machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplePermissionState {
+    pub id: String,
+    pub company_id: String,
+    pub actor_ref: ActorRef,
+    pub role_template: SimpleRoleTemplate,
+    pub module_capabilities: Vec<ModuleCapability>,
+    pub execution_binding: SimplePermissionExecutionBinding,
+    pub created_by: ActorRef,
+    pub created_at: String,
+}
+
+impl ValidateCompanyOs for SimplePermissionState {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        required(&self.id, "SimplePermissionState.id")?;
+        required(&self.company_id, "SimplePermissionState.company_id")?;
+        self.actor_ref.validate()?;
+        if self.actor_ref.actor_type != ActorType::Agent {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionState.actor_ref",
+                reason: "must reference a StandingAgent".into(),
+            });
+        }
+        self.execution_binding.validate()?;
+        if self.actor_ref != self.execution_binding.standing_agent_ref {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionState.execution_binding",
+                reason: "must bind the exact permission-state Actor".into(),
+            });
+        }
+        if self.module_capabilities.is_empty() {
+            return Err(CompanyOsValidationError::Required {
+                field: "SimplePermissionState.module_capabilities",
+            });
+        }
+        let mut modules = BTreeSet::new();
+        for capability in &self.module_capabilities {
+            capability.validate()?;
+            if !modules.insert(capability.module) {
+                return Err(CompanyOsValidationError::Invalid {
+                    field: "SimplePermissionState.module_capabilities",
+                    reason: "must contain at most one entry per module".into(),
+                });
+            }
+            if let Some(verb) = capability
+                .verbs
+                .iter()
+                .copied()
+                .find(|verb| !self.role_template.allows(*verb))
+            {
+                return Err(CompanyOsValidationError::Invalid {
+                    field: "SimplePermissionState.module_capabilities",
+                    reason: format!(
+                        "role template {:?} does not permit {:?}",
+                        self.role_template, verb
+                    ),
+                });
+            }
+        }
+        self.created_by.validate()?;
+        if self.created_by.actor_type != ActorType::Human {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionState.created_by",
+                reason: "initial permission state must be rooted in a Human Actor".into(),
+            });
+        }
+        required(&self.created_at, "SimplePermissionState.created_at")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimpleActionPolicyDecision {
+    Allowed,
+    Denied,
+    Unknown,
+}
+
+/// Server-supplied inputs for one permission evaluation. The execution binding
+/// is repeated deliberately so stale or retargeted callers fail closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplePermissionRequest {
+    pub execution_binding: SimplePermissionExecutionBinding,
+    pub module: PermissionModule,
+    pub verb: PermissionVerb,
+    pub scope_ref: String,
+    pub subject_ref: EntityRef,
+    /// Supplied only by the authenticated transport boundary. False never
+    /// falls back to Actor, role, session, or token inference.
+    pub transport_authenticated: bool,
+    pub action_policy_decision: SimpleActionPolicyDecision,
+    pub protected_effect: Option<ProtectedEffect>,
+    pub human_approval_ref: Option<String>,
+    pub evaluated_at: String,
+}
+
+impl ValidateCompanyOs for SimplePermissionRequest {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        self.execution_binding.validate()?;
+        required(&self.scope_ref, "SimplePermissionRequest.scope_ref")?;
+        self.subject_ref.validate()?;
+        optional_required(
+            self.human_approval_ref.as_deref(),
+            "SimplePermissionRequest.human_approval_ref",
+        )?;
+        required(&self.evaluated_at, "SimplePermissionRequest.evaluated_at")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimplePermissionDenial {
+    StateMissing,
+    InvalidState,
+    InvalidRequest,
+    BindingMismatch,
+    InactiveIdentity,
+    MissingNativeSession,
+    AssignmentMismatch,
+    StaleSupervisor,
+    TemplateDenied,
+    CapabilityMissing,
+    ScopeEscape,
+    TransportUnauthenticated,
+    ActionPolicyDenied,
+    ActionPolicyUnknown,
+    ProtectedEffectApprovalRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", content = "reason", rename_all = "snake_case")]
+pub enum SimplePermissionDecision {
+    Allowed,
+    Denied(SimplePermissionDenial),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimpleDelegationError {
+    ParentCannotDelegate,
+    ChildMustBeExecutionMember,
+    InvalidChildEnvelope,
+    CapabilityExpansion,
+    ScopeExpansion,
+}
+
+impl SimplePermissionState {
+    /// Evaluate the immutable template/envelope/policy portion. Store-backed
+    /// callers must additionally re-resolve runtime, Assignment, Supervisor,
+    /// and Human Approval evidence for every request.
+    pub fn evaluate(&self, request: &SimplePermissionRequest) -> SimplePermissionDecision {
+        if self.validate().is_err() {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::InvalidState);
+        }
+        if request.validate().is_err() {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::InvalidRequest);
+        }
+        if self.execution_binding != request.execution_binding {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::BindingMismatch);
+        }
+        if !self.role_template.allows(request.verb) {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::TemplateDenied);
+        }
+        let Some(capability) = self
+            .module_capabilities
+            .iter()
+            .find(|capability| capability.module == request.module)
+        else {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::CapabilityMissing);
+        };
+        if !capability.verbs.contains(&request.verb) {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::CapabilityMissing);
+        }
+        if !capability.scope_refs.contains(&request.scope_ref) {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::ScopeEscape);
+        }
+        if !request.transport_authenticated {
+            return SimplePermissionDecision::Denied(
+                SimplePermissionDenial::TransportUnauthenticated,
+            );
+        }
+        match request.action_policy_decision {
+            SimpleActionPolicyDecision::Denied => {
+                return SimplePermissionDecision::Denied(SimplePermissionDenial::ActionPolicyDenied)
+            }
+            SimpleActionPolicyDecision::Unknown => {
+                return SimplePermissionDecision::Denied(
+                    SimplePermissionDenial::ActionPolicyUnknown,
+                )
+            }
+            SimpleActionPolicyDecision::Allowed => {}
+        }
+        if request.protected_effect.is_some() && request.human_approval_ref.is_none() {
+            return SimplePermissionDecision::Denied(
+                SimplePermissionDenial::ProtectedEffectApprovalRequired,
+            );
+        }
+        SimplePermissionDecision::Allowed
+    }
+
+    /// Validate one bounded child execution envelope. V1 intentionally permits
+    /// only a direct execution Member whose verbs and exact scopes are subsets
+    /// of the parent; it creates no durable child permission state or grant UX.
+    pub fn validate_child_delegation(
+        &self,
+        child_role: SimpleRoleTemplate,
+        child_capabilities: &[ModuleCapability],
+    ) -> Result<(), SimpleDelegationError> {
+        self.validate_child_delegation_with_scope_proofs(child_role, child_capabilities, &[])
+    }
+
+    /// Variant used after the owning server has resolved explicit scope
+    /// containment evidence. A proof can narrow a parent scope to a child but
+    /// can never change the module or expand verbs.
+    pub fn validate_child_delegation_with_scope_proofs(
+        &self,
+        child_role: SimpleRoleTemplate,
+        child_capabilities: &[ModuleCapability],
+        scope_proofs: &[SimplePermissionScopeProof],
+    ) -> Result<(), SimpleDelegationError> {
+        if !matches!(
+            self.role_template,
+            SimpleRoleTemplate::CompanyLead | SimpleRoleTemplate::DomainLead
+        ) {
+            return Err(SimpleDelegationError::ParentCannotDelegate);
+        }
+        if child_role != SimpleRoleTemplate::ExecutionMember {
+            return Err(SimpleDelegationError::ChildMustBeExecutionMember);
+        }
+        if child_capabilities.is_empty()
+            || child_capabilities.iter().any(|capability| {
+                capability.validate().is_err()
+                    || capability
+                        .verbs
+                        .iter()
+                        .any(|verb| !child_role.allows(*verb))
+            })
+        {
+            return Err(SimpleDelegationError::InvalidChildEnvelope);
+        }
+        let mut modules = BTreeSet::new();
+        for child in child_capabilities {
+            if !modules.insert(child.module) {
+                return Err(SimpleDelegationError::InvalidChildEnvelope);
+            }
+            let Some(parent) = self
+                .module_capabilities
+                .iter()
+                .find(|candidate| candidate.module == child.module)
+            else {
+                return Err(SimpleDelegationError::CapabilityExpansion);
+            };
+            if !parent.verbs.contains(&PermissionVerb::Delegate)
+                || child.verbs.iter().any(|verb| !parent.verbs.contains(verb))
+            {
+                return Err(SimpleDelegationError::CapabilityExpansion);
+            }
+            if child.scope_refs.iter().any(|scope| {
+                !parent.scope_refs.contains(scope)
+                    && !parent.scope_refs.iter().any(|parent_scope| {
+                        scope_proofs.iter().any(|proof| {
+                            proof.validate().is_ok()
+                                && proof.module == child.module
+                                && proof.parent_scope_ref == *parent_scope
+                                && proof.child_scope_ref == *scope
+                        })
+                    })
+            }) {
+                return Err(SimpleDelegationError::ScopeExpansion);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {

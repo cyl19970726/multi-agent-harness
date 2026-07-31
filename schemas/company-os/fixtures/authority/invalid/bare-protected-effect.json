@@ -1,0 +1,24 @@
+{
+  "execution_binding": {
+    "standing_agent_ref": { "actor_type": "agent", "actor_id": "agent-trademark" },
+    "agent_member_id": "agent-member-trademark",
+    "team_run_id": "team-run-trademark",
+    "member_run_id": "member-run-trademark",
+    "native_session_id": "native-session-trademark",
+    "project_binding_id": "multi-agent-harness",
+    "assignment_id": "assignment-trademark",
+    "assignment_team_message_id": "team-message-trademark",
+    "assignment_correlation_id": "correlation-trademark",
+    "supervisor_id": "supervisor-trademark",
+    "supervisor_generation": 1
+  },
+  "module": "org",
+  "verb": "execute",
+  "scope_ref": "org-unit/governance",
+  "subject_ref": { "kind": "actor", "id": "agent-trademark" },
+  "transport_authenticated": true,
+  "action_policy_decision": "allowed",
+  "protected_effect": "cross-domain-root-expansion",
+  "human_approval_ref": "approval-org-expansion",
+  "evaluated_at": "2026-07-31T12:00:00Z"
+}

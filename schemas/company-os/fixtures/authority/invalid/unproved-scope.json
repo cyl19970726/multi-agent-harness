@@ -1,0 +1,6 @@
+{
+  "module": "docs",
+  "parent_scope_ref": "document-space/company",
+  "child_scope_ref": "document-space/company/governance",
+  "evidence_ref": ""
+}

@@ -1,0 +1,33 @@
+{
+  "id": "permission-state-trademark-domain",
+  "company_id": "company-example",
+  "actor_ref": { "actor_type": "agent", "actor_id": "agent-trademark" },
+  "role_template": "domain_lead",
+  "module_capabilities": [
+    {
+      "module": "work",
+      "verbs": ["read", "write", "execute", "delegate"],
+      "scope_refs": ["work-trademark", "work-trademark-child"]
+    },
+    {
+      "module": "github",
+      "verbs": ["read", "write", "execute"],
+      "scope_refs": ["project-binding/multi-agent-harness"]
+    }
+  ],
+  "execution_binding": {
+    "standing_agent_ref": { "actor_type": "agent", "actor_id": "agent-trademark" },
+    "agent_member_id": "agent-member-trademark",
+    "team_run_id": "team-run-trademark",
+    "member_run_id": "member-run-trademark",
+    "native_session_id": "native-session-trademark",
+    "project_binding_id": "multi-agent-harness",
+    "assignment_id": "assignment-trademark",
+    "assignment_team_message_id": "team-message-trademark",
+    "assignment_correlation_id": "correlation-trademark",
+    "supervisor_id": "supervisor-trademark",
+    "supervisor_generation": 1
+  },
+  "created_by": { "actor_type": "human", "actor_id": "human-owner" },
+  "created_at": "2026-07-31T12:00:00Z"
+}

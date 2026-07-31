@@ -3,13 +3,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, Assignment, AssignmentDeliveryState, AuditEvent, AuditEventKind,
-    Block, BlockKind, BusinessModule, Commitment, CommitmentStatus, CustomPageDefinition,
-    CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, DeclaredAvailability, Document,
-    DocumentKind, EntityKind, EntityRef, ExecutionMode, ExternalParticipant, HumanMember,
-    LifecycleStatus, MemberStatus, Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus,
-    OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
-    PaymentStatus, Relation, RiskTier, StandingAgent, TypedRecord, View, ViewMode, WorkItem,
+    AgentMember, AgentTeamRun, Approval, ApprovalStatus, Assignment, AssignmentDeliveryState,
+    AuditEvent, AuditEventKind, Block, BlockKind, BusinessModule, Commitment, CommitmentStatus,
+    CustomPageDefinition, CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration,
+    DeclaredAvailability, Document, DocumentKind, EntityKind, EntityRef, ExecutionMode,
+    ExternalParticipant, HumanMember, LifecycleStatus, MemberRun, MemberStatus, Milestone,
+    MilestoneStatus, ModuleCapability, Money, OrgUnit, OrgUnitStatus, OrganizationMembership,
+    OrganizationMembershipRole, OrganizationMembershipStatus, Payment, PaymentStatus,
+    PermissionModule, PermissionVerb, ProtectedEffect, Relation, RiskTier,
+    SimpleActionPolicyDecision, SimplePermissionDecision, SimplePermissionDenial,
+    SimplePermissionExecutionBinding, SimplePermissionRequest, SimplePermissionState,
+    SimpleRoleTemplate, StandingAgent, TeamMessage, TypedRecord, View, ViewMode, WorkItem,
     WorkItemStatus, WorkQuery, WorkType,
 };
 use harness_store::{
@@ -1661,4 +1665,322 @@ fn commitment_pending_action_accepts_only_matching_evidenced_requested_human_gat
         ),
         Err(StoreError::Conflict(message)) if message.contains("matching evidence-backed Human queue gate")
     ));
+}
+
+fn seed_simple_permission_runtime(
+    store: &HarnessStore,
+) -> (SimplePermissionState, SimplePermissionRequest, ActorRef) {
+    let human_member = human("human-permission-owner");
+    let human_ref = actor(ActorType::Human, &human_member.id);
+    store.append_human_member(&human_member).unwrap();
+
+    let mut company_agent = standing_agent("agent-simple-permission");
+    company_agent.execution_agent_member_ref = Some("agent-member-simple-permission".into());
+    let agent_ref = actor(ActorType::Agent, &company_agent.id);
+    store.append_standing_agent(&company_agent).unwrap();
+
+    let document_id = "doc-simple-permission";
+    store
+        .append_document(&document(document_id, &human_ref))
+        .unwrap();
+    let work = work_item(
+        "work-simple-permission",
+        document_id,
+        &human_ref,
+        &agent_ref,
+    );
+    store.append_work_item(&work).unwrap();
+
+    let member: AgentMember = serde_json::from_value(json!({
+        "id": "agent-member-simple-permission",
+        "name": "Simple Permission Runtime",
+        "description": "Bound execution identity",
+        "role": "domain_lead",
+        "provider": "codex",
+        "model": null,
+        "profile": null,
+        "capabilities": [],
+        "team_ids": ["team-simple-permission"],
+        "prompt_ref": null,
+        "skill_refs": [],
+        "workspace_policy": null,
+        "status": "running",
+        "current_task_id": null,
+        "current_proposal_id": null,
+        "provider_runtime_id": null,
+        "provider_thread_id": null,
+        "control_endpoint": null,
+        "created_at": NOW,
+        "last_seen_at": NOW
+    }))
+    .unwrap();
+    store.append_member(&member).unwrap();
+
+    let team_run: AgentTeamRun = serde_json::from_value(json!({
+        "id": "team-run-simple-permission",
+        "agent_team_id": "team-simple-permission",
+        "project_binding_id": "project-simple-permission",
+        "host_surface": "codex-app",
+        "objective": "Exercise exact simple permission binding",
+        "status": "running",
+        "member_run_ids": ["member-run-simple-permission"],
+        "created_at": NOW,
+        "updated_at": NOW
+    }))
+    .unwrap();
+    store.append_team_run(&team_run).unwrap();
+
+    let member_run: MemberRun = serde_json::from_value(json!({
+        "id": "member-run-simple-permission",
+        "team_run_id": team_run.id,
+        "agent_member_id": member.id,
+        "name": member.name,
+        "role": member.role,
+        "provider": "codex",
+        "status": "running",
+        "native_session": {
+            "provider": "codex",
+            "execution_mode": "codex_app_server",
+            "native_session_id": "native-session-simple-permission",
+            "native_locator_kind": "codex_rollout",
+            "adapter_contract_version": "codex-app-server-v1",
+            "availability": "available",
+            "supports_resume": true
+        },
+        "started_at": NOW
+    }))
+    .unwrap();
+    store.append_member_run(&member_run).unwrap();
+
+    let team_message: TeamMessage = serde_json::from_value(json!({
+        "id": "team-message-simple-permission",
+        "team_run_id": "team-run-simple-permission",
+        "from_member_id": "host",
+        "to_member_ids": ["member-run-simple-permission"],
+        "kind": "assignment",
+        "body": "Execute bounded permission work",
+        "correlation_id": "correlation-simple-permission",
+        "deliveries": [{
+            "member_id": "member-run-simple-permission",
+            "policy": "queue",
+            "status": "delivered",
+            "attempt": 1,
+            "updated_at": "unix-ms:1"
+        }],
+        "created_at": "unix-ms:1"
+    }))
+    .unwrap();
+    store.append_team_message(&team_message).unwrap();
+
+    let assignment = Assignment {
+        id: "assignment-simple-permission".into(),
+        work_item_id: work.id.clone(),
+        recipient: agent_ref.clone(),
+        sender: human_ref.clone(),
+        assigned_role: "domain_lead".into(),
+        scope: Some("work-simple-permission".into()),
+        delivery_state: AssignmentDeliveryState::Delivered,
+        delivery_policy_ref: "policy-assignment-delivery".into(),
+        correlation_id: team_message.correlation_id.clone(),
+        delivery_evidence_ref: Some(team_message.id.clone()),
+        assigned_at: NOW.into(),
+        delivered_at: Some(NOW.into()),
+        acknowledged_at: None,
+    };
+    store.append_assignment(&assignment).unwrap();
+
+    let lease = store
+        .acquire_team_supervisor_lease(
+            &team_run.id,
+            "supervisor-simple-permission",
+            std::process::id(),
+            "test://simple-permission",
+            1,
+            u64::MAX,
+        )
+        .unwrap();
+    let binding = SimplePermissionExecutionBinding {
+        standing_agent_ref: agent_ref,
+        agent_member_id: member.id,
+        team_run_id: team_run.id,
+        member_run_id: member_run.id,
+        native_session_id: "native-session-simple-permission".into(),
+        project_binding_id: "project-simple-permission".into(),
+        assignment_id: assignment.id,
+        assignment_team_message_id: team_message.id,
+        assignment_correlation_id: team_message.correlation_id,
+        supervisor_id: lease.supervisor_id,
+        supervisor_generation: lease.generation,
+    };
+    let state = SimplePermissionState {
+        id: "simple-permission-state".into(),
+        company_id: "company-example".into(),
+        actor_ref: binding.standing_agent_ref.clone(),
+        role_template: SimpleRoleTemplate::DomainLead,
+        module_capabilities: vec![ModuleCapability {
+            module: PermissionModule::Work,
+            verbs: vec![
+                PermissionVerb::Read,
+                PermissionVerb::Execute,
+                PermissionVerb::Delegate,
+            ],
+            scope_refs: vec![work.id],
+        }],
+        execution_binding: binding.clone(),
+        created_by: human_ref.clone(),
+        created_at: NOW.into(),
+    };
+    let request = SimplePermissionRequest {
+        execution_binding: binding,
+        module: PermissionModule::Work,
+        verb: PermissionVerb::Execute,
+        scope_ref: "work-simple-permission".into(),
+        subject_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        transport_authenticated: true,
+        action_policy_decision: SimpleActionPolicyDecision::Allowed,
+        protected_effect: None,
+        human_approval_ref: None,
+        evaluated_at: NOW.into(),
+    };
+    (state, request, human_ref)
+}
+
+#[test]
+fn simple_permission_store_re_resolves_identity_assignment_and_supervisor() {
+    let test = TestStore::new("simple-permission");
+    let (state, mut request, human_ref) = seed_simple_permission_runtime(&test.store);
+    test.store.append_simple_permission_state(&state).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Allowed
+    );
+    request.transport_authenticated = false;
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::TransportUnauthenticated)
+    );
+    request.transport_authenticated = true;
+    assert!(matches!(
+        test.store.append_simple_permission_state(&state),
+        Err(StoreError::Conflict(message)) if message.contains("already exists")
+    ));
+
+    let current_agent = test
+        .store
+        .latest_standing_agents()
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.id == state.actor_ref.actor_id)
+        .unwrap();
+    let mut paused_agent = current_agent.clone();
+    paused_agent.status = MemberStatus::Paused;
+    test.store.append_standing_agent(&paused_agent).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::InactiveIdentity)
+    );
+    test.store.append_standing_agent(&current_agent).unwrap();
+
+    let current_member_run = test
+        .store
+        .member_runs()
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|run| run.id == state.execution_binding.member_run_id)
+        .unwrap();
+    let mut missing_session = current_member_run.clone();
+    missing_session.native_session = None;
+    test.store.append_member_run(&missing_session).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::MissingNativeSession)
+    );
+    test.store.append_member_run(&current_member_run).unwrap();
+
+    let current_assignment = test
+        .store
+        .latest_assignments()
+        .unwrap()
+        .into_iter()
+        .find(|assignment| assignment.id == state.execution_binding.assignment_id)
+        .unwrap();
+    let mut mismatched_assignment = current_assignment.clone();
+    mismatched_assignment.correlation_id = "different-correlation".into();
+    test.store
+        .append_assignment(&mismatched_assignment)
+        .unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::AssignmentMismatch)
+    );
+    test.store.append_assignment(&current_assignment).unwrap();
+
+    request.protected_effect = Some(ProtectedEffect::PolicyUnknown);
+    request.human_approval_ref = Some("approval-simple-permission".into());
+    request.evaluated_at = "2026-07-20T12:00:00+08:00".into();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::ProtectedEffectApprovalRequired)
+    );
+    let requested = requested_approval(
+        "approval-simple-permission",
+        EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        &state.actor_ref,
+        &human_ref,
+    );
+    let requested = Approval {
+        policy_ref: ProtectedEffect::PolicyUnknown.as_str().into(),
+        ..requested
+    };
+    test.store.append_approval(&requested).unwrap();
+    let approval = approved(requested, &human_ref);
+    test.store.append_approval(&approval).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Allowed
+    );
+    request.subject_ref.id = "work-other".into();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::ProtectedEffectApprovalRequired)
+    );
+    request.subject_ref.id = "work-simple-permission".into();
+
+    test.store
+        .release_team_supervisor_lease(
+            &state.execution_binding.team_run_id,
+            &state.execution_binding.supervisor_id,
+            state.execution_binding.supervisor_generation,
+            2,
+        )
+        .unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::StaleSupervisor)
+    );
 }

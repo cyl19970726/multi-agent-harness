@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://star-harness.local/schemas/company-os/authority.schema.json",
+  "title": "Company OS simple Organization permission v1",
+  "description": "One fixed-template, exact-envelope permission state plus fail-closed evaluation and server-proven scope-containment inputs.",
+  "oneOf": [
+    { "$ref": "#/$defs/simplePermissionState" },
+    { "$ref": "#/$defs/simplePermissionRequest" },
+    { "$ref": "#/$defs/simplePermissionScopeProof" }
+  ],
+  "$defs": {
+    "string": { "type": "string", "minLength": 1 },
+    "nullableString": { "type": ["string", "null"], "minLength": 1 },
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "enum": ["human", "agent", "external", "service"] },
+        "actor_id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "standingAgentRef": {
+      "allOf": [
+        { "$ref": "#/$defs/actorRef" },
+        {
+          "type": "object",
+          "properties": { "actor_type": { "const": "agent" } }
+        }
+      ]
+    },
+    "humanActorRef": {
+      "allOf": [
+        { "$ref": "#/$defs/actorRef" },
+        {
+          "type": "object",
+          "properties": { "actor_type": { "const": "human" } }
+        }
+      ]
+    },
+    "entityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "actor",
+            "document",
+            "typed_record",
+            "business_module",
+            "milestone",
+            "work_item",
+            "approval",
+            "financial_record",
+            "evidence",
+            "execution"
+          ]
+        },
+        "id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "roleTemplate": {
+      "enum": ["company_lead", "domain_lead", "execution_member"]
+    },
+    "permissionModule": {
+      "enum": ["docs", "work", "org", "github"]
+    },
+    "permissionVerb": {
+      "enum": ["read", "write", "execute", "delegate"]
+    },
+    "protectedEffect": {
+      "enum": [
+        "protected-effect/irreversible-destructive",
+        "protected-effect/credential-root-security",
+        "protected-effect/material-finance-legal-external",
+        "protected-effect/major-public-production",
+        "protected-effect/cross-domain-root-expansion",
+        "protected-effect/policy-unknown"
+      ]
+    },
+    "moduleCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "verbs", "scope_refs"],
+      "properties": {
+        "module": { "$ref": "#/$defs/permissionModule" },
+        "verbs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/permissionVerb" }
+        },
+        "scope_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/string" }
+        }
+      }
+    },
+    "executionBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "standing_agent_ref",
+        "agent_member_id",
+        "team_run_id",
+        "member_run_id",
+        "native_session_id",
+        "project_binding_id",
+        "assignment_id",
+        "assignment_team_message_id",
+        "assignment_correlation_id",
+        "supervisor_id",
+        "supervisor_generation"
+      ],
+      "properties": {
+        "standing_agent_ref": { "$ref": "#/$defs/standingAgentRef" },
+        "agent_member_id": { "$ref": "#/$defs/string" },
+        "team_run_id": { "$ref": "#/$defs/string" },
+        "member_run_id": { "$ref": "#/$defs/string" },
+        "native_session_id": { "$ref": "#/$defs/string" },
+        "project_binding_id": { "$ref": "#/$defs/string" },
+        "assignment_id": { "$ref": "#/$defs/string" },
+        "assignment_team_message_id": { "$ref": "#/$defs/string" },
+        "assignment_correlation_id": { "$ref": "#/$defs/string" },
+        "supervisor_id": { "$ref": "#/$defs/string" },
+        "supervisor_generation": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "simplePermissionState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "company_id",
+        "actor_ref",
+        "role_template",
+        "module_capabilities",
+        "execution_binding",
+        "created_by",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "company_id": { "$ref": "#/$defs/string" },
+        "actor_ref": { "$ref": "#/$defs/standingAgentRef" },
+        "role_template": { "$ref": "#/$defs/roleTemplate" },
+        "module_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/moduleCapability" }
+        },
+        "execution_binding": { "$ref": "#/$defs/executionBinding" },
+        "created_by": { "$ref": "#/$defs/humanActorRef" },
+        "created_at": { "$ref": "#/$defs/string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "role_template": { "const": "execution_member" } },
+            "required": ["role_template"]
+          },
+          "then": {
+            "properties": {
+              "module_capabilities": {
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/$defs/moduleCapability" },
+                    {
+                      "properties": {
+                        "verbs": {
+                          "not": { "contains": { "const": "delegate" } }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "simplePermissionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_binding",
+        "module",
+        "verb",
+        "scope_ref",
+        "subject_ref",
+        "transport_authenticated",
+        "action_policy_decision",
+        "protected_effect",
+        "human_approval_ref",
+        "evaluated_at"
+      ],
+      "properties": {
+        "execution_binding": { "$ref": "#/$defs/executionBinding" },
+        "module": { "$ref": "#/$defs/permissionModule" },
+        "verb": { "$ref": "#/$defs/permissionVerb" },
+        "scope_ref": { "$ref": "#/$defs/string" },
+        "subject_ref": { "$ref": "#/$defs/entityRef" },
+        "transport_authenticated": { "type": "boolean" },
+        "action_policy_decision": { "enum": ["allowed", "denied", "unknown"] },
+        "protected_effect": {
+          "oneOf": [
+            { "$ref": "#/$defs/protectedEffect" },
+            { "type": "null" }
+          ]
+        },
+        "human_approval_ref": { "$ref": "#/$defs/nullableString" },
+        "evaluated_at": { "$ref": "#/$defs/string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "protected_effect": { "type": "string" } },
+            "required": ["protected_effect"]
+          },
+          "then": {
+            "properties": {
+              "human_approval_ref": { "$ref": "#/$defs/string" }
+            }
+          }
+        }
+      ]
+    },
+    "simplePermissionScopeProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "parent_scope_ref", "child_scope_ref", "evidence_ref"],
+      "properties": {
+        "module": { "$ref": "#/$defs/permissionModule" },
+        "parent_scope_ref": { "$ref": "#/$defs/string" },
+        "child_scope_ref": { "$ref": "#/$defs/string" },
+        "evidence_ref": { "$ref": "#/$defs/string" }
+      }
+    }
+  }
+}

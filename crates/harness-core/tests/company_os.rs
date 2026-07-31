@@ -4,10 +4,14 @@ use harness_core::{
     Block, BlockKind, BusinessModule, Commitment, CommitmentStatus, CompanyOsValidationError,
     CustomPageDefinition, CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, Document,
     DocumentKind, EntityKind, EntityRef, ExecutionMode, ExternalParticipant, HumanMember,
-    LifecycleStatus, MemberStatus, Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus,
-    OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
-    PaymentStatus, Relation, RelationRule, RiskTier, ServiceActor, StandingAgent, TypedRecord,
-    ValidateCompanyOs, View, ViewMode, WorkItem, WorkItemStatus, WorkType,
+    LifecycleStatus, MemberStatus, Milestone, MilestoneStatus, ModuleCapability, Money, OrgUnit,
+    OrgUnitStatus, OrganizationMembership, OrganizationMembershipRole,
+    OrganizationMembershipStatus, Payment, PaymentStatus, PermissionModule, PermissionVerb,
+    ProtectedEffect, Relation, RelationRule, RiskTier, ServiceActor, SimpleActionPolicyDecision,
+    SimpleDelegationError, SimplePermissionDecision, SimplePermissionDenial,
+    SimplePermissionExecutionBinding, SimplePermissionRequest, SimplePermissionScopeProof,
+    SimplePermissionState, SimpleRoleTemplate, StandingAgent, TypedRecord, ValidateCompanyOs, View,
+    ViewMode, WorkItem, WorkItemStatus, WorkType, SIMPLE_PERMISSION_PROTECTED_EFFECTS,
 };
 use serde_json::json;
 
@@ -26,6 +30,44 @@ fn human() -> ActorRef {
 
 fn agent() -> ActorRef {
     actor(ActorType::Agent, "agent-trademark")
+}
+
+fn simple_binding() -> SimplePermissionExecutionBinding {
+    SimplePermissionExecutionBinding {
+        standing_agent_ref: agent(),
+        agent_member_id: "agent-member-trademark".into(),
+        team_run_id: "team-run-trademark".into(),
+        member_run_id: "member-run-trademark".into(),
+        native_session_id: "native-session-trademark".into(),
+        project_binding_id: "project-trademark".into(),
+        assignment_id: "assignment-trademark".into(),
+        assignment_team_message_id: "team-message-trademark".into(),
+        assignment_correlation_id: "correlation-trademark".into(),
+        supervisor_id: "supervisor-trademark".into(),
+        supervisor_generation: 1,
+    }
+}
+
+fn simple_permission_state(role_template: SimpleRoleTemplate) -> SimplePermissionState {
+    SimplePermissionState {
+        id: "simple-permission-trademark".into(),
+        company_id: "company-example".into(),
+        actor_ref: agent(),
+        role_template,
+        module_capabilities: vec![ModuleCapability {
+            module: PermissionModule::Work,
+            verbs: vec![
+                PermissionVerb::Read,
+                PermissionVerb::Write,
+                PermissionVerb::Execute,
+                PermissionVerb::Delegate,
+            ],
+            scope_refs: vec!["work-trademark".into(), "work-trademark-child".into()],
+        }],
+        execution_binding: simple_binding(),
+        created_by: human(),
+        created_at: NOW.into(),
+    }
 }
 
 #[test]
@@ -639,4 +681,159 @@ fn audit_event_is_a_durable_typed_action_record() {
         serde_json::from_value(serde_json::to_value(&event).unwrap()).unwrap();
     assert_eq!(round_trip.id, event.id);
     assert_eq!(round_trip.event_kind, AuditEventKind::Requested);
+}
+
+#[test]
+fn simple_permission_templates_and_protected_effects_are_fixed() {
+    assert!(SimpleRoleTemplate::CompanyLead.allows(PermissionVerb::Delegate));
+    assert!(SimpleRoleTemplate::DomainLead.allows(PermissionVerb::Delegate));
+    assert!(!SimpleRoleTemplate::ExecutionMember.allows(PermissionVerb::Delegate));
+    assert_eq!(
+        SIMPLE_PERMISSION_PROTECTED_EFFECTS,
+        [
+            ProtectedEffect::IrreversibleDestructive,
+            ProtectedEffect::CredentialRootSecurity,
+            ProtectedEffect::MaterialFinanceLegalExternal,
+            ProtectedEffect::MajorPublicProduction,
+            ProtectedEffect::CrossDomainRootExpansion,
+            ProtectedEffect::PolicyUnknown,
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(ProtectedEffect::PolicyUnknown).unwrap(),
+        json!("protected-effect/policy-unknown")
+    );
+    assert!(serde_json::from_value::<ProtectedEffect>(json!("policy-unknown")).is_err());
+
+    let mut execution = simple_permission_state(SimpleRoleTemplate::ExecutionMember);
+    assert!(matches!(
+        execution.validate(),
+        Err(CompanyOsValidationError::Invalid {
+            field: "SimplePermissionState.module_capabilities",
+            ..
+        })
+    ));
+    execution.module_capabilities[0]
+        .verbs
+        .retain(|verb| *verb != PermissionVerb::Delegate);
+    execution.validate().unwrap();
+}
+
+#[test]
+fn simple_permission_delegation_is_one_level_and_same_or_narrower() {
+    let parent = simple_permission_state(SimpleRoleTemplate::DomainLead);
+    let child = ModuleCapability {
+        module: PermissionModule::Work,
+        verbs: vec![PermissionVerb::Read, PermissionVerb::Execute],
+        scope_refs: vec!["work-trademark-child".into()],
+    };
+    parent
+        .validate_child_delegation(
+            SimpleRoleTemplate::ExecutionMember,
+            std::slice::from_ref(&child),
+        )
+        .unwrap();
+
+    assert_eq!(
+        parent.validate_child_delegation(
+            SimpleRoleTemplate::DomainLead,
+            std::slice::from_ref(&child),
+        ),
+        Err(SimpleDelegationError::ChildMustBeExecutionMember)
+    );
+    let mut expanded = child.clone();
+    expanded.scope_refs = vec!["work-trademark-grandchild".into()];
+    assert_eq!(
+        parent.validate_child_delegation(SimpleRoleTemplate::ExecutionMember, &[expanded.clone()]),
+        Err(SimpleDelegationError::ScopeExpansion)
+    );
+    parent
+        .validate_child_delegation_with_scope_proofs(
+            SimpleRoleTemplate::ExecutionMember,
+            &[expanded],
+            &[SimplePermissionScopeProof {
+                module: PermissionModule::Work,
+                parent_scope_ref: "work-trademark".into(),
+                child_scope_ref: "work-trademark-grandchild".into(),
+                evidence_ref: "relation/work-trademark/contains/grandchild".into(),
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        parent.validate_child_delegation_with_scope_proofs(
+            SimpleRoleTemplate::ExecutionMember,
+            &[ModuleCapability {
+                module: PermissionModule::Work,
+                verbs: vec![PermissionVerb::Read],
+                scope_refs: vec!["work-unrelated".into()],
+            }],
+            &[SimplePermissionScopeProof {
+                module: PermissionModule::Docs,
+                parent_scope_ref: "work-trademark".into(),
+                child_scope_ref: "work-unrelated".into(),
+                evidence_ref: "wrong-module-proof".into(),
+            }],
+        ),
+        Err(SimpleDelegationError::ScopeExpansion)
+    );
+    let mut recursive = child;
+    recursive.verbs.push(PermissionVerb::Delegate);
+    assert_eq!(
+        parent.validate_child_delegation(SimpleRoleTemplate::ExecutionMember, &[recursive]),
+        Err(SimpleDelegationError::InvalidChildEnvelope)
+    );
+}
+
+#[test]
+fn simple_permission_evaluation_intersects_binding_envelope_policy_and_effect() {
+    let state = simple_permission_state(SimpleRoleTemplate::DomainLead);
+    state.validate().unwrap();
+    let mut request = SimplePermissionRequest {
+        execution_binding: simple_binding(),
+        module: PermissionModule::Work,
+        verb: PermissionVerb::Execute,
+        scope_ref: "work-trademark".into(),
+        subject_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-trademark".into(),
+        },
+        transport_authenticated: true,
+        action_policy_decision: SimpleActionPolicyDecision::Allowed,
+        protected_effect: None,
+        human_approval_ref: None,
+        evaluated_at: NOW.into(),
+    };
+    assert_eq!(state.evaluate(&request), SimplePermissionDecision::Allowed);
+
+    request.scope_ref = "work-unrelated".into();
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::ScopeEscape)
+    );
+    request.scope_ref = "work-trademark".into();
+    request.transport_authenticated = false;
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::TransportUnauthenticated)
+    );
+    request.transport_authenticated = true;
+    request.action_policy_decision = SimpleActionPolicyDecision::Unknown;
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::ActionPolicyUnknown)
+    );
+    request.action_policy_decision = SimpleActionPolicyDecision::Allowed;
+    request.protected_effect = Some(ProtectedEffect::PolicyUnknown);
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::ProtectedEffectApprovalRequired)
+    );
+    request.human_approval_ref = Some("approval-policy-unknown".into());
+    assert_eq!(state.evaluate(&request), SimplePermissionDecision::Allowed);
+
+    request.execution_binding.native_session_id = "different-session".into();
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::BindingMismatch)
+    );
 }

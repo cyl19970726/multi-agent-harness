@@ -1,0 +1,23 @@
+{
+  "id": "permission-state-missing-session",
+  "company_id": "company-example",
+  "actor_ref": { "actor_type": "agent", "actor_id": "agent-trademark" },
+  "role_template": "domain_lead",
+  "module_capabilities": [
+    { "module": "work", "verbs": ["read"], "scope_refs": ["work-trademark"] }
+  ],
+  "execution_binding": {
+    "standing_agent_ref": { "actor_type": "agent", "actor_id": "agent-trademark" },
+    "agent_member_id": "agent-member-trademark",
+    "team_run_id": "team-run-trademark",
+    "member_run_id": "member-run-trademark",
+    "project_binding_id": "multi-agent-harness",
+    "assignment_id": "assignment-trademark",
+    "assignment_team_message_id": "team-message-trademark",
+    "assignment_correlation_id": "correlation-trademark",
+    "supervisor_id": "supervisor-trademark",
+    "supervisor_generation": 1
+  },
+  "created_by": { "actor_type": "human", "actor_id": "human-owner" },
+  "created_at": "2026-07-31T12:00:00Z"
+}

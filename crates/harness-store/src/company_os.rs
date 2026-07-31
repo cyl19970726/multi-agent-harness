@@ -9,12 +9,15 @@ use std::fmt;
 
 use harness_core::{
     ActionCommand, ActionCommandStatus, ActionPolicyDefinition, ActorRef, ActorType, ActorWorkload,
-    Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
-    EntityRef, ExternalParticipant, HumanMember, MemberStatus, Milestone, MilestoneProgress,
-    OrgUnit, OrganizationMembership, Payment, PaymentStatus, Relation, ServiceActor, StandingAgent,
-    TypedRecord, ValidateCompanyOs, View, WorkItem, WorkItemStatus, WorkProjection, WorkQuery,
-    WorkSummary, WorkType,
+    AgentMemberStatus, Approval, ApprovalStatus, Assignment, AssignmentDeliveryState, AuditEvent,
+    AuditEventKind, Block, BusinessModule, Commitment, CommitmentStatus, CustomPageDefinition,
+    CustomPagePackage, Document, EntityKind, EntityRef, ExternalParticipant, HumanMember,
+    MemberRunStatus, MemberStatus, Milestone, MilestoneProgress, NativeSessionAvailability,
+    OrgUnit, OrganizationMembership, Payment, PaymentStatus, Relation, ServiceActor,
+    SimplePermissionDecision, SimplePermissionDenial, SimplePermissionExecutionBinding,
+    SimplePermissionRequest, SimplePermissionState, StandingAgent, TeamDeliveryStatus,
+    TeamMessageKind, TeamRunStatus, TeamSupervisorLeaseStatus, TypedRecord, ValidateCompanyOs,
+    View, WorkItem, WorkItemStatus, WorkProjection, WorkQuery, WorkSummary, WorkType,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -32,6 +35,7 @@ const EXTERNAL_PARTICIPANTS: &str = "company_os_external_participants.jsonl";
 const SERVICE_ACTORS: &str = "company_os_service_actors.jsonl";
 const ORG_UNITS: &str = "company_os_org_units.jsonl";
 const ORGANIZATION_MEMBERSHIPS: &str = "company_os_organization_memberships.jsonl";
+const SIMPLE_PERMISSION_STATES: &str = "company_os_simple_permission_states.jsonl";
 const MILESTONES: &str = "company_os_milestones.jsonl";
 const WORK_ITEMS: &str = "company_os_work_items.jsonl";
 const ASSIGNMENTS: &str = "company_os_assignments.jsonl";
@@ -179,6 +183,12 @@ impl HarnessStore {
         OrganizationMembership,
         ORGANIZATION_MEMBERSHIPS
     );
+    company_read_api!(
+        simple_permission_states,
+        latest_simple_permission_states,
+        SimplePermissionState,
+        SIMPLE_PERMISSION_STATES
+    );
     company_read_api!(work_items, latest_work_items, WorkItem, WORK_ITEMS);
     company_read_api!(milestones, latest_milestones, Milestone, MILESTONES);
     company_read_api!(assignments, latest_assignments, Assignment, ASSIGNMENTS);
@@ -218,6 +228,13 @@ impl HarnessStore {
 
     pub fn latest_audit_event(&self, id: &str) -> StoreResult<Option<AuditEvent>> {
         self.find_by_id(AUDIT_EVENTS, id)
+    }
+
+    pub fn latest_simple_permission_state(
+        &self,
+        id: &str,
+    ) -> StoreResult<Option<SimplePermissionState>> {
+        self.find_by_id(SIMPLE_PERMISSION_STATES, id)
     }
     company_read_api!(
         custom_page_definitions,
@@ -342,6 +359,257 @@ impl HarnessStore {
             store.require_actor(&value.actor_ref)?;
             store.require_actor(&value.created_by_actor_ref)
         })
+    }
+
+    /// Insert one immutable simple-permission snapshot. Duplicate ids and a
+    /// second snapshot for the same Actor are rejected rather than projected
+    /// into an implicit permission lifecycle.
+    pub fn append_simple_permission_state(&self, value: &SimplePermissionState) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::CompanyOsValidation(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let states = latest_by_id(
+            self.read_jsonl::<SimplePermissionState>(SIMPLE_PERMISSION_STATES)?,
+            |state| state.id.clone(),
+        );
+        if states.contains_key(&value.id) {
+            return Err(StoreError::Conflict(format!(
+                "simple permission state already exists: {}",
+                value.id
+            )));
+        }
+        if states
+            .values()
+            .any(|state| state.actor_ref == value.actor_ref)
+        {
+            return Err(StoreError::Conflict(format!(
+                "simple permission state already exists for Actor {}",
+                value.actor_ref.actor_id
+            )));
+        }
+        self.require_actor(&value.actor_ref)?;
+        self.require_actor(&value.created_by)?;
+        if let Some(reason) =
+            self.simple_permission_binding_denial(&value.execution_binding, &value.created_at)?
+        {
+            return Err(StoreError::Conflict(format!(
+                "simple permission execution binding denied: {reason:?}"
+            )));
+        }
+        self.append_jsonl_unlocked(SIMPLE_PERMISSION_STATES, value)
+    }
+
+    /// Evaluate one request against the immutable snapshot and current Store
+    /// truth. Runtime, Assignment, Supervisor, and Approval evidence are
+    /// re-resolved on every call; stale selectors never authorize.
+    pub fn evaluate_simple_permission(
+        &self,
+        state_id: &str,
+        request: &SimplePermissionRequest,
+    ) -> StoreResult<SimplePermissionDecision> {
+        let Some(state) = self.latest_simple_permission_state(state_id)? else {
+            return Ok(SimplePermissionDecision::Denied(
+                SimplePermissionDenial::StateMissing,
+            ));
+        };
+        let decision = state.evaluate(request);
+        if decision != SimplePermissionDecision::Allowed {
+            return Ok(decision);
+        }
+        if let Some(reason) = self
+            .simple_permission_binding_denial(&request.execution_binding, &request.evaluated_at)?
+        {
+            return Ok(SimplePermissionDecision::Denied(reason));
+        }
+        if request.protected_effect.is_some()
+            && !self.simple_permission_human_approval_is_valid(
+                request.human_approval_ref.as_deref(),
+                request.protected_effect,
+                &request.subject_ref,
+                &request.evaluated_at,
+            )?
+        {
+            return Ok(SimplePermissionDecision::Denied(
+                SimplePermissionDenial::ProtectedEffectApprovalRequired,
+            ));
+        }
+        Ok(SimplePermissionDecision::Allowed)
+    }
+
+    fn simple_permission_binding_denial(
+        &self,
+        binding: &SimplePermissionExecutionBinding,
+        evaluated_at: &str,
+    ) -> StoreResult<Option<SimplePermissionDenial>> {
+        if binding.validate().is_err() {
+            return Ok(Some(SimplePermissionDenial::BindingMismatch));
+        }
+
+        let agents = latest_by_id(self.standing_agents()?, |agent| agent.id.clone());
+        let Some(agent) = agents.get(&binding.standing_agent_ref.actor_id) else {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        };
+        if binding.standing_agent_ref.actor_type != ActorType::Agent
+            || agent.status != MemberStatus::Active
+            || agent.execution_agent_member_ref.as_deref() != Some(binding.agent_member_id.as_str())
+        {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        }
+
+        let members = latest_by_id(self.members()?, |member| member.id.clone());
+        let Some(member) = members.get(&binding.agent_member_id) else {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        };
+        if matches!(
+            member.status,
+            AgentMemberStatus::Creating
+                | AgentMemberStatus::Closing
+                | AgentMemberStatus::Closed
+                | AgentMemberStatus::Error
+                | AgentMemberStatus::Paused
+                | AgentMemberStatus::Stale
+                | AgentMemberStatus::Retired
+        ) {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        }
+
+        let team_runs = latest_by_id(self.team_runs()?, |run| run.id.clone());
+        let Some(team_run) = team_runs.get(&binding.team_run_id) else {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        };
+        if team_run.project_binding_id.as_deref() != Some(binding.project_binding_id.as_str()) {
+            return Ok(Some(SimplePermissionDenial::BindingMismatch));
+        }
+        if !matches!(
+            team_run.status,
+            TeamRunStatus::Running | TeamRunStatus::Waiting | TeamRunStatus::Reviewing
+        ) {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        }
+
+        let member_runs = latest_by_id(self.member_runs()?, |run| run.id.clone());
+        let Some(member_run) = member_runs.get(&binding.member_run_id) else {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        };
+        if member_run.team_run_id != binding.team_run_id
+            || member_run.agent_member_id.as_deref() != Some(binding.agent_member_id.as_str())
+            || member_run.finished_at.is_some()
+            || matches!(
+                member_run.status,
+                MemberRunStatus::Disconnected
+                    | MemberRunStatus::Completed
+                    | MemberRunStatus::Failed
+                    | MemberRunStatus::Stopped
+            )
+        {
+            return Ok(Some(SimplePermissionDenial::InactiveIdentity));
+        }
+        let Some(native_session) = member_run.native_session.as_ref() else {
+            return Ok(Some(SimplePermissionDenial::MissingNativeSession));
+        };
+        if native_session.native_session_id != binding.native_session_id
+            || native_session.availability != NativeSessionAvailability::Available
+        {
+            return Ok(Some(SimplePermissionDenial::MissingNativeSession));
+        }
+
+        let assignments = latest_by_id(self.assignments()?, |assignment| assignment.id.clone());
+        let Some(assignment) = assignments.get(&binding.assignment_id) else {
+            return Ok(Some(SimplePermissionDenial::AssignmentMismatch));
+        };
+        if assignment.recipient != binding.standing_agent_ref
+            || assignment.correlation_id != binding.assignment_correlation_id
+            || !matches!(
+                assignment.delivery_state,
+                AssignmentDeliveryState::Delivered | AssignmentDeliveryState::Acknowledged
+            )
+            || assignment.delivery_evidence_ref.as_deref()
+                != Some(binding.assignment_team_message_id.as_str())
+        {
+            return Ok(Some(SimplePermissionDenial::AssignmentMismatch));
+        }
+
+        let messages = latest_by_id(self.team_messages()?, |message| message.id.clone());
+        let Some(message) = messages.get(&binding.assignment_team_message_id) else {
+            return Ok(Some(SimplePermissionDenial::AssignmentMismatch));
+        };
+        if message.team_run_id != binding.team_run_id
+            || message.kind != TeamMessageKind::Assignment
+            || message.correlation_id != binding.assignment_correlation_id
+            || !message.to_member_ids.contains(&binding.member_run_id)
+            || !message.deliveries.iter().any(|delivery| {
+                delivery.member_id == binding.member_run_id
+                    && matches!(
+                        delivery.status,
+                        TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged
+                    )
+            })
+        {
+            return Ok(Some(SimplePermissionDenial::AssignmentMismatch));
+        }
+
+        let Some(lease) = self.latest_team_supervisor_lease(&binding.team_run_id)? else {
+            return Ok(Some(SimplePermissionDenial::StaleSupervisor));
+        };
+        let Some(evaluated_seconds) = rfc3339_epoch_seconds(evaluated_at) else {
+            return Ok(Some(SimplePermissionDenial::StaleSupervisor));
+        };
+        let evaluated_unix_ms = u64::try_from(evaluated_seconds)
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000));
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != binding.supervisor_id
+            || lease.generation != binding.supervisor_generation
+            || evaluated_unix_ms.is_none_or(|at| lease.expires_unix_ms <= at)
+        {
+            return Ok(Some(SimplePermissionDenial::StaleSupervisor));
+        }
+        Ok(None)
+    }
+
+    fn simple_permission_human_approval_is_valid(
+        &self,
+        approval_ref: Option<&str>,
+        protected_effect: Option<harness_core::ProtectedEffect>,
+        subject_ref: &EntityRef,
+        evaluated_at: &str,
+    ) -> StoreResult<bool> {
+        let (Some(approval_ref), Some(protected_effect)) = (approval_ref, protected_effect) else {
+            return Ok(false);
+        };
+        let approvals = latest_by_id(self.approvals()?, |approval| approval.id.clone());
+        let Some(approval) = approvals.get(approval_ref) else {
+            return Ok(false);
+        };
+        if approval.status != ApprovalStatus::Approved
+            || approval.subject_ref != *subject_ref
+            || approval.policy_ref != protected_effect.as_str()
+            || approval.required_actor_type != Some(ActorType::Human)
+            || approval.decided_at.as_deref().is_none_or(str::is_empty)
+            || approval
+                .decided_at
+                .as_deref()
+                .is_some_and(|decided_at| timestamp_is_after(decided_at, evaluated_at))
+            || approval.decided_by.is_empty()
+            || approval
+                .decided_by
+                .iter()
+                .any(|actor| actor.actor_type != ActorType::Human)
+            || approval
+                .expires_at
+                .as_deref()
+                .is_some_and(|expires_at| !timestamp_is_after(expires_at, evaluated_at))
+        {
+            return Ok(false);
+        }
+        let humans = latest_by_id(self.human_members()?, |human| human.id.clone());
+        Ok(approval.decided_by.iter().all(|actor| {
+            humans
+                .get(&actor.actor_id)
+                .is_some_and(|human| human.status == MemberStatus::Active)
+        }))
     }
 
     pub fn append_document(&self, value: &Document) -> StoreResult<()> {
@@ -1885,6 +2153,7 @@ impl_has_id!(
     ServiceActor,
     OrgUnit,
     OrganizationMembership,
+    SimplePermissionState,
     Milestone,
     WorkItem,
     Assignment,
