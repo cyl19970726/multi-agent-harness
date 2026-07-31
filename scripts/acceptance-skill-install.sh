@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Acceptance: a fresh user can INSTALL the star-workflow skill, INSTALL the
-# Company OS operator suite, and RUN the harness. Models the external-user
+# nine-Skill Company OS operator suite, and RUN the harness. Models the external-user
 # journey with checkable outcomes; exits nonzero on any failed check.
 #
 #   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
@@ -79,7 +79,7 @@ if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ
 else
   bad "install-skill.sh --suite company-os exited nonzero"
 fi
-for name in company-business-project-bootstrap company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder; do
+for name in company-business-project-bootstrap company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os; do
   for d in .claude/skills .agents/skills; do
     if [ -f "$COMPANY_PROJ/$d/$name/SKILL.md" ] && [ ! -L "$COMPANY_PROJ/$d/$name" ]; then
       ok "$d/$name installed as real files"
@@ -91,6 +91,24 @@ for name in company-business-project-bootstrap company-docs-operator company-wor
       || bad "$d/$name/agents/openai.yaml missing"
   done
 done
+
+echo "== A1c: reject a Company OS suite with a missing delegated Skill =="
+MISSING_REPO="$WORK/missing-suite-repo"
+MISSING_PROJ="$WORK/missing-suite-proj"
+mkdir -p "$MISSING_REPO/scripts" "$MISSING_REPO/skills" "$MISSING_PROJ"
+cp "$REPO_ROOT/scripts/install-skill.sh" "$MISSING_REPO/scripts/install-skill.sh"
+cp -R "$REPO_ROOT/skills/." "$MISSING_REPO/skills"
+mv "$MISSING_REPO/skills/connect-github-company-os" "$WORK/withheld-connect-github-company-os"
+if bash "$MISSING_REPO/scripts/install-skill.sh" --agent both --dest "$MISSING_PROJ" --suite company-os >/dev/null 2>&1; then
+  bad "company-os suite accepted a missing delegated Skill"
+else
+  ok "company-os suite rejects a missing delegated Skill"
+fi
+if [ ! -e "$MISSING_PROJ/.claude/skills" ] && [ ! -e "$MISSING_PROJ/.agents/skills" ]; then
+  ok "missing-Skill preflight leaves both agent targets untouched"
+else
+  bad "missing-Skill preflight partially wrote an agent target"
+fi
 
 echo "== A2: build the harness binary =="
 BIN="$REPO_ROOT/target/debug/harness"

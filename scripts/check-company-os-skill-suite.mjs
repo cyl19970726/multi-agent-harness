@@ -12,6 +12,8 @@ const suiteSkills = [
   "company-org-operator",
   "company-module-designer",
   "company-page-builder",
+  "dogfood-company-os",
+  "connect-github-company-os",
 ];
 
 const operatorSkills = [
@@ -22,6 +24,14 @@ const operatorSkills = [
 ];
 
 const failures = [];
+
+expectSuiteSize();
+
+function expectSuiteSize() {
+  if (suiteSkills.length !== 9) {
+    failures.push(`company-os suite must contain exactly 9 skills, found ${suiteSkills.length}`);
+  }
+}
 
 function read(rel) {
   return fs.readFileSync(path.join(repo, rel), "utf8");
@@ -58,6 +68,14 @@ const acceptance = read("scripts/acceptance-skill-install.sh");
 expect(
   acceptance.includes("--suite company-os"),
   "acceptance-skill-install.sh does not install --suite company-os",
+);
+expect(
+  acceptance.includes("for d in .claude/skills .agents/skills"),
+  "acceptance-skill-install.sh must validate both Claude and Codex targets",
+);
+expect(
+  acceptance.includes("company-os suite rejects a missing delegated Skill"),
+  "acceptance-skill-install.sh must reject a missing delegated Skill",
 );
 for (const skill of suiteSkills) {
   expect(acceptance.includes(skill), `acceptance-skill-install.sh missing ${skill}`);

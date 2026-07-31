@@ -26,6 +26,10 @@ When the change touches a recurring business domain or custom page, also read:
 - `docs/company-os/agent-programmable-pages.md`
 - `docs/company-os/frontend-information-architecture.md`
 
+When observing GitHub repositories, Issues, PRs, checks, or reviews, use
+`$connect-github-company-os` for the external-system boundary. This Skill owns
+only the Docs records, snapshots, and Relations used by that connector.
+
 Do not use this skill to override those contracts. If a repository document,
 schema, API, or acceptance check conflicts with this skill, the canonical
 contract wins.
@@ -119,6 +123,58 @@ typed-record, view, and relation writes require a matching
 9. Report evidence and remaining gaps. Distinguish `verified`, `partial`,
    `planned`, and `design-only`.
 
+## Root Company hierarchy and archive boundary
+
+Operate one selected Company Store as the durable company boundary. The root
+Company Docs tree is its navigation and memory hierarchy; it is not a new
+`Project` record and must not be inferred from a repository or Execution
+Space.
+
+Keep the active hierarchy shallow and responsibility-shaped:
+
+```text
+Company Home
+  -> Governance and company-wide operating areas
+  -> Domain / business-line homes owned by Domain Leads
+  -> Current procedures, source records, decisions, and accepted results
+```
+
+The active tree should answer what the Company is doing now, who owns each
+area, what work is open, and where results return. Human requests enter as
+durable source context: the Human Principal / Constitution Owner remains the
+requester, the Supervisor may faithfully capture and route provenance without
+creating Company authority, and the Company Lead decides whether to promote
+the request into Docs or Work. Do not use an inbox block, meeting note, or chat
+transcript as a shadow task queue.
+
+When a Document describes the Company Constitution or a delegation envelope,
+label current versus target truth explicitly. A draft or mutable Document is
+policy context, not authority by itself. Do not call it active/canonical until
+its exact version/digest, supersession relation, authority-bearing subject
+(for example a native `ScopedPermissionGrant` or governed fallback
+`AuthorityConstitution` TypedRecord), required Approval/Action evidence, and
+Store readback all exist. Recursive attenuating delegation remains target-only
+until schemas, Actions, authenticated transport, and acceptance prove it.
+
+Archive a Document or subtree when it is superseded, closed, duplicated, or no
+longer part of current operating context. Before archival:
+
+1. query and traverse the candidate subtree;
+2. inspect refs, related records, open WorkItems, maintained-document owners,
+   and active module/page entrypoints;
+3. move any still-current fact or accepted result to the active owner through
+   an explicit update or relation;
+4. use `document archive --dry-run`, obtain required review, then confirm; and
+5. verify the archived content is absent from active navigation while its ids,
+   relations, evidence, and audit history remain resolvable.
+
+Archival is a lifecycle projection, not deletion. Never copy the whole old tree
+under an "Archive" page merely to hide it, never archive the only source/result
+for open Work, and never mark stale content active because it still exists in
+the append-only Store. A successor Document must link and supersede the prior
+version without erasing the old constitution, Approval, result, or evidence
+chain.
+
 ## Business page quality gate
 
 A page is not acceptable merely because it has text blocks. Before and after
@@ -199,7 +255,9 @@ schema or SQL read models must remain rebuildable from these Company OS records.
 commercial truth, create WorkItems, approve spending, update Finance, mutate
 Organization, execute GitHub actions, or treat a GitHub webhook as authority.
 When synced sources drift materially, create or route a separate WorkItem for
-Docs Governance review.
+Docs Governance review through `$company-work-operator`. Issue/PR/check/review
+sync and DeliveryRef reconciliation belong to `$connect-github-company-os`,
+not to this Docs command.
 
 ## Code-declared custom pages
 

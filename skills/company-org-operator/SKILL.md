@@ -44,6 +44,10 @@ Before proposing or executing a durable Organization change, read:
 If repository files, schemas, API code, or acceptance checks conflict with this
 skill, the canonical implementation contract wins.
 
+Use `$dogfood-company-os` when the task is the repeated cross-system
+self-hosting loop. This Skill owns only Organization reads and changes inside
+that loop.
+
 ## Operating boundary
 
 Organization owns who exists and who may act:
@@ -141,6 +145,11 @@ back to source Documents, WorkItems, and evidence. It must not infer authority
 from a logged-in platform account, phone session, profile card, or plugin
 installation.
 
+For GitHub, `$connect-github-company-os` owns repository facts and delivery
+links. Organization owns which durable actor may triage, write, review, merge,
+release, or change repository permissions; a valid `gh` login does not grant
+that company authority.
+
 ## Current interface state
 
 Organization records exist through the Company OS Store/API. The first
@@ -226,7 +235,8 @@ Current v1 boundary:
 
 The first Company OS layer is governance:
 
-- Human Owner sets company direction and Human gates.
+- Human Principal / Constitution Owner sets company direction, the root
+  constitutional envelope, and required Human gates.
 - Lead Agent manages Governance Agents.
 - Docs Governance Agent owns company memory structure.
 - Work Governance Agent owns WorkItem routing and commitment visibility.
@@ -238,6 +248,60 @@ Business Agents sit under Org / HR governance. HR/Org may identify capability
 gaps, reuse existing agents, request temporary execution, propose a new
 Standing Agent, provision approved tools/skills/permissions, and later evaluate,
 adjust, or retire the actor. Skills are tools; they never grant authority.
+
+### Root Company delegation model
+
+Model the operating hierarchy as durable Organization truth:
+
+```text
+Human Principal / Constitution Owner / required Human gates
+  -> Company Lead
+     -> Governance Leads and Domain Leads
+        -> bounded Standing Agents, Humans, services, or external collaborators
+```
+
+The Supervisor preserves intake provenance, runtime delivery, emergency
+control acknowledgements, and runtime generation. It is not a Company actor,
+grantor, work planner, or source of business authority. The Company Lead
+continuously triages accepted Human intent and Company-wide Work, balances
+priorities against explicit availability/capacity, assigns accountability to
+the right Domain Lead, and replans when evidence, blockers, or capacity
+changes.
+
+A Domain Lead may autonomously delegate operational work only inside the
+currently implemented policy and its declared responsibility, accepted
+WorkTypes, data/tool scope, budget/permission ceiling, and capacity. Recursive
+child-grant issuance and approved-template Standing Agent creation are target
+capabilities until the hierarchical grant lifecycle and authenticated
+transport are implemented and accepted.
+
+Every delegation attenuates authority: the recipient gets only the subset
+needed for the WorkItem, never broader access, spending, approval, legal,
+organization-change, or external-commitment authority than the delegator
+holds, and a child grant must be strictly narrower in at least one
+authority-bearing dimension. Delegated work keeps one accountable owner and an
+explicit Company Assignment in Work; provider subagents and MemberRuns do not
+become durable reports.
+
+Current truth is the Human-admin Organization CLI v1 plus explicit
+StandingAgent ↔ AgentMember execution links. Target truth is one hierarchical
+`ScopedPermissionGrant` family with exact root constitution/generation/digest,
+parent and approved-template lineage, bounded action/module/project/GitHub
+scope, TTL/budget/concurrency/depth ceilings, atomic sibling reservations, and
+ancestor expiry/suspension/revocation fencing. Skills, runtime receipts, or
+`danger-full-access` never substitute for that grant. Do not describe target
+fields, autonomous child creation, or effective-authority UI as implemented.
+
+Route to a Human queue only when policy names a Human gate, the action would
+expand authority or Organization, a protected effect is requested, no safe
+bounded actor has capacity, or policy/evidence conflict cannot be resolved.
+Routine prioritization, routing, status updates, and bounded execution belong
+to the Company Lead and Domain Leads rather than a universal Human approval
+queue. Apply the decision test: known policy, reversible effect, bounded blast
+radius, and no material external commitment may proceed autonomously with
+audit; otherwise route the exact exception reason and evidence. Current
+Organization CLI v1 does not implement this full delegation policy lifecycle;
+record unimplemented controls as `partial` or `planned`.
 
 ## Safe workflow
 
@@ -257,9 +321,12 @@ adjust, or retire the actor. Skills are tools; they never grant authority.
    exists.
 5. Provision only approved tools, skills, budgets, and permissions. Do not infer
    authority from a prompt, profile, avatar, or UI card.
-6. Link initial WorkItems and maintained Docs so the actor's purpose is
+6. For delegation, prove the parent relation and calculate the recipient's
+   effective ceiling as an explicit subset of both Organization policy and the
+   WorkItem's needs. Escalate instead of silently widening either boundary.
+7. Link initial WorkItems and maintained Docs so the actor's purpose is
    observable.
-7. Record evaluation and lifecycle changes as durable Organization records.
+8. Record evaluation and lifecycle changes as durable Organization records.
 
 ## Validation checklist
 
