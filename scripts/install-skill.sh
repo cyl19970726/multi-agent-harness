@@ -51,7 +51,7 @@ done
 expand_suite() {
   case "$1" in
     company-os)
-      echo "company-business-project-bootstrap company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder"
+      echo "company-business-project-bootstrap company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os"
       ;;
     *)
       echo "unknown suite: $1 (available: company-os)" >&2
@@ -90,6 +90,13 @@ else
   git clone --depth 1 --branch "$REF" "$REPO" "$TMP/repo" >/dev/null 2>&1
   SKILLS_ROOT="$TMP/repo/skills"
 fi
+
+# Validate the complete selection before writing either target. This keeps a
+# suite with a missing delegated Skill from being installed only partially.
+for name in $SKILLS; do
+  [ -f "$SKILLS_ROOT/$name/SKILL.md" ] \
+    || { echo "could not find the skill source at $SKILLS_ROOT/$name" >&2; exit 1; }
+done
 
 # Copy one skill's real files into <base>/<subdir>/<name>. Deref the repo
 # symlink (.agents/skills/<name> may be a symlink) with cp -RL so the install is
