@@ -731,7 +731,14 @@ fn tool_team_run_status(
         .into_iter()
         .filter(|interaction| interaction.team_run_id == id)
         .filter(|interaction| {
-            if interaction.status == PendingInteractionStatus::Pending {
+            // `Unsupported` is terminal but ACTIONABLE: the provider could not
+            // render the prompt, so the Host must intervene. Bucketing it as
+            // "resolved" would hide the one terminal state that still needs a
+            // human/Host decision behind a name that reads as "already handled".
+            if matches!(
+                interaction.status,
+                PendingInteractionStatus::Pending | PendingInteractionStatus::Unsupported
+            ) {
                 true
             } else {
                 resolved_interactions += 1;

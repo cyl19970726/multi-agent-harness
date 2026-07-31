@@ -1631,13 +1631,24 @@ impl HarnessStore {
         let mut file = File::open(path)?;
         let len = file.metadata()?.len();
         let start = len.saturating_sub(window);
-        if start > 0 {
-            file.seek(SeekFrom::Start(start))?;
-        }
+        // Whether the byte before `start` is a newline decides if `start`
+        // already sits on a row boundary. Discarding unconditionally would drop
+        // a COMPLETE row whenever the window happens to land there, which costs
+        // a needless full-scan fallback (and would silently lose a row for any
+        // future caller that does not have one).
+        let starts_on_boundary = if start == 0 {
+            true
+        } else {
+            file.seek(SeekFrom::Start(start - 1))?;
+            let mut prev = [0u8; 1];
+            std::io::Read::read_exact(&mut file, &mut prev)?;
+            prev[0] == b'\n'
+        };
+        file.seek(SeekFrom::Start(start))?;
         let mut values = Vec::new();
         let mut lines = BufReader::new(file).lines();
-        if start > 0 {
-            // Discard the partial first line inside the window.
+        if !starts_on_boundary {
+            // Discard the torn first line inside the window.
             let _ = lines.next();
         }
         for line in lines {
@@ -1705,6 +1716,15 @@ impl HarnessStore {
             file.sync_all()?;
         }
         fs::rename(&temp, &path)?;
+        // fsync the PARENT DIRECTORY, not just the temp inode. POSIX allows a
+        // crash to recover either the old or the new directory entry after a
+        // rename; only syncing the directory makes the replacement durable.
+        // Without it a system crash can resurrect the pre-compaction file and
+        // with it an already-issued generation, violating the monotonic
+        // higher-generation contract in ADR 0044.
+        if let Ok(dir) = File::open(&self.root) {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
 
@@ -2364,6 +2384,48 @@ mod tests {
         assert_eq!(tail.supervisor_id, full.supervisor_id);
         assert_eq!(tail.generation, full.generation);
         assert_eq!(tail.expires_unix_ms, full.expires_unix_ms);
+    }
+
+    /// The tail window may land exactly on a row boundary. Discarding the first
+    /// line unconditionally would drop a COMPLETE row; reviewer-reported.
+    #[test]
+    fn supervisor_lease_tail_keeps_a_row_when_window_lands_on_a_boundary() {
+        let root = team_test_root("lease-boundary");
+        let store = HarnessStore::new(&root);
+        seed_lease_run(&store, "run-a");
+        store
+            .acquire_team_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
+            .expect("acquire");
+        for tick in 0..20u64 {
+            store
+                .renew_team_supervisor_lease("run-a", "sup-a", 1, 1_001 + tick, 15_000)
+                .expect("renew");
+        }
+        let path = root.join("team_supervisor_leases.jsonl");
+        let bytes = std::fs::read(&path).expect("read lease file");
+        let total = bytes.len() as u64;
+        // Start the window exactly at the first byte of the LAST row, i.e. one
+        // past the second-to-last newline. The file ends with a newline, so the
+        // last newline is the row terminator, not the row start.
+        let last_terminator = bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .expect("trailing newline");
+        let row_start = bytes[..last_terminator]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .expect("a previous row") as u64
+            + 1;
+        let window = total - row_start;
+        let rows = store
+            .read_jsonl_tail::<TeamSupervisorLease>("team_supervisor_leases.jsonl", window)
+            .expect("tail read");
+        assert_eq!(
+            rows.len(),
+            1,
+            "a window landing on a row boundary must keep that row, got {}",
+            rows.len()
+        );
     }
 
     /// Compaction on acquire bounds the file at one row per run and must keep
