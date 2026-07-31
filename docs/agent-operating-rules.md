@@ -315,6 +315,61 @@ mechanism, but must say so and add focused acceptance for the path it creates.
 - The Agent Dashboard is the operator view for harness state. Product
   dashboards for adapted projects remain separate.
 
+## Dogfood Execution Roster, Research Budget, And Rolling Reconciliation
+
+These rules keep root instructions, [operations.md](operations.md), and the
+[dogfood skill](../skills/dogfood-company-os/SKILL.md) on one roster and one
+reconciliation semantics. Where wording diverges, `operations.md` wins as the
+canonical operations doc.
+
+Dogfood TeamRuns use a deliberate provider roster, not whatever provider is
+installed:
+
+- Kimi (`kimi_acp`) is the primary execution member. Request the reviewed K3
+  model alias with `max` thinking effort, and verify the MemberRun
+  requested-vs-effective `provider_controls` receipt before trusting the
+  lane; a recorded alias alone is never proof of the model actually used.
+- Claude (`claude_agent_sdk`) may join only while its installed SDK version
+  is reviewed: `harness member providers --fail-on-review` must be green. An
+  unreviewed SDK is `review_required` and stays out of dogfood lanes.
+- Codex providers are not dogfood execution members. Historical Codex runs
+  are read-only evidence, and bounded `codex_exec` paths stay inside Dynamic
+  Workflow; do not create new Codex Team lanes or use them as fallbacks.
+
+Every member runs under a strict research budget. One evidence pass — the
+Assignment, owned paths, and directly linked records — is enough to start.
+After that pass the member must either produce its deliverables or report a
+blocked verdict with the exact missing fact and a recommendation. The Host
+steers or interrupts a member that keeps exploring past the checkpoint;
+unbounded repository archaeology is a lane defect, not diligence.
+
+A necessary master merge — a Harness, adapter, protocol, permission,
+model-control, Plugin, or Skill change that dogfood must run on — triggers
+rolling Supervisor reconciliation of every live dogfood runtime:
+
+1. classify whether only UI/Docs projection changed or a runtime contract
+   changed; projection-only merges need no restart;
+2. drain or interrupt active turns before replacing an incompatible runtime;
+3. install/sync canonical artifacts from the new master before starting the
+   next generation;
+4. rebase each member worktree onto the new master, or recreate a clean
+   same-repository worktree when rebase is unsafe; never let two runtime
+   generations write the same Workspace;
+5. resume the same MemberRun and provider-native Session under a higher
+   Supervisor generation when the reviewed contract allows it; when
+   compatibility cannot be proven, record the reason and start a new native
+   Session, retaining the old Session as history;
+6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
+   roots, and the single writable-Workspace driver before resuming; and
+7. prove the new generation with an acceptance probe: a fresh correlated
+   message reaches the existing MemberRun, the same native Session answers,
+   and the Host can ACK the resulting handoff.
+
+Rolling means lane by lane: reconcile one member, probe it, then move to the
+next. The reconciliation itself is Company Work — link the merge commit, the
+Supervisor generations, and each resume-or-new-session decision to the
+governing WorkItem.
+
 ## Relocation Map
 
 How the pre-slimming root `AGENTS.md` (337 lines) maps to the current layout.
@@ -348,3 +403,4 @@ companion.
 | Self-Hosting Rules | Root §Repository Execution Rules (condensed); here §Self-Hosting Rules (full) | — |
 | Staged Acceptance | Root §Proportional Acceptance | Not duplicated here |
 | What Counts As Done | Root §Proportional Acceptance | Not duplicated here |
+| Dogfood execution roster, research budget, rolling reconciliation (added post-slimming for cross-file convergence, not relocated) | Root §Repository Execution Rules (summary); here §Dogfood Execution Roster, Research Budget, And Rolling Reconciliation (full) | Mirrors [operations.md](operations.md) and [../skills/dogfood-company-os/SKILL.md](../skills/dogfood-company-os/SKILL.md); `operations.md` wins on divergence |
