@@ -1,6 +1,13 @@
 {
-  "module": "docs",
-  "parent_scope_ref": "document-space/company",
-  "child_scope_ref": "document-space/company/governance",
-  "evidence_ref": "relation/document-space-company-contains-governance"
+  "child_role": "execution_member",
+  "child_capabilities": [
+    {
+      "module": "docs",
+      "verbs": ["read", "execute"],
+      "scope_refs": ["document-space/company/governance"]
+    }
+  ],
+  "scope_evidence_refs": [
+    "relation/document-space-company-contains-governance"
+  ]
 }

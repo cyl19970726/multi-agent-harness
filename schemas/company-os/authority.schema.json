@@ -2,11 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://star-harness.local/schemas/company-os/authority.schema.json",
   "title": "Company OS simple Organization permission v1",
-  "description": "One fixed-template, exact-envelope permission state plus fail-closed evaluation and server-proven scope-containment inputs.",
+  "description": "One fixed-template, exact-envelope permission state plus fail-closed evaluation and selector-only delegation requests resolved by the Store.",
   "oneOf": [
     { "$ref": "#/$defs/simplePermissionState" },
     { "$ref": "#/$defs/simplePermissionRequest" },
-    { "$ref": "#/$defs/simplePermissionScopeProof" }
+    { "$ref": "#/$defs/simplePermissionDelegationRequest" }
   ],
   "$defs": {
     "string": { "type": "string", "minLength": 1 },
@@ -206,6 +206,7 @@
         "verb": { "$ref": "#/$defs/permissionVerb" },
         "scope_ref": { "$ref": "#/$defs/string" },
         "subject_ref": { "$ref": "#/$defs/entityRef" },
+        "subject_scope_evidence_ref": { "$ref": "#/$defs/nullableString" },
         "transport_authenticated": { "type": "boolean" },
         "action_policy_decision": { "enum": ["allowed", "denied", "unknown"] },
         "protected_effect": {
@@ -231,15 +232,39 @@
         }
       ]
     },
-    "simplePermissionScopeProof": {
+    "simplePermissionDelegationRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "parent_scope_ref", "child_scope_ref", "evidence_ref"],
+      "required": [
+        "child_role",
+        "child_capabilities",
+        "scope_evidence_refs"
+      ],
       "properties": {
-        "module": { "$ref": "#/$defs/permissionModule" },
-        "parent_scope_ref": { "$ref": "#/$defs/string" },
-        "child_scope_ref": { "$ref": "#/$defs/string" },
-        "evidence_ref": { "$ref": "#/$defs/string" }
+        "child_role": { "const": "execution_member" },
+        "child_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "allOf": [
+              { "$ref": "#/$defs/moduleCapability" },
+              {
+                "properties": {
+                  "verbs": {
+                    "not": { "contains": { "const": "delegate" } }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "scope_evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/string" }
+        }
       }
     }
   }

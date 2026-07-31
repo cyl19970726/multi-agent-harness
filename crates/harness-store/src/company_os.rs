@@ -12,9 +12,10 @@ use harness_core::{
     AgentMemberStatus, Approval, ApprovalStatus, Assignment, AssignmentDeliveryState, AuditEvent,
     AuditEventKind, Block, BusinessModule, Commitment, CommitmentStatus, CustomPageDefinition,
     CustomPagePackage, Document, EntityKind, EntityRef, ExternalParticipant, HumanMember,
-    MemberRunStatus, MemberStatus, Milestone, MilestoneProgress, NativeSessionAvailability,
-    OrgUnit, OrganizationMembership, Payment, PaymentStatus, Relation, ServiceActor,
-    SimplePermissionDecision, SimplePermissionDenial, SimplePermissionExecutionBinding,
+    MemberRunStatus, MemberStatus, Milestone, MilestoneProgress, ModuleCapability,
+    NativeSessionAvailability, OrgUnit, OrganizationMembership, Payment, PaymentStatus,
+    PermissionModule, Relation, ServiceActor, SimpleDelegationError, SimplePermissionDecision,
+    SimplePermissionDelegationRequest, SimplePermissionDenial, SimplePermissionExecutionBinding,
     SimplePermissionRequest, SimplePermissionState, StandingAgent, TeamDeliveryStatus,
     TeamMessageKind, TeamRunStatus, TeamSupervisorLeaseStatus, TypedRecord, ValidateCompanyOs,
     View, WorkItem, WorkItemStatus, WorkProjection, WorkQuery, WorkSummary, WorkType,
@@ -414,7 +415,14 @@ impl HarnessStore {
                 SimplePermissionDenial::StateMissing,
             ));
         };
-        let decision = state.evaluate(request);
+        let mut normalized_request = request.clone();
+        if let Some(reason) = self.simple_permission_subject_scope_denial(request)? {
+            return Ok(SimplePermissionDecision::Denied(reason));
+        }
+        if normalized_request.scope_ref != normalized_request.subject_ref.id {
+            normalized_request.subject_ref.id = normalized_request.scope_ref.clone();
+        }
+        let decision = state.evaluate(&normalized_request);
         if decision != SimplePermissionDecision::Allowed {
             return Ok(decision);
         }
@@ -436,6 +444,202 @@ impl HarnessStore {
             ));
         }
         Ok(SimplePermissionDecision::Allowed)
+    }
+
+    fn simple_permission_subject_scope_denial(
+        &self,
+        request: &SimplePermissionRequest,
+    ) -> StoreResult<Option<SimplePermissionDenial>> {
+        let Some(scope_entity_kind) = request.module.scope_entity_kind() else {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeUnresolved));
+        };
+        if request.subject_ref.kind != scope_entity_kind {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeMismatch));
+        }
+        let scope_entity_ref = EntityRef {
+            kind: scope_entity_kind,
+            id: request.scope_ref.clone(),
+        };
+        if !self.simple_permission_scope_entity_exists(request.module, &scope_entity_ref)?
+            || !self.simple_permission_scope_entity_exists(request.module, &request.subject_ref)?
+        {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeUnresolved));
+        }
+        if request.scope_ref == request.subject_ref.id {
+            return Ok(request
+                .subject_scope_evidence_ref
+                .as_ref()
+                .map(|_| SimplePermissionDenial::SubjectScopeMismatch));
+        }
+        let Some(evidence_ref) = request.subject_scope_evidence_ref.as_deref() else {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeEvidenceMissing));
+        };
+        let relations = latest_by_id(self.relations()?, |relation| relation.id.clone());
+        let Some(relation) = relations.get(evidence_ref) else {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeEvidenceMissing));
+        };
+        if !simple_permission_scope_relation_matches_module(request.module, relation)
+            || relation.relation_type != simple_permission_scope_relation_type(request.module)
+            || relation.from_ref.id != request.scope_ref
+            || relation.to_ref != request.subject_ref
+        {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeMismatch));
+        }
+        if relation.lifecycle_status.as_deref() != Some("active") {
+            return Ok(Some(SimplePermissionDenial::SubjectScopeEvidenceStale));
+        }
+        Ok(None)
+    }
+
+    fn simple_permission_scope_entity_exists(
+        &self,
+        module: PermissionModule,
+        reference: &EntityRef,
+    ) -> StoreResult<bool> {
+        if module.scope_entity_kind() != Some(reference.kind) {
+            return Ok(false);
+        }
+        match module {
+            PermissionModule::Docs => Ok(self
+                .latest_documents()?
+                .iter()
+                .any(|document| document.id == reference.id)),
+            PermissionModule::Work => Ok(self
+                .latest_work_items()?
+                .iter()
+                .any(|work_item| work_item.id == reference.id)),
+            PermissionModule::Org | PermissionModule::Github => Ok(false),
+        }
+    }
+
+    /// Validate one child execution-Member delegation using current Store
+    /// relations as the only scope-containment authority.
+    ///
+    /// Request evidence refs are selectors, never proofs. Every selector must
+    /// resolve to a current `scope_contains/<module>` relation matching one
+    /// requested child scope and one exact parent-envelope scope. The Core
+    /// receives only a normalized exact-scope envelope.
+    pub fn validate_simple_permission_child_delegation(
+        &self,
+        state_id: &str,
+        request: &SimplePermissionDelegationRequest,
+    ) -> StoreResult<Result<(), SimpleDelegationError>> {
+        if request.validate().is_err() {
+            return Ok(Err(SimpleDelegationError::InvalidChildEnvelope));
+        }
+        let Some(state) = self.latest_simple_permission_state(state_id)? else {
+            return Err(missing("SimplePermissionState", state_id));
+        };
+        if state.validate().is_err() {
+            return Ok(Err(SimpleDelegationError::InvalidChildEnvelope));
+        }
+
+        // Preflight every authority-bearing dimension except scope. Replacing
+        // a requested child scope with an existing parent scope cannot grant
+        // authority; it only lets the canonical Core validator report role,
+        // module, and verb errors before relation resolution.
+        let mut preflight = request.child_capabilities.clone();
+        for capability in &mut preflight {
+            if let Some(parent) = state
+                .module_capabilities
+                .iter()
+                .find(|candidate| candidate.module == capability.module)
+            {
+                for scope_ref in &mut capability.scope_refs {
+                    if !parent.scope_refs.contains(scope_ref) {
+                        *scope_ref = parent.scope_refs[0].clone();
+                    }
+                }
+            }
+        }
+        if let Err(error) = state.validate_child_delegation(request.child_role, &preflight) {
+            return Ok(Err(error));
+        }
+
+        let mut unresolved = Vec::new();
+        for capability in &request.child_capabilities {
+            let parent = state
+                .module_capabilities
+                .iter()
+                .find(|candidate| candidate.module == capability.module)
+                .expect("preflight rejects missing parent modules");
+            for child_scope_ref in &capability.scope_refs {
+                if !parent.scope_refs.contains(child_scope_ref) {
+                    unresolved.push((
+                        capability.module,
+                        child_scope_ref.clone(),
+                        parent.scope_refs.clone(),
+                    ));
+                }
+            }
+        }
+
+        if unresolved.is_empty() {
+            if request.scope_evidence_refs.is_empty() {
+                return Ok(state
+                    .validate_child_delegation(request.child_role, &request.child_capabilities));
+            }
+            return Ok(Err(SimpleDelegationError::ScopeEvidenceMismatch));
+        }
+        if request.scope_evidence_refs.is_empty() {
+            return Ok(Err(SimpleDelegationError::ScopeEvidenceMissing));
+        }
+        let relations = latest_by_id(self.relations()?, |relation| relation.id.clone());
+        let mut resolved = BTreeMap::new();
+        for evidence_ref in &request.scope_evidence_refs {
+            let Some(relation) = relations.get(evidence_ref) else {
+                // An invented selector has no authority and fails exactly like
+                // any other missing canonical relation.
+                return Ok(Err(SimpleDelegationError::ScopeEvidenceMissing));
+            };
+            let Some((module, child_scope_ref, parent_scope_ref)) =
+                unresolved
+                    .iter()
+                    .find_map(|(module, child_scope_ref, parent_scope_refs)| {
+                        let relation_type = simple_permission_scope_relation_type(*module);
+                        parent_scope_refs.iter().find_map(|parent_scope_ref| {
+                            (simple_permission_scope_relation_matches_module(*module, relation)
+                                && relation.relation_type == relation_type
+                                && relation.from_ref.id == *parent_scope_ref
+                                && relation.to_ref.id == *child_scope_ref)
+                                .then(|| {
+                                    (*module, child_scope_ref.clone(), parent_scope_ref.clone())
+                                })
+                        })
+                    })
+            else {
+                return Ok(Err(SimpleDelegationError::ScopeEvidenceMismatch));
+            };
+            if relation.lifecycle_status.as_deref() != Some("active") {
+                return Ok(Err(SimpleDelegationError::ScopeEvidenceStale));
+            }
+            resolved.insert((module, child_scope_ref), parent_scope_ref);
+        }
+        if unresolved.iter().any(|(module, child_scope_ref, _)| {
+            !resolved.contains_key(&(*module, child_scope_ref.clone()))
+        }) {
+            return Ok(Err(SimpleDelegationError::ScopeEvidenceMissing));
+        }
+
+        let normalized = request
+            .child_capabilities
+            .iter()
+            .map(|capability| ModuleCapability {
+                module: capability.module,
+                verbs: capability.verbs.clone(),
+                scope_refs: capability
+                    .scope_refs
+                    .iter()
+                    .map(|scope_ref| {
+                        resolved
+                            .get(&(capability.module, scope_ref.clone()))
+                            .cloned()
+                            .unwrap_or_else(|| scope_ref.clone())
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        Ok(state.validate_child_delegation(request.child_role, &normalized))
     }
 
     fn simple_permission_binding_denial(
@@ -2126,6 +2330,24 @@ impl HarnessStore {
         }
         Ok(())
     }
+}
+
+fn simple_permission_scope_relation_type(module: PermissionModule) -> &'static str {
+    match module {
+        PermissionModule::Docs => "scope_contains/docs",
+        PermissionModule::Work => "scope_contains/work",
+        PermissionModule::Org => "scope_contains/org",
+        PermissionModule::Github => "scope_contains/github",
+    }
+}
+
+fn simple_permission_scope_relation_matches_module(
+    module: PermissionModule,
+    relation: &Relation,
+) -> bool {
+    module
+        .scope_entity_kind()
+        .is_some_and(|kind| relation.from_ref.kind == kind && relation.to_ref.kind == kind)
 }
 
 trait HasId {

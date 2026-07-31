@@ -11,10 +11,10 @@ use harness_core::{
     MilestoneStatus, ModuleCapability, Money, OrgUnit, OrgUnitStatus, OrganizationMembership,
     OrganizationMembershipRole, OrganizationMembershipStatus, Payment, PaymentStatus,
     PermissionModule, PermissionVerb, ProtectedEffect, Relation, RiskTier,
-    SimpleActionPolicyDecision, SimplePermissionDecision, SimplePermissionDenial,
-    SimplePermissionExecutionBinding, SimplePermissionRequest, SimplePermissionState,
-    SimpleRoleTemplate, StandingAgent, TeamMessage, TypedRecord, View, ViewMode, WorkItem,
-    WorkItemStatus, WorkQuery, WorkType,
+    SimpleActionPolicyDecision, SimpleDelegationError, SimplePermissionDecision,
+    SimplePermissionDelegationRequest, SimplePermissionDenial, SimplePermissionExecutionBinding,
+    SimplePermissionRequest, SimplePermissionState, SimpleRoleTemplate, StandingAgent, TeamMessage,
+    TypedRecord, View, ViewMode, WorkItem, WorkItemStatus, WorkQuery, WorkType,
 };
 use harness_store::{
     ActionCommandClaimResult, CompanyActor, FinancialRecord, HarnessStore, StoreError,
@@ -1839,6 +1839,7 @@ fn seed_simple_permission_runtime(
             kind: EntityKind::WorkItem,
             id: "work-simple-permission".into(),
         },
+        subject_scope_evidence_ref: None,
         transport_authenticated: true,
         action_policy_decision: SimpleActionPolicyDecision::Allowed,
         protected_effect: None,
@@ -1960,7 +1961,32 @@ fn simple_permission_store_re_resolves_identity_assignment_and_supervisor() {
             .unwrap(),
         SimplePermissionDecision::Allowed
     );
-    request.subject_ref.id = "work-other".into();
+    let other_subject = work_item(
+        "work-other",
+        "doc-simple-permission",
+        &human_ref,
+        &state.actor_ref,
+    );
+    test.store.append_work_item(&other_subject).unwrap();
+    let other_subject_relation = Relation {
+        id: "scope-relation-work-other".into(),
+        from_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        relation_type: "scope_contains/work".into(),
+        to_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: other_subject.id.clone(),
+        },
+        provenance_ref: None,
+        lifecycle_status: Some("active".into()),
+        created_by: human_ref.clone(),
+        created_at: NOW.into(),
+    };
+    test.store.append_relation(&other_subject_relation).unwrap();
+    request.subject_ref.id = other_subject.id;
+    request.subject_scope_evidence_ref = Some(other_subject_relation.id);
     assert_eq!(
         test.store
             .evaluate_simple_permission(&state.id, &request)
@@ -1968,6 +1994,7 @@ fn simple_permission_store_re_resolves_identity_assignment_and_supervisor() {
         SimplePermissionDecision::Denied(SimplePermissionDenial::ProtectedEffectApprovalRequired)
     );
     request.subject_ref.id = "work-simple-permission".into();
+    request.subject_scope_evidence_ref = None;
 
     test.store
         .release_team_supervisor_lease(
@@ -1982,5 +2009,281 @@ fn simple_permission_store_re_resolves_identity_assignment_and_supervisor() {
             .evaluate_simple_permission(&state.id, &request)
             .unwrap(),
         SimplePermissionDecision::Denied(SimplePermissionDenial::StaleSupervisor)
+    );
+}
+
+#[test]
+fn simple_permission_store_binds_ordinary_subject_to_authorized_scope() {
+    let test = TestStore::new("simple-permission-subject-scope");
+    let (state, mut request, human_ref) = seed_simple_permission_runtime(&test.store);
+    test.store.append_simple_permission_state(&state).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Allowed,
+        "an exact module-appropriate subject that exists in current Store truth is allowed"
+    );
+    request.subject_ref.kind = EntityKind::Document;
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeMismatch),
+        "same-id cross-kind resemblance must not authorize"
+    );
+    request.subject_ref.kind = EntityKind::WorkItem;
+
+    let child = work_item(
+        "work-simple-permission-subject",
+        "doc-simple-permission",
+        &human_ref,
+        &state.actor_ref,
+    );
+    test.store.append_work_item(&child).unwrap();
+    let unrelated = work_item(
+        "work-simple-permission-other-subject",
+        "doc-simple-permission",
+        &human_ref,
+        &state.actor_ref,
+    );
+    test.store.append_work_item(&unrelated).unwrap();
+
+    request.subject_ref = EntityRef {
+        kind: EntityKind::WorkItem,
+        id: child.id.clone(),
+    };
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeEvidenceMissing),
+        "ordinary non-protected actions fail closed without canonical subject containment"
+    );
+
+    request.subject_scope_evidence_ref = Some("fabricated-subject-relation".into());
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeEvidenceMissing)
+    );
+
+    let mismatched = Relation {
+        id: "subject-scope-relation-mismatched".into(),
+        from_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        relation_type: "scope_contains/work".into(),
+        to_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: unrelated.id,
+        },
+        provenance_ref: None,
+        lifecycle_status: Some("active".into()),
+        created_by: human_ref.clone(),
+        created_at: NOW.into(),
+    };
+    test.store.append_relation(&mismatched).unwrap();
+    request.subject_scope_evidence_ref = Some(mismatched.id);
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeMismatch)
+    );
+
+    let valid = Relation {
+        id: "subject-scope-relation-valid".into(),
+        from_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        relation_type: "scope_contains/work".into(),
+        to_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: child.id,
+        },
+        provenance_ref: None,
+        lifecycle_status: Some("active".into()),
+        created_by: human_ref,
+        created_at: NOW.into(),
+    };
+    test.store.append_relation(&valid).unwrap();
+    request.subject_scope_evidence_ref = Some(valid.id.clone());
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Allowed,
+        "a current Store-owned relation may bind an ordinary action subject to its scope"
+    );
+
+    let stale = Relation {
+        lifecycle_status: Some("archived".into()),
+        ..valid
+    };
+    test.store.append_relation(&stale).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeEvidenceStale)
+    );
+}
+
+#[test]
+fn simple_permission_store_denies_same_id_missing_scope_subject() {
+    let test = TestStore::new("simple-permission-missing-exact-subject");
+    let (mut state, mut request, _human_ref) = seed_simple_permission_runtime(&test.store);
+    state.module_capabilities[0].scope_refs = vec!["work-missing-exact-subject".into()];
+    request.scope_ref = "work-missing-exact-subject".into();
+    request.subject_ref = EntityRef {
+        kind: EntityKind::WorkItem,
+        id: "work-missing-exact-subject".into(),
+    };
+    test.store.append_simple_permission_state(&state).unwrap();
+    assert_eq!(
+        test.store
+            .evaluate_simple_permission(&state.id, &request)
+            .unwrap(),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeUnresolved),
+        "same-id scope and subject must resolve to a current canonical Store entity"
+    );
+}
+
+#[test]
+fn simple_permission_delegation_uses_only_current_store_scope_relations() {
+    let test = TestStore::new("simple-permission-delegation");
+    let (state, _request, human_ref) = seed_simple_permission_runtime(&test.store);
+    test.store.append_simple_permission_state(&state).unwrap();
+
+    let child = work_item(
+        "work-simple-permission-child",
+        "doc-simple-permission",
+        &human_ref,
+        &state.actor_ref,
+    );
+    test.store.append_work_item(&child).unwrap();
+    let unrelated = work_item(
+        "work-simple-permission-unrelated",
+        "doc-simple-permission",
+        &human_ref,
+        &state.actor_ref,
+    );
+    test.store.append_work_item(&unrelated).unwrap();
+
+    let mut delegation = SimplePermissionDelegationRequest {
+        child_role: SimpleRoleTemplate::ExecutionMember,
+        child_capabilities: vec![ModuleCapability {
+            module: PermissionModule::Work,
+            verbs: vec![PermissionVerb::Read, PermissionVerb::Execute],
+            scope_refs: vec![child.id.clone()],
+        }],
+        scope_evidence_refs: vec![],
+    };
+    assert_eq!(
+        test.store
+            .validate_simple_permission_child_delegation(&state.id, &delegation)
+            .unwrap(),
+        Err(SimpleDelegationError::ScopeEvidenceMissing)
+    );
+
+    delegation.scope_evidence_refs = vec!["fabricated-scope-relation".into()];
+    assert_eq!(
+        test.store
+            .validate_simple_permission_child_delegation(&state.id, &delegation)
+            .unwrap(),
+        Err(SimpleDelegationError::ScopeEvidenceMissing),
+        "a caller-invented evidence_ref must never authorize"
+    );
+
+    let mismatched = Relation {
+        id: "scope-relation-mismatched".into(),
+        from_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: unrelated.id,
+        },
+        relation_type: "scope_contains/work".into(),
+        to_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: child.id.clone(),
+        },
+        provenance_ref: None,
+        lifecycle_status: Some("active".into()),
+        created_by: human_ref.clone(),
+        created_at: NOW.into(),
+    };
+    test.store.append_relation(&mismatched).unwrap();
+    delegation.scope_evidence_refs = vec![mismatched.id];
+    assert_eq!(
+        test.store
+            .validate_simple_permission_child_delegation(&state.id, &delegation)
+            .unwrap(),
+        Err(SimpleDelegationError::ScopeEvidenceMismatch)
+    );
+
+    let wrong_module = Relation {
+        id: "scope-relation-wrong-module".into(),
+        from_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        relation_type: "scope_contains/docs".into(),
+        to_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: child.id.clone(),
+        },
+        provenance_ref: None,
+        lifecycle_status: Some("active".into()),
+        created_by: human_ref.clone(),
+        created_at: NOW.into(),
+    };
+    test.store.append_relation(&wrong_module).unwrap();
+    delegation.scope_evidence_refs = vec![wrong_module.id];
+    assert_eq!(
+        test.store
+            .validate_simple_permission_child_delegation(&state.id, &delegation)
+            .unwrap(),
+        Err(SimpleDelegationError::ScopeEvidenceMismatch)
+    );
+
+    let valid = Relation {
+        id: "scope-relation-valid".into(),
+        from_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: "work-simple-permission".into(),
+        },
+        relation_type: "scope_contains/work".into(),
+        to_ref: EntityRef {
+            kind: EntityKind::WorkItem,
+            id: child.id,
+        },
+        provenance_ref: None,
+        lifecycle_status: Some("active".into()),
+        created_by: human_ref,
+        created_at: NOW.into(),
+    };
+    test.store.append_relation(&valid).unwrap();
+    delegation.scope_evidence_refs = vec![valid.id.clone()];
+    assert_eq!(
+        test.store
+            .validate_simple_permission_child_delegation(&state.id, &delegation)
+            .unwrap(),
+        Ok(()),
+        "the Store may normalize a current canonical relation into an exact parent scope"
+    );
+
+    let stale = Relation {
+        lifecycle_status: Some("archived".into()),
+        ..valid
+    };
+    test.store.append_relation(&stale).unwrap();
+    assert_eq!(
+        test.store
+            .validate_simple_permission_child_delegation(&state.id, &delegation)
+            .unwrap(),
+        Err(SimpleDelegationError::ScopeEvidenceStale)
     );
 }

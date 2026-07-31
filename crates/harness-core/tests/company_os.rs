@@ -8,8 +8,8 @@ use harness_core::{
     OrgUnitStatus, OrganizationMembership, OrganizationMembershipRole,
     OrganizationMembershipStatus, Payment, PaymentStatus, PermissionModule, PermissionVerb,
     ProtectedEffect, Relation, RelationRule, RiskTier, ServiceActor, SimpleActionPolicyDecision,
-    SimpleDelegationError, SimplePermissionDecision, SimplePermissionDenial,
-    SimplePermissionExecutionBinding, SimplePermissionRequest, SimplePermissionScopeProof,
+    SimpleDelegationError, SimplePermissionDecision, SimplePermissionDelegationRequest,
+    SimplePermissionDenial, SimplePermissionExecutionBinding, SimplePermissionRequest,
     SimplePermissionState, SimpleRoleTemplate, StandingAgent, TypedRecord, ValidateCompanyOs, View,
     ViewMode, WorkItem, WorkItemStatus, WorkType, SIMPLE_PERMISSION_PROTECTED_EFFECTS,
 };
@@ -747,31 +747,19 @@ fn simple_permission_delegation_is_one_level_and_same_or_narrower() {
         parent.validate_child_delegation(SimpleRoleTemplate::ExecutionMember, &[expanded.clone()]),
         Err(SimpleDelegationError::ScopeExpansion)
     );
-    parent
-        .validate_child_delegation_with_scope_proofs(
-            SimpleRoleTemplate::ExecutionMember,
-            &[expanded],
-            &[SimplePermissionScopeProof {
-                module: PermissionModule::Work,
-                parent_scope_ref: "work-trademark".into(),
-                child_scope_ref: "work-trademark-grandchild".into(),
-                evidence_ref: "relation/work-trademark/contains/grandchild".into(),
-            }],
-        )
-        .unwrap();
+    let selector_only_request = SimplePermissionDelegationRequest {
+        child_role: SimpleRoleTemplate::ExecutionMember,
+        child_capabilities: vec![expanded],
+        scope_evidence_refs: vec!["relation/work-trademark/contains/grandchild".into()],
+    };
+    selector_only_request.validate().unwrap();
     assert_eq!(
-        parent.validate_child_delegation_with_scope_proofs(
+        parent.validate_child_delegation(
             SimpleRoleTemplate::ExecutionMember,
             &[ModuleCapability {
                 module: PermissionModule::Work,
                 verbs: vec![PermissionVerb::Read],
                 scope_refs: vec!["work-unrelated".into()],
-            }],
-            &[SimplePermissionScopeProof {
-                module: PermissionModule::Docs,
-                parent_scope_ref: "work-trademark".into(),
-                child_scope_ref: "work-unrelated".into(),
-                evidence_ref: "wrong-module-proof".into(),
             }],
         ),
         Err(SimpleDelegationError::ScopeExpansion)
@@ -797,6 +785,7 @@ fn simple_permission_evaluation_intersects_binding_envelope_policy_and_effect() 
             kind: EntityKind::WorkItem,
             id: "work-trademark".into(),
         },
+        subject_scope_evidence_ref: None,
         transport_authenticated: true,
         action_policy_decision: SimpleActionPolicyDecision::Allowed,
         protected_effect: None,
@@ -804,6 +793,20 @@ fn simple_permission_evaluation_intersects_binding_envelope_policy_and_effect() 
         evaluated_at: NOW.into(),
     };
     assert_eq!(state.evaluate(&request), SimplePermissionDecision::Allowed);
+
+    request.subject_ref.kind = EntityKind::Document;
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeMismatch)
+    );
+    request.subject_ref.kind = EntityKind::WorkItem;
+
+    request.subject_ref.id = "work-unrelated".into();
+    assert_eq!(
+        state.evaluate(&request),
+        SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeMismatch)
+    );
+    request.subject_ref.id = "work-trademark".into();
 
     request.scope_ref = "work-unrelated".into();
     assert_eq!(

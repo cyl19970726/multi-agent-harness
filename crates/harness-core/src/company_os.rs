@@ -499,42 +499,6 @@ pub struct ModuleCapability {
     pub scope_refs: Vec<String>,
 }
 
-/// Server-resolved evidence that one exact scope is a direct or transitive
-/// child of another for the same module. It is evaluation input, never stored
-/// authority: callers must obtain it from the owning Docs/Work/Org/repository
-/// relation resolver rather than declaring hierarchy themselves.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SimplePermissionScopeProof {
-    pub module: PermissionModule,
-    pub parent_scope_ref: String,
-    pub child_scope_ref: String,
-    pub evidence_ref: String,
-}
-
-impl ValidateCompanyOs for SimplePermissionScopeProof {
-    fn validate(&self) -> Result<(), CompanyOsValidationError> {
-        required(
-            &self.parent_scope_ref,
-            "SimplePermissionScopeProof.parent_scope_ref",
-        )?;
-        required(
-            &self.child_scope_ref,
-            "SimplePermissionScopeProof.child_scope_ref",
-        )?;
-        required(
-            &self.evidence_ref,
-            "SimplePermissionScopeProof.evidence_ref",
-        )?;
-        if self.parent_scope_ref == self.child_scope_ref {
-            return Err(CompanyOsValidationError::Invalid {
-                field: "SimplePermissionScopeProof.child_scope_ref",
-                reason: "identical scopes do not require a child-scope proof".into(),
-            });
-        }
-        Ok(())
-    }
-}
-
 impl ValidateCompanyOs for ModuleCapability {
     fn validate(&self) -> Result<(), CompanyOsValidationError> {
         if self.verbs.is_empty() {
@@ -766,6 +730,10 @@ pub struct SimplePermissionRequest {
     pub verb: PermissionVerb,
     pub scope_ref: String,
     pub subject_ref: EntityRef,
+    /// Optional selector for a canonical Store relation from `scope_ref` to
+    /// `subject_ref`. It is never authority by itself.
+    #[serde(default)]
+    pub subject_scope_evidence_ref: Option<String>,
     /// Supplied only by the authenticated transport boundary. False never
     /// falls back to Actor, role, session, or token inference.
     pub transport_authenticated: bool,
@@ -775,11 +743,59 @@ pub struct SimplePermissionRequest {
     pub evaluated_at: String,
 }
 
+/// Selector-only request for one bounded child execution Member.
+///
+/// `scope_evidence_refs` never carry authority. The Core evaluator accepts
+/// exact parent scopes only; a Store/server boundary must resolve every
+/// selector against its current canonical relation rows before calling that
+/// evaluator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimplePermissionDelegationRequest {
+    pub child_role: SimpleRoleTemplate,
+    pub child_capabilities: Vec<ModuleCapability>,
+    #[serde(default)]
+    pub scope_evidence_refs: Vec<String>,
+}
+
+impl ValidateCompanyOs for SimplePermissionDelegationRequest {
+    fn validate(&self) -> Result<(), CompanyOsValidationError> {
+        if self.child_capabilities.is_empty() {
+            return Err(CompanyOsValidationError::Required {
+                field: "SimplePermissionDelegationRequest.child_capabilities",
+            });
+        }
+        for capability in &self.child_capabilities {
+            capability.validate()?;
+        }
+        required_strings(
+            &self.scope_evidence_refs,
+            "SimplePermissionDelegationRequest.scope_evidence_refs",
+        )?;
+        if self
+            .scope_evidence_refs
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != self.scope_evidence_refs.len()
+        {
+            return Err(CompanyOsValidationError::Invalid {
+                field: "SimplePermissionDelegationRequest.scope_evidence_refs",
+                reason: "must not contain duplicates".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl ValidateCompanyOs for SimplePermissionRequest {
     fn validate(&self) -> Result<(), CompanyOsValidationError> {
         self.execution_binding.validate()?;
         required(&self.scope_ref, "SimplePermissionRequest.scope_ref")?;
         self.subject_ref.validate()?;
+        optional_required(
+            self.subject_scope_evidence_ref.as_deref(),
+            "SimplePermissionRequest.subject_scope_evidence_ref",
+        )?;
         optional_required(
             self.human_approval_ref.as_deref(),
             "SimplePermissionRequest.human_approval_ref",
@@ -802,6 +818,10 @@ pub enum SimplePermissionDenial {
     TemplateDenied,
     CapabilityMissing,
     ScopeEscape,
+    SubjectScopeMismatch,
+    SubjectScopeUnresolved,
+    SubjectScopeEvidenceMissing,
+    SubjectScopeEvidenceStale,
     TransportUnauthenticated,
     ActionPolicyDenied,
     ActionPolicyUnknown,
@@ -822,6 +842,9 @@ pub enum SimpleDelegationError {
     InvalidChildEnvelope,
     CapabilityExpansion,
     ScopeExpansion,
+    ScopeEvidenceMissing,
+    ScopeEvidenceMismatch,
+    ScopeEvidenceStale,
 }
 
 impl SimplePermissionState {
@@ -854,6 +877,19 @@ impl SimplePermissionState {
         if !capability.scope_refs.contains(&request.scope_ref) {
             return SimplePermissionDecision::Denied(SimplePermissionDenial::ScopeEscape);
         }
+        // Core never interprets caller evidence as containment authority. A
+        // Store/server resolver may normalize a canonically related subject
+        // to this exact scope before evaluating the immutable envelope.
+        let Some(scope_entity_kind) = request.module.scope_entity_kind() else {
+            return SimplePermissionDecision::Denied(
+                SimplePermissionDenial::SubjectScopeUnresolved,
+            );
+        };
+        if request.subject_ref.kind != scope_entity_kind
+            || request.scope_ref != request.subject_ref.id
+        {
+            return SimplePermissionDecision::Denied(SimplePermissionDenial::SubjectScopeMismatch);
+        }
         if !request.transport_authenticated {
             return SimplePermissionDecision::Denied(
                 SimplePermissionDenial::TransportUnauthenticated,
@@ -885,18 +921,6 @@ impl SimplePermissionState {
         &self,
         child_role: SimpleRoleTemplate,
         child_capabilities: &[ModuleCapability],
-    ) -> Result<(), SimpleDelegationError> {
-        self.validate_child_delegation_with_scope_proofs(child_role, child_capabilities, &[])
-    }
-
-    /// Variant used after the owning server has resolved explicit scope
-    /// containment evidence. A proof can narrow a parent scope to a child but
-    /// can never change the module or expand verbs.
-    pub fn validate_child_delegation_with_scope_proofs(
-        &self,
-        child_role: SimpleRoleTemplate,
-        child_capabilities: &[ModuleCapability],
-        scope_proofs: &[SimplePermissionScopeProof],
     ) -> Result<(), SimpleDelegationError> {
         if !matches!(
             self.role_template,
@@ -935,17 +959,11 @@ impl SimplePermissionState {
             {
                 return Err(SimpleDelegationError::CapabilityExpansion);
             }
-            if child.scope_refs.iter().any(|scope| {
-                !parent.scope_refs.contains(scope)
-                    && !parent.scope_refs.iter().any(|parent_scope| {
-                        scope_proofs.iter().any(|proof| {
-                            proof.validate().is_ok()
-                                && proof.module == child.module
-                                && proof.parent_scope_ref == *parent_scope
-                                && proof.child_scope_ref == *scope
-                        })
-                    })
-            }) {
+            if child
+                .scope_refs
+                .iter()
+                .any(|scope| !parent.scope_refs.contains(scope))
+            {
                 return Err(SimpleDelegationError::ScopeExpansion);
             }
         }
@@ -966,6 +984,19 @@ pub enum EntityKind {
     FinancialRecord,
     Evidence,
     Execution,
+}
+
+impl PermissionModule {
+    /// Canonical Company entity kind used for exact scope and subject identity.
+    /// OrgUnit and repository kinds do not yet exist in `EntityKind`, so those
+    /// modules fail closed instead of borrowing another kind.
+    pub const fn scope_entity_kind(self) -> Option<EntityKind> {
+        match self {
+            Self::Docs => Some(EntityKind::Document),
+            Self::Work => Some(EntityKind::WorkItem),
+            Self::Org | Self::Github => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
