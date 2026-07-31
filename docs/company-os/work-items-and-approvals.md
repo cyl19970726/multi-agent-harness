@@ -228,6 +228,106 @@ Docs audit may create corrective Work. Every WorkItem still requires explicit
 source context, accountability, lifecycle, review, and result promotion. See
 [AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md).
 
+## Managed intake, capacity, and parallel execution
+
+New requirements enter one managed company queue. Intake preserves the
+requester, source record or message, submission actor, observation time, and
+the route by which the requirement reached Company Work. A Supervisor routes
+ordinary intake to the Company Lead for triage; it does not broadcast every
+request directly to every Agent. An explicit emergency override may interrupt
+active work. Otherwise the Lead orders the queue against existing commitments,
+dependencies, risk, and available capacity.
+
+That ordering is an operating decision over WorkItems, not a second work
+ledger. WorkItems remain the durable intent, acceptance, constraints, risk,
+source, and result provenance. The Company Lead or delegated domain Lead owns
+cross-WorkItem capacity and resource-conflict judgment. The core does not add a
+Task Graph, Project object, or universal resource scheduler for this purpose.
+
+Before routing or starting a lane, the responsible Lead must read back:
+
+- the accountable owner, assignees, reviewer, work type, priority, source,
+  context, result destination, and lifecycle state of the existing WorkItem;
+- active Assignments and execution references for the same WorkItem and Actor,
+  including delivery and acknowledgement truth where supported;
+- the Actor's active status, availability, required permission, accepted work
+  types, declared assignment capacity, and any exclusive assignment;
+- active lanes that own the same repository paths, writable workspace, external
+  effect, integration boundary, or other declared shared hotspot; and
+- the transition policy, required review or Approval, and the evidence still
+  missing for the intended next state.
+
+Missing `assignment_capacity` or accepted-work-type declarations are explicit
+unknowns, not proof of unlimited capacity or routing compatibility. A WorkItem
+role proves accountability, an Assignment proves durable routing, and a native
+execution record proves observed execution; none substitutes for the others.
+Runtime availability alone grants neither Company authority nor capacity.
+
+The normal autonomy boundary routes Work to the accountable domain Lead, such
+as a CTO or Docs Lead. Within an attenuated permission, budget, risk, and
+concurrency ceiling, that Lead may create or reuse an Agent Team and coordinate
+Developer, Reviewer, QA, or other child Members without reporting each child
+step through every Organization layer. Child outcomes, evidence, blockers, and
+delivery references update the originating WorkItem directly through governed
+actions. Raw transcripts and private reasoning remain provider-native.
+
+Routine in-scope execution is recorded in audit and digest views; it does not
+wait for synchronous Human notification or approval. Material finance, legal,
+root-security, destructive, major-public, permission-changing, or policy-unknown
+effects cross the declared escalation boundary into the Human Decision Queue.
+Scope expansion also returns to the accountable Lead or required approver.
+
+### Minimum parallel Assignment brief
+
+An Assignment carries only the execution brief for its lane. With the current
+V1 record, these details live in its stable identity, WorkItem reference,
+sender, recipient, role, correlation, and `scope`; implementations may later
+add structured fields without changing their meaning:
+
+- the bounded objective and non-goals, plus the originating WorkItem and exact
+  correlation used for delivery and handoff;
+- owned paths or resources, named shared hotspots, and the rule for surfacing a
+  newly discovered conflict;
+- the expected deliverable, required checks, evidence form, and the actor who
+  integrates or orders overlapping lanes;
+- the effective permission, budget, risk, and concurrency ceilings, including
+  whether child Agent creation is allowed; and
+- any Lead-pinned base SHA, worktree, or branch constraint needed for safety.
+
+A pinned base and isolated worktree are Lead/Supervisor defaults when code
+lanes could conflict, not mandatory user-authored WorkItem fields. A permitted
+executor may select a clean worktree and branch, then reports the actual base,
+worktree, branch, commit, checks, and conflicts in its handoff. The Supervisor
+enforces one top-level driver per writable workspace and resolves allocation
+across active WorkItems.
+
+### Queue and lifecycle readiness
+
+Queue order never changes lifecycle truth by itself. The operator applies the
+smallest public governed action and leaves the current state unchanged when a
+required action, authority, or immutable link is unavailable:
+
+| Intended step | Minimum read-back before the governed action |
+| --- | --- |
+| route or deliver | Existing non-duplicate WorkItem; live compatible Actor; explicit Assignment identity, sender, recipient, scope, and correlation; declared execution and conflict ceilings. |
+| `submitted` to `in_progress` | Accountable owner and assignee are valid; the executable scope has been durably routed; source/context are resolvable; required authority and protected-action policy are satisfied. |
+| `in_progress` to `in_review` | The bounded execution is terminal; outcome, execution, evidence, artifact, and deliverable references required by acceptance are appended through supported governed paths; result provenance is named without claiming acceptance. |
+| `in_review` to `completed` | Reviewer decision, all acceptance criteria, required Approvals, durable outcome summary, and result Document or record return are present and read back. |
+
+Evidence arriving late is appended through its governed evidence/result path;
+the WorkItem is never regressed to an earlier status merely to attach it.
+Provider completion, a handoff, a successful check, a merged pull request, or
+an acknowledged Assignment does not automatically complete Company Work.
+
+If public policy cannot express the next truthful link, the operator records a
+blocker and preserves the existing record instead of editing ledgers directly,
+inventing an Assignment, or creating a duplicate WorkItem. Related WorkItems
+may remain distinct only when their objectives and acceptance boundaries are
+distinct and their typed context links make that ownership reconstructable.
+Accepted results return to the canonical source/result Documents through an
+explicit governed Docs action; context Documents never silently replace the
+source.
+
 ## Approval contract
 
 An `Approval` is an auditable authorization request associated with a WorkItem

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -78,6 +78,42 @@ async function post(base, path, body) {
 }
 
 async function main() {
+  const workContract = await readFile(
+    join(repoRoot, "docs", "company-os", "work-items-and-approvals.md"),
+    "utf8",
+  );
+  const normalizedWorkContract = workContract.replace(/\s+/g, " ");
+  check(
+    [
+      "New requirements enter one managed company queue",
+      "A Supervisor routes ordinary intake to the Company Lead for triage",
+      "An explicit emergency override may interrupt active work",
+    ].every((text) => normalizedWorkContract.includes(text)),
+    "Work contract preserves managed intake provenance, Lead triage, and explicit emergency override",
+  );
+  check(
+    normalizedWorkContract.includes("explicit unknowns, not proof of unlimited capacity")
+      && normalizedWorkContract.includes("A WorkItem role proves accountability")
+      && normalizedWorkContract.includes("an Assignment proves durable routing")
+      && normalizedWorkContract.includes("a native execution record proves observed execution"),
+    "Work contract keeps capacity unknowns and accountability, routing, and execution truth separate",
+  );
+  check(
+    [
+      "owned paths or resources, named shared hotspots",
+      "expected deliverable, required checks, evidence form",
+      "permission, budget, risk, and concurrency ceilings",
+      "whether child Agent creation is allowed",
+      "Lead-pinned base SHA, worktree, or branch constraint",
+    ].every((text) => normalizedWorkContract.includes(text)),
+    "Work contract defines the minimum bounded parallel Assignment brief without adding a scheduler",
+  );
+  check(
+    normalizedWorkContract.includes("the WorkItem is never regressed to an earlier status")
+      && normalizedWorkContract.includes("does not automatically complete Company Work")
+      && normalizedWorkContract.includes("cross the declared escalation boundary into the Human Decision Queue"),
+    "Work contract keeps evidence append-only, acceptance explicit, and Human escalation exception-only",
+  );
   execFileSync("cargo", ["build", "-q", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
   const root = await mkdtemp(join(tmpdir(), "company-os-work-cli-smoke-"));
   const env = { ...process.env, HARNESS_ROOT: join(root, "store"), HARNESS_COMPANY_OS_TOKEN: token };
