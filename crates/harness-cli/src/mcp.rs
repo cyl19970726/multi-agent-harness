@@ -36,9 +36,10 @@ use crate::{
     parse_team_actor_kind, parse_team_message_kind, parse_wave_executor_kind,
     prepare_team_run_start, reconcile_team_message_delivery_value, rename_team_run_member,
     resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
-    revise_wave, route_agent_inbox_messages, send_team_message_as, steer_team_member_value,
-    team_member_specs_from_definition, team_run_inbox, team_run_wave_index, transition_team_run,
-    visible_member_actions_in_append_order, ResolvedStore, TeamMemberSpec,
+    revise_wave, route_agent_inbox_messages, send_team_message_as, serde_snake_label,
+    steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
+    team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
+    ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -185,7 +186,7 @@ fn call_tool(
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
         "team_run_cancel" => tool_team_run_cancel(store, resolved, &arguments),
         "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
-        "team_run_list" => tool_team_run_list(store),
+        "team_run_list" => tool_team_run_list(store, &arguments),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
         "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
@@ -546,6 +547,7 @@ fn tool_team_run_create(
             worktree_ref: optional_str(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_str(member, "resume_native_session_id")?,
+            assignment: optional_str(member, "assignment")?,
         });
     }
     let agent_team_id = optional_str(arguments, "agent_team_id")?;
@@ -631,6 +633,7 @@ fn tool_team_run_add_member(
             &Value::Object(member.clone()),
             "resume_native_session_id",
         )?,
+        assignment: optional_str(&Value::Object(member.clone()), "assignment")?,
     };
     let (run, member_run, assignment_message) = add_team_run_member(
         store,
@@ -676,8 +679,30 @@ fn tool_team_run_deactivate_member(
 
 /// `team_run_list` — the latest projection of every run, trimmed to the
 /// fields a host needs to pick one.
-fn tool_team_run_list(store: &HarnessStore) -> Result<Value, String> {
+fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    // One coordination store holds every tenant that shares an Execution Space
+    // (which is the decided architecture -- ADR 0042 makes the Project Binding
+    // store a compatibility root that does not own new execution rows). What is
+    // missing is a way to ask for one tenant: an unscoped list measured 64 KB
+    // with another project's rows listed first, and every caller pays for every
+    // other tenant's history on each call.
+    let project_binding_id = arguments
+        .get("project_binding_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let status_filter = arguments.get("status").and_then(Value::as_str);
     let runs = latest_team_runs_in_append_order(store).map_err(|error| error.to_string())?;
+    let runs: Vec<_> = runs
+        .into_iter()
+        .filter(|run| match project_binding_id.as_deref() {
+            Some(wanted) => run.project_binding_id.as_deref() == Some(wanted),
+            None => true,
+        })
+        .filter(|run| match status_filter {
+            Some(wanted) => serde_snake_label(&run.status) == wanted,
+            None => true,
+        })
+        .collect();
     Ok(Value::Array(
         runs.iter()
             .map(|run| {
@@ -688,6 +713,7 @@ fn tool_team_run_list(store: &HarnessStore) -> Result<Value, String> {
                     "status": run.status,
                     "wave_index": wave_index,
                     "member_count": run.member_run_ids.len(),
+                    "project_binding_id": run.project_binding_id,
                     "created_at": run.created_at,
                 })
             })
@@ -1103,6 +1129,7 @@ fn tool_definitions() -> Value {
                                 "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
                                 "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
+                                "assignment": {"type": "string", "minLength": 1, "description": "This member's own brief. The run-level objective is used when omitted; supply this so a multi-lane objective is not delivered verbatim to every member."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
                             "required": ["name", "role", "provider"]
@@ -1133,6 +1160,7 @@ fn tool_definitions() -> Value {
                             "service_tier": {"type": "string", "minLength": 1},
                             "worktree_ref": {"type": "string", "minLength": 1},
                             "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                            "assignment": {"type": "string", "minLength": 1, "description": "This member's own brief; the run-level objective is used when omitted."},
                             "resume_native_session_id": {"type": "string", "minLength": 1}
                         },
                         "required": ["name", "role", "provider"]
@@ -1203,8 +1231,11 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_list",
-            "description": "List every team run in the store (latest projection, append order). wave_index is derived by joining wave_id to the native Wave and is null when unresolved.",
-            "inputSchema": {"type": "object", "properties": {}}
+            "description": "List team runs in the store (latest projection, append order). One Execution Space store holds every tenant bound to it, so pass project_binding_id to see only one project's runs and status to drop finished ones. wave_index is derived by joining wave_id to the native Wave and is null when unresolved.",
+            "inputSchema": {"type": "object", "properties": {
+                "project_binding_id": {"type": "string", "description": "Return only runs bound to this project."},
+                "status": {"type": "string", "description": "Return only runs in this status, for example running."}
+            }}
         },
         {
             "name": "team_run_status",
