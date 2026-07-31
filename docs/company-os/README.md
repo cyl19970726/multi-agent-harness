@@ -39,8 +39,10 @@ scripts/install-skill.sh --agent both --suite company-os
 Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands
 are implemented. Organization CLI v1 covers both the flat
 `harness company org ...` surface and nested `actor/unit/membership` groups for
-inspection and Human administrative authoring of Humans, Standing Agents,
-OrgUnits, Memberships, declared actor status, and permission/capability refs. It
+inspection and **bootstrap-only** Human administrative authoring of Humans,
+Standing Agents, OrgUnits, Memberships, declared actor status, and
+permission/capability refs. That boundary is not target delegated authority and
+cannot substitute for a governed Approval, scoped grant, or broker dispatch. It
 does not yet provide the governed OrgChangeProposal lifecycle for adding actors
 or expanding authority.
 

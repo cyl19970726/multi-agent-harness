@@ -1,6 +1,6 @@
 {
   "schema": "star_harness.company_os_implementation_truth.v1",
-  "auditedAt": "2026-07-23",
+  "auditedAt": "2026-07-31",
   "states": [
     "design_only",
     "partial",
@@ -107,7 +107,7 @@
         "skills": ["skills/company-org-operator/SKILL.md"],
         "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "crates/harness-cli/tests/mission_wave_api.rs", "scripts/check-company-os-org-cli-smoke.mjs", "pnpm check:dashboard"]
       },
-      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref -> AgentMember.id -> MemberRun.agent_member_id join with no same-id fallback or lifecycle writeback", "read-only Agent Team assignment and assignment-less participation projection", "Organization-to-profile and Standing-Agent-to-MemberRun navigation", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the Human administrative authoring boundary"],
+      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref -> AgentMember.id -> MemberRun.agent_member_id join with no same-id fallback or lifecycle writeback", "read-only Agent Team assignment and assignment-less participation projection", "Organization-to-profile and Standing-Agent-to-MemberRun navigation", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the bootstrap-only Human administrative authoring boundary"],
       "blockingGaps": ["implemented availability and capacity ownership", "Workflow participation and direct durable-agent messaging projection", "durable cross-client Team Supervisor runtime health", "governed organization-change proposal/approval lifecycle", "governance-led Organization Actual"]
     },
     {
@@ -173,6 +173,38 @@
       "blockingGaps": [
         "native commitment.propose Action for first Commitment creation without the current Human administrative import boundary",
         "finance reporting and reconciliation beyond Commitment/Payment records"
+      ]
+    },
+    {
+      "id": "authority",
+      "implementationState": "design_only",
+      "truthRefs": {
+        "contract": [
+          "docs/company-os/company-constitution.md",
+          "docs/company-os/scoped-authority-broker.md",
+          "docs/company-os/governance.md",
+          "docs/decisions/0047-scoped-company-authority-broker.md",
+          "docs/decisions/0048-human-rooted-company-constitution.md"
+        ],
+        "schema": [],
+        "store": [],
+        "api": [],
+        "ui": [],
+        "acceptance": []
+      },
+      "verifiedSlices": [
+        "Company write transport keeps HARNESS_COMPANY_OS_TOKEN service-side and the existing Action dispatcher checks Actor, policy, permission, scope, risk, and Approval",
+        "Organization CLI authoring is a bootstrap-only Human administrative boundary and not delegated Company authority"
+      ],
+      "blockingGaps": [
+        "ScopedPermissionGrant and CapabilityLeaseReceipt schemas, Store, broker API, and one-command ADR 0047 proof",
+        "Human request provenance to delivery evidence to Company Lead durable promotion",
+        "strict recursive attenuation for temporary Team execution and approved-template Standing Agents with exact ProjectBinding fencing",
+        "atomic execution-budget, concurrency, and delegation-depth reservations",
+        "cascading expiry and revocation plus indeterminate recovery",
+        "routine authority audit digest and exception-only Human queue",
+        "one evidence-shaped root R3 Approval and activation",
+        "Store-truth Organization and Work authority projections"
       ]
     }
   ],

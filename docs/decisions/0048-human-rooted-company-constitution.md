@@ -29,17 +29,30 @@ Domain Leads execute autonomously within their domain and may subdelegate only
 through one strictly attenuating `ScopedPermissionGrant` lineage and durable
 Assignments.
 
+Human request provenance passes through Supervising Operator capture and
+Runtime Supervisor delivery evidence before the Company Lead promotes it into
+Docs, Work, priority, replan, or an exception. Intake and transport create no
+Company authority, and `WorkItem.requested_by` preserves the actual originator.
+
 The Runtime Supervisor remains outside the authority hierarchy. It proves
 delivery, MemberRun/native-session provenance, generation, runtime control, and
 recovery state; it cannot create intent, choose priority, grant authority,
 approve exceptions, or accept Company Work.
 
+Temporary Team Members remain execution-only and bind exact Assignment,
+TeamMessage, MemberRun, native session, and ProjectBinding. Durable child
+Standing Agents require explicit Organization truth and an approved template
+id/version/digest. Child ProjectBinding and template selectors must be equal to
+or narrower than the parent allowlists and cannot be retargeted later.
+
 Child delivery or execution requires one atomic reservation of execution
 budget, concurrency, and delegation depth. Expiry or revocation fences
-descendants and unconsumed authority. Routine in-scope decisions emit a
-canonical audit digest and proceed without a new Human prompt. Only
-constitutional, permission, protected-effect, resource-ceiling, missing-owner,
-or ambiguous-recovery exceptions enter the Human queue.
+descendants and unconsumed authority. A strictly attenuating child or
+approved-template instance consumes the existing Human-approved envelope and
+is routine only when policy is known, the effect is reversible, blast radius is
+bounded, and there is no material external commitment. Unknown policy,
+irreversibility, broad/root-security blast radius, external commitment, or any
+scope/ceiling expansion enters the Human queue.
 
 Company OS Work remains canonical for intent, responsibility, Assignment,
 Approval, acceptance, and result. GitHub/Git remains canonical for software
@@ -53,10 +66,14 @@ semantics. Its V1 proof is a one-node lineage with no nested delegation.
 Constitutional child delegation is a later implementation phase and must first
 extend that canonical grammar and acceptance.
 
-The root `ChangePermission` Approval remains an exact R3 proposal bound to the
-Company, Constitution version/digest, Company Lead ActorRef, and root
-`grant_id + grant_generation + canonical_grant_digest`. This decision and its
-merge do not request, approve, or activate that proposal.
+The root `ChangePermission` Approval is one evidence-shaped R3 request bound to
+the Company, Constitution version/digest, Company Lead ActorRef, root
+`grant_id + grant_generation + canonical_grant_digest`, exact acceptance
+evidence, policy, subject, command, approver, and expiry. Preparation and
+acceptance gathering do not request or decide it. After acceptance, one
+governed request receives one Human decision and the exact activation command
+may run only from that same approved, unexpired decision. This ADR and its
+merge do none of those things.
 
 ## Consequences
 
@@ -66,6 +83,8 @@ merge do not request, approve, or activate that proposal.
   responsibilities and evidence.
 - Delegation cannot union sibling authority or outrun its parent resource and
   time ceilings.
+- Intake delivery, temporary Team membership, template similarity, and
+  ProjectBinding selection create no implied Company authority.
 - Reservation races, cascading revocation, indeterminate recovery, exception
   routing, and Store-backed UI truth become required acceptance surfaces.
 - The existing Company Store and broker remain unchanged until separately
@@ -91,6 +110,8 @@ Acceptance requires deterministic proof that:
 - the Human-rooted topology and one active lineage resolve from Store truth;
 - a routine exact Work command can proceed without a Human prompt while a
   protected or broadened command reaches denial or the exact exception path;
+- the reversibility, blast-radius, external-commitment, ProjectBinding, and
+  approved-template tests distinguish routine attenuation from an R3 exception;
 - concurrent child requests cannot oversubscribe budget, concurrency, or
   depth;
 - expiry, revocation, and indeterminate recovery fence every affected

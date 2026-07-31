@@ -13,6 +13,8 @@ Organization records, WorkItems, Assignments, Approvals, Action policies, and
 AuditEvents. ADR 0045 defines the explicit StandingAgent-to-execution relation,
 and ADR 0046 separates the durable Company Lead from the Runtime Supervisor.
 Company writes still use the service-side `HARNESS_COMPANY_OS_TOKEN`.
+The [implementation truth matrix](implementation-truth-matrix.md) is canonical
+for what those current surfaces can prove.
 
 The [Scoped Company Authority Broker](scoped-authority-broker.md) defines
 `ScopedPermissionGrant` and `CapabilityLeaseReceipt` as target contracts. They
@@ -41,7 +43,10 @@ Human Principal
         ├── Domain Lead: Organization
         └── other explicitly constituted Domain Leads
               autonomous execution inside one attenuating grant lineage
-              └── bounded child Assignment and execution binding
+              ├── temporary Team Member
+              │     execution-only; exact Assignment, MemberRun, and ProjectBinding
+              └── approved-template Standing Agent
+                    durable Actor, reporting relation, and child grant
 
 Runtime Supervisor
   provenance, delivery, session control, and recovery only
@@ -66,6 +71,39 @@ routine, in-scope work proceeds asynchronously. The Principal:
 “Continuous” does not mean approving every command. It means routine authority
 is an explicit, revocable attenuation of a Human-owned root, never authority
 created by an Agent or runtime.
+
+### Human request intake and durable promotion
+
+Human intent reaches the Company through an explicit provenance and promotion
+chain:
+
+```text
+Human request + exact provenance
+  -> Supervising Operator capture
+  -> Runtime Supervisor delivery evidence
+  -> Company Lead classification and promotion
+       -> Docs update
+       -> WorkItem create/update
+       -> priority change
+       -> execution replan
+       -> Human exception
+  -> Domain Lead execution
+```
+
+The intake envelope preserves the originating Human or other Actor, source
+message or governed-surface ref, received time and channel, attachments or
+evidence, requested urgency, and delivery ref. The Supervising Operator may
+capture, sanitize, and route it. The Runtime Supervisor may prove delivery and
+runtime facts. Neither role creates Company intent, responsibility, Work, or
+authority merely by receiving or forwarding the request.
+
+The Company Lead chooses whether and how to promote intake into durable Docs,
+Work, priority, or replan truth. `WorkItem.requested_by` preserves the actual
+originating Actor or record; it is not overwritten with the constitutional
+Human by default. Unpromoted intake confers no authority. Ordinary
+requirements, feedback, reprioritization, and replanning do not rotate or
+reopen the root Approval unless they change the Constitution, root envelope,
+or a protected boundary.
 
 ### Company Lead
 
@@ -92,6 +130,20 @@ of these are true:
   execution; and
 - the parent remains accountable and can reconstruct the child result.
 
+There are two child forms:
+
+- A **temporary Team Member** is execution-only and is bound to the exact
+  Assignment, delivered TeamMessage, MemberRun, native session, and
+  ProjectBinding. It never becomes a Company Actor, receives no Company grant
+  as grantee, cannot subdelegate Company authority, and returns evidence to the
+  accountable Standing Agent. Any Company Action still dispatches through an
+  eligible StandingAgent-bound leaf.
+- A **durable Standing Agent** requires an explicit Organization record and
+  reporting relation and may receive a child grant only from an approved
+  Standing Agent template identified by exact template id, version, and
+  canonical digest. Template approval is not inferred from a similar prompt,
+  role, skill set, provider, or prior instance.
+
 Sibling, unrelated, expired, or revoked grants cannot be combined. A missing
 edge is a denial, not a reason to infer authority.
 
@@ -115,8 +167,17 @@ Each child must strictly attenuate at least one authorization or resource
 dimension and may never broaden Company, domain, Actor, WorkItem, Assignment,
 correlation, permission, command, subject, payload, effect, validity, expiry,
 lease TTL, successful-use budget, execution budget, concurrency, or remaining
-delegation depth. Child expiry cannot outlive parent expiry. A parent cannot
-delegate more depth than it retained.
+delegation depth. Exact allowed ProjectBinding selectors and, for durable
+Standing Agent creation, approved template id/version/digest are also
+authority-bearing dimensions. Child selections must be equal to or narrower
+than parent allowlists. A later ProjectBinding or template selector change
+cannot retarget existing authority. Child expiry cannot outlive parent expiry.
+A parent cannot delegate more depth than it retained.
+
+The authority service denies an unapproved or stale template, a retargeted or
+unlisted ProjectBinding, equal-or-broader authorization, parent-budget
+oversubscription, concurrency excess, and depth excess. ProjectBinding proves
+the bounded execution resource; it never grants Company authority.
 
 The broker document remains canonical for grant and receipt object grammar,
 immutable generation/digest rules, identity binding, dispatch, and denial
@@ -166,6 +227,7 @@ Constitution version + canonical digest
 grant lineage ids + generations + canonical grant digests
 Company Actors + StandingAgent/AgentMember/MemberRun/native-session binding
 WorkItem + Assignment + delivered TeamMessage/correlation
+approved Standing Agent template id/version/digest + exact ProjectBinding
 reservation ids and budget/concurrency/depth amounts
 ActionCommand/request/result and AuditEvent references
 ```
@@ -173,17 +235,24 @@ ActionCommand/request/result and AuditEvent references
 This digest is evidence, not a capability. Display metadata and UI labels
 cannot change its meaning.
 
-Routine work that satisfies the Constitution, one active lineage, resource
-reservations, Action policy, and any existing Approval proceeds without a new
-Human decision. The Human queue contains exceptions only:
+Routine work, compliant child-grant issuance, and approved-template staffing
+may proceed under an already approved parent envelope only when policy is
+known, the effect is reversible, blast radius is bounded to the exact Company,
+Work, Actors, ProjectBinding, command, payload, and resource ceilings, and
+there is no material external commitment. The action remains audited and
+digested, but does not require a fresh R3 decision merely because it consumes a
+strictly attenuated part of the existing envelope.
+
+The Human queue contains exceptions only:
 
 - Constitution or root-grant creation, activation, expansion, replacement, or
   revocation;
-- R3 permission or Organization authority changes;
-- cross-domain work or a proposed child that cannot strictly attenuate;
+- a child that cannot strictly attenuate, uses an unapproved/stale template,
+  retargets ProjectBinding, or changes protected Organization/permission state;
 - budget, concurrency, or depth exhaustion requiring a higher ceiling;
-- Finance, payment, legal, credential, external-publication, or other
-  protected effects requiring named Human authority;
+- unknown policy, a materially irreversible or destructive effect, broad/root
+  security blast radius, or material Finance, legal, credential,
+  major-publication, or other external commitment;
 - ambiguous identity, delivery, recovery, or indeterminate execution; and
 - Work with no accountable Company Actor or applicable policy.
 
@@ -192,37 +261,58 @@ required approver permits the named effect.
 
 ## Exact root Approval/R3 proposal
 
-The constitutional root is reserved as this exact proposal:
+The constitutional root is reserved as one target
+[Approval](work-items-and-approvals.md#approval-contract) envelope:
 
 ```text
-proposal_id: proposal-agentos-company-constitution-root-v1
-approval_id: approval-agentos-company-constitution-root-v1
+Approval
+  id: approval-agentos-company-constitution-root-v1
+  subject_ref:
+    kind: scoped_permission_grant       # target subject kind; not in current schema
+    id: grant-agentos-company-lead-root-v1
+  action_summary: activate root ScopedPermissionGrant generation 1 only
+  requested_by: { actor_type: human, actor_id: human-wcw-owner }
+  required_approver_refs:
+    - { actor_type: human, actor_id: human-wcw-owner }
+  required_actor_type: human
+  policy_ref: policy-company-authority-constitution-v1
+  status: requested
+  decided_by: []
+  decision_note: null
+  evidence_refs:
+    - scoped-permission-grant-activation:grant-agentos-company-lead-root-v1:1:<canonical-grant-digest>
+    - company-constitution:1:<canonical-constitution-digest>
+    - company-authority-acceptance:<exact-acceptance-evidence-ref>
+  requested_at: <exact request time>
+  decided_at: null
+  expires_at: <required bounded expiry at request time>
+
+activation_action_command: permission.grant.activate
 risk_tier: R3
 effect: ChangePermission
-requester: human:human-wcw-owner
-approver: human:human-wcw-owner
-grantee: agent:agent-agentos-lead
-subject:
-  company_id: agent-company
-  organization_id: company
-  root_org_unit_id: orgunit-agentos-root
-  constitution_version: 1
-  canonical_constitution_digest: required computed value at request time
-  root_grant_id: grant-agentos-company-lead-root-v1
-  root_grant_generation: 1
-  canonical_grant_digest: required computed value at request time
-decision_scope: activate only the exact root grant snapshot above
-status: documentation-only proposal; no Store record, request, approval, or activation
+company_id: agent-company
+organization_id: company
+root_org_unit_id: orgunit-agentos-root
+grantee: { actor_type: agent, actor_id: agent-agentos-lead }
+root_grant_generation: 1
 ```
 
-The Actor and Organization ids above are current Store observations; the
-proposal, Approval, grant, and digest values are reserved target inputs, not
-claims that those records exist. Before an Approval can be requested, both
-digests must be computed from the final canonical snapshots and the whole
-proposal must be persisted through the governed Approval path. Any later
-change to one bound value is a new proposal and Human R3 decision. Human
-confirmation of this architecture, documentation merge, deployment, runtime
-start, or Assignment delivery is not that activation decision.
+This is the exact shape the one Approval must have **when it is requested**;
+no such record currently exists. The Actor and Organization ids above are
+current Store observations. The target subject kind, activation command,
+grant, acceptance ref, and digest values are reserved target inputs, not
+claims that those schema members or records exist. ADR 0047 and the broker
+contract remain canonical for the bound grant generation/digest and activation
+semantics.
+
+Before the single Approval can be requested, both digests and the exact
+acceptance evidence ref must replace the placeholders. The governed path then
+persists this one request, records one Human decision, and, only if it is
+approved and unexpired, dispatches the exact activation command. There is no
+earlier or second root Approval. Any change to a bound value requires a new
+request and Human R3 decision. Human confirmation of this architecture,
+documentation merge, deployment, runtime start, or Assignment delivery is not
+that decision.
 
 ## Concrete routine and exception example
 
@@ -291,14 +381,18 @@ available row, or the selected Execution Space/Project Binding.
 
 ## Short implementation sequence
 
-1. Freeze and approve the Constitution version/digest plus exact root R3
-   proposal without activating it.
-2. Implement and accept the one-node V1 broker proof from ADR 0047, including
-   durable allow/deny audit and root-token non-disclosure.
+1. Freeze the Constitution and grant snapshots, compute their digests, and
+   prepare the exact root R3 envelope without requesting or deciding it.
+2. Implement deterministic, non-activating acceptance for the one-node V1
+   broker from ADR 0047, including durable allow/deny audit and root-token
+   non-disclosure.
 3. Extend the canonical broker grammar and Store transactions for strict child
    lineage, atomic budget/concurrency/depth reservations, cascading fences, and
    indeterminate recovery; then run deterministic race and denial tests.
 4. Add the exception-only queue, routine audit digest, and Store-backed
    Organization/Work projections.
-5. Request the exact Human R3 activation only after independent review proves
-   scope attenuation, protected-effect denial, recovery, audit, and UI truth.
+5. After independent review proves attenuation, protected-effect denial,
+   recovery, audit, and UI truth, persist and request the single exact root
+   Approval, attach the acceptance evidence, record one Human decision, and
+   dispatch activation only if that same decision is approved and unexpired;
+   then run the exact live V1 allow/deny proof.
