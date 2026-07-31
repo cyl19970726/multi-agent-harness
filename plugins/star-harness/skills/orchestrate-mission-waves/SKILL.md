@@ -125,6 +125,7 @@ internal test subagent is not independent review.
 
 1. **Observe:** inspect the selected project, Mission, Waves, linked teams,
    runs, Lead Inbox, member Inbox state, pending interactions, and outcomes.
+   Observe on a cadence, not on a loop — see **Waiting Without Polling** below.
 2. Create or update the Mission context with the durable objective, constraints,
    and success standard.
 3. Create the current Wave as a concise Markdown plan. Include changed facts,
@@ -133,7 +134,12 @@ internal test subagent is not independent review.
    collaborators are useful.
 5. Start one Mission-scoped TeamRun for that team. Do not pass `--wave-id` on
    the primary path.
-6. Send correlated assignment messages. Use `--origin-wave-id` only for
+6. Send correlated assignment messages. Give each member its own brief rather
+   than the run objective: `members[].assignment` (API/MCP) or
+   `--member name:role:provider[@paths]#brief` (CLI). The objective is the
+   run-level intent; seeding every member from it delivers a multi-lane brief
+   verbatim to everyone, so each member reads every other member's task on its
+   first tokens. Use `--origin-wave-id` only for
    navigation and explanation.
 7. For a complex or high-risk lane, use an ordinary correlated message to ask
    for a Markdown plan before execution. Reply with revisions or permission to
@@ -164,6 +170,36 @@ repeated tool loop. Never load a whole rollout/transcript, copy it into Harness,
 or let a narrative summary override tool/process evidence. Forensics diagnoses;
 the Host still answers, steers, interrupts, resumes, reassigns, or opens a
 Repair Wave through normal controls.
+
+## Waiting Without Polling
+
+A Host that repeats a full status snapshot while members work burns one model
+round-trip per check and produces nothing. Measured on one run: 35 `team-run
+status` calls at a 58 s median gap, including 27 calls in a 25-minute window in
+which the Host changed no files.
+
+Three rules:
+
+1. **Block, do not poll.** `harness team-run wait --id <run> [--after-seq N]
+   [--timeout-secs S]` returns as soon as a team-run event passes the cursor,
+   with the new events and a `next_after_seq` to pass to the next wait. With no
+   `--after-seq` it anchors on the current maximum, so a bare wait means "what
+   happens next", not "replay this run". Use `team-run events --after-seq` when
+   a non-blocking incremental read is enough; reserve the full `status`
+   snapshot for re-anchoring after a compaction or a handoff.
+2. **Work your own lane while waiting.** Between two observations the Host must
+   do something that changes state — a patch, a build, a review of a delivered
+   handoff. A turn whose only actions are observations is a defect, not
+   diligence.
+3. **A silent member is a question the control plane cannot answer.** `wait`
+   tells you *whether* something happened; it cannot tell you what a member is
+   doing while it is quiet. Before steering or interrupting, read that member's
+   own provider-native session through its `NativeSessionRef` with a bounded
+   forensics probe. Never load a whole rollout to check on progress.
+
+Budget check for a Wave: more than ~30 harness calls in an hour against fewer
+than ~10 state-changing actions means the Host is idling in orchestration, and
+the Wave should be re-planned rather than polled harder.
 
 At every safe Host turn boundary—session start, after the user sends a new
 prompt, before re-planning, and before accepting a handoff—read the Lead Inbox.

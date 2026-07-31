@@ -9683,6 +9683,14 @@ struct TeamMemberSpec {
     worktree_ref: Option<String>,
     owned_paths: Vec<String>,
     resume_native_session_id: Option<String>,
+    /// This member's own brief. `objective` is the run-level intent; when every
+    /// member's assignment is seeded from it, a multi-lane objective is
+    /// delivered verbatim to everyone and each member reads every other
+    /// member's brief on its first tokens -- the one cost a member is
+    /// guaranteed to pay and cannot amortise. Measured on a 2-lane review run:
+    /// both members received the full objective including the other's
+    /// questions. None keeps the historical behaviour.
+    assignment: Option<String>,
 }
 
 fn team_member_specs_from_definition(
@@ -9716,6 +9724,7 @@ fn team_member_specs_from_definition(
                     .native_session
                     .as_ref()
                     .map(|session| session.native_session_id.clone()),
+                assignment: None,
             })
         })
         .collect()
@@ -10130,8 +10139,17 @@ fn team_member_provider_version_output(provider: &str) -> Result<String, String>
     )
 }
 
-/// Parse one `--member name:role:provider[:model][@path1,path2]` spec.
+/// Parse one `--member name:role:provider[:model][@path1,path2][#brief]` spec.
+///
+/// The brief is split off FIRST and is free text: it may contain `@` and `:`,
+/// which the identity grammar would otherwise consume. Without it the only way
+/// to brief a member is the run-level objective, which is then delivered
+/// verbatim to every member of a multi-lane run.
 fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
+    let (raw, inline_assignment) = match raw.split_once('#') {
+        Some((head, brief)) if !brief.trim().is_empty() => (head, Some(brief.trim().to_string())),
+        _ => (raw, None),
+    };
     let (identity, owned_paths) = match raw.split_once('@') {
         Some((identity, paths)) => (
             identity,
@@ -10147,7 +10165,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
     let parts: Vec<&str> = identity.split(':').collect();
     if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
         return Err(CliError::Usage(format!(
-            "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2])"
+            "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2][#brief])"
         )));
     }
     let (provider, execution_mode) = match parts[2].split_once('/') {
@@ -10179,6 +10197,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
         worktree_ref: None,
         owned_paths,
         resume_native_session_id: None,
+        assignment: inline_assignment,
     })
 }
 
@@ -10539,7 +10558,9 @@ fn create_team_run(
     seq += 1;
 
     let mut assignment_messages = Vec::new();
-    for member_run in &member_runs {
+    // `member_runs` is built from `members` in order above, so zip pairs each
+    // MemberRun with the spec that produced it and its own assignment brief.
+    for (member, member_run) in members.iter().zip(&member_runs) {
         store.append_member_run(member_run)?;
         append_team_run_event(
             store,
@@ -10566,10 +10587,7 @@ fn create_team_run(
             recipients: vec![compatibility_team_recipient(&member_run.id)],
             to_member_ids: vec![member_run.id.clone()],
             kind: TeamMessageKind::Assignment,
-            body: format!(
-                "Assignment for {} ({}): {}",
-                member_run.name, member_run.role, objective
-            ),
+            body: member_assignment_body(member, member_run, objective),
             correlation_id: generated_id("corr"),
             causation_id: None,
             evidence_refs: Vec::new(),
@@ -10597,6 +10615,51 @@ fn create_team_run(
         member_runs,
         assignment_messages,
     })
+}
+
+/// Build one member's assignment body.
+///
+/// `objective` is the run-level intent, not a per-member brief. Seeding every
+/// member's assignment from it delivers a multi-lane objective verbatim to
+/// everyone: measured on a two-lane review run, each member's assignment
+/// contained the other member's questions, so both paid to read a brief that
+/// was not theirs on the first tokens of their first turn. That is the one cost
+/// a member cannot amortise, and it works against lane isolation.
+///
+/// `spec.assignment` therefore wins when present; otherwise the historical
+/// objective seeding is preserved verbatim so nothing breaks.
+///
+/// `owned_paths` is already typed on the spec, so it is rendered as a block
+/// rather than left for the author to restate in prose.
+fn member_assignment_body(
+    spec: &TeamMemberSpec,
+    member_run: &MemberRun,
+    objective: &str,
+) -> String {
+    let brief = spec
+        .assignment
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut body = match brief {
+        Some(text) => format!(
+            "Assignment for {} ({}): {}",
+            member_run.name, member_run.role, text
+        ),
+        None => format!(
+            "Assignment for {} ({}): {}",
+            member_run.name, member_run.role, objective
+        ),
+    };
+    if !spec.owned_paths.is_empty() {
+        body.push_str("\n\nOwned paths (yours exclusively):\n");
+        for path in &spec.owned_paths {
+            body.push_str("- ");
+            body.push_str(path);
+            body.push('\n');
+        }
+    }
+    body
 }
 
 fn add_team_run_member(
@@ -11921,7 +11984,22 @@ fn team_run_command(
             }
         }
         "list" => {
-            let runs = latest_team_runs_in_append_order(store)?;
+            // One Execution Space store holds every tenant bound to it (ADR
+            // 0042), so an unscoped list makes every caller read every other
+            // project's history. Filters, not a store split, are the fix.
+            let project_filter = value(args, "--project-binding");
+            let status_filter = value(args, "--status");
+            let runs: Vec<_> = latest_team_runs_in_append_order(store)?
+                .into_iter()
+                .filter(|run| match project_filter.as_deref() {
+                    Some(wanted) => run.project_binding_id.as_deref() == Some(wanted),
+                    None => true,
+                })
+                .filter(|run| match status_filter.as_deref() {
+                    Some(wanted) => serde_snake_label(&run.status) == wanted,
+                    None => true,
+                })
+                .collect();
             if json {
                 let display = runs
                     .iter()
@@ -19301,6 +19379,7 @@ fn handle_http_action(
             worktree_ref: optional_json_string(body, "worktree_ref")?,
             owned_paths: optional_json_string_array(body, "owned_paths")?,
             resume_native_session_id: optional_json_string(body, "resume_native_session_id")?,
+            assignment: None,
         };
         let (run, member, assignment) = add_team_run_member(
             store,
@@ -20142,6 +20221,7 @@ fn create_team_run_value(
             worktree_ref: optional_json_string(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
+            assignment: optional_json_string(member, "assignment")?,
         });
     }
     if members.is_empty() {
@@ -34680,6 +34760,7 @@ package:com.tencent.mm
                     worktree_ref: None,
                     owned_paths: vec!["crates/a".into()],
                     resume_native_session_id: None,
+                    assignment: None,
                 },
                 TeamMemberSpec {
                     agent_member_id: None,
@@ -34693,6 +34774,7 @@ package:com.tencent.mm
                     worktree_ref: None,
                     owned_paths: vec!["crates/b".into()],
                     resume_native_session_id: None,
+                    assignment: None,
                 },
             ],
         )
@@ -34713,6 +34795,7 @@ package:com.tencent.mm
             worktree_ref: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
+            assignment: None,
         };
 
         let run =
@@ -34816,6 +34899,7 @@ package:com.tencent.mm
             worktree_ref: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
+            assignment: None,
         };
         let missing = match create_team_run(
             &store,
@@ -34905,6 +34989,7 @@ package:com.tencent.mm
                 worktree_ref: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
+                assignment: None,
             }],
         )
         .expect("create linked runtime");
@@ -34973,6 +35058,7 @@ package:com.tencent.mm
             worktree_ref: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
+            assignment: None,
         };
         let first = create_team_run(
             &store,
@@ -35415,6 +35501,7 @@ package:com.tencent.mm
                 worktree_ref: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
+                assignment: None,
             }],
         );
         let error = match result {
@@ -35443,6 +35530,7 @@ package:com.tencent.mm
                 worktree_ref: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
+                assignment: None,
             },
             "Join the running collaboration",
             None,
@@ -36022,6 +36110,66 @@ package:com.tencent.mm
             canonical_member_report_text("  legacy free-form report  "),
             "legacy free-form report"
         );
+    }
+}
+
+#[cfg(test)]
+mod team_member_assignment_tests {
+    use super::*;
+
+    /// A member brief must survive the identity grammar: it is free text and
+    /// may contain the `@` and `:` that owned-paths / identity parsing consume.
+    #[test]
+    fn member_spec_brief_is_split_before_paths_and_identity() {
+        let spec = parse_team_member_spec(
+            "Alice:reviewer:codex:gpt-5@crates/a.rs,crates/b.rs#attack the lease change: see a@b",
+        )
+        .expect("spec parses");
+        assert_eq!(spec.name, "Alice");
+        assert_eq!(spec.role, "reviewer");
+        assert_eq!(spec.provider, "codex");
+        assert_eq!(spec.model.as_deref(), Some("gpt-5"));
+        assert_eq!(spec.owned_paths, vec!["crates/a.rs", "crates/b.rs"]);
+        assert_eq!(
+            spec.assignment.as_deref(),
+            Some("attack the lease change: see a@b"),
+            "the brief keeps its own separators"
+        );
+
+        // No brief keeps the historical shape exactly.
+        let plain = parse_team_member_spec("Bob:builder:claude@src/x.rs").expect("spec parses");
+        assert_eq!(plain.assignment, None);
+        assert_eq!(plain.owned_paths, vec!["src/x.rs"]);
+    }
+
+    /// The run objective is a run-level intent, not a per-member brief. When a
+    /// member carries its own assignment the objective must not appear in its
+    /// mail, and owned_paths must be rendered rather than restated in prose.
+    #[test]
+    fn member_assignment_body_prefers_the_member_brief_and_renders_owned_paths() {
+        let spec = parse_team_member_spec("Alice:reviewer:codex@crates/a.rs#audit the store lane")
+            .expect("spec parses");
+        let member_run = build_member_run_for_team(None, "team-run-x", &spec).expect("member run");
+
+        let body = member_assignment_body(&spec, &member_run, "OBJECTIVE-FOR-EVERY-LANE");
+        assert!(
+            body.contains("audit the store lane"),
+            "the member brief must be delivered: {body}"
+        );
+        assert!(
+            !body.contains("OBJECTIVE-FOR-EVERY-LANE"),
+            "a briefed member must not receive the run-level objective: {body}"
+        );
+        assert!(
+            body.contains("crates/a.rs"),
+            "owned paths must be rendered, not left to prose: {body}"
+        );
+
+        // Without a brief the historical objective seeding is preserved.
+        let bare = parse_team_member_spec("Bob:builder:claude").expect("spec parses");
+        let bare_run = build_member_run_for_team(None, "team-run-x", &bare).expect("member run");
+        let bare_body = member_assignment_body(&bare, &bare_run, "OBJECTIVE-FOR-EVERY-LANE");
+        assert!(bare_body.contains("OBJECTIVE-FOR-EVERY-LANE"));
     }
 }
 
