@@ -72,11 +72,22 @@ objects, and later evidence of effectiveness.
 | R0 — reversible | Private draft page or non-sensitive view. | Accountable owner; audit event. |
 | R1 — operational | Reusable template, normal routing, or low-risk Agent role without new sensitive access. | Lead acceptance; relevant review when affected. |
 | R2 — controlled | New module, cross-module relation, external collaborator, or increased data/tool access. | Lead + affected reviewer(s) + human approval where policy applies. |
-| R3 — regulated / irreversible | Financial commitment/payment, legal filing, authority delegation, privileged data access, or production-wide governance change. | Independent Finance/Legal review as applicable + named human gate; complete audit evidence. |
+| R3 — regulated / irreversible | Financial commitment/payment, legal filing, root or expanding authority delegation, privileged data access, or production-wide governance change. | Independent Finance/Legal review as applicable + named human gate; complete audit evidence. |
 
 Risk is the greatest affected dimension (money, legal exposure, privacy,
 security, external commitment, or reversibility). Policies may elevate a tier;
 they must never silently lower one.
+
+The [Human-rooted Company Constitution](company-constitution.md) governs
+delegation under an already approved root. A child grant or approved-template
+Standing Agent is routine consumption of that envelope only when it strictly
+narrows at least one authority or resource dimension, no scope or resource
+dimension is broader, policy is known, the effect is reversible, blast radius
+is bounded, and there is no material external commitment. Root
+creation/activation/replacement, scope or ceiling expansion, protected
+Organization/permission effects, unknown policy, material irreversibility,
+broad/root-security blast radius, and material external commitment remain R3.
+Queue placement alone is never Approval.
 
 ## Governance output
 

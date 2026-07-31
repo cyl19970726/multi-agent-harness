@@ -44,6 +44,8 @@ consequences, affected modules, and validation path.
 | [0044](0044-durable-team-supervision-and-typed-mail.md) | active | One durable Supervisor lease owns Provider control; typed mail and atomic delivery claims make multi-client coordination safe |
 | [0045](0045-company-owned-standing-agent-execution-relation.md) | active | Company-owned one-to-one StandingAgent execution ref; no inferred identity or lifecycle writeback |
 | [0046](0046-supervised-agentos-self-hosting-loop.md) | active | Supervising Operator, durable Lead, Runtime Supervisor, and continuous Docs/Work/Org self-hosting remain distinct |
+| [0047](0047-scoped-company-authority-broker.md) | accepted target; implementation pending | Company-side one-command authority broker binds exact Standing Agent execution and delivered Work Assignment to a short, non-secret, auditable capability receipt |
+| [0048](0048-human-rooted-company-constitution.md) | accepted target; implementation pending | Human Principal roots Company authority; Leads operate through one attenuating grant lineage while the Runtime Supervisor remains provenance-only |
 
 ## Split Rule
 

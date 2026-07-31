@@ -39,8 +39,10 @@ scripts/install-skill.sh --agent both --suite company-os
 Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands
 are implemented. Organization CLI v1 covers both the flat
 `harness company org ...` surface and nested `actor/unit/membership` groups for
-inspection and Human administrative authoring of Humans, Standing Agents,
-OrgUnits, Memberships, declared actor status, and permission/capability refs. It
+inspection and **bootstrap-only** Human administrative authoring of Humans,
+Standing Agents, OrgUnits, Memberships, declared actor status, and
+permission/capability refs. That boundary is not target delegated authority and
+cannot substitute for a governed Approval, scoped grant, or broker dispatch. It
 does not yet provide the governed OrgChangeProposal lifecycle for adding actors
 or expanding authority.
 
@@ -149,6 +151,8 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Finance | [Financial relations](financial-relations.md) |
 | Cross-system ownership | [Four-system collaboration](four-system-collaboration.md) |
 | Governance and internal management | [Governance](governance.md), [Governance Agent workspaces](governance-agent-workspaces.md) |
+| Company authority root and delegation | [Human-rooted Company Constitution](company-constitution.md), [ADR 0048](../decisions/0048-human-rooted-company-constitution.md) |
+| Scoped Company authority brokerage | [Scoped Company Authority Broker](scoped-authority-broker.md), [ADR 0047](../decisions/0047-scoped-company-authority-broker.md) |
 | Company / execution / project identity | [ADR 0042](../decisions/0042-company-store-execution-space-project-binding.md), [Execution foundation](execution-foundation.md) |
 | Execution boundary | [Execution foundation](execution-foundation.md) |
 | External gateways and plugins | [External Gateway and Plugin Intake](external-gateway-and-plugins.md) |

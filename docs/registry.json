@@ -1693,7 +1693,7 @@
    "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
-    "Docs Organization Work Finance implementation truth matrix",
+    "Docs Organization Work Finance and Company authority implementation truth matrix",
     "Company OS contract to schema store API UI acceptance audit",
     "native trademark closure gap"
    ],
@@ -1702,6 +1702,8 @@
     "docs/company-os/organization-and-actors.md",
     "docs/company-os/work-items-and-approvals.md",
     "docs/company-os/financial-relations.md",
+    "docs/company-os/company-constitution.md",
+    "docs/company-os/scoped-authority-broker.md",
     "crates/harness-core/src/company_os.rs",
     "crates/harness-store/src/company_os.rs",
     "crates/harness-cli/src/company_os_api.rs",
@@ -2049,7 +2051,8 @@
     "docs/company-os/concept-model.md",
     "docs/company-os/organization-and-actors.md",
     "docs/company-os/module-design.md",
-    "docs/company-os/work-items-and-approvals.md"
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/company-constitution.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -4037,6 +4040,122 @@
     "npx pnpm@9.15.4 check:docs-governance"
    ],
    "reorgTrigger": "Supervising Operator, durable Lead, Runtime Supervisor, Standing Agent Inbox, or Company OS self-hosting semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/company-os/scoped-authority-broker.md",
+   "ownerRole": "company-authority-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "least-privilege Company Action authority for bound Standing Agent execution",
+    "ScopedPermissionGrant and CapabilityLeaseReceipt target contracts"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
+    "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0047-scoped-company-authority-broker.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Scoped Company grant grammar, broker identity binding, lease fencing, denial audit, Human activation, or implementation truth changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/decisions/0047-scoped-company-authority-broker.md",
+   "ownerRole": "company-authority-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "decision to adopt the scoped Company authority broker contract while deferring implementation"
+   ],
+   "dependsOn": [
+    "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
+    "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/company-os/scoped-authority-broker.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The decision to adopt or defer scoped Company authority brokerage changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/company-os/company-constitution.md",
+   "ownerRole": "company-authority-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Human-rooted Company authority topology and delegation invariants",
+    "Company authority exception routing and Store-truth Organization and Work operator requirements"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/external-project-product-sources.md",
+    "docs/company-os/scoped-authority-broker.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0047-scoped-company-authority-broker.md",
+    "docs/decisions/0048-human-rooted-company-constitution.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The Company authority root, Lead responsibilities, attenuation, resource reservation, exception routing, or Store-truth operator requirements change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/decisions/0048-human-rooted-company-constitution.md",
+   "ownerRole": "company-authority-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "decision to adopt the Human-rooted Company Constitution while deferring implementation and activation"
+   ],
+   "dependsOn": [
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0047-scoped-company-authority-broker.md",
+    "docs/company-os/company-constitution.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The decision to adopt or defer the Human-rooted Company Constitution changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "design_only",
    "truthRefs": []
