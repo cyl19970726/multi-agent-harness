@@ -1,6 +1,6 @@
 ---
 name: dogfood-company-os
-description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead or Supervisor needs the Company to discover its own gaps, create or prioritize WorkItems, route them to Standing Agents or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
+description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize WorkItems, route them to Standing Agents or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
 ---
 
 # Dogfood Company OS
@@ -127,8 +127,12 @@ evidence.
 
 Current implemented truth includes native Docs/Work/Org records and Actions,
 Company Assignment delivery, explicit StandingAgent ↔ AgentMember execution
-links, and provider/runtime evidence. Treat any accepted narrow broker/grant
-candidate as implemented only at the exact reviewed generation and scope.
+links, and provider/runtime evidence. A reviewed local or unmerged broker/grant
+candidate is exact-commit evidence only and must remain labelled `candidate`,
+never `implemented`. `Implemented` requires the exact generation to be present
+in the selected merged repository and verified through the active installed
+runtime, schema, Store/API behavior, projection readback, and proportional
+acceptance evidence.
 
 Target-only until accepted end to end:
 
