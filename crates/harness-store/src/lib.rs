@@ -1671,10 +1671,12 @@ impl HarnessStore {
             "team_supervisor_leases.jsonl",
             TAIL_WINDOW_BYTES,
         )?;
+        // rfind, not filter().next_back(): latest-wins means the LAST matching
+        // row in the window, and rfind scans from the back so it stops at the
+        // first hit instead of walking the whole window.
         if let Some(found) = tail
             .into_iter()
-            .filter(|lease| lease.team_run_id == team_run_id)
-            .next_back()
+            .rfind(|lease| lease.team_run_id == team_run_id)
         {
             return Ok(Some(found));
         }
