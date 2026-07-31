@@ -6,7 +6,8 @@ import type { ReactNode } from "react";
  * member. Containers can adapt API records into these small view models.
  */
 export type ActorKind = "human" | "standing_agent" | "external" | "service";
-export type ActorAvailability = "available" | "away" | "unavailable";
+export type ActorAvailability = "available" | "busy" | "paused" | "offline" | "unknown";
+export type ActorOrganizationRoleState = "proposed" | "active" | "invited" | "paused" | "ended" | "archived";
 
 export interface ActorSummary {
   id: string;
@@ -17,7 +18,7 @@ export interface ActorSummary {
   /** Only render when it is explicitly reported by an organization record. */
   availability?: ActorAvailability;
   /** Organization role state, not a provider or runtime state. */
-  organizationRoleState?: "proposed" | "active" | "paused";
+  organizationRoleState?: ActorOrganizationRoleState;
   membershipRole?: "lead" | "member" | "advisor" | "observer" | "external_partner";
   responsibilitySummary?: string;
   systemPromptRef?: string;
@@ -25,8 +26,17 @@ export interface ActorSummary {
   skillRefs?: string[];
   maintainedDocumentRefs?: string[];
   acceptedWorkTypeRefs?: string[];
+  /** Declared capability configuration; it is not an effective permission. */
+  capabilityRefs?: string[];
+  assignmentCapacity?: number;
+  exclusiveAssignmentRef?: string;
   permissionPolicyRefs?: string[];
+  /** Declared organization authority policy references, not an evaluated grant. */
+  authorityPolicyRefs?: string[];
   escalationPolicyRef?: string;
+  /** Declared locators only. Live health comes from the explicit execution join. */
+  runtimeRefs?: string[];
+  nativeSessionRefs?: string[];
   executionAgentMemberRef?: string;
 }
 
@@ -78,6 +88,17 @@ export interface OrganizationIntegrityFinding {
   detail: string;
   unitIds: string[];
   actorIds: string[];
+}
+
+/**
+ * Honest capability boundary for the current Company OS snapshot. Scoped grant
+ * objects and grant evaluation are target contracts, so declared policy refs
+ * must never be copied into an "effective" authority claim.
+ */
+export interface EffectiveDelegatedAuthorityView {
+  status: "not_projected";
+  grantRefs: [];
+  detail: string;
 }
 
 export interface WorkAggregateView {
@@ -342,6 +363,7 @@ export interface TrademarkOperationsProjection {
     unplacedUnitIds: string[];
     unassignedActorIds: string[];
     integrityFindings: OrganizationIntegrityFinding[];
+    effectiveDelegatedAuthority: EffectiveDelegatedAuthorityView;
   };
   sourceDocument: RelatedLink;
   contentPlanDocument: RelatedLink;

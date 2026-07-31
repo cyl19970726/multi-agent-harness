@@ -274,7 +274,7 @@ async function main() {
   ];
   agentosOrganizationProjection.organization.memberships = [
     { id: "membership-owner", actor_ref: { actor_type: "human", actor_id: "actor-human-brand-owner" }, org_unit_id: "orgunit-agentos-root", membership_role: "lead" },
-    { id: "membership-docs-lead", actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" }, org_unit_id: "orgunit-agentos-governance", membership_role: "lead" },
+    { id: "membership-docs-lead", actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" }, org_unit_id: "orgunit-agentos-governance", membership_role: "lead", authority_policy_refs: ["policy-membership-docs"] },
     { id: "membership-docs-child", actor_ref: { actor_type: "agent", actor_id: "actor-agent-document-architecture" }, org_unit_id: "orgunit-agentos-child", membership_role: "advisor" },
     { id: "membership-org", actor_ref: { actor_type: "agent", actor_id: "actor-agent-organization-governance" }, org_unit_id: "orgunit-agentos-governance", membership_role: "member" },
     { id: "membership-strategy", actor_ref: { actor_type: "agent", actor_id: "actor-agent-content-strategy" }, org_unit_id: "orgunit-agentos-child", membership_role: "member" },
@@ -288,8 +288,9 @@ async function main() {
   );
   check(agentosOrganization.organization.memberships.filter((membership) => membership.actorId === "actor-agent-document-architecture").length === 2
     && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-governance")?.actorIds.includes("actor-agent-document-architecture")
-    && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-child")?.actorIds.includes("actor-agent-document-architecture"),
-  "organization projection preserves all memberships when one actor belongs to multiple units");
+    && agentosOrganization.organization.units.find((unit) => unit.id === "orgunit-agentos-child")?.actorIds.includes("actor-agent-document-architecture")
+    && agentosOrganization.organization.memberships.find((membership) => membership.id === "membership-docs-lead")?.authorityPolicyRefs.includes("policy-membership-docs"),
+  "organization projection preserves all memberships and declared membership policies when one actor belongs to multiple units");
   check(!fixtureAdapter.includes("membershipAgentLead")
     && !fixtureAdapter.includes("legacyRoleAgentLead")
     && !fixtureAdapter.includes("primaryOperatingUnit")
@@ -318,7 +319,7 @@ async function main() {
   check(pages.includes("data-organization-integrity-count")
     && pages.includes("data-org-parent-unit-id")
     && pages.includes("AgentMember / runtime binding")
-    && pages.includes("assignment.agentMemberId === actor.executionAgentMemberRef"),
+    && pages.includes("standingExecutionAssignmentsForActor(actor, view.standingAssignments)"),
   "Organization renders integrity evidence and exact StandingAgent → AgentMember → MemberRun/runtime bindings");
   const nonFinancialProjection = structuredClone(fixture);
   nonFinancialProjection.work_items.push({
@@ -361,6 +362,12 @@ async function main() {
   const linkedExecutionProjection = structuredClone(fixture);
   const linkedActor = linkedExecutionProjection.actors.find((actor) => actor.id === "actor-agent-trademark");
   linkedActor.execution_agent_member_ref = "execution-agent-trademark";
+  linkedActor.availability = "busy";
+  linkedActor.assignment_capacity = 2;
+  linkedActor.capability_refs = ["capability-trademark-drafting"];
+  linkedActor.permission_policy_refs = ["policy-trademark-work"];
+  linkedActor.runtime_refs = ["declared-runtime-locator"];
+  linkedActor.native_session_refs = ["declared-session-locator"];
   linkedExecutionProjection.standing_assignments = [{
     id: "standing-assignment-member-build-corr-build",
     agent_member_id: "execution-agent-trademark",
@@ -376,7 +383,7 @@ async function main() {
     assigned_at: "2026-07-20T09:15:00+08:00",
     last_activity_at: "2026-07-20T09:20:00+08:00",
     correlation_id: "corr-build",
-    native_session: { provider: "codex", native_session_id: "thread-build" },
+    native_session: { provider: "codex", native_session_id: "thread-build", availability: "available" },
     navigation_target: "?surface=team&team=team-run-build&memberRun=member-run-build",
   }];
   const linkedExecution = adapterModule.adaptTrademarkOperationsProjection(linkedExecutionProjection);
@@ -385,8 +392,28 @@ async function main() {
     && linkedExecution.standingAssignments[0].memberRunId === "member-run-build"
     && linkedExecution.standingAssignments[0].agentMemberId === "execution-agent-trademark",
   "adapter preserves the explicit Company-owned StandingAgent-to-AgentMember link");
+  const linkedActorView = linkedExecution.actors["actor-agent-trademark"];
+  check(linkedActorView?.availability === "busy"
+    && linkedActorView.assignmentCapacity === 2
+    && linkedActorView.capabilityRefs.includes("capability-trademark-drafting")
+    && linkedActorView.permissionPolicyRefs.includes("policy-trademark-work")
+    && linkedActorView.runtimeRefs.includes("declared-runtime-locator")
+    && linkedActorView.nativeSessionRefs.includes("declared-session-locator"),
+  "adapter preserves declared Organization availability, capacity, permission, capability, and locator configuration without treating it as runtime truth");
+  const exactLinkedAssignments = adapterModule.standingExecutionAssignmentsForActor(linkedActorView, linkedExecution.standingAssignments);
+  const mismatchActor = { ...linkedActorView, executionAgentMemberRef: "execution-agent-other", name: "Trademark Agent", role: "builder" };
+  check(exactLinkedAssignments.length === 1
+    && exactLinkedAssignments[0].memberRunId === "member-run-build"
+    && adapterModule.standingExecutionAssignmentsForActor(mismatchActor, linkedExecution.standingAssignments).length === 0,
+  "execution resolver accepts the exact AgentMember id and rejects name, role, provider, session, and actor-id similarities");
   check(pages.includes("actor.executionAgentMemberRef") && !pages.includes("assignment.agentMemberId === actor.id"),
     "Standing Agent focus never binds execution by same-string actor id");
+  linkedExecutionProjection.organization.effective_delegated_authority = { status: "active", grant_refs: ["fabricated-grant"] };
+  const unsupportedAuthority = adapterModule.adaptTrademarkOperationsProjection(linkedExecutionProjection);
+  check(unsupportedAuthority.organization.effectiveDelegatedAuthority.status === "not_projected"
+    && unsupportedAuthority.organization.effectiveDelegatedAuthority.grantRefs.length === 0
+    && unsupportedAuthority.organization.effectiveDelegatedAuthority.detail.includes("does not project evaluated scoped grants"),
+  "adapter does not promote an unsupported input field or declared policy/capability refs into effective delegated authority");
   check(pages.includes("workItem.reviewer?.id === actor.id")
     && pages.includes("activeRelatedItems")
     && pages.includes('return "Reviewer"'),
@@ -437,7 +464,7 @@ async function main() {
   const brandUnit = canonicalProjection.organization.units.find((unit) => unit.id === "org-brand-ip");
   check(brandUnit?.actorIds.length === 4 && canonicalProjection.governanceProposal.proposedById === "actor-agent-document-architecture", "adapter retains the actual Brand & IP membership branch and governance proposal author");
   check(brandUnit?.agentLeadActorId === undefined && pages.includes("unit.agentLeadActorId === actor.id") && !pages.includes("candidate.id !== actor.id).slice(0, 4)"), "membership role and actor naming cannot invent an Agent lead when OrgUnit.agent_lead_actor_ref is absent");
-  check(canonicalProjection.actors["actor-agent-document-architecture"]?.availability === "available" && !canonicalProjection.actors["actor-agent-finance"]?.availability, "availability remains explicit rather than inferred from runtime or membership");
+  check(canonicalProjection.actors["actor-agent-document-architecture"]?.availability === "available" && !canonicalProjection.actors["actor-agent-finance"]?.availability, "explicit Organization availability is preserved while a null value remains absent rather than inferred from runtime or membership");
   check(pages.includes("OrganizationUnitBranch") && pages.includes("ExplicitUnitLeads") && pages.includes("All memberships"), "organization surface is a recursive forest with explicit leads and complete membership branches");
   check(pages.includes("data-organization-membership-grid")
     && pages.includes("repeat(auto-fit,minmax(min(100%,18rem),1fr))")
@@ -471,7 +498,15 @@ async function main() {
   "assignment-less Agent Team participation stays out of current work and current cards require a real correlation");
   check(pages.includes("selectionForActor") && pages.includes("onOpen={selectionForActor") && router.includes("onSelectionChange={onSelectionChange}"), "Organization actor cards route through the shared selection state");
   check(pages.includes("authoredProposal") && pages.includes("proposal-${authoredProposal.id}") && pages.includes('title="Maintained Docs"'), "Standing Agent distinguishes authored proposal activity from related durable Docs");
-  check(pages.includes('title="Prompt, tools & skills"') && pages.includes('title="Permissions"') && pages.includes('title="Work routing"'), "Standing Agent composes native configuration and authority modules in the context rail");
+  check(pages.includes('title="Prompt, tools & skills"')
+    && pages.includes('title="Declared permission configuration"')
+    && pages.includes('title="Effective delegated authority"')
+    && pages.includes('title="Runtime availability"')
+    && pages.includes('title="Implemented vs target"')
+    && pages.includes('data-effective-authority-status')
+    && !pages.includes('label="Reports to"')
+    && !pages.includes("Direct reports"),
+  "Standing Agent separates declared configuration, effective-authority absence, and runtime availability without inventing ReportingRelation");
   check(pages.includes("view.workItems ?? [view.workItem]") && pages.includes("view.assignments ?? []"), "Standing Agent workspace consumes all projected WorkItems and native Assignments");
   check(pages.includes("textarea") && pages.includes("standing-agent-message-reason") && pages.includes("Send message. Unavailable"), "Standing Agent composer is visibly disabled with a governed transport reason");
   check(pages.includes("displayTimestamp(workItem.updatedAt)") && pages.includes("function displayTimestamp"), "WorkItem focus renders raw update timestamps in a human-readable form");

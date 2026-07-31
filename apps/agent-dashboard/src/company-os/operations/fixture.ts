@@ -1,6 +1,7 @@
 import type {
   ActorAvailability,
   ActorKind,
+  ActorOrganizationRoleState,
   ActorSummary,
   StandingExecutionAssignment,
   AssignmentView,
@@ -38,6 +39,33 @@ function text(value: unknown, fallback = ""): string {
 
 function numeric(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function actorAvailability(value: unknown): ActorAvailability | undefined {
+  switch (text(value)) {
+    case "available":
+    case "busy":
+    case "paused":
+    case "offline":
+    case "unknown":
+      return text(value) as ActorAvailability;
+    default:
+      return undefined;
+  }
+}
+
+function actorOrganizationRoleState(value: unknown): ActorOrganizationRoleState | undefined {
+  switch (text(value)) {
+    case "proposed":
+    case "active":
+    case "invited":
+    case "paused":
+    case "ended":
+    case "archived":
+      return text(value) as ActorOrganizationRoleState;
+    default:
+      return undefined;
+  }
 }
 
 function object(value: unknown): JsonRecord {
@@ -245,6 +273,23 @@ export const companyOsActors = {
   analytics: { id: "actor-agent-analytics", name: "Analytics Agent", kind: "standing_agent", role: "Analytics", unit: "Content Operations" },
 } as const satisfies Record<string, ActorSummary>;
 
+/**
+ * Resolve execution only through the Company-owned stable-id edge. Names,
+ * roles, providers, native-session ids, and coincident actor ids are never
+ * fallback join keys.
+ */
+export function standingExecutionAssignmentsForActor(
+  actor: ActorSummary,
+  assignments: StandingExecutionAssignment[] = [],
+): StandingExecutionAssignment[] {
+  if (actor.kind !== "standing_agent" || !actor.executionAgentMemberRef) return [];
+  return [...new Map(
+    assignments
+      .filter((assignment) => assignment.agentMemberId === actor.executionAgentMemberRef)
+      .map((assignment) => [assignment.memberRunId, assignment]),
+  ).values()];
+}
+
 export const trademarkSource = {
   id: "document-trademark-application-cn-2026-018",
   label: "Trademark application CN-2026-018",
@@ -365,6 +410,11 @@ export const prototypeTrademarkOperationsProjection: TrademarkOperationsProjecti
     unplacedUnitIds: [],
     unassignedActorIds: [],
     integrityFindings: [],
+    effectiveDelegatedAuthority: {
+      status: "not_projected",
+      grantRefs: [],
+      detail: "The current Company OS snapshot does not project evaluated scoped grants. Declared policies and capabilities are configuration only.",
+    },
   },
   sourceDocument: trademarkSource,
   contentPlanDocument: { id: "document-brand-a-content-operating-plan", label: "Brand A · Content operating plan", detail: "Content Operations" },
@@ -417,10 +467,10 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       id,
       name: text(actor.display_name, id || "Unresolved actor"),
       kind: actorKind(actor.actor_type),
-      role: text(membership?.role_label, text(membership?.title_or_function, text(actor.role, "Organization participant"))),
+      role: text(actor.role, text(actor.title, text(actor.engagement_scope, text(membership?.role_label, text(membership?.title_or_function, "Organization participant"))))),
       unit: text(unit?.name) || undefined,
-      availability: (text(reported?.value) || (text(actor.availability) !== "unknown" ? text(actor.availability) : "")) as ActorAvailability || undefined,
-      organizationRoleState: text(roleState?.value) === "proposed" ? "proposed" : undefined,
+      availability: actorAvailability(reported?.value) ?? actorAvailability(actor.availability),
+      organizationRoleState: actorOrganizationRoleState(roleState?.value) ?? actorOrganizationRoleState(actor.status),
       membershipRole: text(membership?.membership_role) as ActorSummary["membershipRole"] || undefined,
       responsibilitySummary: text(actor.responsibility_summary) || undefined,
       systemPromptRef: text(actor.system_prompt_ref) || undefined,
@@ -428,8 +478,14 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       skillRefs: stringArray(actor.skill_refs),
       maintainedDocumentRefs: stringArray(actor.maintained_document_refs),
       acceptedWorkTypeRefs: stringArray(actor.accepted_work_type_refs),
+      capabilityRefs: stringArray(actor.capability_refs),
+      assignmentCapacity: numeric(actor.assignment_capacity) > 0 ? numeric(actor.assignment_capacity) : undefined,
+      exclusiveAssignmentRef: text(actor.exclusive_assignment_ref) || undefined,
       permissionPolicyRefs: stringArray(actor.permission_policy_refs),
+      authorityPolicyRefs: stringArray(actor.authority_policy_refs),
       escalationPolicyRef: text(actor.escalation_policy_ref) || undefined,
+      runtimeRefs: stringArray(actor.runtime_refs),
+      nativeSessionRefs: stringArray(actor.native_session_refs),
       executionAgentMemberRef: text(actor.execution_agent_member_ref) || undefined,
     };
   }
@@ -980,6 +1036,11 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       unplacedUnitIds,
       unassignedActorIds,
       integrityFindings: organizationIntegrityFindings,
+      effectiveDelegatedAuthority: {
+        status: "not_projected",
+        grantRefs: [],
+        detail: "The current Company OS snapshot does not project evaluated scoped grants. Declared policies and capabilities are configuration only.",
+      },
     },
     sourceDocument: source,
     contentPlanDocument: asRef(contentPlan.id, contentPlan.title, contentPlan.space ?? contentPlan.space_id),
