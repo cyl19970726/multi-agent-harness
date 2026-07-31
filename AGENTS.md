@@ -83,16 +83,20 @@ doc carries the contract behind each rule.
    approval. The trusted-development Team policy that gives Codex, Claude, and
    Kimi members full execution access is a product policy — not a Provider
    capability and not approval for protected external effects. That permission
-   policy is separate from execution-roster selection: which providers run
-   dogfood lanes is governed by the roster rule under Repository Execution
-   Rules.
+   policy is separate from execution-roster selection, which is scenario
+   policy rather than a repository invariant (see Repository Execution Rules).
 7. **Member lifecycle and control honesty.** New Agent Team members use only
    their persistent bidirectional mode: `codex_app_server`, `kimi_acp`, or
    `claude_agent_sdk`. Interrupt stops one current turn; Close ends the member
    runtime; Wave or TeamRun completion never implies Close. Cross-process
    control routes through the durable Team Supervisor lease, revalidated
    immediately before every drive; uncertain claimed deliveries require
-   explicit reconciliation, never blind replay.
+   explicit reconciliation, never blind replay. Replacing a runtime drains or
+   interrupts active turns first and never lets two runtime generations drive
+   the same writable Workspace; resume the same native session under a higher
+   Supervisor generation only when the reviewed contract allows, otherwise
+   record the reason and start a new session, retaining the old one as
+   history.
 8. **One execution driver.** Each active MemberRun/native session/writable
    Workspace has exactly one top-level execution driver: `host_driven` or
    `provider_driven`. Never activate a provider-native goal and also issue an
@@ -138,18 +142,11 @@ doc carries the contract behind each rule.
   classify defects, repair on a clean lane, rerun the original scenario, then
   expand the pressure matrix. Never weaken a scenario or edit store evidence to
   make a run appear green.
-- Dogfood TeamRuns use a deliberate execution roster, not whatever provider is
-  installed: Kimi `kimi_acp` with the reviewed K3 model alias at `max`
-  thinking effort is primary (verify the MemberRun requested-vs-effective
-  `provider_controls` receipt); Claude `claude_agent_sdk` joins only while
-  `harness member providers --fail-on-review` is green; Codex providers are
-  not dogfood execution members — historical Codex runs are read-only
-  evidence and bounded `codex_exec` stays inside Dynamic Workflow. Each
-  member works under a strict research budget (one evidence pass, then
-  produce or report blocked), and a necessary master merge triggers rolling
-  lane-by-lane Supervisor reconciliation. Full semantics:
-  [docs/agent-operating-rules.md](docs/agent-operating-rules.md) and
-  [docs/operations.md](docs/operations.md).
+- Scenario execution rosters and research budgets (for example the current
+  dogfood roster) are scenario policy, not repository-wide invariants: they
+  live in [docs/operations.md](docs/operations.md) and the owning scenario
+  skill ([skills/dogfood-company-os/SKILL.md](skills/dogfood-company-os/SKILL.md))
+  and must not be broadened into root instructions.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
   plugin`. The Agent Dashboard is the operator view for harness state; product
   dashboards for adapted projects remain separate.

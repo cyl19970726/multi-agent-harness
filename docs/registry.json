@@ -94,6 +94,56 @@
    ]
   },
   {
+   "path": "docs/agent-operating-rules.md",
+   "ownerRole": "lead-operations",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "operating detail behind the root AGENTS.md hard invariants",
+    "AGENTS.md slimming relocation map"
+   ],
+   "dependsOn": [
+    "AGENTS.md",
+    "docs/prd.md",
+    "docs/company-os/README.md",
+    "docs/concept-model.md",
+    "docs/operations.md",
+    "docs/multi-project.md",
+    "docs/member-continuation-model.md",
+    "docs/product/agent-team-dogfood-loop.md",
+    "docs/integration/native-session-storage.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0028-retire-goal-phase-task-graph.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0033-agent-team-workspace-contract.md",
+    "docs/decisions/0041-provider-neutral-member-continuation.md",
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
+    "skills/dogfood-company-os/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-26",
+   "lastVerifiedWith": [
+    "harness governance check",
+    "node scripts/check-native-session-boundary.mjs"
+   ],
+   "reorgTrigger": "Root AGENTS.md invariants change, operating detail is relocated again, or the relocation map no longer matches the root file structure.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0032-provider-native-session-is-execution-truth.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0042-company-store-execution-space-project-binding.md"
+    }
+   ]
+  },
+  {
    "path": "docs/README.md",
    "ownerRole": "knowledge",
    "status": "stable",
