@@ -16,6 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::harness_env::clear_inherited_native_harness_env;
+
 /// Create a `bin/` dir containing an executable shim named `provider` (e.g.
 /// `codex` or `claude`) that, when run, writes its current working directory to
 /// `cwd_marker` and emits a single NDJSON line on stdout. Returns the `bin/` dir
@@ -493,16 +495,16 @@ impl DeliveryDriver {
             self.fake_bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let out = Command::new(&self.bin)
+        let mut command = Command::new(&self.bin);
+        command
             .arg("--project")
             .arg(&self.project_root)
             .args(args)
             .current_dir(&self.process_cwd)
             .envs(self.envs.iter().cloned())
-            .env("PATH", path)
-            .env_remove("HARNESS_ROOT")
-            .output()
-            .expect("run harness");
+            .env("PATH", path);
+        clear_inherited_native_harness_env(&mut command);
+        let out = command.output().expect("run harness");
         CliOutput {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
