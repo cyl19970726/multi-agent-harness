@@ -4100,6 +4100,64 @@
    "truthRefs": []
   },
   {
+   "path": "docs/company-os/company-constitution.md",
+   "ownerRole": "company-authority-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Human-rooted Company authority topology and delegation invariants",
+    "Company authority exception routing and Store-truth Organization and Work operator requirements"
+   ],
+   "dependsOn": [
+    "docs/company-os/README.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/company-os/external-project-product-sources.md",
+    "docs/company-os/scoped-authority-broker.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0047-scoped-company-authority-broker.md",
+    "docs/decisions/0048-human-rooted-company-constitution.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The Company authority root, Lead responsibilities, attenuation, resource reservation, exception routing, or Store-truth operator requirements change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/decisions/0048-human-rooted-company-constitution.md",
+   "ownerRole": "company-authority-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "decision to adopt the Human-rooted Company Constitution while deferring implementation and activation"
+   ],
+   "dependsOn": [
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0047-scoped-company-authority-broker.md",
+    "docs/company-os/company-constitution.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-31",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The decision to adopt or defer the Human-rooted Company Constitution changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
    "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md",
    "ownerRole": "product-design",
    "status": "planned",
