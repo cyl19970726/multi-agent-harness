@@ -81,12 +81,13 @@ they must never silently lower one.
 The [Human-rooted Company Constitution](company-constitution.md) governs
 delegation under an already approved root. A child grant or approved-template
 Standing Agent is routine consumption of that envelope only when it strictly
-attenuates every scope and resource dimension, policy is known, the effect is
-reversible, blast radius is bounded, and there is no material external
-commitment. Root creation/activation/replacement, scope or ceiling expansion,
-protected Organization/permission effects, unknown policy, material
-irreversibility, broad/root-security blast radius, and material external
-commitment remain R3. Queue placement alone is never Approval.
+narrows at least one authority or resource dimension, no scope or resource
+dimension is broader, policy is known, the effect is reversible, blast radius
+is bounded, and there is no material external commitment. Root
+creation/activation/replacement, scope or ceiling expansion, protected
+Organization/permission effects, unknown policy, material irreversibility,
+broad/root-security blast radius, and material external commitment remain R3.
+Queue placement alone is never Approval.
 
 ## Governance output
 

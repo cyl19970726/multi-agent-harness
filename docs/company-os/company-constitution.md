@@ -119,25 +119,30 @@ Finance, legal, credential, Organization, or permission authority.
 ### Domain Leads and bounded executors
 
 A Domain Lead may autonomously accept, plan, execute, and return Work inside
-its exact domain, Assignment, and grant scope. It may subdelegate only when all
-of these are true:
+its exact domain, Assignment, and grant scope. Every child execution requires:
 
 - the child has a durable Company Assignment and exact execution delivery;
-- one parent-to-child `ScopedPermissionGrant` lineage is proved;
-- every child scope dimension and resource ceiling is equal to or narrower
-  than the parent;
+- the exact temporary or durable identity, TeamMessage, MemberRun/native
+  session, and ProjectBinding resolve without inference;
 - budget, concurrency, and depth are reserved atomically before delivery or
   execution; and
 - the parent remains accountable and can reconstruct the child result.
+
+Only a durable Standing Agent child may receive Company command authority. For
+that form, one parent-to-child `ScopedPermissionGrant` lineage must additionally
+be proved, no scope or resource dimension may be broader than the parent, and
+at least one authority or resource dimension must be strictly narrower.
 
 There are two child forms:
 
 - A **temporary Team Member** is execution-only and is bound to the exact
   Assignment, delivered TeamMessage, MemberRun, native session, and
   ProjectBinding. It never becomes a Company Actor, receives no Company grant
-  as grantee, cannot subdelegate Company authority, and returns evidence to the
-  accountable Standing Agent. Any Company Action still dispatches through an
-  eligible StandingAgent-bound leaf.
+  as grantee, cannot possess, present, or transport the parent grant, cannot
+  subdelegate Company authority, and returns evidence to the accountable
+  Standing Agent. It operates solely under its execution binding. Any Company
+  Action remains attributable to and dispatches through an eligible
+  StandingAgent-bound leaf.
 - A **durable Standing Agent** requires an explicit Organization record and
   reporting relation and may receive a child grant only from an approved
   Standing Agent template identified by exact template id, version, and
@@ -163,16 +168,17 @@ Every brokered Company command must resolve to exactly one active
 executing leaf. Authorization is the intersection of every generation in that
 lineage. It is never the union of sibling or historical grants.
 
-Each child must strictly attenuate at least one authorization or resource
-dimension and may never broaden Company, domain, Actor, WorkItem, Assignment,
-correlation, permission, command, subject, payload, effect, validity, expiry,
-lease TTL, successful-use budget, execution budget, concurrency, or remaining
-delegation depth. Exact allowed ProjectBinding selectors and, for durable
-Standing Agent creation, approved template id/version/digest are also
-authority-bearing dimensions. Child selections must be equal to or narrower
-than parent allowlists. A later ProjectBinding or template selector change
-cannot retarget existing authority. Child expiry cannot outlive parent expiry.
-A parent cannot delegate more depth than it retained.
+Temporary Team Members are not grant-lineage nodes. Each durable Standing
+Agent child grant must strictly attenuate at least one authorization or
+resource dimension and may never broaden Company, domain, Actor, WorkItem,
+Assignment, correlation, permission, command, subject, payload, effect,
+validity, expiry, lease TTL, successful-use budget, execution budget,
+concurrency, or remaining delegation depth. Exact allowed ProjectBinding
+selectors and approved template id/version/digest are also authority-bearing
+dimensions. Child selections must be equal to or narrower than parent
+allowlists. A later ProjectBinding or template selector change cannot retarget
+existing authority. Child expiry cannot outlive parent expiry. A parent cannot
+delegate more depth than it retained.
 
 The authority service denies an unapproved or stale template, a retargeted or
 unlisted ProjectBinding, equal-or-broader authorization, parent-budget
