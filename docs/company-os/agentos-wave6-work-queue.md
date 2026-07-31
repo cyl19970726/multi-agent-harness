@@ -8,10 +8,14 @@ source: agent-company Company Store work list + master commit 869a870, inspected
 ```
 
 This queue classifies every AgentOS WorkItem in the `agent-company` Company
-Store exactly once: **reconcile** (already covered on master; verify and
-close, no new implementation), **duplicate-obsolete** (superseded by another
+Store exactly once: **completed** (already closed in the Store; listed only
+for accounting), **reconcile** (already covered on master; verify and close,
+no new implementation), **duplicate-obsolete** (superseded by another
 WorkItem), **genuine next** (ranked implementation/governance lanes), or
 **blocked** (external gate with an exact resume condition).
+
+Exact-once accounting: 25 AgentOS WorkItems = 1 completed + 13 reconcile +
+2 duplicate-obsolete + 7 genuine next + 2 blocked.
 
 It preserves current-vs-target truth: an item is "covered" only when the
 merged master commit, the Store projection, or the installed runtime proves
@@ -38,7 +42,16 @@ After each lane merges to master, remaining live lanes go through rolling
 Supervisor reconciliation (rebase worktree, resume MemberRun/native session
 when compatible, never two generations in one Workspace).
 
-## A. Covered On Master — Reconcile And Close (13)
+## A. Completed In Store — No Action (1)
+
+Already closed in the Company Store; listed only so the exact-once accounting
+covers it. No reconciliation needed.
+
+| WorkItem | Store state | Evidence |
+| --- | --- | --- |
+| work-agentos-social-content-gateway-v0 | completed | `github-pr-268` (merged `dac9c9d` social content gateway readiness) |
+
+## B. Covered On Master — Reconcile And Close (13)
 
 No new implementation. The owner verifies the cited evidence against the
 WorkItem's stored acceptance criteria, attaches the evidence refs, and closes
@@ -58,7 +71,7 @@ criterion named.
 | work-agentos-org-work-doc-loop-v1 | `50763b9`/`c4b0f73` Standing Agent execution link; `38580de`/`73ba38d` assignment→TeamMessage→MemberRun→native-session provenance chain; live evidence already attached to the item | agent-agentos-work-governance |
 | work-agentos-organization-operability-v1 | PR #291 (`e2736e1`): Org hierarchy from Store truth, execution binding without MemberRun/identity conflation, ambiguous identity withheld (`apps/agent-dashboard/src/company-os/operations/pages.tsx`) | agent-agentos-org-governance |
 | work-agentos-external-gateway-registry-v1 | PR #273 (`e9de920`): gateway registry contract in `docs/company-os/external-gateway-and-plugins.md` | agent-agentos-platform-development |
-| work-agentos-wecom-gateway-plugin-v0 | PR #273 (`e9de920`): WeCom v0 design contract documented; implementation is a separate blocked item (B2) | agent-agentos-platform-development |
+| work-agentos-wecom-gateway-plugin-v0 | PR #273 (`e9de920`): WeCom v0 design contract documented; implementation is a separate blocked item (see section E) | agent-agentos-platform-development |
 | work-agentos-workitem-reassignment-action-v1 | `b033965` governed WorkItem update command (`harness company work update`) | agent-agentos-work-governance |
 | work-agentos-org-role-permission-closure-v1 | `company.work.execute` enforcement with actionable denial (`crates/harness-cli/src/company_os_api.rs`); `harness company org update-permissions` CLI; Org governor self-transition proven live (see `docs/company-os/agentos-self-hosting-loop.md` "Current implementation truth") | agent-agentos-org-governance |
 
@@ -69,7 +82,7 @@ the implemented enforcement criteria and must name this residual in the close
 outcome; it becomes genuine-next scope only when the scoped-authority broker
 contract is accepted for implementation.
 
-## B. Duplicate-Obsolete (2)
+## C. Duplicate-Obsolete (2)
 
 Close as superseded with a relation to the successor; do not re-implement.
 
@@ -78,7 +91,7 @@ Close as superseded with a relation to the successor; do not re-implement.
 | work-agentos-workitem-detail-contract | work-agentos-workitem-detail-fields-v1 | Same scope (description, acceptance, context/deliverable refs); v1 carries the precise acceptance and shipped in `28003e9` |
 | work-agentos-store-docs-foundation | work-agentos-store-docs-foundation-v1 | v0's home/intake/gateway docs are the archived legacy set; v1's root/modules/source-sync are Store-verified |
 
-## C. Genuine Next — Ranked Queue (7)
+## D. Genuine Next — Ranked Queue (7)
 
 Lane rules for every implementation item: one same-repository worktree off
 latest master per lane; the member reports worktree path, branch, commit,
@@ -108,7 +121,7 @@ lane merges, other live lanes reconcile per the rolling rule.
   (provider/adapter versions, `current|review_required|incompatible`) exists;
   missing: Harness build fingerprint, `restart_required` state, automatic
   restart-required reconciliation
-- Dependencies: provider-controls substrate (A-list, covered); N1 merged first
+- Dependencies: provider-controls substrate (B-list, covered); N1 merged first
   to avoid `harness-core`/schema conflicts
 - Collision boundary: `crates/harness-core` MemberRun/profile, `crates/harness-cli`
   supervisor + `member providers`, `schemas/member-run.schema.json`,
@@ -183,19 +196,19 @@ lane merges, other live lanes reconcile per the rolling rule.
 - Owner: agent-agentos-work-governance with agent-agentos-lead
 - Status: in_progress; this is the continuous Org+Docs+Work self-hosting loop
   the other lanes feed — keep it open and attach lane results as evidence
-- Dependencies: consumes N1–N6 and the A-list reconciliations
+- Dependencies: consumes N1–N6 and the B-list reconciliations
 - Collision boundary: governance lane — `docs/company-os/**`, Company Store
   records through governed CLI only; no runtime code
 - Acceptance: per the stored criteria — truthful Org/Work/Docs projections,
   context-preserving deep links, unavailable actions visibly disabled, and
   multiple real self-hosting cycles reconstructable from native state
 
-## D. Blocked (2)
+## E. Blocked (2)
 
 | WorkItem | Blocker | Exact resume condition |
 | --- | --- | --- |
 | work-agentos-github-source-binding-v0 (in_progress) | Acceptance requires PR #277 merged by the authorized Human path; #277 is OPEN (`feat(company-os): govern dogfood and reconcile team assignments`). The HARNESS_SPACE set/unset Company Assignment execution-bridge suite is also unimplemented | Human merges PR #277 and the exact merge commit is read back; then the bridge suite becomes a genuine-next slice for agent-agentos-platform-development |
-| work-wcw-agentos-wecom-gateway-v0 | WeCom gateway CLI/schema is planned-only (`docs/company-os/external-gateway-and-plugins.md`); requires merchant WeCom credentials and policy approval | Human provides the WeCom app credentials and approves the external-access gate; contract from A-list item work-agentos-wecom-gateway-plugin-v0 then drives implementation |
+| work-wcw-agentos-wecom-gateway-v0 | WeCom gateway CLI/schema is planned-only (`docs/company-os/external-gateway-and-plugins.md`); requires merchant WeCom credentials and policy approval | Human provides the WeCom app credentials and approves the external-access gate; contract from B-list item work-agentos-wecom-gateway-plugin-v0 then drives implementation |
 
 ## Cross-Lane Collision Rules
 
