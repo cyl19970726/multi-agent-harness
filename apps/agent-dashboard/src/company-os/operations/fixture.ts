@@ -8,9 +8,12 @@ import type {
   CanonicalEntityRef,
   ApprovalView,
   FinancialRecordView,
+  OrganizationIntegrityFinding,
+  OrganizationMembershipView,
   RelatedLink,
   StandingLinkConflict,
   TrademarkOperationsProjection,
+  WorkAggregateView,
   WorkItemView,
 } from "./types";
 
@@ -31,6 +34,22 @@ function records(value: unknown): JsonRecord[] {
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function numeric(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function object(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonRecord
+    : {};
+}
+
+function stringListMap(value: unknown): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(object(value)).map(([key, entries]) => [key, stringArray(entries)]),
+  );
 }
 
 function stringArray(value: unknown): string[] {
@@ -105,6 +124,15 @@ function actorKind(value: unknown): ActorKind {
     case "external": return "external";
     case "service": return "service";
     default: return "service";
+  }
+}
+
+function membershipRole(value: unknown): OrganizationMembershipView["membershipRole"] {
+  switch (text(value)) {
+    case "lead": case "member": case "advisor": case "observer": case "external_partner":
+      return text(value) as OrganizationMembershipView["membershipRole"];
+    default:
+      return undefined;
   }
 }
 
@@ -315,21 +343,44 @@ export const prototypeTrademarkOperationsProjection: TrademarkOperationsProjecti
   actors: companyOsActors,
   actorList: Object.values(companyOsActors),
   organization: {
-    company: { id: "org-company", label: "Company" },
-    brandUnit: { id: "org-brand-ip", label: "Brand & IP" },
     units: [
-      { id: "org-company", label: "Company", actorIds: [] },
-      { id: "org-brand-ip", label: "Brand & IP", parentId: "org-company", humanLeadActorId: "actor-human-brand-owner", agentLeadActorId: "actor-agent-ip-lead", actorIds: ["actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark", "actor-external-lawyer"] },
-      { id: "org-content-operations", label: "Content Operations", parentId: "org-company", actorIds: ["actor-agent-content-strategy", "actor-agent-analytics"] },
-      { id: "org-finance", label: "Finance", parentId: "org-company", actorIds: ["actor-agent-finance"] },
-      { id: "org-governance", label: "Governance", parentId: "org-company", actorIds: ["actor-agent-document-architecture", "actor-agent-organization-governance"] },
+      { id: "org-company", label: "Company", actorIds: [], policyRefs: [] },
+      { id: "org-brand-ip", label: "Brand & IP", parentId: "org-company", humanLeadActorId: "actor-human-brand-owner", agentLeadActorId: "actor-agent-ip-lead", actorIds: ["actor-human-brand-owner", "actor-agent-ip-lead", "actor-agent-trademark", "actor-external-lawyer"], policyRefs: [] },
+      { id: "org-content-operations", label: "Content Operations", parentId: "org-company", actorIds: ["actor-agent-content-strategy", "actor-agent-analytics"], policyRefs: [] },
+      { id: "org-finance", label: "Finance", parentId: "org-company", actorIds: ["actor-agent-finance"], policyRefs: [] },
+      { id: "org-governance", label: "Governance", parentId: "org-company", actorIds: ["actor-agent-document-architecture", "actor-agent-organization-governance"], policyRefs: [] },
     ],
+    memberships: [
+      { id: "membership-brand-owner", orgUnitId: "org-brand-ip", actorId: "actor-human-brand-owner", membershipRole: "lead", authorityPolicyRefs: [] },
+      { id: "membership-ip-lead", orgUnitId: "org-brand-ip", actorId: "actor-agent-ip-lead", membershipRole: "lead", authorityPolicyRefs: [] },
+      { id: "membership-trademark", orgUnitId: "org-brand-ip", actorId: "actor-agent-trademark", membershipRole: "member", authorityPolicyRefs: [] },
+      { id: "membership-lawyer", orgUnitId: "org-brand-ip", actorId: "actor-external-lawyer", membershipRole: "external_partner", authorityPolicyRefs: [] },
+      { id: "membership-content-strategy", orgUnitId: "org-content-operations", actorId: "actor-agent-content-strategy", membershipRole: "member", authorityPolicyRefs: [] },
+      { id: "membership-analytics", orgUnitId: "org-content-operations", actorId: "actor-agent-analytics", membershipRole: "member", authorityPolicyRefs: [] },
+      { id: "membership-finance", orgUnitId: "org-finance", actorId: "actor-agent-finance", membershipRole: "member", authorityPolicyRefs: [] },
+      { id: "membership-docs", orgUnitId: "org-governance", actorId: "actor-agent-document-architecture", membershipRole: "member", authorityPolicyRefs: [] },
+      { id: "membership-org-governance", orgUnitId: "org-governance", actorId: "actor-agent-organization-governance", membershipRole: "member", authorityPolicyRefs: [] },
+    ],
+    rootUnitIds: ["org-company"],
+    unplacedUnitIds: [],
+    unassignedActorIds: [],
+    integrityFindings: [],
   },
   sourceDocument: trademarkSource,
   contentPlanDocument: { id: "document-brand-a-content-operating-plan", label: "Brand A · Content operating plan", detail: "Content Operations" },
   typedApplication: { id: "trademark-application-cn-2026-018", label: "Trademark application CN-2026-018", detail: "Typed application record · filing preparation" },
   workItem: trademarkWorkItem,
   workItems: [trademarkWorkItem, documentArchitectureWorkItem],
+  work: {
+    provenance: "legacy_raw_records",
+    summary: { total: 2, active: 2, completed: 0, blocked: 0, waitingForApproval: 1, unassigned: 0, withoutMilestone: 2, withoutBusinessLine: 2 },
+    board: { waiting_for_approval: [trademarkWorkItem.id], in_progress: [documentArchitectureWorkItem.id] },
+    businessLines: { unclassified: [trademarkWorkItem.id, documentArchitectureWorkItem.id] },
+    workTypes: { general: [trademarkWorkItem.id, documentArchitectureWorkItem.id] },
+    milestones: [],
+    workload: [],
+    selection: { requestedId: trademarkWorkItem.id, status: "resolved" },
+  },
   assignments: [trademarkAssignment, documentArchitectureAssignment],
   commitment: trademarkCommitment,
   approval: trademarkApproval,
@@ -392,7 +443,11 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
 
   const documents = records(root.documents);
   const typedRecords = records(root.typed_records);
-  const workRecords = records(root.work_items);
+  const hasWorkAggregate = Object.prototype.hasOwnProperty.call(root, "work");
+  const workAggregateRecord = object(root.work);
+  const workRecords = hasWorkAggregate
+    ? records(workAggregateRecord.work_items)
+    : records(root.work_items);
   const assignmentRecords = records(root.assignments);
   const standingAssignmentRecords = records(root.standing_assignments);
   const executionChainRecords = records(root.work_assignment_execution_chains);
@@ -481,8 +536,10 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     ...records(root.explicit_metrics),
     ...typedRecords.filter((item) => text(item.record_type).toLowerCase() === "metric_observation"),
   ];
-  const workRecord = pick(workRecords, options.workItemId ?? "workitem-trademark-filing-brand-a");
-  const sourceDocument = pick(documents, text(workRecord.source_document_ref, "document-trademark-application-cn-2026-018"));
+  const requestedWorkItemId = options.workItemId
+    ?? (text(root.fixture_id) ? "workitem-trademark-filing-brand-a" : undefined);
+  const workRecord = requestedWorkItemId ? find(workRecords, requestedWorkItemId) ?? {} : {};
+  const sourceDocument = find(documents, text(workRecord.source_document_ref)) ?? {};
   const contentPlan = pick(documents, "document-brand-a-content-operating-plan");
   const application = pick(typedRecords, "trademark-application-cn-2026-018");
   const commitmentRecord = financeRecords.find((item) => text(item.type) === "commitment") ?? financeRecords[0] ?? {};
@@ -502,8 +559,8 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   });
 
   const workItem: WorkItemView = {
-    id: text(workRecord.id, "unresolved-work-item"),
-    title: text(workRecord.title, "Unresolved work"),
+    id: text(workRecord.id, requestedWorkItemId ?? "unresolved-work-item"),
+    title: text(workRecord.title, requestedWorkItemId ? "WorkItem not found" : "No WorkItem selected"),
     objective: text(workRecord.objective) || undefined,
     description: text(workRecord.description) || undefined,
     acceptanceCriteria: stringArray(workRecord.acceptance_criteria),
@@ -548,6 +605,71 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       updatedAt: text(record.updated_at),
     } satisfies WorkItemView;
   });
+  const aggregateSummary = object(workAggregateRecord.summary);
+  const legacyActive = workItems.filter((item) => !["draft", "completed", "cancelled", "archived"].includes(item.status));
+  const legacyBoard = workItems.reduce<Record<string, string[]>>((board, item) => {
+    (board[item.status] ??= []).push(item.id);
+    return board;
+  }, {});
+  const legacyWorkTypes = workRecords.reduce<Record<string, string[]>>((types, record) => {
+    const type = text(record.work_type, "general");
+    (types[type] ??= []).push(text(record.id));
+    return types;
+  }, {});
+  const legacyBusinessLines = workRecords.reduce<Record<string, string[]>>((lines, record) => {
+    const line = text(record.business_module_ref, "unclassified");
+    (lines[line] ??= []).push(text(record.id));
+    return lines;
+  }, {});
+  const aggregateMilestones = records(workAggregateRecord.milestones).map((entry) => {
+    const milestone = object(entry.milestone);
+    return {
+      id: text(milestone.id, text(entry.id)),
+      title: text(milestone.title, "Untitled milestone"),
+      status: text(milestone.status, "planned"),
+      total: numeric(entry.total_work_items),
+      completed: numeric(entry.completed_work_items),
+      blocked: numeric(entry.blocked_work_items),
+      waitingForApproval: numeric(entry.waiting_for_approval_work_items),
+      progressPercent: numeric(entry.progress_percent),
+    };
+  }).filter((milestone) => milestone.id);
+  const work: WorkAggregateView = {
+    provenance: hasWorkAggregate ? "company_os.work" : "legacy_raw_records",
+    summary: {
+      total: hasWorkAggregate ? numeric(aggregateSummary.total) : workItems.length,
+      active: hasWorkAggregate ? numeric(aggregateSummary.active) : legacyActive.length,
+      completed: hasWorkAggregate ? numeric(aggregateSummary.completed) : workItems.filter((item) => item.status === "completed").length,
+      blocked: hasWorkAggregate ? numeric(aggregateSummary.blocked) : workItems.filter((item) => item.status === "blocked").length,
+      waitingForApproval: hasWorkAggregate ? numeric(aggregateSummary.waiting_for_approval) : workItems.filter((item) => item.status === "waiting_for_approval").length,
+      unassigned: hasWorkAggregate ? numeric(aggregateSummary.unassigned) : workItems.filter((item) => item.assignees.length === 0).length,
+      withoutMilestone: hasWorkAggregate ? numeric(aggregateSummary.without_milestone) : workRecords.filter((item) => !text(item.milestone_ref)).length,
+      withoutBusinessLine: hasWorkAggregate ? numeric(aggregateSummary.without_business_line) : workRecords.filter((item) => !text(item.business_module_ref)).length,
+    },
+    board: hasWorkAggregate ? stringListMap(workAggregateRecord.board) : legacyBoard,
+    businessLines: hasWorkAggregate ? stringListMap(workAggregateRecord.business_lines) : legacyBusinessLines,
+    workTypes: hasWorkAggregate ? stringListMap(workAggregateRecord.work_types) : legacyWorkTypes,
+    milestones: hasWorkAggregate ? aggregateMilestones : [],
+    workload: hasWorkAggregate
+      ? records(workAggregateRecord.workload).map((entry) => ({
+          actorId: refId(entry.actor),
+          accountableCount: numeric(entry.accountable_count),
+          assignedCount: numeric(entry.assigned_count),
+          activeCount: numeric(entry.active_count),
+          workItemIds: stringArray(entry.work_item_refs),
+        })).filter((entry) => entry.actorId)
+      : [],
+    selection: {
+      requestedId: requestedWorkItemId,
+      status: workRecords.length === 0
+        ? "empty"
+        : !requestedWorkItemId
+          ? "not_requested"
+          : text(workRecord.id) === requestedWorkItemId
+            ? "resolved"
+            : "not_found",
+    },
+  };
   const assignments: AssignmentView[] = assignmentRecords.map((record) => ({
     id: text(record.id, "unresolved-assignment"),
     workItemId: text(record.work_item_id),
@@ -665,38 +787,185 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   ]);
   const linkedCommitment = linkedFinancialIds.includes(commitment.id) ? commitment : undefined;
 
-  const organizationUnits = units.map((unit) => {
-    const unitMemberships = memberships.filter((membership) => text(field(membership, "org_unit_id")) === text(unit.id));
-    const actorIds = unitMemberships
-      .map((membership) => text(field(membership, "actor_id")) || refId(field(membership, "actor_ref")))
-      .filter(Boolean);
-    const membershipAgentLead = unitMemberships
-      .map((membership) => ({
-        actorId: text(field(membership, "actor_id")) || refId(field(membership, "actor_ref")),
-        role: text(field(membership, "membership_role")),
-      }))
-      .find((membership) => membership.role === "lead" && actorById[membership.actorId]?.kind === "standing_agent")?.actorId;
-    const legacyRoleAgentLead = actorIds.find((actorId) => actorById[actorId]?.kind === "standing_agent" && /\blead\b/i.test(actorById[actorId]?.role ?? ""));
+  const organizationMemberships: OrganizationMembershipView[] = memberships.map((membership, index) => {
+    const orgUnitId = text(field(membership, "org_unit_id"));
+    const actorId = text(field(membership, "actor_id")) || refId(field(membership, "actor_ref"));
     return {
-      id: text(unit.id),
-      label: text(field(unit, "name"), "Unresolved unit"),
-      parentId: text(field(unit, "parent_unit_id"), text(field(unit, "parent_id"))) || undefined,
-      humanLeadActorId: refId(field(unit, "human_lead_actor_ref")) || undefined,
-      agentLeadActorId: refId(field(unit, "agent_lead_actor_ref")) || membershipAgentLead || legacyRoleAgentLead,
-      actorIds,
+      id: text(membership.id, `membership:${orgUnitId}:${actorId}:${index}`),
+      organizationId: text(field(membership, "organization_id")) || undefined,
+      orgUnitId,
+      actorId,
+      membershipRole: membershipRole(field(membership, "membership_role")),
+      titleOrFunction: text(field(membership, "title_or_function"), text(field(membership, "role_label"))) || undefined,
+      status: text(field(membership, "status")) || undefined,
+      startsAt: text(field(membership, "starts_at")) || undefined,
+      endsAt: text(field(membership, "ends_at")) || undefined,
+      authorityPolicyRefs: stringArray(field(membership, "authority_policy_refs")),
     };
+  }).filter((membership) => membership.orgUnitId && membership.actorId);
+  const organizationIntegrityFindings: OrganizationIntegrityFinding[] = [];
+  const seenUnitIds = new Set<string>();
+  const organizationUnits = units.flatMap((unit) => {
+    const id = text(unit.id);
+    if (!id) return [];
+    if (seenUnitIds.has(id)) {
+      organizationIntegrityFindings.push({
+        id: `duplicate-unit:${id}`,
+        kind: "duplicate_unit",
+        severity: "error",
+        detail: `OrgUnit ${id} appears more than once in the projection.`,
+        unitIds: [id],
+        actorIds: [],
+      });
+      return [];
+    }
+    seenUnitIds.add(id);
+    const unitMemberships = organizationMemberships.filter((membership) => membership.orgUnitId === id);
+    const liveParentId = text(field(unit, "parent_unit_id"));
+    const legacyFixtureParentId = text(root.fixture_id) ? text(field(unit, "parent_id")) : "";
+    return [{
+      id,
+      label: text(field(unit, "name"), "Unresolved unit"),
+      detail: text(field(unit, "purpose")) || undefined,
+      organizationId: text(field(unit, "organization_id")) || undefined,
+      purpose: text(field(unit, "purpose")) || undefined,
+      status: text(field(unit, "status")) || undefined,
+      parentId: liveParentId || legacyFixtureParentId || undefined,
+      humanLeadActorId: refId(field(unit, "human_lead_actor_ref")) || undefined,
+      agentLeadActorId: refId(field(unit, "agent_lead_actor_ref")) || undefined,
+      actorIds: distinct(unitMemberships.map((membership) => membership.actorId)),
+      policyRefs: stringArray(field(unit, "policy_refs")),
+      documentSpaceRef: text(field(unit, "document_space_ref")) || undefined,
+    }];
   });
-  const companyUnit = organizationUnits.find((unit) => !unit.parentId) ?? organizationUnits[0];
-  const primaryOperatingUnit = organizationUnits
-    .filter((unit) => unit.id !== companyUnit?.id)
-    .sort((left, right) => {
-      const score = (unit: typeof left) => (
-        (unit.agentLeadActorId ? 100 : 0)
-        + unit.actorIds.filter((actorId) => actorById[actorId]?.kind === "standing_agent").length * 10
-        + unit.actorIds.length
-      );
-      return score(right) - score(left) || left.label.localeCompare(right.label);
-    })[0] ?? companyUnit;
+  const unitById = new Map(organizationUnits.map((unit) => [unit.id, unit]));
+  if (organizationUnits.length === 0) {
+    organizationIntegrityFindings.push({
+      id: "empty-organization",
+      kind: "empty_organization",
+      severity: "warning",
+      detail: "No OrgUnit records are present in Store truth.",
+      unitIds: [],
+      actorIds: [],
+    });
+  }
+  for (const unit of organizationUnits) {
+    if (unit.parentId && !unitById.has(unit.parentId)) {
+      organizationIntegrityFindings.push({
+        id: `orphan-parent:${unit.id}`,
+        kind: "orphan_parent",
+        severity: "error",
+        detail: `OrgUnit ${unit.id} references missing parent ${unit.parentId}.`,
+        unitIds: [unit.id, unit.parentId],
+        actorIds: [],
+      });
+    }
+    const humanLead = unit.humanLeadActorId ? actorById[unit.humanLeadActorId] : undefined;
+    if (unit.humanLeadActorId && humanLead?.kind !== "human") {
+      organizationIntegrityFindings.push({
+        id: `invalid-human-lead:${unit.id}`,
+        kind: "invalid_human_lead",
+        severity: "error",
+        detail: `OrgUnit ${unit.id} human lead does not resolve to a Human actor.`,
+        unitIds: [unit.id],
+        actorIds: [unit.humanLeadActorId],
+      });
+    }
+    const agentLead = unit.agentLeadActorId ? actorById[unit.agentLeadActorId] : undefined;
+    if (unit.agentLeadActorId && agentLead?.kind !== "standing_agent") {
+      organizationIntegrityFindings.push({
+        id: `invalid-agent-lead:${unit.id}`,
+        kind: "invalid_agent_lead",
+        severity: "error",
+        detail: `OrgUnit ${unit.id} agent lead does not resolve to a Standing Agent actor.`,
+        unitIds: [unit.id],
+        actorIds: [unit.agentLeadActorId],
+      });
+    }
+  }
+  const seenMembershipPairs = new Set<string>();
+  for (const membership of organizationMemberships) {
+    if (!unitById.has(membership.orgUnitId)) {
+      organizationIntegrityFindings.push({
+        id: `unknown-membership-unit:${membership.id}`,
+        kind: "unknown_membership_unit",
+        severity: "error",
+        detail: `Membership ${membership.id} references missing OrgUnit ${membership.orgUnitId}.`,
+        unitIds: [membership.orgUnitId],
+        actorIds: [membership.actorId],
+      });
+    }
+    if (!actorById[membership.actorId]) {
+      organizationIntegrityFindings.push({
+        id: `unknown-membership-actor:${membership.id}`,
+        kind: "unknown_membership_actor",
+        severity: "error",
+        detail: `Membership ${membership.id} references missing actor ${membership.actorId}.`,
+        unitIds: [membership.orgUnitId],
+        actorIds: [membership.actorId],
+      });
+    }
+    const pair = `${membership.orgUnitId}:${membership.actorId}`;
+    if (seenMembershipPairs.has(pair)) {
+      organizationIntegrityFindings.push({
+        id: `duplicate-membership:${membership.id}`,
+        kind: "duplicate_membership",
+        severity: "warning",
+        detail: `Actor ${membership.actorId} has more than one membership in OrgUnit ${membership.orgUnitId}.`,
+        unitIds: [membership.orgUnitId],
+        actorIds: [membership.actorId],
+      });
+    }
+    seenMembershipPairs.add(pair);
+  }
+  const rootUnitIds = organizationUnits.filter((unit) => !unit.parentId).map((unit) => unit.id);
+  const reached = new Set<string>();
+  const visit = (unitId: string, ancestry: string[]) => {
+    if (ancestry.includes(unitId)) {
+      const cycle = [...ancestry.slice(ancestry.indexOf(unitId)), unitId];
+      const id = `parent-cycle:${cycle.join(":")}`;
+      if (!organizationIntegrityFindings.some((finding) => finding.id === id)) {
+        organizationIntegrityFindings.push({
+          id,
+          kind: "parent_cycle",
+          severity: "error",
+          detail: `OrgUnit parent cycle detected: ${cycle.join(" → ")}.`,
+          unitIds: cycle,
+          actorIds: [],
+        });
+      }
+      return;
+    }
+    if (reached.has(unitId)) return;
+    reached.add(unitId);
+    for (const child of organizationUnits.filter((candidate) => candidate.parentId === unitId)) {
+      visit(child.id, [...ancestry, unitId]);
+    }
+  };
+  for (const rootId of rootUnitIds) visit(rootId, []);
+  for (const unit of organizationUnits) {
+    if (!reached.has(unit.id)) visit(unit.id, []);
+  }
+  const structurallyPlaced = new Set<string>();
+  const markPlaced = (unitId: string) => {
+    if (structurallyPlaced.has(unitId)) return;
+    structurallyPlaced.add(unitId);
+    for (const child of organizationUnits.filter((candidate) => candidate.parentId === unitId)) markPlaced(child.id);
+  };
+  for (const rootId of rootUnitIds) markPlaced(rootId);
+  const unplacedUnitIds = organizationUnits.filter((unit) => !structurallyPlaced.has(unit.id)).map((unit) => unit.id);
+  const assignedActorIds = new Set(organizationMemberships.map((membership) => membership.actorId));
+  const unassignedActorIds = Object.keys(actorById).filter((actorId) => !assignedActorIds.has(actorId));
+  for (const actorId of unassignedActorIds) {
+    organizationIntegrityFindings.push({
+      id: `unassigned-actor:${actorId}`,
+      kind: "unassigned_actor",
+      severity: "info",
+      detail: `Actor ${actorId} has no OrganizationMembership.`,
+      unitIds: [],
+      actorIds: [actorId],
+    });
+  }
 
   return {
     fixtureId: text(root.fixture_id) || undefined,
@@ -705,9 +974,12 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     standingAssignments,
     standingAssignmentConflicts,
     organization: {
-      company: asRef(companyUnit?.id, companyUnit?.label),
-      brandUnit: asRef(primaryOperatingUnit?.id, primaryOperatingUnit?.label),
       units: organizationUnits,
+      memberships: organizationMemberships,
+      rootUnitIds,
+      unplacedUnitIds,
+      unassignedActorIds,
+      integrityFindings: organizationIntegrityFindings,
     },
     sourceDocument: source,
     contentPlanDocument: asRef(contentPlan.id, contentPlan.title, contentPlan.space ?? contentPlan.space_id),
@@ -717,6 +989,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     linkedCommitment,
     workItem,
     workItems,
+    work,
     assignments,
     workAssignmentExecutionChains: workAssignmentExecutionChains.filter((chain) => chain.workItemId === workItem.id),
     commitment,

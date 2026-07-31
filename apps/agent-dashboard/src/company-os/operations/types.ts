@@ -38,9 +38,84 @@ export interface RelatedLink {
 
 export interface OrganizationUnitView extends RelatedLink {
   parentId?: string;
+  organizationId?: string;
+  purpose?: string;
+  status?: string;
   humanLeadActorId?: string;
   agentLeadActorId?: string;
   actorIds: string[];
+  policyRefs: string[];
+  documentSpaceRef?: string;
+}
+
+export interface OrganizationMembershipView {
+  id: string;
+  organizationId?: string;
+  orgUnitId: string;
+  actorId: string;
+  membershipRole?: "lead" | "member" | "advisor" | "observer" | "external_partner";
+  titleOrFunction?: string;
+  status?: string;
+  startsAt?: string;
+  endsAt?: string;
+  authorityPolicyRefs: string[];
+}
+
+export interface OrganizationIntegrityFinding {
+  id: string;
+  kind:
+    | "empty_organization"
+    | "duplicate_unit"
+    | "orphan_parent"
+    | "parent_cycle"
+    | "unknown_membership_unit"
+    | "unknown_membership_actor"
+    | "duplicate_membership"
+    | "invalid_human_lead"
+    | "invalid_agent_lead"
+    | "unassigned_actor";
+  severity: "info" | "warning" | "error";
+  detail: string;
+  unitIds: string[];
+  actorIds: string[];
+}
+
+export interface WorkAggregateView {
+  provenance: "company_os.work" | "legacy_raw_records";
+  summary: {
+    total: number;
+    active: number;
+    completed: number;
+    blocked: number;
+    waitingForApproval: number;
+    unassigned: number;
+    withoutMilestone: number;
+    withoutBusinessLine: number;
+  };
+  board: Record<string, string[]>;
+  businessLines: Record<string, string[]>;
+  workTypes: Record<string, string[]>;
+  milestones: Array<{
+    id: string;
+    title: string;
+    status: string;
+    total: number;
+    completed: number;
+    blocked: number;
+    waitingForApproval: number;
+    progressPercent: number;
+  }>;
+  workload: Array<{
+    actorId: string;
+    accountableCount: number;
+    assignedCount: number;
+    activeCount: number;
+    workItemIds: string[];
+  }>;
+  selection: {
+    requestedId?: string;
+    status: "resolved" | "not_requested" | "not_found" | "empty";
+  };
 }
 
 export interface WorkItemView {
@@ -261,9 +336,12 @@ export interface TrademarkOperationsProjection {
   actors: Record<string, ActorSummary>;
   actorList: ActorSummary[];
   organization: {
-    company: RelatedLink;
-    brandUnit: RelatedLink;
     units: OrganizationUnitView[];
+    memberships: OrganizationMembershipView[];
+    rootUnitIds: string[];
+    unplacedUnitIds: string[];
+    unassignedActorIds: string[];
+    integrityFindings: OrganizationIntegrityFinding[];
   };
   sourceDocument: RelatedLink;
   contentPlanDocument: RelatedLink;
@@ -274,6 +352,7 @@ export interface TrademarkOperationsProjection {
   linkedCommitment?: FinancialRecordView;
   workItem: WorkItemView;
   workItems?: WorkItemView[];
+  work: WorkAggregateView;
   assignments?: AssignmentView[];
   /** Computed read projection. It never changes or accepts durable Work truth. */
   workAssignmentExecutionChains?: WorkAssignmentExecutionChain[];

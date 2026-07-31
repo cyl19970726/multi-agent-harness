@@ -1,5 +1,5 @@
-import { useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, FileText, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, Send, ShieldCheck, Sparkles, Tag, Users, Wrench } from "lucide-react";
+import { useRef, useState } from "react";
+import { AlertTriangle, Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, Send, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 
 import {
   ActorPill, ContextRail, DecisionNotice,
@@ -8,8 +8,8 @@ import {
 import { prototypeTrademarkOperationsProjection } from "./fixture";
 import { buildApprovalDecisionCommand } from "./approvalAction";
 import { buildWorkItemTransitionCommand } from "./workItemAction";
-import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, RelatedLink, StandingLinkConflict, TrademarkOperationsProjection, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
-import { ActorAvatar, ObjectEmblem } from "../visuals";
+import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, OrganizationMembershipView, OrganizationUnitView, RelatedLink, StandingLinkConflict, TrademarkOperationsProjection, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
+import { ActorAvatar } from "../visuals";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail as WorkbenchContextRail } from "@/components/workbench/context/ContextRail";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
@@ -100,78 +100,79 @@ function StandingLinkConflictBanner({ conflicts }: { conflicts: StandingLinkConf
 export function OrganizationPage({ data, onSelectionChange }: OperationsPageProps & { onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const view = projection(data);
   const standingLinkConflicts = view.standingAssignmentConflicts ?? [];
-  const brandUnit = view.organization.units.find((unit) => unit.id === view.organization.brandUnit.id) ?? {
-    ...view.organization.brandUnit, actorIds: [],
-  };
-  const brandActors = membersForUnit(view, brandUnit.id);
-  const companyUnit = view.organization.units.find((unit) => unit.id === view.organization.company.id);
-  const humanOwner = view.actors[companyUnit?.humanLeadActorId ?? ""]
-    ?? view.actorList.find((actor) => actor.kind === "human")
-    ?? brandActors.find((actor) => actor.kind === "human");
-  const lead = view.actors[brandUnit.agentLeadActorId ?? ""]
-    ?? brandActors.find((actor) => actor.membershipRole === "lead")
-    ?? brandActors.find((actor) => /\blead\b/i.test(`${actor.role} ${actor.name}`))
-    ?? view.actorList.find((actor) => actor.kind === "standing_agent" && /\blead\b/i.test(`${actor.role} ${actor.name}`));
-  const standingAgentRoster = view.actorList.filter((actor) => actor.kind === "standing_agent" && actor.id !== lead?.id);
-  const externalActors = view.actorList.filter((actor) => actor.kind === "external");
-  const secondaryUnits = view.organization.units.filter((unit) => unit.id !== view.organization.company.id && unit.id !== brandUnit.id);
+  const explicitHumanLeads = view.organization.units
+    .map((unit) => unit.humanLeadActorId ? view.actors[unit.humanLeadActorId] : undefined)
+    .filter((actor, index, all): actor is ActorSummary => Boolean(actor) && all.findIndex((candidate) => candidate?.id === actor?.id) === index);
   const hasGovernanceProposal = Boolean(view.governanceProposal.id)
     && !view.governanceProposal.id.startsWith("unresolved");
 
-  return <PageFrame dense eyebrow="Organization" title="Company OS" description="Responsibility, authority, and capability across Humans, Standing Agents, and external collaborators." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Company lead context"><PolicyNote>Organization changes are proposed and reviewed. This view cannot grant authority, legal access, or financial permissions.</PolicyNote>{humanOwner && <Panel title="Ultimate authority"><ActorPill actor={humanOwner} /></Panel>}<Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Standing Agents may own and coordinate WorkItems within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel>{hasGovernanceProposal && <LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} />}</ContextRail>}>
+  return <PageFrame dense eyebrow="Organization" title="Company OS" description="Exact Store-truth OrgUnit hierarchy, memberships, accountable leads, and durable execution identity bindings." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Organization truth"><PolicyNote>Hierarchy comes only from OrgUnit.parent_unit_id. Leads come only from explicit Human and Agent lead references; membership, names, runtime state, and display order never promote an actor.</PolicyNote>{explicitHumanLeads.length > 0 && <Panel title="Explicit Human leads"><div className="space-y-2">{explicitHumanLeads.map((actor) => <ActorPill key={actor.id} actor={actor} />)}</div></Panel>}<Panel title="Projection provenance"><p className="text-xs leading-5 text-muted-foreground">{view.organization.units.length} OrgUnits · {view.organization.memberships.length} memberships · {view.organization.rootUnitIds.length} roots</p></Panel><Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Standing Agents may own and coordinate WorkItems only within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel>{hasGovernanceProposal && <LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} />}</ContextRail>}>
     <StandingLinkConflictBanner conflicts={standingLinkConflicts} />
-    <section aria-label="Organization tree" className="relative overflow-hidden rounded-2xl border border-border bg-card/70 p-4 shadow-sm sm:p-6" data-company-os-ref={view.organization.company.id}>
+    <OrganizationIntegrity findings={view.organization.integrityFindings} />
+    <section aria-label="Organization forest" className="relative overflow-hidden rounded-2xl border border-border bg-card/70 p-4 shadow-sm sm:p-6" data-organization-root-count={view.organization.rootUnitIds.length}>
       <div className="pointer-events-none absolute -left-24 -top-24 size-72 rounded-full border border-primary/15" /><div className="pointer-events-none absolute -left-10 -top-10 size-44 rounded-full border border-primary/20" />
-      <div className="relative mx-auto max-w-5xl">
-        <div className="flex items-center justify-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground"><Building2 className="size-4 text-primary" />{view.organization.company.label}</div>
-        {humanOwner && <OrgActorCard actor={humanOwner} variant="owner" className="mx-auto mt-5 max-w-md" onOpen={onSelectionChange ? () => onSelectionChange({ surface: "organization", personId: humanOwner.id }) : undefined} />}
-        <Connector />
-        {lead ? <OrgActorCard actor={lead} variant="lead" className="mx-auto max-w-xl" onOpen={onSelectionChange ? () => onSelectionChange({ surface: "organization", standingAgentId: lead.id }) : undefined} /> : <OrganizationNode icon={<Network className="size-5" />} label={brandUnit.label} recordRef={brandUnit.id} className="mx-auto max-w-xl" />}
-        <div className="mx-auto h-7 w-px bg-primary/35" aria-hidden />
-        <div className="relative border-t border-primary/35 pt-7"><p className="mb-4 text-center text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Cross-unit Standing Agent capability roster</p><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{standingAgentRoster.map((actor) => <OrgActorCard key={actor.id} actor={actor} linkedDocument={actor.id === view.workItem.assignees[0]?.id ? view.sourceDocument : undefined} onOpen={onSelectionChange ? () => onSelectionChange({ surface: "organization", standingAgentId: actor.id }) : undefined} />)}</div></div>
-        {externalActors.length > 0 && <div className="mt-7 flex justify-end"><div className="w-full max-w-sm border-l border-dashed border-sky-500/40 pl-5"><p className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-sky-700"><Users className="size-4" />External collaboration</p>{externalActors.map((actor) => <OrgActorCard key={actor.id} actor={actor} variant="external" />)}</div></div>}
-        <div className="mt-7 flex items-center justify-between gap-4 border-t border-border pt-4 text-xs text-muted-foreground"><span data-company-os-ref={brandUnit.id} className="inline-flex items-center gap-2"><Tag className="size-3.5 text-primary" />Primary operating unit · {brandUnit.label}</span><span>{standingAgentRoster.length} cross-unit Standing Agent roles shown · not a reporting relation</span></div>
-        {secondaryUnits.length > 0 && <details className="mt-4 rounded-lg border border-border bg-background/50 p-3"><summary className="cursor-pointer text-xs font-medium text-muted-foreground">Other explicit organization units ({secondaryUnits.length})</summary><div className="mt-3 flex flex-wrap gap-2">{secondaryUnits.map((unit) => <span key={unit.id} data-company-os-ref={unit.id} className="rounded-full border border-border bg-card px-3 py-1.5 text-xs">{unit.label} · {membersForUnit(view, unit.id).length} members</span>)}</div></details>}
-      </div>
+      {view.organization.rootUnitIds.length > 0
+        ? <div className="relative space-y-5">{view.organization.rootUnitIds.map((unitId) => <OrganizationUnitBranch key={unitId} view={view} unitId={unitId} onSelectionChange={onSelectionChange} />)}</div>
+        : <div className="relative rounded-xl border border-dashed border-border bg-background/60 p-8 text-center"><Building2 className="mx-auto size-7 text-primary" /><h2 className="mt-3 font-semibold">No rooted OrgUnit forest</h2><p className="mt-1 text-sm text-muted-foreground">Store truth contains no root whose parent_unit_id is null.</p></div>}
     </section>
+    {view.organization.unplacedUnitIds.length > 0 && <section aria-label="Unplaced organization units" className="mt-4 rounded-xl border border-status-bad/30 bg-status-bad/[0.035] p-4"><h2 className="text-sm font-semibold text-status-bad">Unplaced OrgUnits</h2><p className="mt-1 text-xs text-muted-foreground">These units are preserved but cannot be inserted into the rooted forest because their parent relation is missing or cyclic.</p><div className="mt-3 grid gap-3 sm:grid-cols-2">{view.organization.unplacedUnitIds.map((unitId) => { const unit = view.organization.units.find((candidate) => candidate.id === unitId); return unit ? <OrganizationUnitSummary key={unit.id} unit={unit} /> : null; })}</div></section>}
+    {view.organization.unassignedActorIds.length > 0 && <details className="mt-4 rounded-xl border border-border bg-card/60 p-4"><summary className="cursor-pointer text-xs font-semibold text-muted-foreground">Actors without OrganizationMembership ({view.organization.unassignedActorIds.length})</summary><div className="mt-3 grid gap-2 sm:grid-cols-2">{view.organization.unassignedActorIds.map((actorId) => { const actor = view.actors[actorId]; return actor ? <ActorPill key={actor.id} actor={actor} /> : <code key={actorId} className="text-xs">{actorId}</code>; })}</div></details>}
   </PageFrame>;
 }
 
-function Connector() {
-  return <div className="mx-auto flex h-9 w-px items-center justify-center bg-primary/35" aria-hidden><span className="size-2.5 rounded-full border border-primary bg-background" /></div>;
+function OrganizationIntegrity({ findings }: { findings: TrademarkOperationsProjection["organization"]["integrityFindings"] }) {
+  const material = findings.filter((finding) => finding.severity !== "info");
+  if (material.length === 0) return null;
+  return <div role="alert" data-organization-integrity-count={material.length} className="mb-4 rounded-xl border border-status-warn/35 bg-status-warn/[0.05] p-4"><div className="flex items-center gap-2 text-sm font-semibold text-status-warn"><AlertTriangle className="size-4" />Organization integrity findings ({material.length})</div><ul className="mt-3 space-y-2">{material.map((finding) => <li key={finding.id} data-organization-integrity-kind={finding.kind} className="rounded-lg border border-border/70 bg-background/70 p-3 text-xs leading-5"><p>{finding.detail}</p><code className="mt-1 block break-words font-mono text-[10px] text-muted-foreground">{finding.id}</code></li>)}</ul></div>;
 }
 
-function OrgActorCard({ actor, linkedDocument, variant = "member", className, onOpen }: { actor: ActorSummary; linkedDocument?: TrademarkOperationsProjection["sourceDocument"]; variant?: "owner" | "lead" | "member" | "external"; className?: string; onOpen?: () => void }) {
+function OrganizationUnitBranch({ view, unitId, onSelectionChange }: { view: TrademarkOperationsProjection; unitId: string; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
+  const unit = view.organization.units.find((candidate) => candidate.id === unitId);
+  if (!unit) return null;
+  const memberships = view.organization.memberships.filter((membership) => membership.orgUnitId === unit.id);
+  const children = view.organization.units.filter((candidate) => candidate.parentId === unit.id);
+  return <article data-company-os-ref={unit.id} data-org-parent-unit-id={unit.parentId ?? ""} className="rounded-2xl border border-border bg-background/65 p-4 shadow-sm sm:p-5"><header className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><Building2 className="size-4" /></span><div><p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">OrgUnit · {unit.status ?? "status not supplied"}</p><h2 className="company-editorial-title mt-1 text-xl">{unit.label}</h2>{unit.purpose && <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{unit.purpose}</p>}<code className="mt-1 block font-mono text-[9px] text-muted-foreground">{unit.id}</code></div></div><div className="text-right text-[10px] text-muted-foreground"><p>{memberships.length} memberships</p><p>{children.length} child units</p></div></header><ExplicitUnitLeads view={view} unit={unit} onSelectionChange={onSelectionChange} /><div className="mt-4 border-t border-border pt-4"><p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">All memberships</p>{memberships.length > 0 ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{memberships.map((membership) => { const actor = view.actors[membership.actorId]; return actor ? <OrgActorCard key={membership.id} view={view} actor={actor} membership={membership} variant={actor.kind === "external" ? "external" : "member"} onOpen={selectionForActor(actor, onSelectionChange)} /> : <UnresolvedMembership key={membership.id} membership={membership} />; })}</div> : <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">No OrganizationMembership rows link actors to this unit.</p>}</div>{children.length > 0 && <div className="mt-5 space-y-4 border-l border-primary/25 pl-4 sm:pl-6">{children.map((child) => <OrganizationUnitBranch key={child.id} view={view} unitId={child.id} onSelectionChange={onSelectionChange} />)}</div>}</article>;
+}
+
+function ExplicitUnitLeads({ view, unit, onSelectionChange }: { view: TrademarkOperationsProjection; unit: OrganizationUnitView; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
+  const leads = [
+    unit.humanLeadActorId ? { label: "Explicit Human lead", actor: view.actors[unit.humanLeadActorId], actorId: unit.humanLeadActorId, variant: "owner" as const } : undefined,
+    unit.agentLeadActorId ? { label: "Explicit Agent lead", actor: view.actors[unit.agentLeadActorId], actorId: unit.agentLeadActorId, variant: "lead" as const } : undefined,
+  ].filter((lead): lead is NonNullable<typeof lead> => Boolean(lead));
+  if (leads.length === 0) return <p className="mt-4 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">No explicit Human or Agent lead reference is recorded.</p>;
+  return <div className="mt-4 grid gap-3 lg:grid-cols-2">{leads.map((lead) => <div key={`${unit.id}:${lead.label}`}><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{lead.label}</p>{lead.actor ? <OrgActorCard view={view} actor={lead.actor} variant={lead.variant} onOpen={selectionForActor(lead.actor, onSelectionChange)} /> : <p className="rounded-lg border border-status-bad/30 bg-status-bad/[0.04] p-3 text-xs text-status-bad">Unresolved actor · {lead.actorId}</p>}</div>)}</div>;
+}
+
+function selectionForActor(actor: ActorSummary, onSelectionChange?: (selection: Partial<SelectionState>) => void): (() => void) | undefined {
+  if (!onSelectionChange) return undefined;
+  if (actor.kind === "human") return () => onSelectionChange({ surface: "organization", personId: actor.id });
+  if (actor.kind === "standing_agent") return () => onSelectionChange({ surface: "organization", standingAgentId: actor.id });
+  return undefined;
+}
+
+function UnresolvedMembership({ membership }: { membership: OrganizationMembershipView }) {
+  return <article data-company-os-ref={membership.id} className="rounded-xl border border-status-bad/30 bg-status-bad/[0.04] p-3"><p className="text-xs font-semibold text-status-bad">Unresolved membership actor</p><code className="mt-1 block break-words text-[10px]">{membership.actorId}</code><p className="mt-1 text-[10px] text-muted-foreground">{membership.membershipRole ?? "role not supplied"}</p></article>;
+}
+
+function OrganizationUnitSummary({ unit }: { unit: OrganizationUnitView }) {
+  return <div data-company-os-ref={unit.id} data-org-parent-unit-id={unit.parentId ?? ""} className="rounded-lg border border-border bg-background/70 p-3"><p className="text-sm font-semibold">{unit.label}</p><code className="mt-1 block text-[10px] text-muted-foreground">{unit.id}</code><p className="mt-1 text-xs text-muted-foreground">Parent: {unit.parentId ?? "none"}</p></div>;
+}
+
+function OrgActorCard({ view, actor, membership, variant = "member", className, onOpen }: { view: TrademarkOperationsProjection; actor: ActorSummary; membership?: OrganizationMembershipView; variant?: "owner" | "lead" | "member" | "external"; className?: string; onOpen?: () => void }) {
   const proposed = actor.organizationRoleState === "proposed";
   const actorKind = actorSemanticKind(actor);
-  return <article data-company-os-ref={actor.id} data-actor-kind={actorKind} data-actor-type={actorKind} className={`${variant === "lead" ? "border-status-good/45 bg-status-good/[0.045]" : variant === "external" ? "border-sky-500/35 bg-sky-500/[0.035]" : proposed ? "border-primary/45 border-dashed bg-primary/[0.035]" : "border-border bg-card/90"} rounded-xl border p-4 shadow-sm ${className ?? ""}`}>{onOpen ? <button type="button" onClick={onOpen} className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><OrgActorCardBody actor={actor} variant={variant} proposed={proposed} /></button> : <OrgActorCardBody actor={actor} variant={variant} proposed={proposed} />}{linkedDocument && <div className="mt-3 border-t border-border pt-2"><LinkedRecord recordRef={linkedDocument.id} label={linkedDocument.label} detail="Linked work source" icon={<FileText className="size-4" />} /></div>}</article>;
+  const assignments = actor.executionAgentMemberRef
+    ? [...new Map(
+        (view.standingAssignments ?? [])
+          .filter((assignment) => assignment.agentMemberId === actor.executionAgentMemberRef)
+          .map((assignment) => [assignment.memberRunId, assignment]),
+      ).values()]
+    : [];
+  return <article data-company-os-ref={membership?.id ?? actor.id} data-organization-actor-ref={actor.id} data-actor-kind={actorKind} data-actor-type={actorKind} className={`${variant === "lead" ? "border-status-good/45 bg-status-good/[0.045]" : variant === "external" ? "border-sky-500/35 bg-sky-500/[0.035]" : proposed ? "border-primary/45 border-dashed bg-primary/[0.035]" : "border-border bg-card/90"} rounded-xl border p-4 shadow-sm ${className ?? ""}`}>{onOpen ? <button type="button" onClick={onOpen} className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><OrgActorCardBody actor={actor} variant={variant} proposed={proposed} /></button> : <OrgActorCardBody actor={actor} variant={variant} proposed={proposed} />}{membership && <div className="mt-3 border-t border-border pt-2 text-[10px] text-muted-foreground"><p>{membership.membershipRole ?? "role not supplied"}{membership.titleOrFunction ? ` · ${membership.titleOrFunction}` : ""}{membership.status ? ` · ${membership.status}` : ""}</p><code className="mt-1 block truncate font-mono">{membership.id}</code></div>}{actor.kind === "standing_agent" && <div className="mt-3 rounded-lg border border-border/70 bg-background/55 p-2 text-[10px]"><p className="font-semibold text-foreground">AgentMember / runtime binding</p>{actor.executionAgentMemberRef ? <><code className="mt-1 block break-words font-mono text-muted-foreground">{actor.executionAgentMemberRef}</code>{assignments.length > 0 ? <div className="mt-2 space-y-1">{assignments.map((assignment) => <p key={assignment.id} data-company-os-ref={assignment.memberRunId} className="text-muted-foreground">{assignment.nativeSession?.provider ?? "provider unavailable"} · {assignment.status} · {assignment.memberRunId}</p>)}</div> : <p className="mt-1 text-muted-foreground">No MemberRun in this execution snapshot explicitly binds that AgentMember.</p>}</> : <p className="mt-1 text-muted-foreground">No execution_agent_member_ref is recorded.</p>}</div>}</article>;
 }
 
 function OrgActorCardBody({ actor, variant, proposed }: { actor: ActorSummary; variant: "owner" | "lead" | "member" | "external"; proposed: boolean }) {
   return <><div className="flex items-start gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size={variant === "lead" || variant === "owner" ? "lg" : "md"} ring={variant === "owner" ? "warm" : variant === "lead" ? "good" : variant === "external" ? "external" : "neutral"} /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className={`${variant === "lead" || variant === "owner" ? "company-editorial-title text-xl" : "text-sm font-semibold"}`}>{actor.name}</h3>{actor.availability === "available" && <span className="size-2 rounded-full bg-status-good" title="Explicitly reported available" />}{proposed && <StatusTag status="proposed" />}</div><p className="mt-1 text-xs text-muted-foreground">{actor.kind === "human" ? "Human" : actor.kind === "external" ? "External Collaborator" : "Standing Agent"} · {actor.role}</p></div></div>{variant === "lead" && <div className="mt-4 grid grid-cols-3 divide-x divide-border rounded-lg border border-border bg-background/60 py-3 text-center text-xs"><div><strong className="block text-base">{actor.availability === "available" ? "Available" : "Active"}</strong><span className="text-muted-foreground">Presence</span></div><div><strong className="block text-base">{actor.unit ?? "Company"}</strong><span className="text-muted-foreground">Scope</span></div><div><strong className="block text-base">Lead</strong><span className="text-muted-foreground">Role</span></div></div>}</>;
-}
-
-function membersForUnit(view: TrademarkOperationsProjection, unitId: string): ActorSummary[] {
-  const unit = view.organization.units.find((entry) => entry.id === unitId);
-  const members = unit?.actorIds.map((id) => view.actors[id]).filter((actor): actor is ActorSummary => Boolean(actor))
-    ?? view.actorList.filter((actor) => actor.unit === unit?.label);
-  return [...members].sort((left, right) => organizationRank(left) - organizationRank(right) || left.name.localeCompare(right.name));
-}
-
-function organizationRank(actor: ActorSummary): number {
-  if (actor.kind === "human") return 0;
-  if (actor.kind === "standing_agent" && actor.organizationRoleState !== "proposed") return 1;
-  if (actor.kind === "standing_agent") return 2;
-  if (actor.kind === "external") return 3;
-  return 4;
-}
-
-function OrganizationNode({ icon, label, recordRef, className }: { icon: ReactNode; label: string; recordRef: string; className?: string }) {
-  return <div data-company-os-ref={recordRef} className={`flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-sm ${className ?? ""}`}><span className="grid size-8 place-items-center rounded-full bg-muted text-foreground">{icon}</span><span className="text-base font-semibold">{label}</span></div>;
-}
-
-function OrganizationMember({ actor, linkedDocument, availabilityNote = false }: { actor: ActorSummary; linkedDocument?: TrademarkOperationsProjection["sourceDocument"]; availabilityNote?: boolean }) {
-  return <article className="relative mb-2" data-company-os-ref={actor.id}><span aria-hidden className="absolute -left-4 top-6 h-px w-4 bg-border sm:-left-7 sm:w-7" /><div className="rounded-lg border border-border bg-card p-2.5 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-2"><ActorPill actor={actor} />{actor.organizationRoleState === "proposed" && <StatusTag status="proposed" />}{availabilityNote && actor.availability === "available" && <span className="inline-flex items-center gap-2 rounded-md border border-status-good/30 bg-status-good/10 px-2 py-1 text-xs font-medium text-status-good"><span className="size-2 rounded-full bg-status-good" />{actor.name} · Available</span>}</div>{linkedDocument && <div className="mt-2 border-t border-border pt-1"><LinkedRecord recordRef={linkedDocument.id} label={linkedDocument.label} detail="Linked organization context" icon={<FileText className="size-4" />} /></div>}</div></article>;
 }
 
 export function HumanMemberFocus({ data }: OperationsPageProps) {
@@ -184,24 +185,26 @@ export function HumanMemberFocus({ data }: OperationsPageProps) {
 
 export function StandingAgentFocus({ data, actorId, onSelectionChange }: OperationsPageProps & { actorId?: string; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const view = projection(data);
-  const actor = actorOr(view, actorId ?? "actor-agent-document-architecture", view.actorList[0] ?? view.workItem.submittedBy);
+  const actor = actorId ? view.actors[actorId] : undefined;
+  if (!actor || actor.kind !== "standing_agent") {
+    return <PageFrame eyebrow="Organization · Standing Agent" title="Standing Agent not found" description="The selected durable Standing Agent id is absent from Store truth. No name, provider, list order, or MemberRun similarity was used as a fallback."><div className="rounded-xl border border-dashed border-border bg-card/60 p-6"><p className="text-sm text-muted-foreground">Requested actor: <code>{actorId ?? "none"}</code></p></div></PageFrame>;
+  }
   const authoredProposal = view.governanceProposal.proposedById === actor.id && !view.governanceProposal.id.startsWith("unresolved")
     ? view.governanceProposal
     : undefined;
-  const isLead = /lead/i.test(`${actor.name} ${actor.role}`);
-  const leadUnit = isLead
-    ? view.organization.units.find((unit) => unit.agentLeadActorId === actor.id)
-      ?? view.organization.units.find((unit) => unit.actorIds.includes(actor.id))
-    : undefined;
-  const directReports = leadUnit
-    ? leadUnit.actorIds
-      .map((candidateId) => view.actors[candidateId])
-      .filter((candidate): candidate is ActorSummary => candidate?.kind === "standing_agent" && candidate.id !== actor.id)
-    : [];
-  const membershipUnit = view.organization.units.find((unit) => unit.actorIds.includes(actor.id));
-  const reportsTo = actor.membershipRole === "lead"
-    ? undefined
-    : view.actors[membershipUnit?.agentLeadActorId ?? ""];
+  const memberships = view.organization.memberships.filter((membership) => membership.actorId === actor.id);
+  const membershipUnits = memberships
+    .map((membership) => view.organization.units.find((unit) => unit.id === membership.orgUnitId))
+    .filter((unit): unit is OrganizationUnitView => Boolean(unit));
+  const leadUnits = view.organization.units.filter((unit) => unit.agentLeadActorId === actor.id);
+  const isLead = leadUnits.length > 0;
+  const directReports = leadUnits
+    .flatMap((unit) => view.organization.memberships.filter((membership) => membership.orgUnitId === unit.id))
+    .map((membership) => view.actors[membership.actorId])
+    .filter((candidate, index, all): candidate is ActorSummary => Boolean(candidate) && candidate.id !== actor.id && all.findIndex((entry) => entry?.id === candidate?.id) === index);
+  const reportsTo = membershipUnits
+    .map((unit) => unit.agentLeadActorId ? view.actors[unit.agentLeadActorId] : undefined)
+    .find((candidate) => candidate?.id !== actor.id);
   const relatedItems = (view.workItems ?? [view.workItem]).filter((workItem) =>
     workItem.assignees.some((assignee) => assignee.id === actor.id)
     || workItem.accountableOwner.id === actor.id
@@ -303,11 +306,11 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
         eyebrow="Organization · Standing Agent"
         title={<span className="flex items-center gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size="md" ring={actor.availability === "available" ? "good" : "neutral"} /><span>{actor.name}</span></span>}
         description={actor.responsibilitySummary ?? "A durable organization identity. Runtime attempts and private reasoning do not define membership or authority."}
-        meta={<><Badge tone={actor.availability === "available" ? "good" : "muted"}>{actor.availability ?? "availability unknown"}</Badge><Badge tone="muted">{actor.role}</Badge>{actor.unit && <Badge tone="muted">{actor.unit}</Badge>}</>}
+        meta={<><Badge tone={actor.availability === "available" ? "good" : "muted"}>{actor.availability ?? "availability unknown"}</Badge><Badge tone="muted">{actor.role}</Badge>{membershipUnits.map((unit) => <Badge key={unit.id} tone="muted">{unit.label}</Badge>)}</>}
       />}
       context={<WorkbenchContextRail label="Organization context" quiet>
-        <ContextModule title="Organization identity" kicker={actor.membershipRole ?? "member"} icon={<Bot className="size-3.5" />} tone={actor.availability === "available" ? "good" : undefined}>
-          <dl className="space-y-2 text-xs"><RailFact label="Unit" value={actor.unit ?? "Not linked"} /><RailFact label="Reports to" value={reportsTo?.name ?? (isLead ? "Human Owner / company policy" : "Not recorded")} /><RailFact label="Capacity" value={assignedWork ? "Active assignment visible" : "No linked active assignment"} /></dl>
+        <ContextModule title="Organization identity" kicker={`${memberships.length} explicit memberships`} icon={<Bot className="size-3.5" />} tone={actor.availability === "available" ? "good" : undefined}>
+          <dl className="space-y-2 text-xs"><RailFact label="Units" value={membershipUnits.map((unit) => unit.label).join(", ") || "Not linked"} /><RailFact label="Reports to" value={reportsTo?.name ?? (isLead ? "Explicit Agent lead" : "Not recorded")} /><RailFact label="Capacity" value={assignedWork ? "Active assignment visible" : "No linked active assignment"} /></dl>
           {isLead && directReports.length > 0 && <div className="mt-3 border-t border-border/70 pt-3"><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Direct reports</p><div className="space-y-2">{directReports.map((report) => <ActorPill key={report.id} actor={report} compact />)}</div></div>}
         </ContextModule>
         <ContextModule title="Agent Team participation" kicker="Explicit identity links only" icon={<Network className="size-3.5" />} collapsible defaultOpen={linkedExecutionAssignments.length > 0}>
@@ -362,10 +365,14 @@ function ReferenceGroup({ label, values }: { label: string; values?: string[] })
 
 export function WorkboardPage({ data }: OperationsPageProps) {
   const view = projection(data);
-  return <PageFrame eyebrow="Work" title="Milestones & WorkItems" description="One durable work ledger for development, legal, procurement, operations, and every other company commitment." context={<ContextRail label="Work context"><Panel title="Ledger rules"><p className="text-xs leading-5 text-muted-foreground">Milestone grouping never replaces WorkItem identity. Requester, submitter, accountable owner, assignee, approval, and evidence remain separate facts.</p></Panel><LinkedRecord recordRef={view.sourceDocument.id} label={view.sourceDocument.label} detail="Source document" /><Panel title="Milestone coverage"><p className="text-sm font-medium">Unassigned milestone</p><p className="mt-1 text-xs leading-5 text-muted-foreground">The current projection supplies a WorkItem but no native Milestone record. The UI keeps that gap visible instead of inventing one.</p></Panel></ContextRail>}>
+  const itemsById = new Map((view.workItems ?? []).map((item) => [item.id, item]));
+  const columns = Object.entries(view.work.board);
+  return <PageFrame eyebrow="Work" title="Milestones & WorkItems" description="One durable work ledger for development, legal, procurement, operations, and every other company commitment." context={<ContextRail label="Work context"><Panel title="Aggregate provenance"><p className="text-xs leading-5 text-muted-foreground">{view.work.provenance === "company_os.work" ? "Summary, board lanes, milestones, types, and workload come from company_os.work." : "Prototype compatibility data; no Store aggregate was supplied."}</p></Panel><Panel title="Ledger rules"><p className="text-xs leading-5 text-muted-foreground">Milestone grouping never replaces WorkItem identity. Requester, submitter, accountable owner, assignee, approval, and evidence remain separate facts.</p></Panel><Panel title="Integrity gaps"><p className="text-xs leading-5 text-muted-foreground">{view.work.summary.withoutMilestone} without Milestone · {view.work.summary.withoutBusinessLine} without business line · {view.work.summary.unassigned} unassigned</p></Panel></ContextRail>}>
     <div className="space-y-5">
-      <section className="grid gap-3 sm:grid-cols-3"><WorkStat label="Open WorkItems" value="1" detail="From current projection" tone="warm" /><WorkStat label="Waiting for approval" value={view.workItem.status === "waiting_for_approval" ? "1" : "0"} detail={view.approval.status === "requested" ? "Human decision requested" : "No request supplied"} tone="warn" /><WorkStat label="Milestone assignment" value="—" detail="Not supplied" tone="quiet" /></section>
-      <section className="overflow-hidden rounded-2xl border border-border bg-card/75 shadow-sm"><header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4"><div className="flex items-center gap-3"><ObjectEmblem kind="work" /><div><h2 className="company-editorial-title text-2xl">Unassigned milestone</h2><p className="mt-0.5 text-xs text-muted-foreground">WorkItems awaiting an explicit Milestone relation</p></div></div><StatusTag status={view.workItem.status} /></header><div className="p-4"><WorkLedgerItem workItem={view.workItem} approval={view.approval} /></div></section>
+      <section className="grid gap-3 sm:grid-cols-3"><WorkStat label="Open WorkItems" value={String(view.work.summary.active)} detail="company_os.work summary.active" tone="warm" /><WorkStat label="Waiting for approval" value={String(view.work.summary.waitingForApproval)} detail="company_os.work summary.waiting_for_approval" tone="warn" /><WorkStat label="Milestone gaps" value={String(view.work.summary.withoutMilestone)} detail={`${view.work.milestones.length} native Milestones supplied`} tone="quiet" /></section>
+      {view.work.summary.total === 0
+        ? <section className="rounded-2xl border border-dashed border-border bg-card/60 p-8 text-center"><h2 className="font-semibold">No WorkItems in aggregate truth</h2><p className="mt-2 text-sm text-muted-foreground">The UI does not fall back to a raw first row when company_os.work is empty.</p></section>
+        : <section className="grid gap-4 xl:grid-cols-3">{columns.map(([status, workItemIds]) => <BoardColumn key={status} title={humanReadable(status, status)} items={workItemIds.map((id) => itemsById.get(id)).filter((item): item is WorkItemView => Boolean(item))} />)}</section>}
     </div>
   </PageFrame>;
 }
@@ -374,12 +381,8 @@ function WorkStat({ label, value, detail, tone }: { label: string; value: string
   return <div className={`${tone === "warm" ? "border-primary/25 bg-primary/[0.05]" : tone === "warn" ? "border-status-warn/30 bg-status-warn/[0.05]" : "border-border bg-card/70"} rounded-xl border p-4`}><p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><p className="company-editorial-title mt-2 text-3xl">{value}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
 }
 
-function WorkLedgerItem({ workItem, approval }: { workItem: WorkItemView; approval: TrademarkOperationsProjection["approval"] }) {
-  return <article data-company-os-ref={workItem.id} data-work-item-status={workItem.status} className="rounded-xl border border-border bg-background/70 p-4"><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><ObjectEmblem kind="work" className="size-8 rounded-lg" /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Legal WorkItem</span></div><h3 className="mt-3 text-base font-semibold">{workItem.title}</h3><div className="mt-1 max-w-xl"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Source document" /></div></div><div className="flex -space-x-2">{[workItem.accountableOwner, workItem.assignees[0], workItem.contributors[0]].filter((actor): actor is ActorSummary => Boolean(actor)).map((actor) => <ActorAvatar key={actor.id} identity={`${actor.id} ${actor.role}`} name={actor.name} size="md" ring={actor.kind === "human" ? "warm" : actor.kind === "external" ? "external" : "neutral"} />)}</div></div><dl className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-2 xl:grid-cols-3"><BoardFact label="Requested by" actor={workItem.requestedBy} /><BoardFact label="Submitted by" actor={workItem.submittedBy} /><BoardFact label="Accountable" actor={workItem.accountableOwner} /><BoardFact label="Assignee" actor={workItem.assignees[0]} /><BoardFact label="Contributor" actor={workItem.contributors[0]} /><BoardFact label="Finance reviewer" actor={workItem.reviewer} /></dl><div className="mt-4 rounded-lg border border-primary/20 bg-primary/[0.035] p-2"><LinkedRecord recordRef={approval.id} label="Approval requested" detail={`Human decision required · ${actorDescriptor(approval.requiredApprover)}`} /></div></article>;
-}
-
-function BoardColumn({ title, items, approval }: { title: string; items: WorkItemView[]; approval: TrademarkOperationsProjection["approval"] }) {
-  return <section className="min-h-64 rounded-lg border border-border bg-muted/35 p-3"><h2 className="mb-3 text-sm font-semibold">{title}<span className="ml-2 text-muted-foreground">{items.length}</span></h2><div className="space-y-3">{items.map((workItem) => <article key={workItem.id} data-company-os-ref={workItem.id} data-work-item-status={workItem.status} className="rounded-md border border-border bg-card p-3"><StatusTag status={workItem.status} /><h3 className="mt-3 text-sm font-semibold">{workItem.title}</h3><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Source document" /><dl className="mt-4 space-y-2 border-t border-border pt-3 text-sm"><BoardFact label="Requested by" actor={workItem.requestedBy} /><BoardFact label="Submitted by" actor={workItem.submittedBy} /><BoardFact label="Accountable" actor={workItem.accountableOwner} /><BoardFact label="Assignee" actor={workItem.assignees[0]} /><BoardFact label="Contributor" actor={workItem.contributors[0]} /><BoardFact label="Finance reviewer" actor={workItem.reviewer} /></dl><LinkedRecord recordRef={approval.id} label="Approval requested" detail={`Human decision required · ${actorDescriptor(approval.requiredApprover)}`} /></article>)}</div></section>;
+function BoardColumn({ title, items }: { title: string; items: WorkItemView[] }) {
+  return <section className="min-h-64 rounded-lg border border-border bg-muted/35 p-3"><h2 className="mb-3 text-sm font-semibold">{title}<span className="ml-2 text-muted-foreground">{items.length}</span></h2><div className="space-y-3">{items.map((workItem) => <article key={workItem.id} data-company-os-ref={workItem.id} data-work-item-status={workItem.status} className="rounded-md border border-border bg-card p-3"><StatusTag status={workItem.status} /><h3 className="mt-3 text-sm font-semibold">{workItem.title}</h3><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail="Source document" /><dl className="mt-4 space-y-2 border-t border-border pt-3 text-sm"><BoardFact label="Requested by" actor={workItem.requestedBy} /><BoardFact label="Submitted by" actor={workItem.submittedBy} /><BoardFact label="Accountable" actor={workItem.accountableOwner} /><BoardFact label="Assignee" actor={workItem.assignees[0]} /><BoardFact label="Contributor" actor={workItem.contributors[0]} /><BoardFact label="Reviewer" actor={workItem.reviewer} /></dl></article>)}</div></section>;
 }
 
 function BoardFact({ label, actor }: { label: string; actor?: ActorSummary }) {
@@ -396,6 +399,14 @@ export function WorkItemFocus({ data, actionEnabled = false, onTransition }: Wor
   const [submitting, setSubmitting] = useState<WorkItemTransitionStatus | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const intents = useRef<Partial<Record<WorkItemTransitionStatus, { id: string; transitionedAt: string }>>>({});
+  if (view.work.selection.status !== "resolved") {
+    const reason = view.work.selection.status === "not_found"
+      ? `Requested WorkItem ${view.work.selection.requestedId ?? "unknown"} is absent from company_os.work.`
+      : view.work.selection.status === "empty"
+        ? "company_os.work contains no WorkItems."
+        : "No WorkItem id was selected.";
+    return <PageFrame eyebrow="Work item" title="WorkItem unavailable" description="The detail view fails closed instead of selecting the first WorkItem row."><div role="alert" className="rounded-xl border border-status-warn/35 bg-status-warn/[0.05] p-6"><p className="text-sm font-semibold">{reason}</p><p className="mt-2 text-xs leading-5 text-muted-foreground">Return to Work and choose an explicit WorkItem id from aggregate truth.</p></div></PageFrame>;
+  }
   const terminal = ["completed", "cancelled", "archived"].includes(workItem.status);
   const canTransition = actionEnabled && Boolean(onTransition) && Boolean(workItem.transitionContext) && !terminal;
   const targets: Array<{ status: WorkItemTransitionStatus; label: string }> = workItem.status === "in_progress"
@@ -559,7 +570,13 @@ export function GovernanceProposalFocus({ data }: OperationsPageProps) {
   const proposer = actorOr(view, "actor-agent-document-architecture", view.workItem.submittedBy);
   const proposalTitle = humanReadable(view.governanceProposal.label, "Governance proposal");
   const proposedAgent = view.workItem.assignees[0];
-  return <PageFrame eyebrow="Governance proposal" title={proposalTitle} description="A proposal joins document architecture, organization capacity, work and financial controls without creating authority by itself." context={<ContextRail><StatusTag status="awaiting_final_approval" /><Panel title="Proposed by"><ActorPill actor={proposer} /></Panel><Panel title="Proposed home"><p className="text-sm">{view.organization.brandUnit.label}</p><p className="mt-1 text-xs text-muted-foreground">Proposed role · {proposedAgent?.role ?? "No role specified"}</p></Panel></ContextRail>}>
+  const proposedHomes = proposedAgent
+    ? view.organization.memberships
+      .filter((membership) => membership.actorId === proposedAgent.id)
+      .map((membership) => view.organization.units.find((unit) => unit.id === membership.orgUnitId)?.label)
+      .filter((label): label is string => Boolean(label))
+    : [];
+  return <PageFrame eyebrow="Governance proposal" title={proposalTitle} description="A proposal joins document architecture, organization capacity, work and financial controls without creating authority by itself." context={<ContextRail><StatusTag status="awaiting_final_approval" /><Panel title="Proposed by"><ActorPill actor={proposer} /></Panel><Panel title="Recorded organization homes"><p className="text-sm">{proposedHomes.join(", ") || "No OrganizationMembership recorded"}</p><p className="mt-1 text-xs text-muted-foreground">Proposed role · {proposedAgent?.role ?? "No role specified"}</p></Panel></ContextRail>}>
     <div className="space-y-5" data-company-os-ref={view.governanceProposal.id}><DecisionNotice><strong>Awaiting final approval.</strong> The module and proposed role remain governed changes. Human approval is required before any sensitive effect is authorized.</DecisionNotice><Panel title="Impact surfaces"><div className="grid gap-3 md:grid-cols-2"><ImpactSurface label="Business module" link={view.businessModule} /><ImpactSurface label="Application record" link={view.typedApplication} /><ImpactSurface label="Linked work" link={{ id: view.workItem.id, label: view.workItem.title, detail: `Assignee · ${actorDescriptor(proposedAgent)}` }} /><ImpactSurface label="Financial commitment" financialRecord={view.commitment} /></div></Panel><Panel title="Review participants"><div className="divide-y divide-border"><RoleLine label="Accountable owner" actor={view.workItem.accountableOwner} /><RoleLine label="Finance reviewer" actor={view.approval.financeReviewer} /><RoleLine label="Legal reviewer" actor={view.approval.legalReviewer} /></div></Panel><Panel title="Governed actions"><div className="flex flex-wrap gap-2"><GovernedActionButton label="Approve proposal" reason={commandUnavailable} /><GovernedActionButton label="Request changes" reason={commandUnavailable} /><GovernedActionButton label="Reject proposal" reason={commandUnavailable} /></div><p className="mt-3 text-xs leading-5 text-muted-foreground">{commandUnavailable}</p></Panel></div>
   </PageFrame>;
 }
