@@ -1884,7 +1884,7 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
 #[test]
 fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let home = TempHome::new("team-run-stale-supervisor-quiescence");
-    let project_id = init_project(&home, "alpha");
+    let project_id = init_project_selector_clean(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let first_prompt_ready = home.base().join("stale-first-prompt-ready");
@@ -1895,27 +1895,24 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let first_prompt_release_value = first_prompt_release.display().to_string();
     let prompt_marker_value = prompt_marker.display().to_string();
     let attach_marker_value = attach_marker.display().to_string();
-    let serve = ServeHandle::spawn_with_env(
-        &home,
-        home.base(),
-        &[],
-        &[
-            ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_RESULT", "done"),
-            (
-                "FAKE_KIMI_FIRST_PROMPT_READY",
-                first_prompt_ready_value.as_str(),
-            ),
-            (
-                "FAKE_KIMI_FIRST_PROMPT_RELEASE",
-                first_prompt_release_value.as_str(),
-            ),
-            ("FAKE_KIMI_PROMPT_MARKER", prompt_marker_value.as_str()),
-            ("FAKE_KIMI_ATTACH_MARKER", attach_marker_value.as_str()),
-            ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "300"),
-            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "300"),
-        ],
-    );
+    let mut serve_env = vec![
+        ("KIMI_CODE_BIN", fake_kimi.as_str()),
+        ("FAKE_KIMI_RESULT", "done"),
+        (
+            "FAKE_KIMI_FIRST_PROMPT_READY",
+            first_prompt_ready_value.as_str(),
+        ),
+        (
+            "FAKE_KIMI_FIRST_PROMPT_RELEASE",
+            first_prompt_release_value.as_str(),
+        ),
+        ("FAKE_KIMI_PROMPT_MARKER", prompt_marker_value.as_str()),
+        ("FAKE_KIMI_ATTACH_MARKER", attach_marker_value.as_str()),
+        ("HARNESS_TEAM_SUPERVISOR_LEASE_MS", "300"),
+        ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "300"),
+    ];
+    serve_env.extend(NATIVE_SELECTOR_CLEAN_ENV.iter().copied());
+    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &serve_env);
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
