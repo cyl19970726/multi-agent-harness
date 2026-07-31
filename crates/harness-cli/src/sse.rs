@@ -488,7 +488,19 @@ fn check_and_broadcast_appends<F>(
 
     let current_size = metadata.len();
     let key = (project_id.to_string(), filename.to_string());
-    let consumed = consumed_offsets.get(&key).copied().unwrap_or(0);
+    let mut consumed = consumed_offsets.get(&key).copied().unwrap_or(0);
+
+    // A store file can now SHRINK: `compact_supervisor_leases_unlocked` rewrites
+    // team_supervisor_leases.jsonl in place (temp + rename) so heartbeat history
+    // stops growing without bound. A grew-only watcher treats the smaller file
+    // as "nothing new" and goes permanently silent until it regrows past the
+    // pre-compaction size — which for a 23 MB lease file means never. Detect the
+    // truncation and re-read the compacted file from the start; it is small by
+    // construction, and every row in it is current state a client must see.
+    if current_size < consumed {
+        consumed = 0;
+        consumed_offsets.insert(key.clone(), 0);
+    }
 
     if current_size <= consumed {
         return;
@@ -876,6 +888,82 @@ mod tests {
         }
 
         assert_eq!(received, vec!["message-valid".to_string()]);
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// A store file that SHRINKS (lease compaction rewrites it in place) must not
+    /// silence the watcher. Regression found by an independent reviewer on the
+    /// lease-compaction change: the grew-only guard `current_size <= consumed`
+    /// meant a 23 MB lease file compacted to a few hundred bytes would emit
+    /// nothing until it regrew past 23 MB.
+    #[test]
+    fn compacted_file_is_rebroadcast_rather_than_silently_skipped() {
+        let root = unique_dir("compaction-truncate");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("messages.jsonl");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut offsets: HashMap<(String, String), u64> = HashMap::new();
+
+        // Grow the file well past what the compacted version will occupy.
+        let mut grown = String::new();
+        // Stay under the bounded(100) subscriber channel: an overflowing
+        // try_send drops the client from the manager and the test would then
+        // measure nothing rather than the truncation behaviour.
+        for index in 0..50 {
+            let row =
+                serde_json::to_string(&test_message(&format!("message-{index}"))).expect("ser");
+            grown.push_str(&row);
+            grown.push('\n');
+        }
+        std::fs::write(&path, &grown).expect("write grown rows");
+        check_and_broadcast_appends(
+            TEST_PID,
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
+        while rx.try_recv().is_ok() {}
+        let consumed_before = offsets
+            .get(&(TEST_PID.to_string(), "messages.jsonl".to_string()))
+            .copied()
+            .expect("offset recorded");
+        assert!(consumed_before > 0);
+
+        // Compaction: same file, far smaller, carrying current state.
+        let compacted =
+            serde_json::to_string(&test_message("message-after-compaction")).expect("ser");
+        std::fs::write(&path, format!("{compacted}\n")).expect("write compacted");
+        assert!(
+            std::fs::metadata(&path).expect("meta").len() < consumed_before,
+            "compacted file must be smaller than the consumed offset"
+        );
+
+        check_and_broadcast_appends(
+            TEST_PID,
+            &root,
+            "messages.jsonl",
+            &mut offsets,
+            message_frame,
+            &manager,
+        );
+
+        let mut received = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            match frame {
+                SseEventFrame::Message(message) => received.push(message.id),
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+        assert_eq!(
+            received,
+            vec!["message-after-compaction".to_string()],
+            "post-compaction state must reach connected clients"
+        );
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
