@@ -14770,6 +14770,7 @@ fn run_codex_member(
                     evidence_refs: &[],
                     round,
                     handoffs_before_round: &handoffs_before_round,
+                    provider_error: None,
                 },
             )?;
 
@@ -15870,6 +15871,25 @@ fn run_claude_agent_sdk_team_member(
                         .flatten()
                         .filter_map(|value| value.as_str().map(str::to_string))
                         .collect();
+                    // A provider API failure arrives with subtype "success" and
+                    // `isError: true` (issue #293). The runner forwards the
+                    // honest fields; without this check the ledger would record
+                    // a provider-down round as an ordinary completed round.
+                    let provider_error =
+                        if data.get("isError").and_then(|v| v.as_bool()) == Some(true) {
+                            let terminal_reason = data
+                                .get("terminalReason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown_provider_error");
+                            let status = data
+                                .get("apiErrorStatus")
+                                .and_then(|v| v.as_i64())
+                                .map(|code| format!(" (HTTP {code})"))
+                                .unwrap_or_default();
+                            Some(format!("{terminal_reason}{status}"))
+                        } else {
+                            None
+                        };
                     let trigger_message_id = data
                         .get("triggerMessageId")
                         .and_then(|value| value.as_str());
@@ -15892,6 +15912,7 @@ fn run_claude_agent_sdk_team_member(
                         evidence_refs: &turn_evidence_refs,
                         round,
                         handoffs_before_round: &handoffs_before_round,
+                        provider_error: provider_error.as_deref(),
                     };
                     let (status, summary) = record_member_round(ledger, &mut member_row, &record)?;
                     final_status = status;
@@ -16170,6 +16191,9 @@ struct MemberRoundRecord<'a> {
     evidence_refs: &'a [String],
     round: u32,
     handoffs_before_round: &'a HashSet<String>,
+    /// Set when the provider reported the turn itself as failed (issue #293).
+    /// `final_text` then holds provider error text, not a member report.
+    provider_error: Option<&'a str>,
 }
 
 enum RoundHandoffRecord {
@@ -16281,6 +16305,39 @@ fn record_member_round(
     member_row: &mut MemberRun,
     record: &MemberRoundRecord<'_>,
 ) -> CliResult<(MemberRunStatus, String)> {
+    // A provider-error round produced no member report: the provider itself
+    // failed the turn. Recording a handoff here would impersonate a member
+    // answer, so the ledger gets a failed provider_error action instead.
+    if let Some(provider_error) = record.provider_error {
+        let detail = format!(
+            "provider turn failed: {provider_error}: {}",
+            record.final_text.lines().next().unwrap_or("")
+        );
+        let action = ledger.append_action(
+            &member_row.id,
+            "provider_error",
+            MemberActionStatus::Failed,
+            &format!("round {} provider_error", record.round),
+            &detail,
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member_row.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("{} round {}: provider_error", member_row.name, record.round),
+        )?;
+        member_row.status = MemberRunStatus::Idle;
+        member_row.finished_at = None;
+        member_row.last_event_at = Some(now_string());
+        ledger.save_member_run(member_row)?;
+        return Ok((
+            MemberRunStatus::Idle,
+            format!("provider turn failed: {provider_error}"),
+        ));
+    }
+
     let handoff = record_round_handoff(ledger, member_row, record)?;
 
     let (action_type, action_status, action_summary) = match handoff {
@@ -16874,6 +16931,7 @@ fn run_kimi_member(
                     evidence_refs: &[],
                     round,
                     handoffs_before_round: &handoffs_before_round,
+                    provider_error: None,
                 },
             )?;
             ledger.fold_event(
@@ -35843,6 +35901,7 @@ package:com.tencent.mm
                 evidence_refs: &[],
                 round: 2,
                 handoffs_before_round: &handoffs_before_round,
+                provider_error: None,
             },
         )
         .expect("record fallback");

@@ -214,18 +214,38 @@ export function createMemberRunner({ sdk, config, emit }) {
                 subtype: message.subtype,
                 triggerMessageId: consumedMessageIds.shift() ?? null,
                 evidenceRefs: evidence.map((e) => e.ref),
+                // `subtype` stays "success" on a provider API failure (live
+                // probe, issue #293): the honest signal is `is_error` plus
+                // `terminal_reason`/`api_error_status`. Forward them so Harness
+                // never records a provider-down round as an ordinary success.
+                isError: message.is_error === true,
+                terminalReason: message.terminal_reason ?? null,
+                apiErrorStatus: message.api_error_status ?? null,
               });
             }
           }
         } catch (error) {
-          // A query torn down by our own interrupt is expected to end badly —
-          // the observed failure is an `ede_diagnostic` result with
-          // `stop_reason=null`. Anything else is a real fault.
-          if (!interruptedGeneration) throw error;
-          emit("query_ended_by_interrupt", {
-            sessionId: state.sessionId,
-            error: String(error).slice(0, 200),
-          });
+          if (interruptedGeneration) {
+            // A query torn down by our own interrupt is expected to end badly —
+            // the observed failure is an `ede_diagnostic` result with
+            // `stop_reason=null`. Anything else is a real fault.
+            emit("query_ended_by_interrupt", {
+              sessionId: state.sessionId,
+              error: String(error).slice(0, 200),
+            });
+          } else if (mailbox.closed) {
+            // The SDK re-throws the session's last error result when the input
+            // stream ends ("Claude Code returned an error result: …"). The
+            // Host already decided to end the member and the error round was
+            // already reported via turn_complete(isError) — a clean Host close
+            // must not be turned into a runner_error that loses member_closed.
+            emit("query_ended_with_provider_error", {
+              sessionId: state.sessionId,
+              error: String(error).slice(0, 200),
+            });
+          } else {
+            throw error;
+          }
         }
 
         if (mailbox.closed) break;

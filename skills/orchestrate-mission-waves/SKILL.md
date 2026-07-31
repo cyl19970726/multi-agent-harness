@@ -422,6 +422,12 @@ the Steer action. The Host may then deliberately send an ordinary queued
 Message for the next round; never silently convert one operation into the
 other or fabricate a control ACK.
 
+A member round recorded as a failed `provider_error` action is a provider
+transport failure (reachability, credentials, version), not member output and
+not a handoff. The persistent member usually stays idle and can take the next
+message; verify provider health before retrying or reassigning, and never read
+a `provider_error` round as member progress.
+
 An unbound MCP connection may author only as the bound Host, an Operator, or a
 Service. It may not select `member_run` or `agent_member` by supplying an id.
 Member-originated mail comes from that member's bound Provider runtime.

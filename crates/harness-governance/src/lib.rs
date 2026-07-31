@@ -940,6 +940,13 @@ fn walk_md(root: &Path, rel: &str, out: &mut Vec<String>) {
     }
     if abs.is_dir() {
         for entry in sorted_dir(&abs) {
+            // Vendored dependency trees are not repository documentation.
+            // `apps/claude-member-runner/node_modules` appears after installing
+            // the runner's SDK for live use and must not fail the link/line
+            // checks meant for authored docs.
+            if entry == "node_modules" {
+                continue;
+            }
             walk_md(root, &format!("{rel}/{entry}"), out);
         }
     } else if rel.ends_with(".md") {

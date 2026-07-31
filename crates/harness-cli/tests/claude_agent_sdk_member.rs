@@ -73,7 +73,14 @@ fn init_project(home: &TempHome, name: &str) -> String {
 ///
 /// `follow_up_after_first_turn` makes it send one TeamMessage back into the
 /// ledger *after* reporting turn 1, which is the case the mode exists for.
-fn write_fake_runner(dir: &Path, follow_up_after_first_turn: bool) -> std::path::PathBuf {
+/// `api_error` makes every turn end in a provider API failure, shaped like the
+/// real SDK's error result (issue #293): subtype stays "success" while
+/// `isError` carries the truth.
+fn write_fake_runner(
+    dir: &Path,
+    follow_up_after_first_turn: bool,
+    api_error: bool,
+) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join("fake-runner.mjs");
     let follow_up = if follow_up_after_first_turn {
@@ -81,12 +88,14 @@ fn write_fake_runner(dir: &Path, follow_up_after_first_turn: bool) -> std::path:
     } else {
         "false"
     };
+    let api_error = if api_error { "true" } else { "false" };
     let script = format!(
         r#"
 import {{ spawnSync }} from "node:child_process";
 import {{ createInterface }} from "node:readline";
 
 const FOLLOW_UP = {follow_up};
+const API_ERROR = {api_error};
 let cfg = null;
 let turns = 0;
 let sentFollowUp = false;
@@ -112,11 +121,28 @@ for await (const line of rl) {{
       id: payload.id,
       sessionId: "fake-native-session-0001",
     }});
+    if (API_ERROR) {{
+      emit("assistant_message", {{
+        content: [{{ type: "text", text: "Failed to authenticate. API Error: 403 Request not allowed" }}],
+      }});
+      emit("turn_complete", {{
+        subtype: "success",
+        isError: true,
+        terminalReason: "api_error",
+        apiErrorStatus: 403,
+        triggerMessageId: payload.id,
+        evidenceRefs: [],
+      }});
+      continue;
+    }}
     emit("assistant_message", {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
     emit("turn_complete", {{
       subtype: "success",
+      isError: false,
+      terminalReason: null,
+      apiErrorStatus: null,
       triggerMessageId: payload.id,
       evidenceRefs: turns === 1 ? ["src/member.ts"] : [],
     }});
@@ -195,7 +221,7 @@ fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
     let home = TempHome::new("agent-sdk-company-store-boundary");
     let project_id = init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), false);
+    let runner = write_fake_runner(&home.base().join("runner"), false, false);
 
     let company = run_harness(
         &home,
@@ -270,7 +296,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let home = TempHome::new("agent-sdk-late-message");
     init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), true);
+    let runner = write_fake_runner(&home.base().join("runner"), true, false);
 
     let run_id = create_run(&home, &root);
     // Grace wide enough that the fake's post-turn send lands inside it.
@@ -382,11 +408,83 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
 }
 
 #[test]
+fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
+    // Issue #293: a provider API failure (e.g. 403 from a blocked egress)
+    // arrives with subtype "success". The ledger must show a failed
+    // provider_error action, not an ordinary completed round with a handoff.
+    let home = TempHome::new("agent-sdk-provider-error");
+    init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let runner = write_fake_runner(&home.base().join("runner"), false, true);
+
+    let run_id = create_run(&home, &root);
+    let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
+    assert!(out.status.success(), "start failed: {out:?}");
+
+    let status = run_harness(
+        &home,
+        &root,
+        &["team-run", "status", "--id", &run_id, "--json"],
+    );
+    assert!(status.status.success(), "status failed: {status:?}");
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status JSON");
+    let member_id = status_json["members"][0]["member_run"]["id"]
+        .as_str()
+        .expect("member id");
+    let detail = run_harness(
+        &home,
+        &root,
+        &["member-run", "show", "--id", member_id, "--json"],
+    );
+    assert!(detail.status.success(), "show failed: {detail:?}");
+    let detail_json: serde_json::Value =
+        serde_json::from_slice(&detail.stdout).expect("member detail JSON");
+
+    let actions = detail_json["actions"].as_array().expect("actions");
+    let provider_errors = actions
+        .iter()
+        .filter(|action| action["action_type"] == "provider_error")
+        .count();
+    assert_eq!(
+        provider_errors, 1,
+        "the provider-failure round must be recorded as provider_error: {detail_json}"
+    );
+    let provider_error = actions
+        .iter()
+        .find(|action| action["action_type"] == "provider_error")
+        .expect("provider_error action");
+    assert_eq!(provider_error["status"], "failed");
+    let detail_text = provider_error["summary"].as_str().unwrap_or("");
+    assert!(
+        detail_text.contains("api_error") && detail_text.contains("403"),
+        "the action must name the provider failure and its HTTP status: {detail_text}"
+    );
+    assert!(
+        actions
+            .iter()
+            .all(|action| action["action_type"] != "completed"),
+        "a provider-down round must not be recorded as completed: {detail_json}"
+    );
+
+    let outbox = detail_json["mailbox"]["outbox"].as_array().expect("outbox");
+    assert!(
+        outbox.iter().all(|message| message["kind"] != "handoff"),
+        "a provider error is not a member handoff: {detail_json}"
+    );
+
+    assert_eq!(
+        detail_json["member_run"]["status"], "idle",
+        "the persistent member survives a provider error and stays available"
+    );
+}
+
+#[test]
 fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     let home = TempHome::new("agent-sdk-session-bind");
     init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), false);
+    let runner = write_fake_runner(&home.base().join("runner"), false, false);
 
     let run_id = create_run(&home, &root);
     let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);

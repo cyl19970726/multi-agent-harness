@@ -16,6 +16,10 @@ export function createFakeSdk({
   sessionId = "fake-session-0001",
   claudeCodeVersion = "2.1.220-test",
   model = "claude-sonnet-4-5",
+  // When set, every turn ends in a provider API failure result, shaped exactly
+  // like the real SDK's: `subtype` stays "success" while `is_error` carries the
+  // truth (live probe, issue #293).
+  apiErrorStatus = null,
 } = {}) {
   const calls = { tagSession: [], renameSession: [], permissionModes: [], interrupts: 0 };
   let lastOptions = null;
@@ -51,11 +55,38 @@ export function createFakeSdk({
           );
         }
         const text = userMessage.message.content?.[0]?.text ?? "";
+        if (apiErrorStatus != null) {
+          yield {
+            type: "assistant",
+            message: {
+              content: [
+                { type: "text", text: `Failed to authenticate. API Error: ${apiErrorStatus} Request not allowed` },
+              ],
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            terminal_reason: "api_error",
+            api_error_status: apiErrorStatus,
+            session_id: sessionId,
+          };
+          continue;
+        }
         yield {
           type: "assistant",
           message: { content: [{ type: "text", text: `ack: ${text.slice(0, 40)}` }] },
         };
         yield { type: "result", subtype: "success", session_id: sessionId };
+      }
+      // The real SDK re-throws the session's last error result when the input
+      // stream ends (live probe, issue #293). The runner must still emit
+      // member_closed rather than turning a clean Host close into a crash.
+      if (apiErrorStatus != null) {
+        throw new Error(
+          `Claude Code returned an error result: Failed to authenticate. API Error: ${apiErrorStatus} Request not allowed`,
+        );
       }
     }
 

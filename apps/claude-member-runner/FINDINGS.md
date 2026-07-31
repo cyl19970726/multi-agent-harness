@@ -285,3 +285,66 @@ model answered the `plan_request` with a plan and never attempted the Write, so
 the gate never fired. "The file is absent" has the same shape as "the gate
 worked" — the trap §C avoided with a positive control, and this probe walked
 into. Not scored as a pass.
+
+
+## F. A provider-down round looked exactly like a completed round (2026-07-31)
+
+Issue #293. A canary rerun "passed" structurally — two turns, steer ok,
+interrupt ok — while the EXECUTE turn never wrote its file. The native
+transcript showed every assistant reply was `Failed to authenticate. API Error:
+403 Request not allowed`.
+
+Two independent causes, verified separately:
+
+1. **Environmental.** This machine's direct egress to `api.anthropic.com` is
+   region-blocked (`403 {"type":"forbidden","message":"Request not allowed"}`,
+   same body direct and through the system proxy). No `http_proxy`/`https_proxy`
+   is set in ordinary shells, so both the standalone CLI and the SDK subprocess
+   go direct. `claude auth status` said `loggedIn: true, subscriptionType: max`
+   throughout — again proving it checks token presence, not reachability. With
+   `https_proxy=http://127.0.0.1:7897` (local Clash, whose config already routes
+   `anthropic.com`) the identical canary passes end-to-end, D2 file written.
+2. **Code.** In streaming-input mode the failure arrives as a `result` message
+   with `subtype: "success"`, `is_error: true`, `terminal_reason: "api_error"`,
+   `api_error_status: 403`. `subtype` lies; the honest fields were not forwarded
+   in `turn_complete`, so Harness recorded provider-down rounds as ordinary
+   completed rounds with member handoffs.
+
+A third verified fact, found only because the fix needed a live re-probe: when
+the input stream ends, the SDK **re-throws the session's last error result**
+(`Claude Code returned an error result: …`). Before the fix, a clean Host close
+after an error round became a `runner_error` and `member_closed` was lost.
+
+Fix (covered deterministically):
+
+- `turn_complete` now carries `isError`, `terminalReason`, `apiErrorStatus`.
+- Harness records `isError` rounds as failed `provider_error` actions naming
+  the terminal reason and HTTP status; no handoff is fabricated for them.
+  The persistent member stays `idle` and can still take the next message.
+- The end-of-stream error re-throw is reported as
+  `query_ended_with_provider_error`; `member_closed` still emits.
+
+| Check | Result |
+| --- | --- |
+| runner unit suite | 14/14 |
+| `claude_agent_sdk_member` (Rust, fake runner) | 7/7 incl. `agent_sdk_member_records_provider_errors_instead_of_successful_rounds` |
+| live error path (no proxy): error fields forwarded, clean close survives | verified against SDK 0.3.220 / Claude Code 2.1.220 |
+| live happy path (proxy): full canary | D1/D2/D3/D4 all pass |
+
+
+## G. End-to-end through `team-run start` (2026-07-31)
+
+Live verification of the #293 fix through the full Rust path (not just the
+runner), two isolated runs with `HARNESS_HOME` sandboxes, real Claude
+Haiku 4.5 via the Agent SDK:
+
+| Run | Setup | Result |
+| --- | --- | --- |
+| A — error path | no proxy egress; assignment to write a file | round recorded as `provider_error` / failed with `api_error (HTTP 403)` in the summary; **no handoff fabricated**; member `idle`; subsequent Host close → `closed / succeeded`, member `stopped`, close request `applied` (before the fix this became a `runner_error` and lost `member_closed`) |
+| B — happy path | `https_proxy=127.0.0.1:7897` | assignment wrote `LIVE-B-OK`; follow-up TeamMessage triggered a second round on the **same native session** (`1b14b9c4-…`); both handoffs recorded; Host close → `stopped`, close `applied`; Wave advanced |
+
+One honest deviation surfaced by Run B and filed as issue #295: the member
+submitted its explicit round-2 handoff with the Assignment's id as causation —
+the rendered envelope never shows TeamMessage ids, so a member cannot cite the
+follow-up it is answering. Adapter-side fallback causation
+(`turn_complete.triggerMessageId`) remains correct.
