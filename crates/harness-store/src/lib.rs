@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -787,11 +787,7 @@ impl HarnessStore {
                 "team run not found: {team_run_id}"
             )));
         }
-        let current = latest_by_id(
-            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
-            |lease| lease.team_run_id.clone(),
-        )
-        .remove(team_run_id);
+        let current = self.latest_lease_for_run_unlocked(team_run_id)?;
         if let Some(current) = current.as_ref() {
             if current.status == TeamSupervisorLeaseStatus::Active
                 && current.expires_unix_ms > now_unix_ms
@@ -825,6 +821,9 @@ impl HarnessStore {
             expires_unix_ms: now_unix_ms.saturating_add(ttl_ms.max(1)),
             released_unix_ms: None,
         };
+        // Acquisition is rare (one per Supervisor generation) while heartbeats
+        // are ~1/s, so this is where compaction belongs.
+        self.compact_supervisor_leases_unlocked()?;
         self.append_jsonl_unlocked("team_supervisor_leases.jsonl", &lease)?;
         Ok(lease)
     }
@@ -839,16 +838,13 @@ impl HarnessStore {
     ) -> StoreResult<TeamSupervisorLease> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let mut lease = latest_by_id(
-            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
-            |lease| lease.team_run_id.clone(),
-        )
-        .remove(team_run_id)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "team run {team_run_id} has no Supervisor lease to renew"
-            ))
-        })?;
+        let mut lease = self
+            .latest_lease_for_run_unlocked(team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "team run {team_run_id} has no Supervisor lease to renew"
+                ))
+            })?;
         if lease.status != TeamSupervisorLeaseStatus::Active
             || lease.supervisor_id != supervisor_id
             || lease.generation != generation
@@ -1610,6 +1606,130 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Read only the trailing `window` bytes of a JSONL file, dropping the first
+    /// (possibly partial) line unless the window covers the whole file.
+    ///
+    /// Only valid for latest-wins projections keyed by a field, where the answer
+    /// is the LAST matching row. Callers must fall back to `read_jsonl` when the
+    /// key is absent from the tail — absence in the window proves nothing.
+    ///
+    /// Motivation: Supervisor lease heartbeats append ~1 row/s per live run and
+    /// every renewal re-parsed the entire file under the global write lock,
+    /// making heartbeat cost O(N) and cumulative cost O(N²). Measured on
+    /// `star-harness-dogfood`: 71,524 rows / 23 MB, 15,101 renewals in 4.77 h
+    /// for one run, with observed renewal drift (p50 1135 ms against a 1000 ms
+    /// sleep) already showing the parse cost.
+    fn read_jsonl_tail<T: DeserializeOwned>(
+        &self,
+        file_name: &str,
+        window: u64,
+    ) -> StoreResult<Vec<T>> {
+        let path = self.root.join(file_name);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut file = File::open(path)?;
+        let len = file.metadata()?.len();
+        let start = len.saturating_sub(window);
+        // Whether the byte before `start` is a newline decides if `start`
+        // already sits on a row boundary. Discarding unconditionally would drop
+        // a COMPLETE row whenever the window happens to land there, which costs
+        // a needless full-scan fallback (and would silently lose a row for any
+        // future caller that does not have one).
+        let starts_on_boundary = if start == 0 {
+            true
+        } else {
+            file.seek(SeekFrom::Start(start - 1))?;
+            let mut prev = [0u8; 1];
+            std::io::Read::read_exact(&mut file, &mut prev)?;
+            prev[0] == b'\n'
+        };
+        file.seek(SeekFrom::Start(start))?;
+        let mut values = Vec::new();
+        let mut lines = BufReader::new(file).lines();
+        if !starts_on_boundary {
+            // Discard the torn first line inside the window.
+            let _ = lines.next();
+        }
+        for line in lines {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            values.push(serde_json::from_str(&line)?);
+        }
+        Ok(values)
+    }
+
+    /// Latest lease for one run: tail window first, full scan only on miss.
+    fn latest_lease_for_run_unlocked(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Option<TeamSupervisorLease>> {
+        const TAIL_WINDOW_BYTES: u64 = 256 * 1024;
+        let tail = self.read_jsonl_tail::<TeamSupervisorLease>(
+            "team_supervisor_leases.jsonl",
+            TAIL_WINDOW_BYTES,
+        )?;
+        // rfind, not filter().next_back(): latest-wins means the LAST matching
+        // row in the window, and rfind scans from the back so it stops at the
+        // first hit instead of walking the whole window.
+        if let Some(found) = tail
+            .into_iter()
+            .rfind(|lease| lease.team_run_id == team_run_id)
+        {
+            return Ok(Some(found));
+        }
+        Ok(latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id))
+    }
+
+    /// Collapse the lease file to one row per run (latest wins).
+    ///
+    /// Called on acquisition, which is rare (one per Supervisor generation),
+    /// while heartbeats are frequent. Bounds the file at ~#runs rows so the
+    /// tail window above always hits and the file stops growing without bound.
+    /// Generation fencing is unaffected: the retained row is exactly the row a
+    /// full-scan latest-wins projection would have produced.
+    fn compact_supervisor_leases_unlocked(&self) -> StoreResult<()> {
+        let path = self.root.join("team_supervisor_leases.jsonl");
+        if !path.exists() {
+            return Ok(());
+        }
+        let all = self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?;
+        let latest = latest_by_id(all, |lease| lease.team_run_id.clone());
+        let temp = self.root.join("team_supervisor_leases.jsonl.compact");
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&temp)?;
+            for lease in latest.values() {
+                let mut row = Vec::new();
+                serde_json::to_writer(&mut row, lease)?;
+                row.push(b'\n');
+                file.write_all(&row)?;
+            }
+            file.flush()?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp, &path)?;
+        // fsync the PARENT DIRECTORY, not just the temp inode. POSIX allows a
+        // crash to recover either the old or the new directory entry after a
+        // rename; only syncing the directory makes the replacement durable.
+        // Without it a system crash can resurrect the pre-compaction file and
+        // with it an already-issued generation, violating the monotonic
+        // higher-generation contract in ADR 0044.
+        if let Ok(dir) = File::open(&self.root) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    }
+
     fn acquire_write_lock(&self) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
         let file = OpenOptions::new()
@@ -2202,6 +2322,166 @@ mod tests {
                 .expect("system clock")
                 .as_millis()
         ))
+    }
+
+    fn seed_lease_run(store: &HarnessStore, id: &str) {
+        store
+            .append_team_run(&AgentTeamRun {
+                id: id.into(),
+                definition_id: None,
+                agent_team_id: None,
+                previous_run_id: None,
+                mission_id: None,
+                wave_id: None,
+                project_binding_id: None,
+                host_surface: "codex-app".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "lease test".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("seed run");
+    }
+
+    /// The tail-window fast path must not change which lease a reader sees,
+    /// even when the target row sits far in front of the window.
+    #[test]
+    fn supervisor_lease_tail_read_agrees_with_full_scan() {
+        let root = team_test_root("lease-tail");
+        let store = HarnessStore::new(&root);
+        seed_lease_run(&store, "run-a");
+        seed_lease_run(&store, "run-b");
+        store
+            .acquire_team_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
+            .expect("acquire a");
+        store
+            .acquire_team_supervisor_lease("run-b", "sup-b", 2, "b", 1_000, 15_000)
+            .expect("acquire b");
+        // Push run-a's latest row well outside the 256 KiB tail window.
+        for tick in 0..4_000u64 {
+            store
+                .renew_team_supervisor_lease("run-b", "sup-b", 1, 2_000 + tick, 15_000)
+                .expect("renew b");
+        }
+
+        let tail = store
+            .latest_lease_for_run_unlocked("run-a")
+            .expect("tail read")
+            .expect("run-a lease present");
+        let full = latest_by_id(
+            store
+                .read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")
+                .expect("full scan"),
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove("run-a")
+        .expect("run-a in full scan");
+        assert_eq!(tail.supervisor_id, full.supervisor_id);
+        assert_eq!(tail.generation, full.generation);
+        assert_eq!(tail.expires_unix_ms, full.expires_unix_ms);
+    }
+
+    /// The tail window may land exactly on a row boundary. Discarding the first
+    /// line unconditionally would drop a COMPLETE row; reviewer-reported.
+    #[test]
+    fn supervisor_lease_tail_keeps_a_row_when_window_lands_on_a_boundary() {
+        let root = team_test_root("lease-boundary");
+        let store = HarnessStore::new(&root);
+        seed_lease_run(&store, "run-a");
+        store
+            .acquire_team_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
+            .expect("acquire");
+        for tick in 0..20u64 {
+            store
+                .renew_team_supervisor_lease("run-a", "sup-a", 1, 1_001 + tick, 15_000)
+                .expect("renew");
+        }
+        let path = root.join("team_supervisor_leases.jsonl");
+        let bytes = std::fs::read(&path).expect("read lease file");
+        let total = bytes.len() as u64;
+        // Start the window exactly at the first byte of the LAST row, i.e. one
+        // past the second-to-last newline. The file ends with a newline, so the
+        // last newline is the row terminator, not the row start.
+        let last_terminator = bytes
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .expect("trailing newline");
+        let row_start = bytes[..last_terminator]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .expect("a previous row") as u64
+            + 1;
+        let window = total - row_start;
+        let rows = store
+            .read_jsonl_tail::<TeamSupervisorLease>("team_supervisor_leases.jsonl", window)
+            .expect("tail read");
+        assert_eq!(
+            rows.len(),
+            1,
+            "a window landing on a row boundary must keep that row, got {}",
+            rows.len()
+        );
+    }
+
+    /// Compaction on acquire bounds the file at one row per run and must keep
+    /// generation fencing intact.
+    #[test]
+    fn supervisor_lease_acquire_compacts_and_keeps_fencing() {
+        let root = team_test_root("lease-compact");
+        let store = HarnessStore::new(&root);
+        seed_lease_run(&store, "run-a");
+        store
+            .acquire_team_supervisor_lease("run-a", "sup-1", 1, "a", 1_000, 10)
+            .expect("acquire gen 1");
+        for tick in 0..500u64 {
+            store
+                .renew_team_supervisor_lease("run-a", "sup-1", 1, 1_001 + tick, 10)
+                .expect("renew");
+        }
+        let before = store
+            .read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")
+            .expect("read")
+            .len();
+        assert!(before > 500, "history should be long before compaction");
+
+        // The lease has expired, so a different Supervisor takes generation 2.
+        let gen2 = store
+            .acquire_team_supervisor_lease("run-a", "sup-2", 3, "b", 900_000, 15_000)
+            .expect("acquire gen 2");
+        assert_eq!(gen2.generation, 2);
+
+        // Compaction runs before the new row is appended, so one run yields the
+        // collapsed prior row plus the freshly acquired lease. The invariant is
+        // that the file is bounded by run count rather than by heartbeat count.
+        let after = store
+            .read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")
+            .expect("read")
+            .len();
+        assert_eq!(
+            after, 2,
+            "compaction must bound the file at ~one row per run, got {after} (was {before})"
+        );
+
+        // The fenced-out generation must still be rejected after compaction.
+        assert!(
+            store
+                .renew_team_supervisor_lease("run-a", "sup-1", 1, 900_001, 15_000)
+                .is_err(),
+            "stale generation must not renew"
+        );
+        let live = store
+            .latest_lease_for_run_unlocked("run-a")
+            .expect("tail")
+            .expect("present");
+        assert_eq!(live.supervisor_id, "sup-2");
+        assert_eq!(live.generation, 2);
     }
 
     fn append_sparse_row(root: &Path, file_name: &str, row: &str) {

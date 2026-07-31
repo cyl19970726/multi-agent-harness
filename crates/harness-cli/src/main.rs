@@ -11753,7 +11753,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel",
+        "team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -12130,18 +12130,59 @@ fn team_run_command(
         }
         "ack" => {
             let team_run_id = required(args, "--id")?;
-            let message_id = required(args, "--message-id")?;
             let member_id = value(args, "--member-id").unwrap_or_else(|| "host".to_string());
-            let message = acknowledge_team_message_value(
-                store,
-                &team_run_id,
-                &message_id,
-                &serde_json::json!({"member_id": member_id}),
-            )?;
-            if json {
-                print_json(&message)?;
+            // One CLI round-trip per message id is the dominant bookkeeping cost
+            // for a Host agent (measured 10 ack round-trips for 8 payload
+            // messages on one run). `--message-id` therefore accepts a CSV
+            // batch, and `--all-delivered` acknowledges every message that
+            // still has a delivered manual-ack delivery in this run.
+            let all_delivered = has_flag(args, "--all-delivered");
+            let message_ids: Vec<String> = if all_delivered {
+                latest_team_messages_in_append_order(store)?
+                    .into_iter()
+                    .filter(|message| message.team_run_id == team_run_id)
+                    .filter(has_actionable_delivered_manual_ack)
+                    .map(|message| message.id)
+                    .collect()
             } else {
-                println!("{message_id}\tacknowledged\tmember={member_id}");
+                required(args, "--message-id")?
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            };
+            if message_ids.is_empty() {
+                if json {
+                    print_json(&serde_json::json!({"acknowledged": []}))?;
+                } else {
+                    println!("no messages to acknowledge");
+                }
+            } else {
+                let batch = all_delivered || message_ids.len() > 1;
+                let mut acknowledged = Vec::new();
+                for message_id in &message_ids {
+                    let message = acknowledge_team_message_value(
+                        store,
+                        &team_run_id,
+                        message_id,
+                        &serde_json::json!({"member_id": member_id}),
+                    )?;
+                    acknowledged.push(message);
+                }
+                if json {
+                    // A single explicit --message-id keeps the historical bare
+                    // message shape; batches get an envelope.
+                    if batch {
+                        print_json(&serde_json::json!({"acknowledged": acknowledged}))?;
+                    } else {
+                        print_json(&acknowledged[0])?;
+                    }
+                } else {
+                    for message_id in &message_ids {
+                        println!("{message_id}\tacknowledged\tmember={member_id}");
+                    }
+                }
             }
         }
         "reconcile-delivery" => {
@@ -12340,6 +12381,88 @@ fn team_run_command(
                         event.summary
                     );
                 }
+            }
+        }
+        // Blocking form of `events --after-seq`. Without it the Host has no way
+        // to await member progress: the subcommand surface had no wait/follow
+        // and hook delivery only fires at turn boundaries, so a long Host turn
+        // could only poll. Measured on run 019fa80d: 35 `status` polls, median
+        // gap 58 s, and a 25-minute window with 27 polls and zero patches —
+        // each poll costing a full model round-trip.
+        "wait" => {
+            let id = required(args, "--id")?;
+            let mut after_seq = value(args, "--after-seq")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(0);
+            let timeout_secs = value(args, "--timeout-secs")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(600);
+            let poll_ms = value(args, "--poll-ms")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(500)
+                .clamp(50, 10_000);
+            // A caller that passes no cursor means "wait for what happens
+            // next", not "replay this run's whole history".
+            if value(args, "--after-seq").is_none() {
+                after_seq = store
+                    .team_run_events()?
+                    .into_iter()
+                    .filter(|event| event.team_run_id == id)
+                    .map(|event| event.seq)
+                    .max()
+                    .unwrap_or(0);
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+            loop {
+                let mut events: Vec<TeamRunEvent> = store
+                    .team_run_events()?
+                    .into_iter()
+                    .filter(|event| event.team_run_id == id && event.seq > after_seq)
+                    .collect();
+                events.sort_by_key(|event| event.seq);
+                if !events.is_empty() {
+                    let next_after_seq = events.last().map(|event| event.seq).unwrap_or(after_seq);
+                    if json {
+                        print_json(&serde_json::json!({
+                            "timed_out": false,
+                            "after_seq": after_seq,
+                            "next_after_seq": next_after_seq,
+                            "events": events,
+                        }))?;
+                    } else {
+                        for event in &events {
+                            println!(
+                                "seq={}\t{}\t{}:{}\t{}\t{}",
+                                event.seq,
+                                serde_snake_label(&event.source_kind),
+                                event.entity_type,
+                                event.entity_id,
+                                event.operation,
+                                event.summary
+                            );
+                        }
+                        println!("next_after_seq={next_after_seq}");
+                    }
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    if json {
+                        print_json(&serde_json::json!({
+                            "timed_out": true,
+                            "after_seq": after_seq,
+                            "next_after_seq": after_seq,
+                            "events": [],
+                        }))?;
+                    } else {
+                        println!("timed_out\tnext_after_seq={after_seq}");
+                    }
+                    break;
+                }
+                // Never sleep past the deadline. Sleeping a full poll interval
+                // after the check made the real bound `timeout_secs + poll_ms`:
+                // measured 10.08 s for `--timeout-secs 1 --poll-ms 10000`.
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                std::thread::sleep(remaining.min(Duration::from_millis(poll_ms)));
             }
         }
         other => {
