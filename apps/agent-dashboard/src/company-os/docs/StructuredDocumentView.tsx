@@ -68,14 +68,25 @@ function ModuleLifecycleHealth({ view }: { view: CompanyOsStructuredViewData }) 
   if (!health) return null;
   const isArchived = health.state === "archived_root";
   const isMissing = health.state === "missing_root";
-  const Icon = isMissing ? CircleAlert : isArchived ? Archive : CheckCircle2;
-  const tone = isMissing ? "bad" as const : isArchived ? "warn" as const : "good" as const;
+  const isActive = health.state === "active_root";
+  const Icon = isMissing ? CircleAlert : isArchived ? Archive : isActive ? CheckCircle2 : CircleAlert;
+  const panelClass = health.presentationTone === "bad"
+    ? "rounded-lg border border-status-danger/35 bg-status-danger/[0.06] p-3"
+    : health.presentationTone === "warn"
+      ? "rounded-lg border border-status-warn/35 bg-status-warn/[0.07] p-3"
+      : health.presentationTone === "good"
+        ? "rounded-lg border border-status-good/30 bg-status-good/[0.05] p-3"
+        : "rounded-lg border border-border bg-muted/25 p-3";
+  const stateLabel = isMissing ? "missing root" : isArchived ? "archived root" : isActive ? "active root" : "resolved non-active root";
   return (
     <section
-      className={isMissing ? "rounded-lg border border-status-danger/35 bg-status-danger/[0.06] p-3" : isArchived ? "rounded-lg border border-status-warn/35 bg-status-warn/[0.07] p-3" : "rounded-lg border border-status-good/30 bg-status-good/[0.05] p-3"}
+      className={panelClass}
       aria-label="BusinessModule lifecycle and provenance health"
       data-docs-module-lifecycle-health={health.state}
       data-docs-module-root-ref={health.rootDocumentRef}
+      data-docs-module-root-resolution={health.resolution}
+      data-docs-module-root-lifecycle={health.rootDocumentLifecycle ?? "unavailable"}
+      data-docs-module-lifecycle-tone={health.presentationTone}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2">
@@ -85,15 +96,17 @@ function ModuleLifecycleHealth({ view }: { view: CompanyOsStructuredViewData }) 
             <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">{health.summary}</p>
           </div>
         </div>
-        <Badge tone={tone}>{health.state.replace("_", " ")}</Badge>
+        <Badge tone={health.presentationTone}>{stateLabel}</Badge>
       </div>
-      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-md border border-border bg-background/70 px-2.5 py-2"><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Module status</dt><dd className="mt-0.5 font-medium">{health.moduleStatus ?? "Not supplied"}</dd></div>
         <div className="rounded-md border border-border bg-background/70 px-2.5 py-2" data-company-os-ref={health.rootDocumentRef}><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">root_document_ref</dt><dd className="mt-0.5 break-all font-medium">{health.rootDocumentRef ?? "Not declared"}</dd></div>
-        <div className="rounded-md border border-border bg-background/70 px-2.5 py-2"><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Root lifecycle</dt><dd className="mt-0.5 font-medium">{health.rootDocumentLifecycle ?? (isMissing ? "Missing" : "Not supplied")}</dd></div>
+        <div className="rounded-md border border-border bg-background/70 px-2.5 py-2"><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Root resolution</dt><dd className="mt-0.5 font-medium">{health.resolution}</dd></div>
+        <div className="rounded-md border border-border bg-background/70 px-2.5 py-2"><dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Exact root lifecycle</dt><dd className="mt-0.5 font-medium">{health.rootDocumentLifecycle ?? "Unavailable — root Document missing"}</dd></div>
       </dl>
       {health.rootDocument && <RelationChips className="mt-3" links={[health.rootDocument]} emptyLabel="No root Document resolves." />}
       {health.authoringBlocked && <p className="mt-3 text-[11px] leading-5 text-muted-foreground" data-docs-module-authoring-blocked="source-provenance">Module authoring is read-only until the exact root provenance is resolved through governed lifecycle or migration work. The projection does not rewrite root_document_ref.</p>}
+      {!health.authoringBlocked && !isActive && <p className="mt-3 text-[11px] leading-5 text-muted-foreground" data-docs-module-authoring-policy="existing-policy-only">Resolved provenance does not grant authoring authority. Any available command still depends on its existing declared policy and capability.</p>}
     </section>
   );
 }

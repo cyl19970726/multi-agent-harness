@@ -254,7 +254,9 @@ export interface CompanyOsStructuredViewData {
   };
   configuration?: CompanyOsStandardViewConfig;
   lifecycleHealth?: {
-    state: "healthy" | "archived_root" | "missing_root";
+    state: "active_root" | "resolved_non_active_root" | "archived_root" | "missing_root";
+    resolution: "resolved" | "missing";
+    presentationTone: "good" | "muted" | "warn" | "bad";
     moduleStatus?: string;
     rootDocumentRef?: string;
     rootDocumentLifecycle?: string;

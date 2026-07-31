@@ -75,7 +75,7 @@ async function main() {
   check(structured.includes('className="h-full space-y-4 overflow-y-auto"'), "standard business-module pages retain their own bounded vertical scroll owner");
   check(structured.includes("availableViews") && structured.includes("fallback") && structured.includes("BoardView") && structured.includes("TimelineView"), "structured view exposes standard table, board, timeline, and fallback paths");
   check(structured.includes("StandardViewProvenance") && structured.includes('data-docs-standard-view-provenance="true"') && structured.includes("View is presentation, not a second truth"), "structured view exposes provenance for module scope, native View, source kinds, query, and record count");
-  check(structured.includes("ModuleLifecycleHealth") && structured.includes("data-docs-module-lifecycle-health") && structured.includes("data-docs-module-root-ref") && structured.includes("data-docs-module-authoring-blocked"), "structured view exposes deterministic module root lifecycle and provenance health without rewriting source refs");
+  check(structured.includes("ModuleLifecycleHealth") && structured.includes("data-docs-module-lifecycle-health") && structured.includes("data-docs-module-root-ref") && structured.includes("data-docs-module-root-resolution") && structured.includes("data-docs-module-root-lifecycle") && structured.includes("data-docs-module-lifecycle-tone") && structured.includes("data-docs-module-authoring-blocked") && structured.includes("data-docs-module-authoring-policy"), "structured view separates exact module root resolution, lifecycle, presentation tone, and existing authoring policy without rewriting source refs");
   check(structured.includes("StandardViewConfiguration") && structured.includes('data-docs-standard-view-configuration="true"') && structured.includes("Configuration is stored in native View.query") && structured.includes('aria-label="View filter field"') && structured.includes('aria-label="View group by"'), "structured view exposes saved View configuration and Store-live View query authoring controls");
   check(structured.includes('data-docs-standard-view-empty="true"') && structured.includes("declared query returned no records") && structured.includes("does not delete the BusinessModule"), "structured view empty state is explicit without fabricating module truth");
   check(structured.includes('data-docs-authoring-panel="business-module-focus"') && structured.includes("buildDocsTypedRecordCommand") && structured.includes("buildDocsViewCommand") && structured.includes("buildDocsRelationCommand"), "Structured module view exposes Store-live TypedRecord, View, and Relation authoring controls");
@@ -97,7 +97,7 @@ async function main() {
   check(home.includes("Button asChild") && home.includes("data.decisionRequired.href") && home.includes("disabled"), "Home renders a real approval link without a callback and never leaves an enabled no-op CTA");
   check(adapter.includes("adaptCompanyOsDocsProjection") && adapter.includes("financialRecordType"), "projection adapter maps financial type from an explicit record field");
   check(types.includes("documentTree?: CompanyOsWorkspaceTreeItem[]") && adapter.includes("documentTree: workspaceTree"), "projection adapter supplies the same Store-backed document tree to Document Focus without hard-coded project navigation");
-  check(types.includes("lifecycleHealth?:") && types.includes('state: "healthy" | "archived_root" | "missing_root"') && types.includes("authoringBlocked: boolean"), "Docs types expose bounded module lifecycle health for deterministic projection and authoring policy");
+  check(types.includes("lifecycleHealth?:") && types.includes('state: "active_root" | "resolved_non_active_root" | "archived_root" | "missing_root"') && types.includes('resolution: "resolved" | "missing"') && types.includes('presentationTone: "good" | "muted" | "warn" | "bad"') && types.includes("authoringBlocked: boolean") && !types.includes('state: "healthy"'), "Docs types separate root resolution, exact lifecycle state, presentation tone, and authoring policy");
   check(adapter.includes("buildDocumentHealthData") && adapter.includes("missing_document_record_relation") && adapter.includes("No deletion without governed action") === false, "projection adapter computes document health without embedding UI policy copy");
   check(workspace.includes('data-docs-template-library="true"') && workspace.includes("data-docs-template-block-count") && workspace.includes("template_ref only") && workspace.includes("copy Blocks via Actions"), "Docs Workspace exposes a native template library with provenance and instantiation boundaries");
   check(workspace.includes("data-docs-template-lifecycle") && workspace.includes("harness company docs template status") && workspace.includes("archiving a template does not mutate existing Documents"), "Docs Workspace exposes template lifecycle state and governed status boundary");
@@ -171,6 +171,7 @@ async function main() {
     typed_records: [],
   }, { moduleId: "module-configured-standard-view" });
   check(configuredViewPages.moduleView.configuration?.mode === "board" && configuredViewPages.moduleView.configuration?.filters?.[0]?.field === "record_type" && configuredViewPages.moduleView.configuration?.groupBy === "lifecycle_status" && configuredViewPages.moduleView.configuration?.sortBy === "updated_at", "Business Module standard view configuration preserves native mode, filters, grouping, sorting, and query object");
+  check(configuredViewPages.moduleView.lifecycleHealth?.state === "active_root" && configuredViewPages.moduleView.lifecycleHealth.resolution === "resolved" && configuredViewPages.moduleView.lifecycleHealth.presentationTone === "good" && configuredViewPages.moduleView.lifecycleHealth.rootDocumentLifecycle === "active", "active module root is explicitly resolved with exact active lifecycle and success tone");
   const emptyModulePages = adaptCompanyOsDocsProjection({
     documents: [{ id: "document-empty-module-root", space_id: "company", parent_document_id: null, title: "Empty module root", kind: "page", lifecycle_status: "active", block_ids: [], template_ref: null, permission_policy_refs: ["company.records.write"], reference_refs: [], created_by: { actor_type: "human", actor_id: "actor-human-empty-module" }, updated_by: { actor_type: "human", actor_id: "actor-human-empty-module" }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" }],
     business_modules: [{ id: "module-empty-standard-view", name: "Empty module", root_document_ref: "document-empty-module-root", status: "active", default_view_refs: ["view-empty-standard"] }],
@@ -350,11 +351,70 @@ async function main() {
   check(
     archivedModulePages.moduleView.id === "module-selected-archived-root"
       && archivedModulePages.moduleView.lifecycleHealth?.state === "archived_root"
+      && archivedModulePages.moduleView.lifecycleHealth.resolution === "resolved"
+      && archivedModulePages.moduleView.lifecycleHealth.presentationTone === "warn"
+      && archivedModulePages.moduleView.lifecycleHealth.rootDocumentLifecycle === "archived"
       && archivedModulePages.moduleView.lifecycleHealth.rootDocumentRef === "document-archived-module-root"
       && archivedModulePages.moduleView.lifecycleHealth.rootDocument?.id === "document-archived-module-root"
       && archivedModulePages.moduleView.lifecycleHealth.authoringBlocked
       && archivedModulePages.moduleView.authoring === undefined,
     "active archived-root module view preserves exact read-only provenance and blocks Docs authoring without mutating module lifecycle",
+  );
+  const missingModulePages = adaptCompanyOsDocsProjection({
+    business_modules: [{ id: "module-selected-missing-root", name: "Selected missing-root module", root_document_ref: "document-missing-module-root", status: "active", default_view_refs: [] }],
+  }, { moduleId: "module-selected-missing-root" });
+  check(
+    missingModulePages.moduleView.lifecycleHealth?.state === "missing_root"
+      && missingModulePages.moduleView.lifecycleHealth.resolution === "missing"
+      && missingModulePages.moduleView.lifecycleHealth.presentationTone === "bad"
+      && missingModulePages.moduleView.lifecycleHealth.rootDocumentLifecycle === undefined
+      && missingModulePages.moduleView.lifecycleHealth.rootDocumentRef === "document-missing-module-root"
+      && missingModulePages.moduleView.lifecycleHealth.authoringBlocked
+      && missingModulePages.moduleView.authoring === undefined,
+    "active missing-root module view preserves the exact unresolved ref with missing state, danger tone, and blocked authoring",
+  );
+  const resolvedNonActiveModulePages = (lifecycleStatus) => adaptCompanyOsDocsProjection({
+    actors: [{ id: "actor-agent-docs-lifecycle", display_name: "Docs Lifecycle Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] }],
+    documents: [{ id: `document-${lifecycleStatus}-module-root`, title: `${lifecycleStatus} module root`, space_id: "company", parent_document_id: null, lifecycle_status: lifecycleStatus, block_ids: [] }],
+    business_modules: [{ id: `module-${lifecycleStatus}-root`, name: `${lifecycleStatus} root module`, root_document_ref: `document-${lifecycleStatus}-module-root`, status: "active", default_view_refs: [] }],
+    custom_page_definitions: [{
+      id: `definition-${lifecycleStatus}-root`,
+      module_id: `module-${lifecycleStatus}-root`,
+      action_command_refs: ["document.append", "block.append", "typed_record.append", "view.append", "relation.append"],
+      policy_refs: [
+        `definition-${lifecycleStatus}-root:document.append`,
+        `definition-${lifecycleStatus}-root:block.append`,
+        `definition-${lifecycleStatus}-root:typed_record.append`,
+        `definition-${lifecycleStatus}-root:view.append`,
+        `definition-${lifecycleStatus}-root:relation.append`,
+      ],
+    }],
+  }, { moduleId: `module-${lifecycleStatus}-root` });
+  const draftRootPages = resolvedNonActiveModulePages("draft");
+  const pausedRootPages = resolvedNonActiveModulePages("paused");
+  check(
+    draftRootPages.moduleView.lifecycleHealth?.state === "resolved_non_active_root"
+      && draftRootPages.moduleView.lifecycleHealth.resolution === "resolved"
+      && draftRootPages.moduleView.lifecycleHealth.presentationTone === "muted"
+      && draftRootPages.moduleView.lifecycleHealth.rootDocumentLifecycle === "draft"
+      && /exact lifecycle_status=draft/.test(draftRootPages.moduleView.lifecycleHealth.summary)
+      && /not an active lifecycle claim/.test(draftRootPages.moduleView.lifecycleHealth.summary)
+      && !/active Document/.test(draftRootPages.moduleView.lifecycleHealth.summary)
+      && draftRootPages.health.findings.some((finding) => finding.kind === "business_module_root_document_non_active" && finding.related?.id === "document-draft-module-root" && /lifecycle_status=draft/.test(finding.detail))
+      && draftRootPages.moduleView.authoring?.sourceDocumentId === "document-draft-module-root",
+    "draft module root stays resolved but non-active with exact lifecycle, muted tone, no active claim, and only existing-policy authoring",
+  );
+  check(
+    pausedRootPages.moduleView.lifecycleHealth?.state === "resolved_non_active_root"
+      && pausedRootPages.moduleView.lifecycleHealth.resolution === "resolved"
+      && pausedRootPages.moduleView.lifecycleHealth.presentationTone === "muted"
+      && pausedRootPages.moduleView.lifecycleHealth.rootDocumentLifecycle === "paused"
+      && /exact lifecycle_status=paused/.test(pausedRootPages.moduleView.lifecycleHealth.summary)
+      && /not an active lifecycle claim/.test(pausedRootPages.moduleView.lifecycleHealth.summary)
+      && !/active Document/.test(pausedRootPages.moduleView.lifecycleHealth.summary)
+      && pausedRootPages.health.findings.some((finding) => finding.kind === "business_module_root_document_non_active" && finding.related?.id === "document-paused-module-root" && /lifecycle_status=paused/.test(finding.detail))
+      && pausedRootPages.moduleView.authoring?.sourceDocumentId === "document-paused-module-root",
+    "paused module root stays resolved but non-active with exact lifecycle, muted tone, no active claim, and only existing-policy authoring",
   );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
 

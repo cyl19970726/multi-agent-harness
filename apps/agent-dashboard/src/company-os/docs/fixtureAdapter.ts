@@ -80,6 +80,10 @@ function isArchived(entry: JsonRecord | undefined): boolean {
   return text(entry?.lifecycle_status, text(entry?.status)).toLowerCase() === "archived";
 }
 
+function documentLifecycle(entry: JsonRecord | undefined): string {
+  return entry ? text(entry.lifecycle_status, text(entry.status)) || "not_supplied" : "";
+}
+
 function refs(root: JsonRecord, page: string): string[] {
   const slices = root.page_slices;
   if (!slices || typeof slices !== "object") return [];
@@ -593,7 +597,21 @@ function buildDocumentHealthData({
   modules.forEach((entry) => {
     const rootDocumentId = text(entry.root_document_ref, text(entry.root_document_id));
     const rootDocument = record(allDocuments, rootDocumentId);
-    if (rootDocument && !isArchived(rootDocument)) return;
+    const rootLifecycle = documentLifecycle(rootDocument);
+    if (rootDocument && !isArchived(rootDocument) && rootLifecycle.toLowerCase() === "active") return;
+    if (rootDocument && !isArchived(rootDocument)) {
+      findings.push({
+        id: `non-active-module-root:${text(entry.id)}`,
+        kind: "business_module_root_document_non_active",
+        severity: "info",
+        title: "BusinessModule root Document is resolved but non-active",
+        detail: `${text(entry.name, "Unnamed module")} has status=${text(entry.status, "not supplied")} and root_document_ref=${rootDocumentId}; the exact root lifecycle_status=${rootLifecycle}. Resolution does not imply an active lifecycle or authoring authority.`,
+        subject: moduleLink(entry),
+        related: documentLink(rootDocument),
+        recommendedAction: "Keep the exact lifecycle visible. Any authoring remains subject to existing policy and capability; lifecycle changes require a governed Document action.",
+      });
+      return;
+    }
     if (rootDocument && isArchived(rootDocument)) {
       findings.push({
         id: `archived-module-root:${text(entry.id)}`,
@@ -951,7 +969,9 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       ? `Root missing · ${rootDocumentId || "not declared"}`
       : isArchived(rootDocument)
         ? `Root archived · ${rootDocumentId}`
-        : undefined;
+        : documentLifecycle(rootDocument).toLowerCase() === "active"
+          ? `Root active · lifecycle_status=${documentLifecycle(rootDocument)} · ${rootDocumentId}`
+          : `Root resolved non-active · lifecycle_status=${documentLifecycle(rootDocument)} · ${rootDocumentId}`;
     parent.children?.push({
       id: moduleId,
       ref: moduleId,
@@ -1087,27 +1107,42 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const moduleAuthoringSourceDocumentId = text(module?.root_document_ref, text(module?.root_document_id, text(focusDocument?.id)));
   const moduleRootDocumentRef = text(module?.root_document_ref, text(module?.root_document_id));
   const moduleRootDocument = record(allDocuments, moduleRootDocumentRef);
-  const moduleRootState = !moduleRootDocumentRef || !moduleRootDocument
+  const moduleRootResolution = moduleRootDocumentRef && moduleRootDocument ? "resolved" as const : "missing" as const;
+  const moduleRootLifecycle = documentLifecycle(moduleRootDocument);
+  const moduleRootState = moduleRootResolution === "missing"
     ? "missing_root" as const
     : isArchived(moduleRootDocument)
       ? "archived_root" as const
-      : "healthy" as const;
+      : moduleRootLifecycle.toLowerCase() === "active"
+        ? "active_root" as const
+        : "resolved_non_active_root" as const;
+  const moduleRootPresentationTone = moduleRootState === "missing_root"
+    ? "bad" as const
+    : moduleRootState === "archived_root"
+      ? "warn" as const
+      : moduleRootState === "active_root"
+        ? "good" as const
+        : "muted" as const;
   const moduleLifecycleHealth: CompanyOsStructuredViewData["lifecycleHealth"] | undefined = module
     ? {
         state: moduleRootState,
+        resolution: moduleRootResolution,
+        presentationTone: moduleRootPresentationTone,
         moduleStatus: text(module.status) || undefined,
         rootDocumentRef: moduleRootDocumentRef || undefined,
-        rootDocumentLifecycle: moduleRootDocument ? text(moduleRootDocument.lifecycle_status, text(moduleRootDocument.status)) || undefined : undefined,
+        rootDocumentLifecycle: moduleRootDocument ? moduleRootLifecycle : undefined,
         rootDocument: documentRefLink(moduleRootDocumentRef, moduleRootDocument),
         summary: moduleRootState === "archived_root"
-          ? `Module status=${text(module.status, "not supplied")} retains root_document_ref=${moduleRootDocumentRef}; the exact root Document is archived and remains read-only provenance.`
+          ? `Module status=${text(module.status, "not supplied")} retains root_document_ref=${moduleRootDocumentRef}; the exact root lifecycle_status=${moduleRootLifecycle} and remains read-only provenance.`
           : moduleRootState === "missing_root"
             ? `Module status=${text(module.status, "not supplied")} retains root_document_ref=${moduleRootDocumentRef || "not declared"}; no matching Document is present in this projection.`
-            : `Module root_document_ref=${moduleRootDocumentRef} resolves to an active Document.`,
-        authoringBlocked: moduleRootState !== "healthy",
+            : moduleRootState === "active_root"
+              ? `Module root_document_ref=${moduleRootDocumentRef} resolves with exact lifecycle_status=${moduleRootLifecycle}. Existing authoring still requires its declared policy and capability.`
+              : `Module root_document_ref=${moduleRootDocumentRef} resolves with exact lifecycle_status=${moduleRootLifecycle}. This is resolved provenance, not an active lifecycle claim; existing authoring still requires its declared policy and capability.`,
+        authoringBlocked: moduleRootState === "archived_root" || moduleRootState === "missing_root",
       }
     : undefined;
-  const moduleAuthoring = module && moduleRootState === "healthy" && moduleAuthoringSourceDocumentId && documentDefinition && typedRecordPolicyRef && viewPolicyRef && moduleRelationPolicyRef && documentAuthoringActor
+  const moduleAuthoring = module && moduleRootResolution === "resolved" && moduleRootState !== "archived_root" && moduleAuthoringSourceDocumentId && documentDefinition && typedRecordPolicyRef && viewPolicyRef && moduleRelationPolicyRef && documentAuthoringActor
     ? {
         definitionId: text(documentDefinition.id),
         moduleId: text(module.id),
