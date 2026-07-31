@@ -148,6 +148,44 @@ Target-only until accepted end to end:
 
 Do not let this Skill promote target contracts into Store truth.
 
+## Enforce The Company Execution Hard Gate
+
+When a dogfood cycle uses Mission/Wave, do not advance the Company dogfood
+Wave from Store projection alone. Store projection alone is insufficient: it
+proves selected Company state can be read, not that execution, delivery,
+acceptance, result return, or roster disposition occurred. Mission/Wave and
+Agent Team remain optional execution capabilities, not Company truth or
+mandatory Company planning.
+
+Require one reconstructable chain before Wave advance, in this order:
+
+1. Receive a Lead-originated exact correlated Assignment addressed to the
+   accountable Domain Agent, with owned paths or governed Action scope and an
+   explicit acceptance boundary.
+2. Produce either a Domain-Agent-owned repository commit in the assigned
+   Workspace or a governed Company Action attributed to the authorized actor.
+   An observation, projection, local diff, or provider completion is not this
+   execution result.
+3. Return a correlated Handoff with checks/evidence that names the exact
+   Assignment, commit or Action, affected objects/files, checks, evidence,
+   blockers, and implemented-versus-deferred boundary.
+4. Preserve truthful Work lifecycle and result return. Keep Work open,
+   submitted, or in review until its acceptance criteria are actually met;
+   then return exact result/evidence refs to Work and its originating
+   Document/record through the governed owner. Never infer Work completion
+   from Wave, Handoff, commit, projection, CI, PR, or UI state alone.
+5. Record temporary-member closure or durable roster carry-forward. Close a
+   temporary execution member with terminal evidence after its Handoff, or
+   explicitly retain the durable Standing Agent/member binding, responsibility,
+   capacity, active Work, and continuation owner for the next cycle.
+
+If any link is absent, keep the WorkItem and Wave outcome truthful, record the
+missing evidence or owner, and do not advance the Wave. Keep the Human Principal
+as intent source and protected-boundary decider, the Company Lead as Company
+priority/capacity and Wave-advance owner, and the Domain Lead as accountable
+execution/delegation owner. Do not transfer those responsibilities to the
+Supervisor, Host, provider, projection, or Skill.
+
 ## Run One Complete Cycle
 
 ### 1. Observe

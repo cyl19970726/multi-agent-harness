@@ -142,6 +142,46 @@ expect(
   "governance-agent-workspaces.md must keep Supervisor transport separate from Company authority",
 );
 
+const dogfoodCompany = read("skills/dogfood-company-os/SKILL.md");
+const hardGateStart = dogfoodCompany.indexOf("## Enforce The Company Execution Hard Gate");
+const hardGateEnd = dogfoodCompany.indexOf("\n## Run One Complete Cycle", hardGateStart);
+expect(hardGateStart >= 0 && hardGateEnd > hardGateStart, "dogfood-company-os missing bounded execution hard gate");
+const hardGate = hardGateStart >= 0 && hardGateEnd > hardGateStart
+  ? dogfoodCompany.slice(hardGateStart, hardGateEnd)
+  : "";
+const requiredExecutionGateEvidence = [
+  "Lead-originated exact correlated Assignment",
+  "Domain-Agent-owned repository commit",
+  "governed Company Action",
+  "correlated Handoff with checks/evidence",
+  "truthful Work lifecycle and result return",
+  "temporary-member closure or durable roster carry-forward",
+];
+for (const evidence of requiredExecutionGateEvidence) {
+  expect(hardGate.includes(evidence), `dogfood-company-os execution hard gate missing ${evidence}`);
+}
+expect(
+  requiredExecutionGateEvidence.every((evidence, index) => index === 0
+    || hardGate.indexOf(evidence) > hardGate.indexOf(requiredExecutionGateEvidence[index - 1])),
+  "dogfood-company-os execution hard gate evidence must preserve Assignment-to-roster order",
+);
+expect(
+  hardGate.includes("Store projection alone is insufficient")
+    && hardGate.includes("do not advance the Wave"),
+  "dogfood-company-os must reject Store-projection-only Wave advance",
+);
+expect(
+  /Mission\/Wave and\s+Agent Team remain optional execution capabilities[\s\S]*?not Company truth/.test(hardGate),
+  "dogfood-company-os must keep Mission/Wave and Agent Team optional and separate from Company truth",
+);
+expect(
+  /Human Principal[\s\S]*?Company Lead[\s\S]*?Domain Lead[\s\S]*?Do not transfer those responsibilities/.test(hardGate),
+  "dogfood-company-os execution hard gate must preserve Human and Lead responsibility boundaries",
+);
+for (const retiredModel of ["Plan Mode", "Plan Gate", "Task Graph", "Goal object"]) {
+  expect(!hardGate.includes(retiredModel), `dogfood-company-os execution hard gate reintroduced ${retiredModel}`);
+}
+
 const forbiddenAsImplemented = ["OrgChangeProposal"];
 for (const phrase of forbiddenAsImplemented) {
   const docsClaim = new RegExp(`${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(implemented|available|stable)`, "i");
