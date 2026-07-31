@@ -72,6 +72,44 @@ test("member survives an empty mailbox and consumes a later message", async () =
   assert.equal(of("member_closed")[0].data.reason, "host_accepted_handoff");
 });
 
+test("a provider API failure is not reported as an ordinary successful turn", async () => {
+  // Live probe (issue #293): a 403 round arrives with subtype "success" and
+  // is_error=true. The runner must forward the error fields so Harness can
+  // record a provider-error round instead of a fake completion.
+  const events = [];
+  const sdk = createFakeSdk({ apiErrorStatus: 403 });
+  const runner = createMemberRunner({
+    sdk,
+    config: { ...baseConfig },
+    emit: (event, data) => events.push({ event, data }),
+  });
+  const done = runner.start();
+
+  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "build it" });
+  await settled();
+
+  const turns = events.filter((e) => e.event === "turn_complete");
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].data.subtype, "success", "the SDK keeps subtype success even on error");
+  assert.equal(turns[0].data.isError, true, "the honest error flag must survive");
+  assert.equal(turns[0].data.terminalReason, "api_error");
+  assert.equal(turns[0].data.apiErrorStatus, 403);
+
+  runner.close("test_done");
+  await done;
+
+  // The SDK re-throws the last error result when the input stream ends; a
+  // clean Host close must still produce member_closed, not a runner crash.
+  const closed = events.filter((e) => e.event === "member_closed");
+  assert.equal(closed.length, 1, "member_closed must survive the SDK's end-of-stream error re-throw");
+  assert.equal(closed[0].data.reason, "test_done");
+  assert.equal(
+    events.filter((e) => e.event === "query_ended_with_provider_error").length,
+    1,
+    "the end-of-stream provider error is reported as an observation, not a crash",
+  );
+});
+
 test("only the Host ends the member, and the reason is recorded", async () => {
   const { runner, of } = harness();
   const done = runner.start();

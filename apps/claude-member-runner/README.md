@@ -69,6 +69,13 @@ recording truthful round causation. When the Member already submitted an
 explicit correlated Handoff during the turn, Harness keeps that record and
 uses the final provider reply only as an Adapter fallback, not a duplicate.
 
+**`turn_complete.subtype` is not the success signal.** A provider API failure
+(HTTP 401/403/5xx, region-blocked egress, expired token) arrives with
+`subtype: "success"` and `is_error: true` (live probe, issue #293). The event
+therefore also carries `isError`, `terminalReason`, and `apiErrorStatus`;
+Harness records rounds with `isError` as failed `provider_error` actions, never
+as ordinary completed rounds or member handoffs.
+
 `start` payload:
 
 ```jsonc

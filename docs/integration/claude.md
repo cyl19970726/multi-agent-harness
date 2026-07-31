@@ -155,6 +155,15 @@ Provider-paused questions and approvals use `PendingInteraction`. A provider
 `completed` status alone is not proof that an answer, approval, or semantic
 handoff occurred.
 
+A provider API failure mid-turn (HTTP 401/403/5xx, blocked egress, expired
+token) is recorded as a failed `provider_error` action naming the terminal
+reason and HTTP status — never as a completed round, and no handoff is
+fabricated for it. The SDK's `result.subtype` stays `"success"` on such turns
+(issue #293), so the runner forwards `is_error`, `terminal_reason`, and
+`api_error_status` explicitly. The persistent member usually survives and stays
+`idle` for the next message; a clean Host close after an error round still
+produces `member_closed` rather than a transport error.
+
 Claude does not expose the same content-steer primitive as Codex app-server in
 this adapter. Send ordinary content as a queued TeamMessage. SDK permission or
 model mutation is a provider control, not a substitute for team conversation.
