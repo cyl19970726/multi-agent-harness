@@ -56,6 +56,8 @@ mod workflow;
 enum CliError {
     #[error("{0}")]
     Usage(String),
+    #[error("{0}")]
+    SupervisorLeaseLost(String),
     #[error("store error: {0}")]
     Store(#[from] harness_store::StoreError),
     #[error("io error: {0}")]
@@ -65,6 +67,12 @@ enum CliError {
 }
 
 type CliResult<T> = Result<T, CliError>;
+
+impl CliError {
+    fn is_supervisor_lease_lost(&self) -> bool {
+        matches!(self, Self::SupervisorLeaseLost(_))
+    }
+}
 
 /// Whether a routed message is currently actionable as a manual acknowledgement.
 ///
@@ -13099,6 +13107,39 @@ fn team_supervisor_lease_ttl_ms() -> u64 {
         .unwrap_or(15_000)
 }
 
+fn supervisor_lease_lost_error(team_run_id: &str) -> CliError {
+    CliError::SupervisorLeaseLost(format!(
+        "team run {team_run_id} lost its durable Supervisor lease; stale generation quiesced"
+    ))
+}
+
+fn latch_supervisor_lease_lost(
+    supervisor_valid: &AtomicBool,
+    team_run_id: &str,
+    supervisor_id: &str,
+    generation: u64,
+    reason: &str,
+) -> CliError {
+    if supervisor_valid.swap(false, Ordering::AcqRel) {
+        eprintln!(
+            "team run {team_run_id} supervisor {supervisor_id} generation {generation} \
+             lease_lost; quiescing stale generation: {reason}"
+        );
+    }
+    supervisor_lease_lost_error(team_run_id)
+}
+
+fn supervisor_test_heartbeat_failure() -> Option<String> {
+    let ready = std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")?;
+    let ready = PathBuf::from(ready);
+    match fs::write(&ready, b"heartbeat renewal failure injected") {
+        Ok(()) => Some("test-injected heartbeat renewal/store failure".to_string()),
+        Err(error) => Some(format!(
+            "test-injected heartbeat renewal/store failure marker failed: {error}"
+        )),
+    }
+}
+
 fn reserve_team_supervisor(
     store: &HarnessStore,
     team_run_id: &str,
@@ -13153,17 +13194,30 @@ fn reserve_team_supervisor(
             if heartbeat_stop_thread.load(Ordering::Acquire) {
                 break;
             }
-            if heartbeat_store
-                .renew_team_supervisor_lease(
+            if let Some(reason) = supervisor_test_heartbeat_failure() {
+                let _ = latch_supervisor_lease_lost(
+                    &heartbeat_valid_thread,
                     &heartbeat_team_run_id,
                     &heartbeat_supervisor_id,
                     generation,
-                    current_unix_ms_u64(),
-                    ttl_ms,
-                )
-                .is_err()
-            {
-                heartbeat_valid_thread.store(false, Ordering::Release);
+                    &reason,
+                );
+                break;
+            }
+            if let Err(error) = heartbeat_store.renew_team_supervisor_lease(
+                &heartbeat_team_run_id,
+                &heartbeat_supervisor_id,
+                generation,
+                current_unix_ms_u64(),
+                ttl_ms,
+            ) {
+                let _ = latch_supervisor_lease_lost(
+                    &heartbeat_valid_thread,
+                    &heartbeat_team_run_id,
+                    &heartbeat_supervisor_id,
+                    generation,
+                    &error.to_string(),
+                );
                 break;
             }
         }
@@ -13174,6 +13228,7 @@ fn reserve_team_supervisor(
     let control_supervisor_id = supervisor_id.clone();
     let control_generation = lease.generation;
     let control_stop_thread = Arc::clone(&control_stop);
+    let control_valid_thread = Arc::clone(&heartbeat_valid);
     let control_thread = std::thread::spawn(move || {
         while !control_stop_thread.load(Ordering::Acquire) {
             match control_listener.accept() {
@@ -13184,6 +13239,7 @@ fn reserve_team_supervisor(
                         &control_team_run_id,
                         &control_supervisor_id,
                         control_generation,
+                        &control_valid_thread,
                     );
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -13270,7 +13326,7 @@ fn require_current_supervisor_lease(
         || lease.generation != generation
         || lease.expires_unix_ms <= now
     {
-        return Err(CliError::Usage(format!(
+        return Err(CliError::SupervisorLeaseLost(format!(
             "team run {team_run_id} Supervisor lease moved to another owner"
         )));
     }
@@ -13300,12 +13356,16 @@ fn dispatch_local_live_member_control(
     store: &HarnessStore,
     supervisor_id: &str,
     generation: u64,
+    supervisor_valid: &AtomicBool,
     request: LiveMemberControlRequest,
 ) -> CliResult<serde_json::Value> {
     let team_run_id = request.team_run_id().to_string();
     let member_run_id = request.member_run_id().to_string();
     let is_close = matches!(&request, LiveMemberControlRequest::Close { .. });
     // Fence immediately before touching the process-local provider handle.
+    if !supervisor_valid.load(Ordering::Acquire) {
+        return Err(supervisor_lease_lost_error(&team_run_id));
+    }
     require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
     if let LiveMemberControlRequest::Close {
         reason,
@@ -13422,6 +13482,7 @@ fn handle_live_member_control_connection(
     team_run_id: &str,
     supervisor_id: &str,
     generation: u64,
+    supervisor_valid: &AtomicBool,
 ) {
     let response = (|| -> CliResult<serde_json::Value> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -13442,7 +13503,13 @@ fn handle_live_member_control_connection(
                 request.team_run_id()
             )));
         }
-        dispatch_local_live_member_control(store, supervisor_id, generation, request)
+        dispatch_local_live_member_control(
+            store,
+            supervisor_id,
+            generation,
+            supervisor_valid,
+            request,
+        )
     })();
     let envelope = match response {
         Ok(result) => LiveMemberControlResponse {
@@ -13574,30 +13641,30 @@ impl TeamRunLedger {
 
     fn require_supervisor_lease(&self) -> CliResult<()> {
         if !self.supervisor_valid.load(Ordering::Acquire) {
-            return Err(CliError::Usage(format!(
-                "team run {} lost its durable Supervisor lease; refusing provider side effects",
-                self.run_id
-            )));
+            return Err(supervisor_lease_lost_error(&self.run_id));
         }
         let now = current_unix_ms_u64();
-        let lease = self
-            .store
-            .latest_team_supervisor_lease(&self.run_id)?
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "team run {} has no durable Supervisor lease",
-                    self.run_id
-                ))
-            })?;
-        if lease.supervisor_id != self.supervisor_id
+        let Some(lease) = self.store.latest_team_supervisor_lease(&self.run_id)? else {
+            return Err(latch_supervisor_lease_lost(
+                &self.supervisor_valid,
+                &self.run_id,
+                &self.supervisor_id,
+                self.supervisor_generation,
+                "durable lease row is missing",
+            ));
+        };
+        if lease.status != harness_core::TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != self.supervisor_id
             || lease.generation != self.supervisor_generation
             || lease.expires_unix_ms <= now
         {
-            self.supervisor_valid.store(false, Ordering::Release);
-            return Err(CliError::Usage(format!(
-                "team run {} Supervisor lease moved to another owner",
-                self.run_id
-            )));
+            return Err(latch_supervisor_lease_lost(
+                &self.supervisor_valid,
+                &self.run_id,
+                &self.supervisor_id,
+                self.supervisor_generation,
+                "durable lease moved, expired, or was released",
+            ));
         }
         Ok(())
     }
@@ -13834,6 +13901,10 @@ fn wait_for_idle_member_wake(
 ) -> CliResult<IdleMemberWake> {
     let idle_since = Instant::now();
     loop {
+        // A command may have passed the control-plane fence just before this
+        // generation lost ownership. Recheck before reading any process-local
+        // handle or touching the durable mailbox.
+        ledger.require_supervisor_lease()?;
         while let Ok(command) = controls.try_recv() {
             match command {
                 MemberControlCommand::Close {
@@ -13938,6 +14009,71 @@ struct MemberRuntimeContext {
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
     turn_leases: Arc<ActiveTurnLeasePool>,
+}
+
+/// `std::process::Child` does not terminate a still-running process on drop.
+/// Provider transports must not outlive a stale Supervisor generation. The
+/// guard is disarmed after a normal wait and only signals a child/group that
+/// remains active.
+struct ProviderChildGuard {
+    child: std::process::Child,
+    armed: bool,
+}
+
+fn isolate_provider_child_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
+impl ProviderChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self { child, armed: true }
+    }
+
+    fn wait_and_disarm(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let status = self.child.wait()?;
+        self.armed = false;
+        Ok(status)
+    }
+}
+
+impl std::ops::Deref for ProviderChildGuard {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for ProviderChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
+
+impl Drop for ProviderChildGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                self.armed = false;
+            }
+            Ok(None) => {
+                kill_worker_tree(&mut self.child);
+                self.armed = false;
+            }
+            Err(_) => {
+                // An error does not prove the pid still belongs to this child;
+                // never risk signalling a recycled process group.
+                self.armed = false;
+            }
+        }
+    }
 }
 
 impl MemberOutcome {
@@ -14099,68 +14235,81 @@ pub(crate) fn drive_prepared_team_run(
     let mut handles = HashMap::new();
     let mut outcomes = Vec::new();
     let turn_leases = Arc::new(ActiveTurnLeasePool::new(max_concurrency));
+    let mut lease_lost = false;
     loop {
-        for mut member in pending_members.drain(..) {
-            seen_member_ids.insert(member.id.clone());
-            let member_ledger = Arc::clone(&ledger);
-            let member_objective = objective.clone();
-            let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
-            member.workspace_snapshot = Some(snapshot_member_workspace(
-                &cwd,
-                project_context.as_ref().map(|context| context.id.as_str()),
-                project_context
-                    .as_ref()
-                    .map(|context| context.project_root.as_path()),
-                if member
-                    .worktree_ref
-                    .as_deref()
-                    .is_some_and(|value| !value.is_empty())
-                {
-                    "member_worktree"
-                } else if running
-                    .execution_root
-                    .as_deref()
-                    .is_some_and(|value| !value.is_empty())
-                {
-                    "team_execution_root"
-                } else if project_context.is_some() {
-                    "project_binding_root"
+        if !lease_lost {
+            if let Err(error) = ledger.require_supervisor_lease() {
+                if error.is_supervisor_lease_lost() {
+                    lease_lost = true;
+                    pending_members.clear();
                 } else {
-                    "explicit_unbound"
-                },
-            ));
-            member_ledger.save_member_run(&member)?;
-            member_ledger.fold_event(
-                TeamRunEventSourceKind::Host,
-                Some(member.id.clone()),
-                "member_run",
-                &member.id,
-                "workspace_snapshot",
-                &format!("member workspace resolved to {}", cwd.display()),
-            )?;
-            let handle_member = member.clone();
-            let member_live_sink = live_sink.clone();
-            let member_project_id = project_id.clone();
-            let member_project_selector = project_selector.clone();
-            let member_execution_space_id = execution_space_id.clone();
-            let member_turn_leases = Arc::clone(&turn_leases);
-            let handle = std::thread::spawn(move || {
-                run_member_orchestration(
-                    &member_ledger,
-                    &member_objective,
-                    handle_member,
-                    MemberRuntimeContext {
-                        execution_space_id: member_execution_space_id,
-                        project_id: member_project_id,
-                        project_selector: member_project_selector,
-                        cwd,
-                        idle_timeout,
-                        live_sink: member_live_sink,
-                        turn_leases: member_turn_leases,
+                    return Err(error);
+                }
+            }
+        }
+        if !lease_lost {
+            for mut member in pending_members.drain(..) {
+                seen_member_ids.insert(member.id.clone());
+                let member_ledger = Arc::clone(&ledger);
+                let member_objective = objective.clone();
+                let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
+                member.workspace_snapshot = Some(snapshot_member_workspace(
+                    &cwd,
+                    project_context.as_ref().map(|context| context.id.as_str()),
+                    project_context
+                        .as_ref()
+                        .map(|context| context.project_root.as_path()),
+                    if member
+                        .worktree_ref
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty())
+                    {
+                        "member_worktree"
+                    } else if running
+                        .execution_root
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty())
+                    {
+                        "team_execution_root"
+                    } else if project_context.is_some() {
+                        "project_binding_root"
+                    } else {
+                        "explicit_unbound"
                     },
-                )
-            });
-            handles.insert(member.id.clone(), (member, handle));
+                ));
+                member_ledger.save_member_run(&member)?;
+                member_ledger.fold_event(
+                    TeamRunEventSourceKind::Host,
+                    Some(member.id.clone()),
+                    "member_run",
+                    &member.id,
+                    "workspace_snapshot",
+                    &format!("member workspace resolved to {}", cwd.display()),
+                )?;
+                let handle_member = member.clone();
+                let member_live_sink = live_sink.clone();
+                let member_project_id = project_id.clone();
+                let member_project_selector = project_selector.clone();
+                let member_execution_space_id = execution_space_id.clone();
+                let member_turn_leases = Arc::clone(&turn_leases);
+                let handle = std::thread::spawn(move || {
+                    run_member_orchestration(
+                        &member_ledger,
+                        &member_objective,
+                        handle_member,
+                        MemberRuntimeContext {
+                            execution_space_id: member_execution_space_id,
+                            project_id: member_project_id,
+                            project_selector: member_project_selector,
+                            cwd,
+                            idle_timeout,
+                            live_sink: member_live_sink,
+                            turn_leases: member_turn_leases,
+                        },
+                    )
+                });
+                handles.insert(member.id.clone(), (member, handle));
+            }
         }
 
         let finished_member_ids = handles
@@ -14185,10 +14334,16 @@ pub(crate) fn drive_prepared_team_run(
             }
         }
 
-        pending_members = latest_member_runs_in_append_order(&ledger.store)?
-            .into_iter()
-            .filter(|member| member.team_run_id == run_id && !seen_member_ids.contains(&member.id))
-            .collect();
+        pending_members = if lease_lost {
+            Vec::new()
+        } else {
+            latest_member_runs_in_append_order(&ledger.store)?
+                .into_iter()
+                .filter(|member| {
+                    member.team_run_id == run_id && !seen_member_ids.contains(&member.id)
+                })
+                .collect()
+        };
         if !pending_members.is_empty() {
             ledger.fold_event(
                 TeamRunEventSourceKind::Host,
@@ -14211,6 +14366,10 @@ pub(crate) fn drive_prepared_team_run(
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+
+    if lease_lost {
+        return Err(supervisor_lease_lost_error(&run_id));
     }
 
     let current = latest_team_run(&ledger.store, &run_id)?;
@@ -14261,6 +14420,9 @@ fn run_member_orchestration(
             .ok()
             .flatten()
             .unwrap_or_else(|| member.clone());
+        if let Err(error) = ledger.require_supervisor_lease() {
+            return MemberOutcome::new(&current, current.status, error.to_string());
+        }
         let pending_close = match pending_member_close(&ledger.store, &current.id) {
             Ok(close) => close,
             Err(error) => {
@@ -14326,6 +14488,9 @@ fn run_member_orchestration(
                     .ok()
                     .flatten()
                     .unwrap_or(current);
+                if error.is_supervisor_lease_lost() {
+                    return MemberOutcome::new(&latest, latest.status, reason);
+                }
                 if latest.native_session.is_none() {
                     journal_member_failure(ledger, &latest, &reason);
                     return MemberOutcome::new(&latest, MemberRunStatus::Failed, reason);
@@ -14346,6 +14511,7 @@ fn run_codex_member(
     member: &MemberRun,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
+    ledger.require_supervisor_lease()?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
@@ -14355,6 +14521,7 @@ fn run_codex_member(
     let mut member_row = member.clone();
     member_row.status = MemberRunStatus::Starting;
     if let Some(profile) = member_row.provider_profile.as_mut() {
+        ledger.require_supervisor_lease()?;
         apply_provider_version(profile, provider_version_output("codex").ok());
     }
     member_row.last_event_at = Some(now_string());
@@ -14387,6 +14554,9 @@ fn run_codex_member(
         assignment.as_ref(),
     )?;
     let collaboration_env = envelope.environment();
+    // Fence immediately before app-server start/resume. Durable preparation
+    // above is replay-safe; the provider process is not.
+    ledger.require_supervisor_lease()?;
     let mut app_server = codex_app_server::CodexAppServerClient::spawn(
         cwd,
         codex_app_server::CodexAppServerSpawnOptions {
@@ -14461,6 +14631,7 @@ fn run_codex_member(
         prompt_text = contract_prompt(objective, &member_row, &assignment_body, &envelope);
     } else {
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            ledger.require_supervisor_lease()?;
             app_server.ensure_transport_alive()
         })? {
             IdleMemberWake::Messages(messages) => {
@@ -14502,6 +14673,7 @@ fn run_codex_member(
         let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let turn = {
             let _turn_lease = turn_leases.acquire();
+            ledger.require_supervisor_lease()?;
             run_codex_app_server_turn(
                 &mut app_server,
                 &prompt_text,
@@ -14524,6 +14696,11 @@ fn run_codex_member(
                 },
             )?
         };
+        // Fence the caller as well: no native-session, Handoff, action, or
+        // MemberRun write may follow a terminal transport result from a stale
+        // Supervisor generation.
+        ledger.require_supervisor_lease()?;
+        let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
@@ -14637,6 +14814,7 @@ fn run_codex_member(
         }
 
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            ledger.require_supervisor_lease()?;
             app_server.ensure_transport_alive()
         })? {
             IdleMemberWake::Messages(messages) => {
@@ -14756,6 +14934,32 @@ fn project_codex_team_event_live(
     }
 }
 
+fn supervisor_test_terminal_receive_barrier(provider: &str) -> CliResult<()> {
+    let provider = provider.to_ascii_uppercase();
+    let ready_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_READY");
+    let release_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let Some(ready) = std::env::var_os(&ready_key) else {
+        return Ok(());
+    };
+    let release = std::env::var_os(&release_key).ok_or_else(|| {
+        CliError::Usage(format!(
+            "{ready_key} requires the bounded test release selector {release_key}"
+        ))
+    })?;
+    fs::write(PathBuf::from(ready), b"terminal provider frame received")?;
+    let release = PathBuf::from(release);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !release.exists() {
+        if Instant::now() >= deadline {
+            return Err(CliError::Usage(format!(
+                "timed out waiting for {release_key}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
 /// Drive one turn on the persistent Codex app-server session. Unlike
 /// `codex exec`, this transport can inject user input into the active turn and
 /// interrupt it without killing an unrelated host process.
@@ -14773,6 +14977,7 @@ fn run_codex_app_server_turn(
         accepted_messages,
         lineage,
     } = context;
+    ledger.require_supervisor_lease()?;
     let mut turn_id = client.start_turn(prompt)?;
     for message in accepted_messages {
         mark_message_delivered(ledger, message, &member.id, &member.name, &turn_id)?;
@@ -14790,6 +14995,7 @@ fn run_codex_app_server_turn(
     let mut interrupt_requested = false;
     let mut close_requested = false;
     loop {
+        ledger.require_supervisor_lease()?;
         while let Ok(command) = controls.try_recv() {
             match command {
                 MemberControlCommand::Steer {
@@ -14805,7 +15011,10 @@ fn run_codex_app_server_turn(
                     .and_then(|handoff| {
                         let handoff_lineage =
                             handoff.map(|handoff| (handoff.correlation_id, handoff.id));
-                        client.steer(&turn_id, &content).and_then(|active_turn| {
+                        ledger
+                            .require_supervisor_lease()
+                            .and_then(|()| client.steer(&turn_id, &content))
+                            .and_then(|active_turn| {
                             turn_id = active_turn;
                             ledger.append_action(
                                 &member.id,
@@ -14830,21 +15039,24 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = client.interrupt(&turn_id).and_then(|()| {
-                        interrupt_requested = true;
-                        ledger.append_action(
-                            &member.id,
-                            "interrupt_requested",
-                            MemberActionStatus::Progress,
-                            "Codex interruption requested",
-                            &format!("{requested_by}: {reason}"),
-                        )?;
-                        Ok(serde_json::json!({
-                            "member_run_id": member.id,
-                            "turn_id": turn_id,
-                            "status": "interrupt_requested",
-                        }))
-                    });
+                    let result = ledger
+                        .require_supervisor_lease()
+                        .and_then(|()| client.interrupt(&turn_id))
+                        .and_then(|()| {
+                            interrupt_requested = true;
+                            ledger.append_action(
+                                &member.id,
+                                "interrupt_requested",
+                                MemberActionStatus::Progress,
+                                "Codex interruption requested",
+                                &format!("{requested_by}: {reason}"),
+                            )?;
+                            Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "turn_id": turn_id,
+                                "status": "interrupt_requested",
+                            }))
+                        });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Close {
@@ -14852,23 +15064,26 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = client.interrupt(&turn_id).and_then(|()| {
-                        interrupt_requested = true;
-                        close_requested = true;
-                        ledger.append_action(
-                            &member.id,
-                            "close_requested",
-                            MemberActionStatus::Progress,
-                            "Codex member close requested",
-                            &format!("{requested_by}: {reason}"),
-                        )?;
-                        Ok(serde_json::json!({
-                            "member_run_id": member.id,
-                            "turn_id": turn_id,
-                            "status": "close_requested",
-                            "provider_ack": "turn_interrupt_accepted",
-                        }))
-                    });
+                    let result = ledger
+                        .require_supervisor_lease()
+                        .and_then(|()| client.interrupt(&turn_id))
+                        .and_then(|()| {
+                            interrupt_requested = true;
+                            close_requested = true;
+                            ledger.append_action(
+                                &member.id,
+                                "close_requested",
+                                MemberActionStatus::Progress,
+                                "Codex member close requested",
+                                &format!("{requested_by}: {reason}"),
+                            )?;
+                            Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "turn_id": turn_id,
+                                "status": "close_requested",
+                                "provider_ack": "turn_interrupt_accepted",
+                            }))
+                        });
                     let _ = reply.send(result);
                 }
             }
@@ -14876,8 +15091,14 @@ fn run_codex_app_server_turn(
 
         match client.recv(Duration::from_millis(50)) {
             Ok(frame) => {
-                last_activity = Instant::now();
                 let method = frame.get("method").and_then(|value| value.as_str());
+                if method == Some("turn/completed") {
+                    supervisor_test_terminal_receive_barrier("codex")?;
+                }
+                // The receive above is blocking. Re-fence before interpreting
+                // even a terminal frame or projecting any semantic state.
+                ledger.require_supervisor_lease()?;
+                last_activity = Instant::now();
                 let params = frame.get("params").unwrap_or(&frame);
                 // app-server may emit notifications for another turn on the
                 // same thread (for example an interrupted turn flushing its
@@ -14970,7 +15191,9 @@ fn run_codex_app_server_turn(
                         });
                     }
                     _ if frame.get("id").is_some() && method.is_some() => {
+                        ledger.require_supervisor_lease()?;
                         let result = handle_codex_provider_request(ledger, member, &frame)?;
+                        ledger.require_supervisor_lease()?;
                         client.respond(frame.get("id").expect("checked"), result)?;
                     }
                     _ => {}
@@ -14978,6 +15201,7 @@ fn run_codex_app_server_turn(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if last_activity.elapsed() >= idle_timeout {
+                    ledger.require_supervisor_lease()?;
                     client.interrupt(&turn_id)?;
                     interrupt_requested = true;
                     last_activity = Instant::now();
@@ -15295,6 +15519,7 @@ fn run_claude_agent_sdk_team_member(
 ) -> CliResult<MemberOutcome> {
     use std::io::Write as _;
 
+    ledger.require_supervisor_lease()?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
@@ -15346,21 +15571,26 @@ fn run_claude_agent_sdk_team_member(
         assignment.as_ref(),
     )?;
 
-    let mut child = Command::new("node")
+    // Fence immediately before starting or resuming the provider-owned
+    // session. ProviderChildGuard guarantees a lease-loss return cannot orphan
+    // the runner after this point.
+    ledger.require_supervisor_lease()?;
+    let mut command = Command::new("node");
+    command
         .arg(&runner)
         .current_dir(cwd)
         .envs(envelope.environment().iter().cloned())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            CliError::Usage(format!(
-                "failed to spawn claude_agent_sdk runner for {}: {error}. \
+        .stderr(Stdio::piped());
+    isolate_provider_child_process_group(&mut command);
+    let mut child = ProviderChildGuard::new(command.spawn().map_err(|error| {
+        CliError::Usage(format!(
+            "failed to spawn claude_agent_sdk runner for {}: {error}. \
                  The runner needs `node` on PATH.",
-                member.name
-            ))
-        })?;
+            member.name
+        ))
+    })?);
 
     let mut stdin = child
         .stdin
@@ -15391,6 +15621,7 @@ fn run_claude_agent_sdk_team_member(
     });
 
     let mut send = |command: serde_json::Value| -> CliResult<()> {
+        ledger.require_supervisor_lease()?;
         stdin
             .write_all(format!("{command}\n").as_bytes())
             .and_then(|_| stdin.flush())
@@ -15470,6 +15701,7 @@ fn run_claude_agent_sdk_team_member(
     }
 
     loop {
+        ledger.require_supervisor_lease()?;
         while let Ok(command) = live_control.try_recv() {
             match command {
                 MemberControlCommand::Interrupt {
@@ -15549,6 +15781,9 @@ fn run_claude_agent_sdk_team_member(
                 break;
             }
         };
+        // The wait above is intentionally blocking. Re-fence before consuming
+        // its provider event or writing a response.
+        ledger.require_supervisor_lease()?;
 
         if let Some(line) = waited {
             let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -15764,9 +15999,10 @@ fn run_claude_agent_sdk_team_member(
     }
 
     drop(stdin);
-    let _ = child.wait();
+    let _ = child.wait_and_disarm();
     let _ = stdout_reader.join();
     let stderr_text = stderr_reader.join().unwrap_or_default();
+    ledger.require_supervisor_lease()?;
     if round == 0 {
         if closed_by_host {
             member_row.status = MemberRunStatus::Stopped;
@@ -16287,6 +16523,7 @@ fn run_kimi_member(
     member: &MemberRun,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
+    ledger.require_supervisor_lease()?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
@@ -16342,6 +16579,9 @@ fn run_kimi_member(
         active_assignment.as_ref(),
     )?;
     let collaboration_env = envelope.environment();
+    // Fence immediately before ACP session start/resume. A successor may
+    // reattach this same native session after this generation quiesces.
+    ledger.require_supervisor_lease()?;
     let mut client = kimi_acp::KimiAcpClient::spawn(
         cwd,
         member.model.as_deref(),
@@ -16448,6 +16688,7 @@ fn run_kimi_member(
         )?;
     } else {
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            ledger.require_supervisor_lease()?;
             client.ensure_transport_alive()
         })? {
             IdleMemberWake::Messages(messages) => {
@@ -16491,6 +16732,7 @@ fn run_kimi_member(
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let outcome = {
             let _turn_lease = turn_leases.acquire();
+            ledger.require_supervisor_lease()?;
             client.prompt(
                 &prompt_text,
                 idle_timeout,
@@ -16501,8 +16743,12 @@ fn run_kimi_member(
                     Ok(())
                 },
                 |update| mapper.handle(update),
-                |request| handle_kimi_provider_request(ledger, &member_row, request),
+                |request| {
+                    ledger.require_supervisor_lease()?;
+                    handle_kimi_provider_request(ledger, &member_row, request)
+                },
                 || {
+                    ledger.require_supervisor_lease()?;
                     let mut control = kimi_acp::PromptControl::Continue;
                     while let Ok(command) = live_control.try_recv() {
                         match command {
@@ -16555,6 +16801,11 @@ fn run_kimi_member(
                 },
             )?
         };
+        // `prompt` owns its blocking receive loop. Its terminal result can
+        // arrive after the last control callback, so barrier then fence before
+        // consuming the result or writing any semantic state.
+        supervisor_test_terminal_receive_barrier("kimi")?;
+        ledger.require_supervisor_lease()?;
         let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         let final_text = mapper.text().to_string();
@@ -16640,6 +16891,7 @@ fn run_kimi_member(
         }
 
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            ledger.require_supervisor_lease()?;
             client.ensure_transport_alive()
         })? {
             IdleMemberWake::Messages(messages) => {
@@ -33565,6 +33817,79 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn process_group_command(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        isolate_provider_child_process_group(&mut command);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_guard_kills_stale_active_process_group() {
+        let marker = std::env::temp_dir().join(format!(
+            "harness-provider-child-group-{}-{}",
+            std::process::id(),
+            current_unix_ms()
+        ));
+        let mut command = process_group_command(r#"sleep 30 & echo $! > "$1"; wait"#);
+        command.arg("provider-child-test").arg(&marker);
+        let child = command.spawn().expect("spawn provider child group");
+        let leader_pid = child.id();
+        let guard = ProviderChildGuard::new(child);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let descendant_pid = fs::read_to_string(&marker)
+            .expect("descendant pid marker")
+            .trim()
+            .parse::<u32>()
+            .expect("descendant pid");
+
+        drop(guard);
+
+        assert!(
+            !process_exists(leader_pid),
+            "group leader survived guard drop"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_exists(descendant_pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !process_exists(descendant_pid),
+            "provider descendant survived stale guard teardown"
+        );
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_runner_guard_disarms_after_normal_completion() {
+        let child = process_group_command("exit 0")
+            .spawn()
+            .expect("spawn normally completing provider child");
+        let pid = child.id();
+        let mut guard = ProviderChildGuard::new(child);
+
+        let status = guard.wait_and_disarm().expect("normal provider wait");
+
+        assert!(status.success());
+        assert!(!guard.armed, "normal wait must disarm teardown");
+        drop(guard);
+        assert!(
+            !process_exists(pid),
+            "normally reaped provider child survived"
+        );
+    }
 
     fn native_open_test_member(provider: &str, mode: &str, session_id: &str) -> MemberRun {
         MemberRun {
