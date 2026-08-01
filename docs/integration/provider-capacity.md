@@ -70,7 +70,7 @@ provider-neutral and execution-mode-specific:
 | --- | --- | --- | --- | --- |
 | `codex` · `codex_app_server` | `account/read` + `account/rateLimits/read` over the app-server stdio protocol | `available` \| `limited` \| `exhausted` \| `unauthorized` from the provider answer | Yes — every metered bucket in `rateLimitsByLimitId`, keyed by provider `limit_id` | Both RPCs are reads. The preflight completes `initialize` + `initialized` and stops: no `thread/start`, `thread/resume`, or `thread/name/set`, so no rollout and no billable turn. |
 | `claude` · `claude_agent_sdk` | Local auth metadata, observed runtime context, and an opt-in real request | `unknown` without `--canary`; `available` only from a canary that actually succeeded | **No.** Anthropic does not permit third-party products to surface claude.ai rate limits without prior approval (`apps/claude-member-runner/README.md`), so `windows` stays empty by contract. | The canary is a bounded `claude -p` request. It shares credentials and HTTP egress with the Agent SDK mode but is not the SDK runtime, and the snapshot's `detail` says so. |
-| `kimi` · `kimi_acp` | None | `unknown`, `evidence_source: not_exposed` | No | The reviewed ACP surface is `initialize` and `session/{new,resume,load,set_config_option,prompt,cancel,update,request_permission}`. None reports quota, so no number may be reported. Kimi capacity becomes observable only from a real terminal provider error. |
+| `kimi` · `kimi_acp` | None | `unknown`, `evidence_source: not_exposed` — always | No | The reviewed ACP surface is `initialize` and `session/{new,resume,load,set_config_option,prompt,cancel,update,request_permission}`. None reports quota. ACP also has no HTTP-status error channel, so a 403 is indistinguishable from any other JSON-RPC error and MUST NOT be inferred from its text. Kimi capacity has no observable source today. |
 | any other provider | None | `unknown`, `evidence_source: not_exposed` | No | An unregistered provider never inherits another provider's answer. |
 
 ### Codex Classification
@@ -95,11 +95,32 @@ observation under a different label.
 
 ### Terminal Provider Errors as Evidence
 
-Execution modes with no quota API can still become known-unavailable: a
-terminal `provider_error` this Harness already recorded is classified into
-`unauthorized` (401/403/forbidden/authenticate) or `exhausted`
-(429/rate limit/quota/usage limit). Anything else stays unclassified rather
-than becoming a gate, and only errors newer than the TTL are considered.
+A recorded terminal failure can make an account known-unavailable, but **only
+from provider-STRUCTURED metadata** — never from prose.
+
+The recorded `provider_error` action carries the transport's own fields in
+`MemberAction.provider_status` as `provider_terminal:<reason>:<http status>`.
+The classifier reads only that token: an exact HTTP status integer (401/403 →
+`unauthorized`, 429 → `exhausted`) and a closed reason vocabulary
+(`rate_limit`, `rate_limit_reached`, `usage_limit_reached`, `quota_exceeded`,
+`credits_depleted`, `auth_error`, `authentication_error`, `forbidden`,
+`unauthorized`). Anything else stays unclassified rather than becoming a gate.
+
+The action `summary` is never scanned. It embeds the MEMBER's own first line, so
+a member writing "fixed the 403 handler" would otherwise mark its account
+unauthorized; substring matching also cannot tell `403` from `1403`.
+
+Which modes can produce one:
+
+| Execution mode | Structured terminal metadata | Can gate a start |
+| --- | --- | --- |
+| `claude_agent_sdk` | Yes — `terminal_reason` + `api_error_status` from the SDK result | Yes |
+| `kimi_acp` | **No.** A 403 arrives as free-form JSON-RPC error text with no status field, and a real terminal failure is journalled as `action_type=error`, not `provider_error`. | No — Kimi capacity is always `unknown` |
+| `codex_app_server` | No — adapter error strings. It does not need one: it has a reviewed quota API. | No (uses the quota API instead) |
+
+The search walks backwards past rows it cannot classify, so a silent-round row
+sitting on top never buries a real 403 recorded moments earlier. Only failures
+newer than the TTL count.
 
 ## Start Guard
 
@@ -189,7 +210,7 @@ unknown rather than as healthy.
 | --- | --- |
 | Snapshot/state/freshness/decision rules | `crates/harness-core/src/lib.rs` (`capacity_*`, `fresh_known_unavailable_capacity_blocks_start`, `unknown_absent_and_stale_capacity_never_block_and_never_claim_available`) |
 | Codex payload parsing, thresholds, signed-out, no invented numbers | `crates/harness-cli/src/codex_app_server.rs` tests |
-| Claude proxy diagnosis, Kimi unknown, error classification, TTL expiry, empty report | `crates/harness-cli/src/main.rs` tests |
+| Claude proxy diagnosis, Kimi/Codex never fabricating capacity, structured-only classification, member text never classifying, URL redaction, TTL expiry, silence | `crates/harness-cli/src/main.rs` tests |
 | End-to-end preflight, start guard, queued-Assignment preservation, capacity-vs-compatibility separation | `crates/harness-cli/tests/provider_capacity_preflight.rs` |
 
 ## Known Limits

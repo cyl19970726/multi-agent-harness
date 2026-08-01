@@ -782,13 +782,24 @@ pub(crate) fn codex_capacity_snapshot(
     // LATEST constraining window: the account is usable again only once every
     // window that is holding it back has reopened.
     let reset_at = match state {
-        ProviderCapacityState::Exhausted | ProviderCapacityState::Limited => bucket_windows
-            .iter()
-            .filter(|window| window.used_percent.unwrap_or(0) >= LIMITED_USED_PERCENT)
-            .filter_map(|window| window.resets_at.as_deref())
-            .filter_map(harness_core::parse_harness_unix_ms)
-            .max()
-            .map(|millis| format!("unix-ms:{millis}")),
+        ProviderCapacityState::Exhausted | ProviderCapacityState::Limited => {
+            let latest_reset = |windows: &mut dyn Iterator<Item = &ProviderCapacityWindow>| {
+                windows
+                    .filter_map(|window| window.resets_at.as_deref())
+                    .filter_map(harness_core::parse_harness_unix_ms)
+                    .max()
+                    .map(|millis| format!("unix-ms:{millis}"))
+            };
+            latest_reset(
+                &mut bucket_windows
+                    .iter()
+                    .filter(|window| window.used_percent.unwrap_or(0) >= LIMITED_USED_PERCENT),
+            )
+            // A reached flag can arrive with low percentages. The bucket that
+            // produced the verdict still owns the reset, so fall back to its
+            // own windows rather than reporting no reset at all.
+            .or_else(|| latest_reset(&mut bucket_windows.iter()))
+        }
         _ => None,
     };
     let confidence = if state == ProviderCapacityState::Unknown {
@@ -1124,6 +1135,117 @@ mod tests {
         let snapshot = codex_capacity_snapshot("codex_app_server", &unusable, "unix-ms:1", 1);
         assert!(snapshot.windows.is_empty());
         assert_eq!(snapshot.state, ProviderCapacityState::Unknown);
+    }
+
+    /// The VERBATIM payload shape captured from `codex-cli 0.145.0` by driving
+    /// `initialize` + `initialized` + the two account reads over stdio. Kept
+    /// whole — extra keys included — so a regression is exercised against the
+    /// real wire shape, not a convenience subset.
+    fn live_multi_bucket_payload() -> serde_json::Value {
+        serde_json::json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "limitName": null,
+                "primary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1786161121i64},
+                "secondary": null,
+                "credits": {"hasCredits": false, "unlimited": false, "balance": "0"},
+                "individualLimit": null,
+                "spendControlReached": false,
+                "planType": "pro",
+                "rateLimitReachedType": null
+            },
+            "rateLimitsByLimitId": {
+                "codex_bengalfox": {
+                    "limitId": "codex_bengalfox",
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1786177280i64},
+                    "secondary": null,
+                    "credits": null,
+                    "individualLimit": null,
+                    "spendControlReached": null,
+                    "planType": "pro",
+                    "rateLimitReachedType": null
+                },
+                "codex": {
+                    "limitId": "codex",
+                    "limitName": null,
+                    "primary": {"usedPercent": 3, "windowDurationMins": 10080, "resetsAt": 1786161121i64},
+                    "secondary": null,
+                    "credits": {"hasCredits": false, "unlimited": false, "balance": "0"},
+                    "individualLimit": null,
+                    "spendControlReached": false,
+                    "planType": "pro",
+                    "rateLimitReachedType": null
+                }
+            },
+            "rateLimitResetCredits": {"availableCount": 0, "credits": []}
+        })
+    }
+
+    #[test]
+    fn the_real_live_multi_bucket_payload_classifies_from_the_account_bucket() {
+        let read = CodexAccountCapacityRead {
+            account: serde_json::json!({
+                "account": {"type": "chatgpt", "email": "operator@example.com", "planType": "pro"},
+                "requiresOpenaiAuth": true
+            }),
+            rate_limits: live_multi_bucket_payload(),
+        };
+
+        let snapshot = codex_capacity_snapshot("codex_app_server", &read, "unix-ms:1000", 1_000);
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Available);
+        assert_eq!(snapshot.account.plan.as_deref(), Some("pro"));
+        // Both real buckets are reported, sorted and keyed by provider limit id.
+        let labels: Vec<&str> = snapshot
+            .windows
+            .iter()
+            .map(|window| window.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["codex.primary", "codex_bengalfox.primary"]);
+        assert_eq!(snapshot.reset_at, None, "an available account has no reset");
+
+        // Saturate ONLY the per-model bucket in that same real payload.
+        let mut spark_spent = read.rate_limits.clone();
+        spark_spent["rateLimitsByLimitId"]["codex_bengalfox"]["primary"]["usedPercent"] =
+            serde_json::json!(100);
+        spark_spent["rateLimitsByLimitId"]["codex_bengalfox"]["rateLimitReachedType"] =
+            serde_json::json!("rate_limit_reached");
+        let snapshot = codex_capacity_snapshot(
+            "codex_app_server",
+            &CodexAccountCapacityRead {
+                account: read.account.clone(),
+                rate_limits: spark_spent,
+            },
+            "unix-ms:1000",
+            1_000,
+        );
+        assert_eq!(
+            snapshot.state,
+            ProviderCapacityState::Available,
+            "a spent per-model bucket must not refuse an account at 3%: {:?}",
+            snapshot.detail
+        );
+
+        // Saturate the ACCOUNT bucket in the same real payload.
+        let mut account_spent = read.rate_limits.clone();
+        account_spent["rateLimits"]["rateLimitReachedType"] =
+            serde_json::json!("rate_limit_reached");
+        let snapshot = codex_capacity_snapshot(
+            "codex_app_server",
+            &CodexAccountCapacityRead {
+                account: read.account.clone(),
+                rate_limits: account_spent,
+            },
+            "unix-ms:1000",
+            1_000,
+        );
+        assert_eq!(snapshot.state, ProviderCapacityState::Exhausted);
+        assert_eq!(
+            snapshot.reset_at.as_deref(),
+            Some("unix-ms:1786161121000"),
+            "the reset comes from the account bucket's own window"
+        );
     }
 
     #[test]

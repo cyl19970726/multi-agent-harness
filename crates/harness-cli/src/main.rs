@@ -10335,15 +10335,17 @@ fn redact_url_to_origin(raw: &str) -> String {
         Some((scheme, rest)) => (Some(scheme), rest),
         None => (None, trimmed),
     };
-    // Everything before `@` is userinfo; everything after the first `/`, `?`,
-    // or `#` is a path/query that may carry a token.
-    let authority = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+    // Cut the authority FIRST (RFC 3986: it ends at the first `/`, `?`, or
+    // `#`), then strip userinfo INSIDE it. Searching the whole string for `@`
+    // would mis-parse `https://host/p?email=a@b.com` as host `b.com`, dropping
+    // the real origin and echoing part of the query.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let redacted_userinfo = authority.contains('@');
     let host = authority
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(authority)
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
         .trim();
-    let redacted_userinfo = rest.contains('@');
     let origin = match scheme {
         Some(scheme) if !host.is_empty() => format!("{scheme}://{host}"),
         _ if !host.is_empty() => host.to_string(),
@@ -10721,44 +10723,101 @@ fn provider_capacity_probe(
     }
 }
 
-/// Classify a terminal provider error into a capacity state.
+/// A provider-STRUCTURED terminal failure: fields the provider transport
+/// itself reported, never prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderTerminalFailure {
+    /// The provider's own terminal reason token (for example `api_error`).
+    reason: String,
+    /// The provider's own HTTP status, when the transport reported one.
+    http_status: Option<i64>,
+}
+
+/// Prefix of the canonical token stored in `MemberAction.provider_status`.
+const PROVIDER_TERMINAL_STATUS_PREFIX: &str = "provider_terminal";
+
+impl ProviderTerminalFailure {
+    /// `provider_terminal:<reason>:<http status or ->`.
+    fn to_provider_status(&self) -> String {
+        let status = self
+            .http_status
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        format!(
+            "{PROVIDER_TERMINAL_STATUS_PREFIX}:{}:{status}",
+            self.reason.trim()
+        )
+    }
+
+    fn parse(provider_status: &str) -> Option<Self> {
+        let rest = provider_status.strip_prefix(PROVIDER_TERMINAL_STATUS_PREFIX)?;
+        // Split from the RIGHT: the status is the last field, so a reason that
+        // itself contains `:` stays intact.
+        let (reason, status) = rest.strip_prefix(':')?.rsplit_once(':')?;
+        Some(Self {
+            reason: reason.to_string(),
+            http_status: status.parse::<i64>().ok(),
+        })
+    }
+}
+
+/// Reasons a provider transport reports for a spent account.
+const PROVIDER_EXHAUSTED_REASONS: &[&str] = &[
+    "rate_limit",
+    "rate_limit_reached",
+    "usage_limit_reached",
+    "quota_exceeded",
+    "credits_depleted",
+];
+
+/// Reasons a provider transport reports for a rejected credential.
+const PROVIDER_UNAUTHORIZED_REASONS: &[&str] = &[
+    "auth_error",
+    "authentication_error",
+    "forbidden",
+    "unauthorized",
+];
+
+/// Classify a provider-STRUCTURED terminal failure into a capacity state.
 ///
-/// This is the only capacity signal available for execution modes with no
-/// quota API. It reads a message Harness already recorded; it never guesses
-/// from silence, and an unrecognised failure stays `None` rather than becoming
-/// a gate.
-fn capacity_state_from_provider_error(message: &str) -> Option<(ProviderCapacityState, String)> {
-    let lowered = message.to_lowercase();
-    if [
-        "429",
-        "rate limit",
-        "rate_limit",
-        "quota",
-        "usage limit",
-        "usage_limit",
-    ]
-    .iter()
-    .any(|needle| lowered.contains(needle))
-    {
+/// Only the transport's own fields are read: an exact HTTP status integer and a
+/// closed reason vocabulary. Free text is never scanned, because the recorded
+/// summary also carries the MEMBER's own first line — a member writing "fixed
+/// the 403 handler" must not mark its account unauthorized — and because
+/// substring matching cannot tell `403` from `1403`. An unrecognised failure
+/// stays `None` rather than becoming a gate.
+fn capacity_state_from_provider_terminal(
+    failure: &ProviderTerminalFailure,
+) -> Option<(ProviderCapacityState, String)> {
+    let reason = failure.reason.trim().to_ascii_lowercase();
+    match failure.http_status {
+        Some(429) => {
+            return Some((
+                ProviderCapacityState::Exhausted,
+                "the provider transport reported HTTP 429".to_string(),
+            ))
+        }
+        Some(401) | Some(403) => {
+            return Some((
+                ProviderCapacityState::Unauthorized,
+                format!(
+                    "the provider transport reported HTTP {}",
+                    failure.http_status.unwrap_or_default()
+                ),
+            ))
+        }
+        _ => {}
+    }
+    if PROVIDER_EXHAUSTED_REASONS.contains(&reason.as_str()) {
         return Some((
             ProviderCapacityState::Exhausted,
-            "a terminal provider error reported a usage limit".to_string(),
+            format!("the provider transport reported terminal reason {reason}"),
         ));
     }
-    if [
-        "403",
-        "401",
-        "forbidden",
-        "unauthorized",
-        "not allowed",
-        "authenticate",
-    ]
-    .iter()
-    .any(|needle| lowered.contains(needle))
-    {
+    if PROVIDER_UNAUTHORIZED_REASONS.contains(&reason.as_str()) {
         return Some((
             ProviderCapacityState::Unauthorized,
-            "a terminal provider error reported a rejected credential".to_string(),
+            format!("the provider transport reported terminal reason {reason}"),
         ));
     }
     None
@@ -10787,13 +10846,16 @@ fn capacity_preflight_enabled() -> bool {
     )
 }
 
-/// Derive a capacity snapshot from the terminal provider errors this member
-/// already recorded.
+/// Derive a capacity snapshot from the STRUCTURED terminal failures this
+/// member already recorded.
 ///
-/// Execution modes with no quota API (Kimi ACP, and Claude, whose rate limits
-/// may not be surfaced) can only become "known unavailable" this way. Only
-/// errors newer than the TTL are considered, so a recovered account is not
-/// gated by yesterday's 403.
+/// Only an execution mode whose transport reports structured terminal metadata
+/// can produce one of these. Today that is `claude_agent_sdk`
+/// (`terminal_reason` + `api_error_status`). Kimi ACP surfaces a 403 as
+/// free-form JSON-RPC error text with no status field, and Codex app-server
+/// errors arrive as adapter strings; neither is classified, so neither
+/// fabricates a capacity verdict. Only failures newer than the TTL count, so a
+/// recovered account is not gated by yesterday's 403.
 fn capacity_from_recorded_provider_errors(
     ledger: &TeamRunLedger,
     member: &MemberRun,
@@ -10812,8 +10874,12 @@ fn capacity_from_recorded_provider_errors(
     ))
 }
 
-/// Pure selection half of [`capacity_from_recorded_provider_errors`]: newest
-/// classifiable `provider_error` for this member that is still inside the TTL.
+/// Pure selection half of [`capacity_from_recorded_provider_errors`]: the
+/// newest CLASSIFIABLE structured failure for this member inside the TTL.
+///
+/// The search walks backwards and keeps going past rows it cannot classify —
+/// silent-round rows carry no structured metadata at all, and one of them
+/// sitting on top must never bury a real 403 recorded moments earlier.
 fn capacity_from_provider_error_actions(
     actions: &[MemberAction],
     member_run_id: &str,
@@ -10822,9 +10888,6 @@ fn capacity_from_provider_error_actions(
     now_unix_ms: u64,
     ttl_ms: u64,
 ) -> Option<ProviderCapacitySnapshot> {
-    // Classify INSIDE the search. Selecting the newest provider_error first and
-    // classifying afterwards would let one unclassifiable row (an empty-report
-    // round, say) hide a real 403 recorded seconds earlier.
     let (action, (state, detail)) = actions
         .iter()
         .rev()
@@ -10835,8 +10898,10 @@ fn capacity_from_provider_error_actions(
                     .is_some_and(|stamp| stamp <= now_unix_ms && now_unix_ms - stamp <= ttl_ms)
         })
         .find_map(|action| {
-            capacity_state_from_provider_error(&action.summary)
-                .map(|classified| (action, classified))
+            // Structured transport metadata ONLY. `summary` also carries the
+            // member's own first line and must never reach a classifier.
+            let failure = ProviderTerminalFailure::parse(action.provider_status.as_deref()?)?;
+            capacity_state_from_provider_terminal(&failure).map(|classified| (action, classified))
         })?;
     let observed_unix_ms = parse_unix_ms_timestamp(&action.started_at).unwrap_or(now_unix_ms);
     Some(ProviderCapacitySnapshot {
@@ -14672,6 +14737,28 @@ impl TeamRunLedger {
         title: &str,
         summary: &str,
     ) -> CliResult<MemberAction> {
+        self.append_action_with_provider_status(
+            member_run_id,
+            action_type,
+            status,
+            title,
+            summary,
+            None,
+        )
+    }
+
+    /// `provider_status` carries the transport's OWN terminal metadata in a
+    /// machine-readable token. It is the only field a capacity classifier may
+    /// read: `summary` is prose and also contains the member's own text.
+    fn append_action_with_provider_status(
+        &self,
+        member_run_id: &str,
+        action_type: &str,
+        status: MemberActionStatus,
+        title: &str,
+        summary: &str,
+        provider_status: Option<String>,
+    ) -> CliResult<MemberAction> {
         let _guard = self.write_lock();
         let seq = self
             .store
@@ -14696,7 +14783,7 @@ impl TeamRunLedger {
             provider_call_id: None,
             action_type: action_type.to_string(),
             status,
-            provider_status: None,
+            provider_status,
             semantic_status: None,
             title: title.to_string(),
             summary: summary.to_string(),
@@ -15764,6 +15851,7 @@ fn run_codex_member(
                     round,
                     handoffs_before_round: &handoffs_before_round,
                     provider_error: None,
+                    provider_terminal: None,
                 },
             )?;
 
@@ -16868,21 +16956,26 @@ fn run_claude_agent_sdk_team_member(
                     // `isError: true` (issue #293). The runner forwards the
                     // honest fields; without this check the ledger would record
                     // a provider-down round as an ordinary completed round.
-                    let provider_error =
+                    let provider_terminal =
                         if data.get("isError").and_then(|v| v.as_bool()) == Some(true) {
-                            let terminal_reason = data
-                                .get("terminalReason")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown_provider_error");
-                            let status = data
-                                .get("apiErrorStatus")
-                                .and_then(|v| v.as_i64())
-                                .map(|code| format!(" (HTTP {code})"))
-                                .unwrap_or_default();
-                            Some(format!("{terminal_reason}{status}"))
+                            Some(ProviderTerminalFailure {
+                                reason: data
+                                    .get("terminalReason")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown_provider_error")
+                                    .to_string(),
+                                http_status: data.get("apiErrorStatus").and_then(|v| v.as_i64()),
+                            })
                         } else {
                             None
                         };
+                    let provider_error = provider_terminal.as_ref().map(|failure| {
+                        let status = failure
+                            .http_status
+                            .map(|code| format!(" (HTTP {code})"))
+                            .unwrap_or_default();
+                        format!("{}{status}", failure.reason)
+                    });
                     let trigger_message_id = data
                         .get("triggerMessageId")
                         .and_then(|value| value.as_str());
@@ -16906,6 +16999,7 @@ fn run_claude_agent_sdk_team_member(
                         round,
                         handoffs_before_round: &handoffs_before_round,
                         provider_error: provider_error.as_deref(),
+                        provider_terminal: provider_terminal.as_ref(),
                     };
                     let (status, summary) = record_member_round(ledger, &mut member_row, &record)?;
                     final_status = status;
@@ -17187,6 +17281,10 @@ struct MemberRoundRecord<'a> {
     /// Set when the provider reported the turn itself as failed (issue #293).
     /// `final_text` then holds provider error text, not a member report.
     provider_error: Option<&'a str>,
+    /// The transport's OWN terminal fields, when this execution mode reports
+    /// them. Prose is never a substitute: this is the only input a capacity
+    /// classifier is allowed to read.
+    provider_terminal: Option<&'a ProviderTerminalFailure>,
 }
 
 enum RoundHandoffRecord {
@@ -17319,12 +17417,15 @@ fn record_provider_error_round(
         "provider turn failed: {provider_error}: {}",
         record.final_text.lines().next().unwrap_or("")
     );
-    let action = ledger.append_action(
+    let action = ledger.append_action_with_provider_status(
         &member_row.id,
         "provider_error",
         MemberActionStatus::Failed,
         &format!("round {} provider_error", record.round),
         &detail,
+        record
+            .provider_terminal
+            .map(ProviderTerminalFailure::to_provider_status),
     )?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
@@ -17965,6 +18066,7 @@ fn run_kimi_member(
                     round,
                     handoffs_before_round: &handoffs_before_round,
                     provider_error: None,
+                    provider_terminal: None,
                 },
             )?;
             ledger.fold_event(
@@ -36938,6 +37040,7 @@ package:com.tencent.mm
                 round: 2,
                 handoffs_before_round: &handoffs_before_round,
                 provider_error: None,
+                provider_terminal: None,
             },
         )
         .expect("record fallback");
@@ -37215,6 +37318,49 @@ package:com.tencent.mm
             redact_url_to_origin("localhost,127.0.0.1,.local"),
             "localhost,127.0.0.1,.local"
         );
+        // An `@` AFTER the authority belongs to the path/query, not to
+        // userinfo. Searching the whole string for it mis-parsed the origin
+        // and echoed part of the query back out.
+        assert_eq!(
+            redact_url_to_origin("https://gw.example.com/v1?user=alice@corp.com"),
+            "https://gw.example.com"
+        );
+        assert_eq!(
+            redact_url_to_origin("https://gw.example.com/tenants/a@b/keys/SECRET"),
+            "https://gw.example.com"
+        );
+        // Userinfo AND a path secret together.
+        assert_eq!(
+            redact_url_to_origin("https://u:p@gw.example.com/v1/KEY123?t=z@1"),
+            "https://gw.example.com (credentials redacted)"
+        );
+        // A base URL whose secret is the whole path keeps only the origin.
+        assert_eq!(
+            redact_url_to_origin("https://gw.example.com/sk-live-abcdef"),
+            "https://gw.example.com"
+        );
+        for (raw, secrets) in [
+            (
+                "https://u:p@gw.example.com/v1/KEY123?t=z@1",
+                ["KEY123", "u:p"].as_slice(),
+            ),
+            (
+                "https://gw.example.com/tenants/a@b/keys/SECRET",
+                ["SECRET"].as_slice(),
+            ),
+            (
+                "https://gw.example.com/sk-live-abcdef",
+                ["sk-live-abcdef"].as_slice(),
+            ),
+        ] {
+            let redacted = redact_url_to_origin(raw);
+            for secret in secrets {
+                assert!(
+                    !redacted.contains(secret),
+                    "redaction leaked {secret} from {raw} as {redacted}"
+                );
+            }
+        }
         for secret in ["s3cret", "abcd1234"] {
             for raw in [
                 "http://alice:s3cret@corp-proxy:8080",
@@ -37284,24 +37430,124 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn provider_error_text_classifies_only_reviewed_shapes() {
+    fn only_provider_structured_terminal_metadata_classifies_capacity() {
+        let classify = |reason: &str, http_status: Option<i64>| {
+            capacity_state_from_provider_terminal(&ProviderTerminalFailure {
+                reason: reason.into(),
+                http_status,
+            })
+            .map(|(state, _)| state)
+        };
+
+        // Exact transport status integers and a closed reason vocabulary.
         assert_eq!(
-            capacity_state_from_provider_error("api_error (HTTP 403)").map(|(state, _)| state),
+            classify("api_error", Some(403)),
             Some(ProviderCapacityState::Unauthorized)
         );
         assert_eq!(
-            capacity_state_from_provider_error("kimi acp session/prompt rejected: quota exceeded")
-                .map(|(state, _)| state),
+            classify("api_error", Some(429)),
             Some(ProviderCapacityState::Exhausted)
         );
         assert_eq!(
-            capacity_state_from_provider_error("transport disconnected"),
-            None,
-            "an unrecognised failure must never become a capacity gate"
+            classify("usage_limit_reached", None),
+            Some(ProviderCapacityState::Exhausted)
+        );
+        assert_eq!(
+            classify("auth_error", None),
+            Some(ProviderCapacityState::Unauthorized)
+        );
+
+        // A neighbouring status is a different status, not a near-match: the
+        // old substring rule read "1403" and "4030" as 403.
+        for status in [1403, 4030, 500, 404, 200] {
+            assert_eq!(
+                classify("api_error", Some(status)),
+                None,
+                "HTTP {status} is not a capacity verdict"
+            );
+        }
+        assert_eq!(classify("transport_disconnected", None), None);
+        assert_eq!(classify("unknown_provider_error", None), None);
+    }
+
+    #[test]
+    fn member_authored_text_can_never_produce_a_capacity_verdict() {
+        // The recorded summary embeds the MEMBER's own first line, so a member
+        // writing about a 403 must not mark its account unauthorized, and a
+        // member discussing quotas must not mark it exhausted.
+        let hostile = [
+            "provider turn failed: empty_final_report: fixed the 403 handler and the quota math",
+            "provider turn failed: empty_final_report: rate limit docs updated; 401/403 covered",
+            "provider turn failed: empty_final_report: usage limit table now lists 429",
+        ];
+        let actions: Vec<MemberAction> = hostile
+            .iter()
+            .enumerate()
+            .map(|(index, summary)| {
+                provider_error_action(
+                    "member-run-1",
+                    &format!("unix-ms:{}", 1000 + index),
+                    summary,
+                    None,
+                )
+            })
+            .collect();
+
+        assert!(
+            capacity_from_provider_error_actions(
+                &actions,
+                "member-run-1",
+                "claude",
+                "claude_agent_sdk",
+                1_500,
+                1_000,
+            )
+            .is_none(),
+            "prose must never reach a capacity classifier"
         );
     }
 
-    fn provider_error_action(member_run_id: &str, started_at: &str, summary: &str) -> MemberAction {
+    #[test]
+    fn kimi_and_codex_failures_never_fabricate_capacity() {
+        // Kimi ACP surfaces a 403 as free-form JSON-RPC error text with no
+        // status field, and Codex app-server errors arrive as adapter strings.
+        // Neither carries structured metadata, so neither may gate a start.
+        let actions = vec![
+            provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: kimi acp session/prompt rejected: {\"code\":-32603,\
+                 \"message\":\"403 quota exceeded\"}",
+                None,
+            ),
+            provider_error_action(
+                "member-run-1",
+                "unix-ms:1100",
+                "provider turn failed: codex app-server turn/start failed: 429 too many requests",
+                None,
+            ),
+        ];
+
+        assert!(
+            capacity_from_provider_error_actions(
+                &actions,
+                "member-run-1",
+                "kimi",
+                "kimi_acp",
+                1_500,
+                1_000,
+            )
+            .is_none(),
+            "an execution mode with no structured terminal metadata stays unknown"
+        );
+    }
+
+    fn provider_error_action(
+        member_run_id: &str,
+        started_at: &str,
+        summary: &str,
+        provider_status: Option<&str>,
+    ) -> MemberAction {
         MemberAction {
             id: generated_id("mact"),
             seq: 1,
@@ -37311,7 +37557,7 @@ package:com.tencent.mm
             provider_call_id: None,
             action_type: "provider_error".into(),
             status: MemberActionStatus::Failed,
-            provider_status: None,
+            provider_status: provider_status.map(str::to_string),
             semantic_status: None,
             title: "round 1 provider_error".into(),
             summary: summary.into(),
@@ -37321,12 +37567,22 @@ package:com.tencent.mm
         }
     }
 
+    /// The canonical token a Claude Agent SDK 403 round writes.
+    fn claude_403_status() -> String {
+        ProviderTerminalFailure {
+            reason: "api_error".into(),
+            http_status: Some(403),
+        }
+        .to_provider_status()
+    }
+
     #[test]
     fn recorded_provider_errors_expire_with_the_capacity_ttl() {
         let actions = vec![provider_error_action(
             "member-run-1",
             "unix-ms:1000",
             "provider turn failed: api_error (HTTP 403)",
+            Some(&claude_403_status()),
         )];
 
         let fresh = capacity_from_provider_error_actions(
@@ -37374,19 +37630,37 @@ package:com.tencent.mm
         // rows. Selecting the NEWEST row and classifying afterwards would let
         // one of them bury a real 403 recorded seconds earlier, and the member
         // would start and burn its Assignment on a rejected credential.
-        let actions = vec![
-            provider_error_action(
+        // Three unclassifiable rows stacked on top of the real failure: the
+        // search must walk PAST all of them, not stop at the newest.
+        let mut actions = vec![provider_error_action(
+            "member-run-1",
+            "unix-ms:1000",
+            "provider turn failed: api_error (HTTP 403): ",
+            Some(&claude_403_status()),
+        )];
+        for (offset, summary) in [
+            "provider turn failed: empty_final_report (the provider ended the round without an \
+             agent message): ",
+            "provider turn failed: unknown_provider_error: transport disconnected",
+            "provider turn failed: empty_final_report: ",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let structured = (offset == 1).then(|| {
+                ProviderTerminalFailure {
+                    reason: "unknown_provider_error".into(),
+                    http_status: None,
+                }
+                .to_provider_status()
+            });
+            actions.push(provider_error_action(
                 "member-run-1",
-                "unix-ms:1000",
-                "provider turn failed: api_error (HTTP 403): ",
-            ),
-            provider_error_action(
-                "member-run-1",
-                "unix-ms:1200",
-                "provider turn failed: empty_final_report (the provider ended the round without \
-                 an agent message): ",
-            ),
-        ];
+                &format!("unix-ms:{}", 1_100 + offset),
+                summary,
+                structured.as_deref(),
+            ));
+        }
 
         let snapshot = capacity_from_provider_error_actions(
             &actions,
