@@ -10971,17 +10971,40 @@ fn member_preflight_command(args: &[String]) -> CliResult<()> {
         .iter()
         .filter(|row| row.pointer("/start_decision/decision") == Some(&serde_json::json!("block")))
         .count();
-    print_json(&serde_json::json!({
-        "command": "harness member preflight",
-        "ok": true,
-        "result": {
-            "generated_at": now_string(),
-            "ttl_ms": ttl_ms,
-            "canary": options.canary,
-            "cwd": cwd,
-            "providers": rows,
-        },
-    }))?;
+    if has_flag(args, "--json") {
+        print_json(&serde_json::json!({
+            "command": "harness member preflight",
+            "ok": true,
+            "result": {
+                "generated_at": now_string(),
+                "ttl_ms": ttl_ms,
+                "canary": options.canary,
+                "cwd": cwd,
+                "providers": rows,
+            },
+        }))?;
+    } else {
+        // One line per provider. Capacity and compatibility stay in separate
+        // columns here too, so the operator never reads one as the other.
+        for row in &rows {
+            let text = |pointer: &str| {
+                row.pointer(pointer)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            };
+            println!(
+                "{}\t{}\tcapacity={} ({}, {})\tstart={}\tcompatibility={}",
+                text("/provider"),
+                text("/execution_mode"),
+                text("/capacity/state"),
+                text("/capacity/evidence_source"),
+                text("/capacity_freshness"),
+                text("/start_decision/decision"),
+                text("/compatibility/status"),
+            );
+        }
+    }
     if has_flag(args, "--fail-on-unavailable") && blocked > 0 {
         return Err(CliError::Usage(format!(
             "{blocked} provider(s) reported a fresh known-unavailable capacity state; inspect the JSON report"
