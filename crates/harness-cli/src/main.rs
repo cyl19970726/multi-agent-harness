@@ -26,11 +26,11 @@ use harness_core::{
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
     ProviderInteractionMode, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
     TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
+    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{
     HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
@@ -10669,6 +10669,7 @@ fn create_team_run(
             body: member_assignment_body(member, member_run, objective),
             correlation_id: generated_id("corr"),
             causation_id: None,
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![queued_team_delivery(&member_run.id)],
             created_at: now_string(),
@@ -10818,6 +10819,7 @@ fn add_team_run_member(
         None,
         None,
         origin_wave_id,
+        None,
     )?;
     Ok((next, member_run, message))
 }
@@ -11095,6 +11097,7 @@ fn send_team_message(
     correlation_id: Option<String>,
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
+    response_intent: Option<TeamMessageResponseIntent>,
 ) -> CliResult<TeamMessage> {
     send_team_message_as(
         store,
@@ -11113,6 +11116,7 @@ fn send_team_message(
         correlation_id,
         causation_id,
         origin_wave_id,
+        response_intent,
     )
 }
 
@@ -11127,6 +11131,7 @@ fn send_team_message_as(
     correlation_id: Option<String>,
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
+    response_intent: Option<TeamMessageResponseIntent>,
 ) -> CliResult<TeamMessage> {
     let message = prepare_team_message_as(
         store,
@@ -11139,6 +11144,7 @@ fn send_team_message_as(
         causation_id,
         origin_wave_id,
         TeamMessageDeliveryMode::Routed,
+        response_intent,
     )?;
     publish_team_message(store, &sender, message)
 }
@@ -11155,6 +11161,7 @@ fn prepare_team_message_as(
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
     delivery_mode: TeamMessageDeliveryMode,
+    response_intent: Option<TeamMessageResponseIntent>,
 ) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
@@ -11287,6 +11294,7 @@ fn prepare_team_message_as(
         body: body.to_string(),
         correlation_id,
         causation_id,
+        response_intent,
         evidence_refs: Vec::new(),
         deliveries: to_member_ids
             .iter()
@@ -11477,6 +11485,9 @@ fn route_agent_inbox_messages(
             body: source.content.clone(),
             correlation_id,
             causation_id: None,
+            // Kind-derived intent: routed Assignments require a response
+            // round; routed ordinary mail stays informational.
+            response_intent: None,
             evidence_refs: source
                 .evidence_ids
                 .iter()
@@ -11911,6 +11922,16 @@ fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
         )));
     }
     Ok(kind)
+}
+
+/// Parse an explicit team message response intent from its snake_case wire
+/// name (HTTP API and MCP tool surface; the CLI uses --response-required).
+fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseIntent> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown team message response intent `{s}` (informational|response_required)"
+        ))
+    })
 }
 
 fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
@@ -12447,6 +12468,11 @@ fn team_run_command(
             let from = required(args, "--from")?;
             let kind = parse_team_message_kind(&required(args, "--kind")?)?;
             let body = required(args, "--body")?;
+            // Explicit response intent (ADR 0046 §4): ordinary `message` mail
+            // defaults to informational and never starts a provider round on
+            // its own; --response-required marks mail that must.
+            let response_intent = has_flag(args, "--response-required")
+                .then_some(TeamMessageResponseIntent::ResponseRequired);
             let message = if let Some(actor_kind) = value(args, "--actor-kind") {
                 send_team_message_as(
                     store,
@@ -12463,6 +12489,7 @@ fn team_run_command(
                     value(args, "--correlation-id"),
                     value(args, "--causation-id"),
                     value(args, "--origin-wave-id"),
+                    response_intent,
                 )?
             } else {
                 // Compatibility path for existing Host/member scripts. New
@@ -12477,6 +12504,7 @@ fn team_run_command(
                     value(args, "--correlation-id"),
                     value(args, "--causation-id"),
                     value(args, "--origin-wave-id"),
+                    response_intent,
                 )?
             };
             if json {
@@ -12500,8 +12528,13 @@ fn team_run_command(
                         .map(|profile| serde_snake_label(&profile.ordinary_message_boundary))
                         .unwrap_or_else(|| "unknown".to_string());
                     if boundary == "next_round_batched" {
+                        let pending = if message.requires_response() {
+                            "provider receipt pending until the next safe provider round"
+                        } else {
+                            "informational mail: batched into the next response-required provider round"
+                        };
                         eprintln!(
-                            "delivery durable only: {} queued for {} ({}); provider receipt pending until the next safe provider round",
+                            "delivery durable only: {} queued for {} ({}); {pending}",
                             message.id, member.name, boundary
                         );
                     }
@@ -13860,9 +13893,11 @@ impl TeamRunLedger {
             .collect())
     }
 
-    /// Inbound mail that the provider has not accepted yet. `claimed` remains
-    /// uncertain until a provider receipt or explicit reconciliation, so it
-    /// fences semantic Handoff just like `queued`.
+    /// Inbound response-required mail that the provider has not accepted yet.
+    /// `claimed` remains uncertain until a provider receipt or explicit
+    /// reconciliation, so it fences semantic Handoff just like `queued`.
+    /// Informational mail never starts a round on its own, so it does not
+    /// fence either (ADR 0046 §4).
     fn pending_messages_for_correlation(
         &self,
         member_id: &str,
@@ -13874,6 +13909,7 @@ impl TeamRunLedger {
             .filter(|message| {
                 message.from_member_id != member_id
                     && message.correlation_id == correlation_id
+                    && message.requires_response()
                     && message.deliveries.iter().any(|delivery| {
                         delivery.member_id == member_id
                             && matches!(
@@ -13906,6 +13942,26 @@ impl TeamRunLedger {
 
     fn claim_queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
         let queued = self.queued_messages_for(member_id)?;
+        let mut claimed = Vec::with_capacity(queued.len());
+        for message in queued {
+            if let Some(message) = self.claim_message(&message.id, member_id)? {
+                claimed.push(message);
+            }
+        }
+        Ok(claimed)
+    }
+
+    /// Claim queued mail for an idle member only when at least one queued
+    /// message requires a response round (ADR 0046 §4). When a round is
+    /// triggered, every queued message — including informational mail — is
+    /// claimed in order so the whole batch is delivered exactly once with
+    /// that round's provider receipt. Informational-only mail stays queued
+    /// and durable without starting a round, which bounds peer convergence.
+    fn claim_round_triggering_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+        let queued = self.queued_messages_for(member_id)?;
+        if !queued.iter().any(TeamMessage::requires_response) {
+            return Ok(Vec::new());
+        }
         let mut claimed = Vec::with_capacity(queued.len());
         for message in queued {
             if let Some(message) = self.claim_message(&message.id, member_id)? {
@@ -14048,7 +14104,12 @@ fn wait_for_idle_member_wake(
                 route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
             }
         }
-        let claimed = ledger.claim_queued_messages_for(&member_row.id)?;
+        // Response-intent gate (ADR 0046 §4): informational or
+        // acknowledgement-only mail stays durable and queued but never wakes
+        // an idle member into a new provider round. When response-required
+        // mail triggers a round, the whole queued batch is claimed so every
+        // message is delivered exactly once with that round's receipt.
+        let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
         if !claimed.is_empty() {
             member_row.status = MemberRunStatus::Running;
             member_row.finished_at = None;
@@ -15410,6 +15471,7 @@ fn run_claude_team_member(
                 .map(|message| message.correlation_id.clone())
                 .unwrap_or_else(|| generated_id("corr")),
             causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "host".to_string(),
@@ -16048,7 +16110,9 @@ fn run_claude_agent_sdk_team_member(
         // `inflight_messages` prevents duplicate injection during that window;
         // `delivered_message_ids` also protects this live adapter generation
         // from a stale latest-wins read immediately after the receipt append.
-        let queued = ledger.claim_queued_messages_for(&member.id)?;
+        // The response-intent gate (ADR 0046 §4) keeps informational-only mail
+        // queued until response-required mail triggers a round, then batches it.
+        let queued = ledger.claim_round_triggering_messages_for(&member.id)?;
         let mut delivered_any = false;
         for message in queued {
             if inflight_messages.contains_key(&message.id)
@@ -16335,6 +16399,7 @@ fn record_round_handoff(
         body: canonical_member_report_text(record.final_text).to_string(),
         correlation_id,
         causation_id,
+        response_intent: None,
         evidence_refs: record.evidence_refs.to_vec(),
         deliveries: vec![TeamMessageDelivery {
             member_id: "host".to_string(),
@@ -16992,6 +17057,10 @@ fn run_kimi_member(
                 ));
             }
         } else {
+            // A provider-failed turn (JSON-RPC error or a response with no
+            // stopReason) must record a provider_error round — never an
+            // empty or partial Handoff plus false idle/completion (parity
+            // with the Claude provider-error contract, issue #293).
             let (_, summary) = record_member_round(
                 ledger,
                 &mut member_row,
@@ -17002,7 +17071,7 @@ fn run_kimi_member(
                     evidence_refs: &[],
                     round,
                     handoffs_before_round: &handoffs_before_round,
-                    provider_error: None,
+                    provider_error: outcome.provider_error.as_deref(),
                 },
             )?;
             ledger.fold_event(
@@ -18223,6 +18292,7 @@ fn contract_prompt(
          - Read all received coordination messages (latest stored state): \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
          - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Message a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
+         - Response intent: ordinary message mail is informational by default — durable and correlated, but it never wakes an idle peer into a new provider round, and acknowledgement-only mail must stay informational so the team converges. Add --response-required only when you explicitly need that peer to act and reply (QUESTION, BLOCKER, review request to a peer member).\n\
          - Submit handoff: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Submit a requested plan/revision: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
          \n\
@@ -20113,6 +20183,7 @@ fn steer_team_member_value(
         causation_id,
         json_string(body, "origin_wave_id"),
         TeamMessageDeliveryMode::InjectDelivered,
+        None,
     )?;
     let message = publish_team_message(store, &sender, message)?;
     Ok(serde_json::json!({"control": result, "message": message}))
@@ -20839,6 +20910,9 @@ fn send_team_message_value(
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
         json_string(body, "origin_wave_id"),
+        json_string(body, "response_intent")
+            .map(|intent| parse_team_message_response_intent(&intent))
+            .transpose()?,
     )?;
     Ok(serde_json::to_value(message)?)
 }
@@ -35762,6 +35836,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             None,
             None,
+            None,
         )
         .expect("peer message");
         let peer_delivery = peer_message
@@ -35785,6 +35860,7 @@ package:com.tencent.mm
             "Module A complete",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
+            None,
             None,
         )
         .expect("handoff");
@@ -35826,6 +35902,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
+            None,
         )
         .expect("follow-up");
 
@@ -35842,6 +35919,7 @@ package:com.tencent.mm
             vec![member.id.clone()],
             TeamMessageKind::Assignment,
             "Own the next independent lane",
+            None,
             None,
             None,
             None,
@@ -35893,6 +35971,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
+            None,
         )
         .expect("older message");
         deliver(&store, &mut older);
@@ -35906,6 +35985,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(older.id.clone()),
             None,
+            None,
         )
         .expect("turn trigger");
         deliver(&store, &mut trigger);
@@ -35916,6 +35996,7 @@ package:com.tencent.mm
             vec![member.id.clone()],
             TeamMessageKind::Assignment,
             "Another delivered Assignment must not own the active turn",
+            None,
             None,
             None,
             None,
@@ -35936,6 +36017,7 @@ package:com.tencent.mm
             Some(other_assignment.correlation_id.clone()),
             Some(other_assignment.id.clone()),
             None,
+            None,
         )
         .expect("other Assignment Handoff");
         let older_cause_handoff = send_team_message(
@@ -35947,6 +36029,7 @@ package:com.tencent.mm
             "Stale same-correlation result",
             Some(assignment.correlation_id.clone()),
             Some(older.id.clone()),
+            None,
             None,
         )
         .expect("older-cause Handoff");
@@ -36005,6 +36088,7 @@ package:com.tencent.mm
             Some(correlation.clone()),
             Some(created.assignment_messages[0].id.clone()),
             None,
+            None,
         )
         .expect("member to host");
         assert_eq!(
@@ -36027,6 +36111,7 @@ package:com.tencent.mm
             Some(correlation.clone()),
             None,
             None,
+            None,
         )
         .expect("member to peer");
         assert_eq!(peer_mail.deliveries[0].policy, TeamDeliveryPolicy::Queue);
@@ -36042,6 +36127,7 @@ package:com.tencent.mm
             "Use the stable interface",
             Some(correlation),
             Some(host_mail.id),
+            None,
             None,
         )
         .expect("host to member");
@@ -36073,6 +36159,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
+            None,
         )
         .expect("Host requests plan");
         let proposal_one = send_team_message(
@@ -36085,6 +36172,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(request.id.clone()),
             None,
+            None,
         )
         .expect("owner proposes");
         let feedback = send_team_message(
@@ -36096,6 +36184,7 @@ package:com.tencent.mm
             "Add rollback and integration checks",
             Some(assignment.correlation_id.clone()),
             Some(proposal_one.id.clone()),
+            None,
             None,
         )
         .expect("Host challenges proposal");
@@ -36110,6 +36199,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(feedback.id),
             None,
+            None,
         )
         .expect("owner revises");
         send_team_message(
@@ -36121,6 +36211,7 @@ package:com.tencent.mm
             "Plan reviewed. Execute revision 2.",
             Some(assignment.correlation_id.clone()),
             Some(proposal_two.id),
+            None,
             None,
         )
         .expect("Host instructs execution");
@@ -36151,6 +36242,7 @@ package:com.tencent.mm
             "QUESTION: choose interface A or B",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
+            None,
             None,
         )
         .expect("member asks Host");

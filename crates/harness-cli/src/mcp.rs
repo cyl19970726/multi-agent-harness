@@ -33,11 +33,11 @@ use crate::{
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_actor_kind, parse_team_message_kind, parse_wave_executor_kind,
-    prepare_team_run_start, reconcile_team_message_delivery_value, rename_team_run_member,
-    resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
-    revise_wave, route_agent_inbox_messages, send_team_message_as, serde_snake_label,
-    steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
+    parse_team_actor_kind, parse_team_message_kind, parse_team_message_response_intent,
+    parse_wave_executor_kind, prepare_team_run_start, reconcile_team_message_delivery_value,
+    rename_team_run_member, resolve_pending_interaction_value, revise_mission_context,
+    revise_mission_team_link, revise_wave, route_agent_inbox_messages, send_team_message_as,
+    serde_snake_label, steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
     team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
     ResolvedStore, TeamMemberSpec,
 };
@@ -877,6 +877,10 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         correlation_id,
         causation_id,
         optional_str(arguments, "origin_wave_id")?,
+        optional_str(arguments, "response_intent")?
+            .map(|intent| parse_team_message_response_intent(&intent))
+            .transpose()
+            .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
@@ -1292,6 +1296,7 @@ fn tool_definitions() -> Value {
                     "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                     ,"origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
+                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind default: assignment/handoff/control require a response round; ordinary message mail stays informational and never starts a provider round on its own."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
             }

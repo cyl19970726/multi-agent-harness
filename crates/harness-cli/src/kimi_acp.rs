@@ -56,6 +56,13 @@ pub(crate) struct PromptOutcome {
     /// `result.stopReason` as reported by the agent (`end_turn`, `cancelled`,
     /// `refusal`, `max_tokens`, ...); `"unknown"` when the frame omitted it.
     pub(crate) stop_reason: String,
+    /// Set when the provider failed the turn itself: a JSON-RPC error
+    /// response, or a terminal response with no `result.stopReason`. The
+    /// streamed text then holds provider error output, not a member report,
+    /// and Harness must record a provider_error round instead of fabricating
+    /// an empty or partial Handoff (parity with the Claude provider-error
+    /// contract, issue #293).
+    pub(crate) provider_error: Option<String>,
 }
 
 pub(crate) enum PromptControl {
@@ -489,6 +496,7 @@ impl KimiAcpClient {
                         lock(&self.pending).remove(&prompt_id);
                         return Ok(PromptOutcome {
                             stop_reason: "harness_runtime_closed".to_string(),
+                            provider_error: None,
                         });
                     }
                 }
@@ -737,15 +745,36 @@ fn await_response(
     })
 }
 
-/// Fold the terminal `session/prompt` response into a [`PromptOutcome`].
+/// Fold the terminal `session/prompt` response into a [`PromptOutcome`]. A
+/// JSON-RPC error frame or a response without `result.stopReason` means the
+/// provider failed the turn: surface it as `provider_error` so the caller
+/// records a failed provider_error round rather than a fabricated Handoff.
 fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
+    if let Some(error) = frame.get("error") {
+        let code = error
+            .get("code")
+            .and_then(|code| code.as_i64())
+            .map(|code| format!(" (code {code})"))
+            .unwrap_or_default();
+        let message = error
+            .get("message")
+            .and_then(|message| message.as_str())
+            .unwrap_or("unknown provider error");
+        return PromptOutcome {
+            stop_reason: "error".to_string(),
+            provider_error: Some(format!("session/prompt rejected{code}: {message}")),
+        };
+    }
     let stop_reason = frame
         .get("result")
         .and_then(|result| result.get("stopReason"))
-        .and_then(|reason| reason.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    PromptOutcome { stop_reason }
+        .and_then(|reason| reason.as_str());
+    PromptOutcome {
+        stop_reason: stop_reason.unwrap_or("unknown").to_string(),
+        provider_error: stop_reason
+            .is_none()
+            .then(|| format!("session/prompt response missing result.stopReason: {frame}")),
+    }
 }
 
 #[cfg(test)]
@@ -785,5 +814,33 @@ mod tests {
             config_option_supports(&options, "thinking", "ultra"),
             Some(false)
         );
+    }
+
+    #[test]
+    fn prompt_outcome_marks_error_frames_and_missing_stop_reason_as_provider_errors() {
+        let normal = prompt_outcome(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 5, "result": {"stopReason": "end_turn"}
+        }));
+        assert_eq!(normal.stop_reason, "end_turn");
+        assert_eq!(normal.provider_error, None);
+
+        let rejected = prompt_outcome(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 5,
+            "error": {"code": -32000, "message": "provider API 403: usage limit reached"}
+        }));
+        assert_eq!(rejected.stop_reason, "error");
+        assert_eq!(
+            rejected.provider_error.as_deref(),
+            Some("session/prompt rejected (code -32000): provider API 403: usage limit reached")
+        );
+
+        let malformed = prompt_outcome(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 5, "result": {}
+        }));
+        assert_eq!(malformed.stop_reason, "unknown");
+        assert!(malformed
+            .provider_error
+            .as_deref()
+            .is_some_and(|error| error.contains("missing result.stopReason")));
     }
 }

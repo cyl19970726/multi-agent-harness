@@ -2333,6 +2333,24 @@ pub enum TeamDeliveryStatus {
     Expired,
 }
 
+/// Explicit response intent carried by a [`TeamMessage`] (ADR 0046 §4). A
+/// transport delivery and a semantic reply are distinct facts: mail that only
+/// informs or acknowledges must stay durable and correlated without starting
+/// another provider round, so two Agents can converge instead of bouncing
+/// acknowledgement-only mail back and forth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageResponseIntent {
+    /// Durable, correlated mail that does not by itself start a provider
+    /// round. It is batched into the next round some response-required
+    /// message triggers, and it never fences a same-correlation Handoff.
+    Informational,
+    /// The sender asks for a semantic reply: an idle recipient starts a new
+    /// provider round for this message, and a pending delivery fences a
+    /// same-correlation Handoff as stale.
+    ResponseRequired,
+}
+
 /// One recipient's delivery record inside a [`TeamMessage`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMessageDelivery {
@@ -2386,11 +2404,39 @@ pub struct TeamMessage {
     pub correlation_id: String,
     #[serde(default)]
     pub causation_id: Option<String>,
+    /// Explicit response intent. Absent on historical rows; the effective
+    /// intent then derives from `kind` (see
+    /// [`TeamMessage::effective_response_intent`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_intent: Option<TeamMessageResponseIntent>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default)]
     pub deliveries: Vec<TeamMessageDelivery>,
     pub created_at: String,
+}
+
+impl TeamMessage {
+    /// Effective response intent: the explicit field wins; otherwise the kind
+    /// decides. Assignments, Handoffs, and Control records carry real work or
+    /// runtime semantics and always require a response round. Ordinary
+    /// `message` mail (including acknowledgement-only notes with a readable
+    /// first-line intent) defaults to informational so peer Agents converge
+    /// without confirmation ping-pong (ADR 0046 §4).
+    pub fn effective_response_intent(&self) -> TeamMessageResponseIntent {
+        self.response_intent.unwrap_or(match self.kind {
+            TeamMessageKind::Assignment | TeamMessageKind::Handoff | TeamMessageKind::Control => {
+                TeamMessageResponseIntent::ResponseRequired
+            }
+            _ => TeamMessageResponseIntent::Informational,
+        })
+    }
+
+    /// True when this message may trigger a new provider round for an idle
+    /// recipient and fences a same-correlation Handoff while still pending.
+    pub fn requires_response(&self) -> bool {
+        self.effective_response_intent() == TeamMessageResponseIntent::ResponseRequired
+    }
 }
 
 /// Status of a single [`MemberAction`].
@@ -2544,6 +2590,68 @@ mod tests {
         // Unknown providers round-trip without losing fidelity.
         assert_eq!(kind.to_string(), "gemini");
         assert_eq!(ProviderKind::from("gemini".to_string()), kind);
+    }
+
+    fn bare_team_message(kind: TeamMessageKind) -> TeamMessage {
+        TeamMessage {
+            id: "tmsg-1".to_string(),
+            team_run_id: "run-1".to_string(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".to_string(),
+            recipients: Vec::new(),
+            to_member_ids: Vec::new(),
+            kind,
+            body: "body".to_string(),
+            correlation_id: "corr-1".to_string(),
+            causation_id: None,
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: Vec::new(),
+            created_at: "now".to_string(),
+        }
+    }
+
+    #[test]
+    fn team_message_response_intent_defaults_from_kind() {
+        for kind in [
+            TeamMessageKind::Assignment,
+            TeamMessageKind::Handoff,
+            TeamMessageKind::Control,
+        ] {
+            assert!(bare_team_message(kind).requires_response(), "{kind:?}");
+        }
+        for kind in [
+            TeamMessageKind::Message,
+            TeamMessageKind::Question,
+            TeamMessageKind::Answer,
+            TeamMessageKind::Progress,
+            TeamMessageKind::Blocker,
+        ] {
+            assert!(!bare_team_message(kind).requires_response(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn team_message_explicit_response_intent_wins_over_kind_default() {
+        let mut ack_only = bare_team_message(TeamMessageKind::Message);
+        assert_eq!(
+            ack_only.effective_response_intent(),
+            TeamMessageResponseIntent::Informational
+        );
+        ack_only.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
+        assert!(ack_only.requires_response());
+        // The explicit field round-trips through serde; an absent field keeps
+        // historical rows on their kind-derived default.
+        let json = serde_json::to_string(&ack_only).expect("serialize");
+        assert!(json.contains("\"response_intent\":\"response_required\""));
+        let without = bare_team_message(TeamMessageKind::Message);
+        let json = serde_json::to_string(&without).expect("serialize");
+        assert!(!json.contains("response_intent"));
+        let historical: TeamMessage =
+            serde_json::from_str(&json).expect("deserialize without the field");
+        assert_eq!(historical.response_intent, None);
+        assert!(!historical.requires_response());
     }
 
     #[test]

@@ -506,6 +506,31 @@ export type TeamMessageKind =
   | "broadcast";
 
 /**
+ * Explicit response intent on a {@link TeamMessage} (ADR 0046 §4).
+ * `informational` mail is durable and correlated but never starts a provider
+ * round on its own; `response_required` asks the recipient for a semantic
+ * reply and wakes an idle provider member.
+ */
+export type TeamMessageResponseIntent = "informational" | "response_required";
+
+/**
+ * Effective response intent: the explicit field wins; otherwise the kind
+ * decides — assignment/handoff/control always require a response round,
+ * ordinary message mail defaults to informational (mirrors the Rust
+ * `TeamMessage::effective_response_intent` contract).
+ */
+export function effectiveTeamMessageResponseIntent(
+  message: Pick<TeamMessage, "kind" | "response_intent">,
+): TeamMessageResponseIntent {
+  if (message.response_intent === "informational" || message.response_intent === "response_required") {
+    return message.response_intent;
+  }
+  return message.kind === "assignment" || message.kind === "handoff" || message.kind === "control"
+    ? "response_required"
+    : "informational";
+}
+
+/**
  * One message on a team run's handoff chain. `from_member_id` is `"host"` or a
  * member run id; `deliveries` tracks per-recipient ack state (an unacknowledged
  * delivery is a needs-you signal for the operator).
@@ -522,6 +547,7 @@ export interface TeamMessage {
   body?: string;
   correlation_id?: string | null;
   causation_id?: string | null;
+  response_intent?: TeamMessageResponseIntent | string | null;
   evidence_refs?: string[];
   deliveries?: TeamMessageDelivery[];
   created_at?: string;

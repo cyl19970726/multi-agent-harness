@@ -37,6 +37,22 @@ async function loadSelectors() {
   }
 }
 
+async function loadTypes() {
+  const { default: ts } = await import("typescript");
+  const directory = await mkdtemp(join(tmpdir(), "team-types-"));
+  try {
+    const source = await readFile(join(here, "..", "src", "types.ts"), "utf8");
+    const output = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const path = join(directory, "types.mjs");
+    await writeFile(path, output, "utf8");
+    return await import(pathToFileURL(path).href);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 function fixture() {
   return {
     missions: [{ id: "mission-1", title: "Build console", objective: "ship" }],
@@ -133,6 +149,20 @@ async function main() {
     ok("Stable activity has deterministic chronological tie-breaking and excludes thinking");
   } else {
     bad(`Stable activity was ${activity.map((item) => item.id).join(",")}`);
+  }
+
+  const types = await loadTypes();
+  const intent = types.effectiveTeamMessageResponseIntent;
+  const informationalAck = intent({ kind: "message" }) === "informational"
+    && intent({ kind: "message", response_intent: "informational" }) === "informational";
+  const requiredByKind = intent({ kind: "assignment" }) === "response_required"
+    && intent({ kind: "handoff" }) === "response_required"
+    && intent({ kind: "control" }) === "response_required";
+  const explicitWins = intent({ kind: "message", response_intent: "response_required" }) === "response_required";
+  if (informationalAck && requiredByKind && explicitWins) {
+    ok("Response intent distinguishes informational delivery from response-required (kind default + explicit override)");
+  } else {
+    bad(`Response intent resolution was ack=${informationalAck} kind=${requiredByKind} explicit=${explicitWins}`);
   }
 
   console.log(`\n   team selector checks: ${passed} pass, ${failed} fail`);

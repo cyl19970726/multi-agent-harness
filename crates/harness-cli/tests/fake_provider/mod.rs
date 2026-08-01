@@ -190,6 +190,32 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ -n "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}" ]; then
+        # One non-retryable provider failure after partial content streamed:
+        # the terminal session/prompt response is a JSON-RPC error. Harness
+        # must record a provider_error round, not a partial Handoff.
+        : > "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}"
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: usage limit reached"}}\n' "$id"
+        continue
+      fi
+      if [ -n "${FAKE_KIMI_PEER_ACK_CONFIG:-}" ] && [ -s "${FAKE_KIMI_PEER_ACK_CONFIG}" ] && [ "$prompt_count" = "2" ]; then
+        # Two-peer convergence: the named member answers its follow-up round
+        # with acknowledgement-only peer mail (informational, no explicit
+        # response intent). The config file holds "<from member run>\n<to member run>".
+        ack_from=$(sed -n '1p' "${FAKE_KIMI_PEER_ACK_CONFIG}")
+        ack_to=$(sed -n '2p' "${FAKE_KIMI_PEER_ACK_CONFIG}")
+        if [ "${HARNESS_MEMBER_RUN_ID:-}" = "$ack_from" ]; then
+          sleep 0.1
+          "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run send \
+            --id "$HARNESS_TEAM_RUN_ID" \
+            --from "$HARNESS_MEMBER_RUN_ID" \
+            --to "$ack_to" \
+            --kind message \
+            --body "ACK: noted, no reply needed" \
+            --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+            > "${FAKE_KIMI_PEER_ACK_MARKER:?}" 2>&1
+        fi
+      fi
       if [ -n "${FAKE_KIMI_CRASH_ONCE_MARKER:-}" ] && [ ! -e "$FAKE_KIMI_CRASH_ONCE_MARKER" ]; then
         : > "$FAKE_KIMI_CRASH_ONCE_MARKER"
         exit 7
