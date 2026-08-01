@@ -187,9 +187,11 @@ lane merges, other live lanes reconcile per the rolling rule.
 ### N6. work-wcw-agentos-work-overview-ui
 
 - Owner: agent-wcw-development
-- Status: submitted; partial — the Work surface already defaults to its
-  overview tab (`WorkOperatingPage.tsx`), but the app-wide landing is still
-  the home surface (`apps/agent-dashboard/src/app/selection.ts`)
+- Status: in_review — the Work surface defaults to its overview tab
+  (`WorkOperatingPage.tsx`) and the app-wide landing is the Work surface
+  (`apps/agent-dashboard/src/app/selection.ts`); a selected WorkItem keeps
+  the canonical `?surface=work&workItem=<id>` URL so capture, standing-agent
+  links, and Back/Forward stay valid
 - Dependencies: none
 - Collision boundary: dashboard company-os router/selection files only
 - Acceptance: Work overview is the default Company OS operating board for the

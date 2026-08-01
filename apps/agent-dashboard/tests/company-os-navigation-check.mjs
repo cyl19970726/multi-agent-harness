@@ -166,7 +166,7 @@ async function main() {
     const pushedContext = installLocation("?company=agent-company&space=agentos&project=star-harness&api=http%3A%2F%2Flocalhost%3A8787");
     selection.syncSelectionToLocation({ surface: "work", workItemId: "work-wcw-agentos-work-overview-ui" });
     const contextUrl = pushedContext();
-    check(contextUrl.includes("workItem=work-wcw-agentos-work-overview-ui") && contextUrl.includes("company=agent-company") && contextUrl.includes("space=agentos") && contextUrl.includes("project=star-harness") && contextUrl.includes("api=") && !contextUrl.includes("surface="), "selection sync preserves Company Store, Execution Space, Project Binding, and API context while omitting the default Work surface");
+    check(contextUrl.includes("surface=work") && contextUrl.includes("workItem=work-wcw-agentos-work-overview-ui") && contextUrl.includes("company=agent-company") && contextUrl.includes("space=agentos") && contextUrl.includes("project=star-harness") && contextUrl.includes("api="), "a selected WorkItem keeps the canonical surface=work&workItem URL with Company Store, Execution Space, Project Binding, and API context preserved (regression: bc0e025 dropped surface=work)");
 
     const pushedHome = installLocation("");
     selection.syncSelectionToLocation({ surface: "home" });
@@ -175,6 +175,25 @@ async function main() {
     const pushedDefault = installLocation("");
     selection.syncSelectionToLocation({ surface: selection.defaultSelection.surface });
     check(!pushedDefault().includes("surface="), "the default Work surface is omitted from the URL so a bare link round-trips to the Work overview");
+
+    // Back/Forward contract: each history entry must parse back to the exact
+    // selection it captured, so leaving and returning to a WorkItem focus
+    // restores it instead of collapsing onto the default surface.
+    const pushedFocus = installLocation("");
+    selection.syncSelectionToLocation({ surface: "work", workItemId: "work-wcw-agentos-work-overview-ui" });
+    const focusUrl = pushedFocus();
+    check(focusUrl.includes("surface=work") && focusUrl.includes("workItem=work-wcw-agentos-work-overview-ui"), "selecting a WorkItem pushes the canonical surface=work&workItem history entry");
+    const focusSearch = focusUrl.slice(focusUrl.indexOf("?"));
+    const pushedDeselect = installLocation(focusSearch);
+    selection.syncSelectionToLocation({ surface: "work" });
+    check(pushedDeselect() === "/", "deselecting the WorkItem pushes the bare default-surface entry");
+    installLocation(focusSearch);
+    const restored = selection.selectionFromLocation(selection.defaultSelection);
+    check(restored.surface === "work" && restored.workItemId === "work-wcw-agentos-work-overview-ui", "browser Back to the pushed WorkItem entry restores the Work surface and selected WorkItem");
+
+    const pushedCanonical = installLocation("?surface=work&workItem=work-wcw-agentos-work-overview-ui&company=agent-company&space=agentos&project=star-harness");
+    selection.syncSelectionToLocation({ surface: "work", workItemId: "work-wcw-agentos-work-overview-ui" });
+    check(pushedCanonical() === "", "sync is a no-op on an already-canonical WorkItem URL, so loading a deep link does not push a duplicate reordered history entry");
   } finally {
     delete globalThis.window;
     await rm(directory, { recursive: true, force: true });
