@@ -43,7 +43,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
 | How does a member receive work? | A correlated Assignment and member Inbox are projected into provider turns by `MessageDelivery`. |
-| Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`) or one reviewed native continuation controller (`provider_driven`). |
+| Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`), one reviewed native continuation controller (`provider_driven`), or the user's own out-of-band session (`user_driven`, declared `external_interactive` members only). |
 | Who decides the work is accepted? | The Host, using the Assignment completion policy and evidence; provider completion is only an execution signal. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
@@ -249,11 +249,14 @@ mid-round correction always fences. Informational mail (peer-to-peer
 acknowledgements) never starts a round, so fencing on it would deadlock the
 Handoff behind mail that is intentionally never driven; it does not fence.
 
-Closed, closing, or retired members cannot be revived by delivery. A provider
-may expose an explicit reopen operation later, but normal message delivery and
-runtime start must fail visibly for those states. Close intent is durably
-latched before the process-local handle is released, so a lease/receiver race
-cannot silently resurrect the member.
+Closed, closing, or retired members cannot be revived by delivery. Explicit
+Reopen is the only transition from `closed` to `active`: it keeps the same
+MemberRun, increments `runtime_generation`, and for managed adapters resumes the
+recorded provider-native session with its verified provider operation. Queued
+mail is frozen while closed and becomes actionable after Reopen. Retired
+members cannot reopen. Close intent is durably latched before the process-local
+handle is released, so a lease/receiver race cannot silently resurrect the
+member.
 
 The delivered provider input must carry a stable Harness envelope containing
 the requesting Mission/Wave/run or WorkItem reference, sender, recipient,
@@ -293,7 +296,8 @@ generic runtime or product authority.
    session projections; browser code does not read private provider files
    directly and Harness does not mirror them.
 6. Delivery claims happen before provider side effects.
-7. Closed, closing, and retired members fail normal delivery.
+7. Closed, closing, and retired members fail normal delivery; only explicit
+   Reopen reactivates a closed member, while Retire is permanent.
 
 ## Real-Time Event Streaming (SSE)
 

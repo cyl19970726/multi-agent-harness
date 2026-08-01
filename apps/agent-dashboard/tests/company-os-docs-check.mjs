@@ -11,6 +11,15 @@ const repositoryRoot = join(dashboardRoot, "..", "..");
 let passed = 0;
 let failed = 0;
 
+/** The document tree is a real hierarchy, so ref collection must walk every depth. */
+function flattenTree(items = []) {
+  return items.flatMap((item) => [item, ...flattenTree(item.children)]);
+}
+
+function sortedIds(values) {
+  return [...values].filter(Boolean).sort();
+}
+
 function check(condition, message) {
   if (condition) {
     console.log(`  PASS  ${message}`);
@@ -41,6 +50,22 @@ async function loadFixtureAdapter() {
   }
 }
 
+async function loadDocumentTree() {
+  const { default: ts } = await import("typescript");
+  const directory = await mkdtemp(join(tmpdir(), "company-os-docs-tree-"));
+  try {
+    const input = await source("documentTree.ts");
+    const output = ts.transpileModule(input, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const outputPath = join(directory, "documentTree.mjs");
+    await writeFile(outputPath, output, "utf8");
+    return await import(pathToFileURL(outputPath).href);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function loadDocumentAction() {
   const { default: ts } = await import("typescript");
   const directory = await mkdtemp(join(tmpdir(), "company-os-docs-action-"));
@@ -59,9 +84,9 @@ async function loadDocumentAction() {
 
 async function main() {
   const fixture = JSON.parse(await readFile(join(repositoryRoot, "docs", "design", "company-os-v1", "fixtures", "company-os-trademark-v1.json"), "utf8"));
-  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter, types] = await Promise.all([
+  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter, types, tree] = await Promise.all([
     source("index.ts"), source("DocsWorkspace.tsx"), source("BasicDocumentPage.tsx"),
-    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"), source("types.ts"),
+    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"), source("types.ts"), source("documentTree.ts"),
   ]);
 
   check(index.includes("DocsWorkspace") && index.includes("BasicDocumentPage") && index.includes("StructuredDocumentView") && index.includes("CompanyHome") && index.includes("DocumentHealthReview"), "public Docs API exports all five Company OS Docs surfaces");
@@ -278,6 +303,14 @@ async function main() {
   check(pages.document.properties?.some((property) => property.label === "Operating status" && property.value === "On track") && !/T\d{2}:\d{2}:\d{2}/.test(pages.document.updatedLabel ?? ""), "Document Focus preserves on-track fixture truth without reintroducing Project language and formats timestamps for people");
   const emptyPages = adaptCompanyOsDocsProjection({});
   check(emptyPages.workspace.tree.length === 0 && emptyPages.document.id === undefined && emptyPages.home.decisionRequired === undefined && emptyPages.home.financeSummary.length === 0, "empty projections render honest empty Docs data without fixture facts");
+  check(
+    emptyPages.workspace.archive === undefined
+      && emptyPages.document.breadcrumbs === undefined
+      && emptyPages.document.childDocuments === undefined
+      && emptyPages.document.backlinks === undefined
+      && emptyPages.document.missingDocumentId === undefined,
+    "an empty projection supplies no archive, breadcrumbs, child documents, backlinks, or not-found marker",
+  );
   const alternatePages = adaptCompanyOsDocsProjection({
     documents: [{ id: "document-live-1", title: "Live operating brief", space: "Operations" }],
     typed_records: [{ id: "record-live-1", record_type: "Initiative", source_document_ref: "document-live-1" }],
@@ -322,7 +355,7 @@ async function main() {
     ],
   });
   const archivedVisibleRefs = [
-    ...archivedPages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+    ...flattenTree(archivedPages.workspace.tree).map((item) => item.ref),
     ...(archivedPages.workspace.recentlyUpdated ?? []).map((link) => link.id),
     ...(archivedPages.health.structureLinks ?? []).map((link) => link.id),
     ...archivedPages.moduleView.sourceLinks.map((link) => link.id),
@@ -331,11 +364,314 @@ async function main() {
     archivedPages.health.counts.documents === 1
       && archivedPages.workspace.spaces?.every((space) => space.name !== "company")
       && !archivedVisibleRefs.some((id) => /archived-company/.test(id))
-      && archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-active")
-      && !archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-archived-root"),
+      && flattenTree(archivedPages.workspace.tree).some((item) => item.id === "module-active")
+      && !flattenTree(archivedPages.workspace.tree).some((item) => item.id === "module-archived-root"),
     "Docs workspace hides archived Documents and modules whose root Document is archived from active navigation",
   );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
+
+  // U1/U2: the default tree is the real parent_document_id hierarchy under a single
+  // "not archived" predicate, and the Archive view is that predicate's exact complement.
+  const agentosChildIds = [
+    "document-agentos-01-dogfood",
+    "document-agentos-02-external-gateway",
+    "document-agentos-03-org-work-doc-loop",
+    "document-agentos-04-github-connector",
+    "document-agentos-10-software-product-sources",
+  ];
+  const hierarchyDocuments = [
+    { id: "document-agentos-root", space_id: "agentos", parent_document_id: null, title: "AgentOS / Star Harness", kind: "page", lifecycle_status: "draft", block_ids: [] },
+    ...agentosChildIds.map((id, index) => ({ id, space_id: "agentos", parent_document_id: "document-agentos-root", title: `${String(index).padStart(2, "0")} AgentOS child page`, kind: "page", lifecycle_status: "draft", block_ids: [] })),
+    // Archived leaks the single predicate must remove: a duplicate child, a legacy
+    // company-space root with its own child, and a cross-space child of an active page.
+    { id: "document-agentos-01-dogfood-intake", space_id: "agentos", parent_document_id: "document-agentos-root", title: "01 Dogfood Intake", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-agentos-home", space_id: "company", parent_document_id: null, title: "AgentOS Development", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-agentos-home-child", space_id: "company", parent_document_id: "document-agentos-home", title: "Legacy development note", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-wcw-11-agentos-dogfood", space_id: "company", parent_document_id: "document-wcw-00-project-home", title: "11 AgentOS Dogfood", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-wcw-root", space_id: "wanchengwanling", parent_document_id: null, title: "Wanchengwanling", kind: "page", lifecycle_status: "active", block_ids: [] },
+    { id: "document-wcw-00-project-home", space_id: "wanchengwanling", parent_document_id: "document-wcw-root", title: "00 Project Home", kind: "page", lifecycle_status: "active", block_ids: [] },
+  ];
+  const hierarchyPages = adaptCompanyOsDocsProjection({
+    documents: hierarchyDocuments,
+    business_modules: [
+      { id: "module-agentos-project-home", name: "AgentOS project home", root_document_ref: "document-agentos-root", status: "active", default_view_refs: [] },
+      { id: "module-agentos-development", name: "AgentOS development", root_document_ref: "document-agentos-home", status: "active", default_view_refs: [] },
+    ],
+  });
+  const hierarchyNodes = flattenTree(hierarchyPages.workspace.tree);
+  const agentosRootNode = hierarchyNodes.find((item) => item.ref === "document-agentos-root");
+  const archivedDocumentIds = hierarchyDocuments.filter((entry) => entry.lifecycle_status === "archived").map((entry) => entry.id);
+  check(
+    agentosRootNode !== undefined
+      && JSON.stringify(sortedIds((agentosRootNode.children ?? []).map((child) => child.ref))) === JSON.stringify(sortedIds(agentosChildIds))
+      && agentosChildIds.every((id) => hierarchyDocuments.find((entry) => entry.id === id).lifecycle_status === "draft"),
+    "document-agentos-root nests exactly its five non-archived child pages even though every one of them is still draft",
+  );
+  check(
+    hierarchyPages.workspace.tree.find((space) => space.label === "agentos")?.children?.filter((child) => child.href?.startsWith("?surface=docs&document=")).length === 1
+      && flattenTree(hierarchyPages.workspace.tree.filter((space) => space.label === "wanchengwanling")).some((item) => item.ref === "document-wcw-00-project-home" && item.id !== "space:wanchengwanling")
+      && hierarchyPages.workspace.tree.find((space) => space.label === "wanchengwanling")?.children?.every((child) => child.ref !== "document-wcw-00-project-home"),
+    "space grouping only frames roots: a child Document nests under its parent instead of reappearing as a space-level sibling",
+  );
+  check(
+    hierarchyNodes.some((item) => item.ref) && !hierarchyNodes.some((item) => archivedDocumentIds.includes(item.ref))
+      && !hierarchyNodes.some((item) => item.ref === "module-agentos-development")
+      && hierarchyNodes.some((item) => item.ref === "module-agentos-project-home"),
+    "the default document tree excludes every archived Document and every module whose root Document is archived",
+  );
+  check(
+    hierarchyNodes.every((item) => item.kind === "space" || item.kind === "document" || item.kind === "module")
+      && hierarchyPages.workspace.tree.every((item) => item.kind === "space" && item.ref === undefined)
+      && hierarchyNodes.filter((item) => item.ref === "document-agentos-root").every((item) => item.kind === "document")
+      && hierarchyNodes.filter((item) => item.ref === "module-agentos-project-home").every((item) => item.kind === "module"),
+    "the live workspace tree tags grouping spaces, Documents, and BusinessModules with their canonical kinds",
+  );
+  const archiveRefs = flattenTree(hierarchyPages.workspace.archive?.tree).map((item) => item.ref).filter(Boolean);
+  check(
+    JSON.stringify(sortedIds(archiveRefs)) === JSON.stringify(sortedIds(archivedDocumentIds))
+      && JSON.stringify(sortedIds(hierarchyPages.workspace.archive?.documentIds ?? [])) === JSON.stringify(sortedIds(archivedDocumentIds))
+      && hierarchyPages.workspace.archive?.modules.some((module) => module.id === "module-agentos-development")
+      && !hierarchyPages.workspace.archive?.modules.some((module) => module.id === "module-agentos-project-home"),
+    "the Archive view lists exactly the archived Documents and the modules the default tree withheld, and nothing else",
+  );
+  check(
+    hierarchyPages.workspace.archive?.defaultFilter === 'lifecycle_status != "archived"'
+      && !/\bactive\b/.test(hierarchyPages.workspace.archive?.defaultFilter ?? "")
+      && flattenTree(hierarchyPages.workspace.archive?.tree).filter((item) => item.ref).every((item) => item.meta === "Archived")
+      && flattenTree(hierarchyPages.workspace.archive?.tree).some((item) => item.ref === "document-wcw-11-agentos-dogfood"),
+    "the Archive view states the default tree predicate as an exclusion and re-anchors an archived child whose parent stayed in the default tree",
+  );
+  check(
+    workspace.includes('data-docs-archive-view="explicit"') && workspace.includes("data-docs-archive-toggle") && workspace.includes("data-docs-archive-filter") && workspace.includes("exact complement") && types.includes("CompanyOsWorkspaceArchive"),
+    "Docs Workspace exposes the archive behind one explicit disclosure that names the default tree predicate",
+  );
+  check(
+    adapter.includes("buildDocumentSpaceTree") && adapter.includes("parent_document_id") && !adapter.includes('lifecycle_status) === "active"'),
+    "projection adapter derives the tree from Document.parent_document_id without an active-only lifecycle filter",
+  );
+  // The space node holds root Documents AND every BusinessModule attached to that space,
+  // so a directory anchor chosen by raw child count picks the space and exposes one page
+  // instead of eleven. Rank by Document children only.
+  const { selectDocumentDirectoryAnchor, documentChildCount, isDocumentTreeNode, filterDocumentTree } = await loadDocumentTree();
+  check(
+    tree.includes('item.kind === "document"') && !tree.includes('includes("document=")') && !tree.includes('includes("module=")'),
+    "documentTree distinguishes real Documents from grouping spaces and modules through the canonical node kind, never href substrings",
+  );
+  check(
+    types.includes('kind?: "space" | "document" | "module"')
+      && adapter.includes('kind: "document"') && adapter.includes('kind: "space" as const') && adapter.includes('kind: "module"'),
+    "the projection adapter tags every tree node with the canonical kind of the store object it represents",
+  );
+  check(
+    isDocumentTreeNode({ id: "d", ref: "document-x", label: "X", kind: "document" }) === true
+      && isDocumentTreeNode({ id: "space:x", label: "X", kind: "space" }) === false
+      && isDocumentTreeNode({ id: "m", ref: "module-x", label: "X", kind: "module" }) === false
+      && documentChildCount({ id: "s", label: "s", kind: "space", children: [{ id: "d", ref: "d", label: "d", kind: "document" }, { id: "m", ref: "m", label: "m", kind: "module" }] }) === 1,
+    "Document node detection and child counts accept only canonical Document nodes",
+  );
+  check(
+    JSON.stringify(filterDocumentTree([{ id: "space:x", label: "x", kind: "space", children: [{ id: "d1", ref: "d1", label: "d1", kind: "document" }, { id: "m1", ref: "m1", label: "m1", kind: "module" }] }, { id: "space:empty", label: "empty", kind: "space", children: [{ id: "m2", ref: "m2", label: "m2", kind: "module" }] }]))
+      === JSON.stringify([{ id: "space:x", label: "x", kind: "space", children: [{ id: "d1", ref: "d1", label: "d1", kind: "document" }] }]),
+    "a document tree renders only Document children, dropping module nodes and spaces left without Documents",
+  );
+  check(
+    document.includes("filterDocumentTree") && document.includes("isDocumentTreeNode"),
+    "Document Focus renders documents-only trees and directory cards",
+  );
+  const wcwNumberedIds = Array.from({ length: 11 }, (_, index) => `document-wcw-${String(index).padStart(2, "0")}`);
+  const wcwProjection = {
+    documents: [
+      { id: "document-wcw-root", space_id: "wanchengwanling", parent_document_id: null, title: "Wanchengwanling / 万城万灵", kind: "page", lifecycle_status: "active", block_ids: [] },
+      ...wcwNumberedIds.map((id, index) => ({ id, space_id: "wanchengwanling", parent_document_id: "document-wcw-root", title: `${String(index).padStart(2, "0")} Wanchengwanling page`, kind: "page", lifecycle_status: "active", block_ids: [] })),
+    ],
+    // Eleven modules on the same space: the space node therefore has twelve raw children
+    // while the real page holder has eleven.
+    business_modules: wcwNumberedIds.map((id, index) => ({ id: `module-wcw-${index}`, name: `Wanchengwanling module ${index}`, root_document_ref: id, status: "active", default_view_refs: [] })),
+  };
+  const wcwPages = adaptCompanyOsDocsProjection(wcwProjection, { documentId: "document-wcw-00" });
+  const wcwSpaceNode = wcwPages.workspace.tree.find((item) => item.label === "wanchengwanling");
+  const wcwAnchor = selectDocumentDirectoryAnchor(wcwPages.document.documentTree, /wanchengwanling|万城万灵/i);
+  check(
+    (wcwSpaceNode?.children?.length ?? 0) > documentChildCount(wcwSpaceNode ?? {})
+      && wcwAnchor?.ref === "document-wcw-root"
+      && (wcwAnchor?.children ?? []).filter((child) => child.href?.includes("document=")).length === 11
+      && JSON.stringify(sortedIds((wcwAnchor?.children ?? []).filter((child) => child.href?.includes("document=")).map((child) => child.ref))) === JSON.stringify(sortedIds(wcwNumberedIds)),
+    "the document directory anchors on the Document holding all eleven numbered pages, not the space node whose children are inflated by BusinessModules",
+  );
+  check(
+    selectDocumentDirectoryAnchor([{ id: "space:x", label: "wanchengwanling", kind: "space", children: [{ id: "m", ref: "m", label: "wanchengwanling module", kind: "module", href: "?surface=docs&module=m" }] }], /wanchengwanling/i)?.id === "space:x"
+      && selectDocumentDirectoryAnchor(undefined, /wanchengwanling/i) === undefined,
+    "the directory anchor degrades safely when a matching node has only BusinessModule children or no tree is supplied",
+  );
+
+  // Conservation: a BusinessModule is in the default tree or the Archive, never neither.
+  const orphanSpaceProjection = {
+    documents: [
+      { id: "document-conserve-root", space_id: "wanchengwanling", parent_document_id: null, title: "Conserve root", kind: "page", lifecycle_status: "active", block_ids: [] },
+      // Lives in space "company" but nests under a wanchengwanling parent, so space
+      // "company" ends up with no root Document and therefore no tree node at all.
+      { id: "document-conserve-cross-space", space_id: "company", parent_document_id: "document-conserve-root", title: "Cross space child", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-conserve-archived", space_id: "wanchengwanling", parent_document_id: null, title: "Conserve archived", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    ],
+    business_modules: [
+      { id: "module-conserve-placed", name: "Placed module", root_document_ref: "document-conserve-root", status: "active", default_view_refs: [] },
+      { id: "module-conserve-no-space", name: "Module without a space node", root_document_ref: "document-conserve-cross-space", status: "active", default_view_refs: [] },
+      { id: "module-conserve-archived-root", name: "Module with archived root", root_document_ref: "document-conserve-archived", status: "active", default_view_refs: [] },
+      { id: "module-conserve-missing-root", name: "Module with missing root", root_document_ref: "document-conserve-pruned-away", status: "active", default_view_refs: [] },
+    ],
+  };
+  const conservePages = adaptCompanyOsDocsProjection(orphanSpaceProjection, {});
+  const placedModuleIds = flattenTree(conservePages.workspace.tree).filter((item) => item.href?.includes("module=")).map((item) => item.ref);
+  const withheldModuleIds = (conservePages.workspace.archive?.modules ?? []).map((module) => module.id);
+  const declaredModuleIds = orphanSpaceProjection.business_modules.map((module) => module.id);
+  check(
+    JSON.stringify(sortedIds([...placedModuleIds, ...withheldModuleIds])) === JSON.stringify(sortedIds(declaredModuleIds))
+      && placedModuleIds.every((id) => !withheldModuleIds.includes(id))
+      && withheldModuleIds.includes("module-conserve-no-space"),
+    "every declared BusinessModule appears exactly once across the default tree and the Archive, including one whose space has no root Document",
+  );
+  const withholdReason = (id) => conservePages.workspace.archive?.modules.find((module) => module.id === id)?.meta;
+  check(
+    withholdReason("module-conserve-archived-root") === "Root Document is archived"
+      && withholdReason("module-conserve-missing-root") === "Root Document is missing from this projection"
+      && withholdReason("module-conserve-no-space") === "No navigable space holds this module"
+      && new Set([withholdReason("module-conserve-archived-root"), withholdReason("module-conserve-missing-root"), withholdReason("module-conserve-no-space")]).size === 3,
+    "the Archive distinguishes archived-root, missing-root, and unplaceable withholding instead of asserting one reason for all",
+  );
+  check(
+    workspace.includes("data-docs-archive-module-reason") && workspace.includes("an archived root Document is not the same withholding as a missing one") && workspace.includes("never in neither"),
+    "Docs Workspace archive copy states the conservation invariant and renders each module's own withholding reason",
+  );
+
+  // Archived-ness must be the discriminator for authoring, not a missing policy context.
+  const authoringActor = { id: "actor-agent-docs-authoring", display_name: "Docs Governance Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] };
+  const authoringDefinitions = [{ id: "definition-authoring-probe", module_id: "module-authoring-probe", action_command_refs: ["document.append", "block.append"], policy_refs: ["definition-authoring-probe:document.append", "definition-authoring-probe:block.append"] }];
+  const authoringDocument = (id, lifecycle) => ({ id, space_id: "company", parent_document_id: null, title: `Authoring probe ${lifecycle}`, kind: "page", lifecycle_status: lifecycle, block_ids: [], template_ref: null, permission_policy_refs: ["company.records.write"], reference_refs: [], created_by: { actor_type: "agent", actor_id: authoringActor.id }, updated_by: { actor_type: "agent", actor_id: authoringActor.id }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" });
+  const authoringProjection = {
+    actors: [authoringActor],
+    documents: [authoringDocument("document-authoring-active", "draft"), authoringDocument("document-authoring-archived", "archived")],
+    business_modules: [{ id: "module-authoring-probe", name: "Authoring probe", root_document_ref: "document-authoring-active", status: "active", default_view_refs: [] }],
+    custom_page_definitions: authoringDefinitions,
+  };
+  const grantedAuthoring = adaptCompanyOsDocsProjection(authoringProjection, { documentId: "document-authoring-active" }).document.authoring;
+  const refusedAuthoring = adaptCompanyOsDocsProjection(authoringProjection, { documentId: "document-authoring-archived" }).document.authoring;
+  check(
+    grantedAuthoring?.documentId === "document-authoring-active"
+      && grantedAuthoring?.documentPolicyRef === "definition-authoring-probe:document.append"
+      && grantedAuthoring?.blockPolicyRef === "definition-authoring-probe:block.append"
+      && refusedAuthoring === undefined,
+    "archived lifecycle alone withdraws Store-live authoring: the identical definition, policy refs, and writable actor grant it to the non-archived Document",
+  );
+
+  const deepLinkedArchivedPages = adaptCompanyOsDocsProjection({ documents: hierarchyDocuments }, { documentId: "document-agentos-home" });
+  check(
+    deepLinkedArchivedPages.document.id === "document-agentos-home"
+      && deepLinkedArchivedPages.document.lifecycleStatus === "archived"
+      && deepLinkedArchivedPages.document.authoring === undefined
+      && !flattenTree(deepLinkedArchivedPages.workspace.tree).some((item) => item.ref === "document-agentos-home"),
+    "an archived deep link still resolves read-only with its archived lifecycle while staying out of the default tree",
+  );
+  check(
+    deepLinkedArchivedPages.workspace.archive?.documentIds.includes("document-agentos-home")
+      && flattenTree(deepLinkedArchivedPages.workspace.archive?.tree).some((item) => item.ref === "document-agentos-home" && item.kind === "document")
+      && deepLinkedArchivedPages.document.breadcrumbs?.some((link) => link.id === "document-agentos-home"),
+    "an archived deep link stays reachable through the explicit Archive view and keeps its own location trail",
+  );
+  check(
+    document.includes("archivedReason") && document.includes("withdrawn for archived Documents") && document.indexOf("archivedReason") < document.indexOf('"This projection does not expose a CustomPageDefinition'),
+    "Document Focus names the archived lifecycle as the true Store-live authoring boundary instead of a false missing-policy reason",
+  );
+  check(
+    workspace.includes('data-docs-archive-narrow="true"') && workspace.includes("lg:hidden"),
+    "the Archive stays reachable below desktop widths where the desktop tree rail is hidden",
+  );
+  check(
+    document.includes("lg:border-l lg:border-t-0") && document.includes("border-t border-border pt-5"),
+    "Document Focus stacks its context rail below the document body on narrow widths",
+  );
+
+  // Navigation context derives from real snapshot relations only: the ancestor
+  // chain from parent_document_id, scoped active children, backlinks from
+  // Relations/reference_refs, related WorkItems, and maintained-by actors.
+  const navigationPages = adaptCompanyOsDocsProjection({
+    actors: [
+      { id: "actor-agent-nav", display_name: "Nav Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] },
+      { id: "actor-human-nav", display_name: "Nav Human", actor_type: "human" },
+    ],
+    documents: [
+      { id: "document-nav-root", space_id: "company", parent_document_id: null, title: "Nav Root", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-nav-parent", space_id: "company", parent_document_id: "document-nav-root", title: "Nav Parent", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-nav-focus", space_id: "company", parent_document_id: "document-nav-parent", title: "Nav Focus", kind: "page", lifecycle_status: "active", block_ids: [], created_by: { actor_type: "agent", actor_id: "actor-agent-nav" }, updated_by: { actor_type: "human", actor_id: "actor-human-nav" } },
+      { id: "document-nav-child", space_id: "company", parent_document_id: "document-nav-focus", title: "Nav Child", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-nav-archived-child", space_id: "company", parent_document_id: "document-nav-focus", title: "Nav Archived Child", kind: "page", lifecycle_status: "archived", block_ids: [] },
+      { id: "document-nav-backlink", space_id: "company", parent_document_id: null, title: "Nav Backlink", kind: "page", lifecycle_status: "active", block_ids: [], reference_refs: [{ kind: "document", id: "document-nav-focus" }] },
+    ],
+    work_items: [{ id: "work-nav-focus", title: "Nav focus work", source_document_ref: "document-nav-focus" }],
+    relations: [{ id: "relation-nav-backlink", relation_type: "references", source_ref: "document-nav-backlink", target_ref: "document-nav-focus" }],
+  }, { documentId: "document-nav-focus" });
+  check(
+    navigationPages.document.breadcrumb?.join(" / ") === "company / Nav Root / Nav Parent / Nav Focus"
+      && navigationPages.document.breadcrumbs?.map((link) => link.id).join(",") === "document-nav-root,document-nav-parent,document-nav-focus"
+      && navigationPages.document.breadcrumbs?.[0]?.href === "?surface=docs&document=document-nav-root"
+      && navigationPages.document.breadcrumbs?.[2]?.href === undefined,
+    "breadcrumbs derive the full ancestor chain from parent_document_id and stay navigable up to the current Document",
+  );
+  check(
+    JSON.stringify(navigationPages.document.childDocuments?.map((link) => link.id)) === JSON.stringify(["document-nav-child"]),
+    "scoped child documents list exactly the active parent_document_id children of the selected Document",
+  );
+  check(
+    navigationPages.document.backlinks?.length === 1 && navigationPages.document.backlinks?.[0]?.id === "document-nav-backlink",
+    "backlinks derive from snapshot Relations and reference_refs, deduplicated to each referencing Document",
+  );
+  check(
+    navigationPages.document.resultLinks?.some((link) => link.id === "work-nav-focus")
+      && navigationPages.document.properties?.some((property) => property.label === "Last maintained by" && property.ref === "actor-human-nav")
+      && navigationPages.document.properties?.some((property) => property.label === "Created by" && property.ref === "actor-agent-nav"),
+    "related WorkItems and maintained-by actors derive from real snapshot relations and actor refs",
+  );
+  check(
+    document.includes('data-docs-breadcrumbs="true"') && document.includes("DocumentBreadcrumbs")
+      && document.includes('label="Child pages"') && document.includes('label="Backlinks"'),
+    "Document Focus renders navigable breadcrumbs, scoped child pages, and backlinks",
+  );
+  check(
+    types.includes("breadcrumbs?: CompanyOsLink[]") && types.includes("childDocuments?: CompanyOsLink[]") && types.includes("backlinks?: CompanyOsLink[]") && types.includes("missingDocumentId?: string"),
+    "the document page contract carries breadcrumbs, child documents, backlinks, and the not-found marker",
+  );
+
+  // A missing explicit selection is an honest not-found route, not a substitution.
+  const missingPages = adaptCompanyOsDocsProjection({
+    documents: [{ id: "document-nav-root", space_id: "company", parent_document_id: null, title: "Nav Root", kind: "page", lifecycle_status: "active", block_ids: [] }],
+  }, { documentId: "document-pruned-away" });
+  check(
+    missingPages.document.id === undefined
+      && missingPages.document.missingDocumentId === "document-pruned-away"
+      && missingPages.document.title === "Document not found"
+      && missingPages.document.authoring === undefined
+      && missingPages.document.blocks.length === 0
+      && adapter.includes("selectionMissed"),
+    "a missing explicit document selection renders an explicit not-found state instead of substituting another Document",
+  );
+  check(
+    document.includes('data-docs-document-not-found="true"') && document.includes("nothing else is substituted under the requested id"),
+    "Document Focus renders the not-found state without fabricating document content",
+  );
+
+  // A long document renders every native Block in Document.block_ids order and
+  // raises the existing oversized-document health signal.
+  const longBlockIds = Array.from({ length: 60 }, (_, index) => `block-long-${String(index).padStart(2, "0")}`);
+  const longPages = adaptCompanyOsDocsProjection({
+    documents: [{ id: "document-long", space_id: "company", parent_document_id: null, title: "Long document", kind: "page", lifecycle_status: "active", block_ids: longBlockIds }],
+    blocks: longBlockIds.map((id, index) => ({ id, document_id: "document-long", kind: "rich_text", position: 59 - index, content: { text: `Paragraph ${index}` } })),
+  }, { documentId: "document-long" });
+  check(
+    longPages.document.blocks.length === 60
+      && longPages.document.blocks[0]?.id === "block-long-00"
+      && longPages.document.blocks[59]?.id === "block-long-59"
+      && longPages.health.findings.some((finding) => finding.kind === "oversized_document" && finding.subject?.id === "document-long"),
+    "a long document renders every native Block in Document.block_ids order and flags the oversized-document health signal",
+  );
 
   const pageRefs = {
     home: new Set([
@@ -348,14 +684,14 @@ async function main() {
       ...pages.home.financeSummary.flatMap((item) => item.id ? [item.id] : []),
     ]),
     "docs-workspace": new Set([
-      ...pages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+      ...flattenTree(pages.workspace.tree).map((item) => item.ref),
       ...(pages.workspace.recentlyUpdated ?? []).map((link) => link.id),
       ...(pages.workspace.suggestions ?? []).map((link) => link.id),
       pages.workspace.proposal?.id,
     ].filter(Boolean)),
     "document-focus": new Set([
       pages.document.id,
-      ...(pages.document.documentTree ?? []).flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+      ...flattenTree(pages.document.documentTree).map((item) => item.ref),
       ...(pages.document.properties ?? []).flatMap((property) => property.ref ? [property.ref] : []),
       ...(pages.document.sourceLinks ?? []).map((link) => link.id),
       ...(pages.document.resultLinks ?? []).map((link) => link.id),

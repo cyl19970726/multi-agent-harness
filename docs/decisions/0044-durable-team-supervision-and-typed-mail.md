@@ -168,7 +168,8 @@ and silently queued. The caller may deliberately use Message, or Interrupt then
 Message.
 
 Interrupt stops one current Provider activity and waits for a terminal native
-acknowledgement. Close ends the Harness-owned runtime. Kimi ACP has no native
+acknowledgement. Close ends the Harness-owned runtime while ADR 0049 preserves
+the closed MemberRun/native binding for explicit Reopen. Kimi ACP has no native
 session-close operation; closing its client runtime must not claim otherwise.
 
 ### Observation and control attachments
@@ -242,8 +243,8 @@ events.
 
 Provider transport loss moves an unclosed Member to disconnected/waiting while
 retaining its native binding. Supervisor restart does not create a new
-MemberRun. Explicit Close is the only normal action that terminalizes the
-runtime.
+MemberRun. Explicit Close terminalizes one runtime generation; ADR 0049 Reopen
+may start a higher generation on the same MemberRun/native session.
 
 An idle Supervisor verifies that the Provider transport is alive before it
 claims queued mail. If the previous transport ended, it first reattaches the

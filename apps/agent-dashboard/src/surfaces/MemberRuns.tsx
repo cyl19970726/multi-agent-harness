@@ -11,6 +11,7 @@ import {
   GitBranch,
   Link2,
   MessageSquare,
+  RotateCcw,
   Send,
   Square,
   ShieldAlert,
@@ -25,6 +26,7 @@ import { fetchNativeMemberActivity } from "@/api";
 import {
   closeTeamMember,
   interruptTeamMember,
+  reopenTeamMember,
   resolvePendingInteraction,
   sendTeamMessage,
   steerTeamMember,
@@ -185,6 +187,8 @@ export function MemberRunFocus({
   }
 
   const finished = isFinishedMember(context.member.status);
+  const coordinationStatus = context.member.coordination_status ?? "active";
+  const coordinationOpen = coordinationStatus === "active";
   const livePreview = isCurrentPreview(context.liveActivity?.expires_at, now)
     ? context.liveActivity
     : undefined;
@@ -216,7 +220,7 @@ export function MemberRunFocus({
 
   const dispatchMessage = () => {
     const body = draft.trim();
-    if (!body || !actionsEnabled || finished) return;
+    if (!body || !actionsEnabled || finished || !coordinationOpen) return;
     if (messageKind === "steer" && !canLiveSteer) return;
     const descriptor = messageKind === "steer"
       ? steerTeamMember(context.run.id, context.member.id, body)
@@ -269,8 +273,14 @@ export function MemberRunFocus({
         <MemberComposer
           value={draft}
           kind={messageKind}
-          disabled={!actionsEnabled || finished}
-          disabledReason={finished ? "This member run is finished; its history is read-only." : ACTIONS_DISABLED_HINT}
+          disabled={!actionsEnabled || finished || !coordinationOpen}
+          disabledReason={!coordinationOpen
+            ? coordinationStatus === "retired"
+              ? "This member is retired; its history is permanently read-only."
+              : "This member is closed. Reopen it to resume messaging and its native session."
+            : finished
+              ? "This member runtime is finished; close and reopen it to resume the same native session."
+              : ACTIONS_DISABLED_HINT}
           supportsLiveSteer={canLiveSteer}
           steerUnavailableReason={context.member.provider_profile?.execution_mode !== "codex_app_server"
             ? `${context.member.provider_profile?.execution_mode ?? "This provider mode"} does not support same-turn Steer.`
@@ -381,6 +391,9 @@ function MemberHeroHeader({
           <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px]">
             <span className="inline-flex items-center gap-1.5 font-medium text-status-good"><StatusDot tone={memberStatusTone(context.member.status)} /> {context.member.status ?? "unknown"}</span>
             <span className="h-4 w-px bg-border" />
+            <span className="text-muted-foreground">Coordination</span>
+            <span className="text-foreground">{context.member.coordination_status ?? "active"} · gen {context.member.runtime_generation ?? 1}</span>
+            <span className="h-4 w-px bg-border" />
             <span className="text-muted-foreground">Provider</span>
             <span className="text-foreground">{context.member.provider ?? "provider"}{memberModelLabel(context.member) ? ` · ${memberModelLabel(context.member)}` : ""}</span>
           </div>
@@ -413,7 +426,7 @@ function MemberHeroHeader({
             <Square className="size-3 fill-current" /> Interrupt
           </Button>
         )}
-        {!["failed", "stopped"].includes(context.member.status ?? "") && (
+        {(context.member.coordination_status ?? "active") === "active" && (
           <Button
             size="sm"
             variant="outline"
@@ -421,6 +434,19 @@ function MemberHeroHeader({
             onClick={() => dispatch(onAction, closeTeamMember(context.run.id, context.member.id))}
           >
             <Square className="size-3" /> Close
+          </Button>
+        )}
+        {context.member.coordination_status === "closed" && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!actionsEnabled || !["stopped", "completed", "failed"].includes(context.member.status ?? "")}
+            title={["stopped", "completed", "failed"].includes(context.member.status ?? "")
+              ? "Start a new adapter process and resume this member's existing native session"
+              : "Wait until the closing runtime reaches a terminal status"}
+            onClick={() => dispatch(onAction, reopenTeamMember(context.run.id, context.member.id))}
+          >
+            <RotateCcw className="size-3.5" /> Reopen
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={onBack}><ArrowLeft className="size-3.5" /> Back to team</Button>

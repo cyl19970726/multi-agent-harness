@@ -20,8 +20,8 @@ use std::{
 };
 
 use harness_core::{
-    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLeaseStatus, WaveStatus,
+    MemberRunStatus, PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -35,9 +35,10 @@ use crate::{
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     parse_team_actor_kind, parse_team_message_kind, parse_team_message_response_intent,
     parse_wave_executor_kind, prepare_team_run_start, reconcile_team_message_delivery_value,
-    rename_team_run_member, resolve_pending_interaction_value, revise_mission_context,
-    revise_mission_team_link, revise_wave, route_agent_inbox_messages, send_team_message_as,
-    serde_snake_label, steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
+    rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
+    resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
+    revise_wave, route_agent_inbox_messages, send_team_message_as, serde_snake_label,
+    steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
     team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
     ResolvedStore, TeamMemberSpec,
 };
@@ -197,6 +198,7 @@ fn call_tool(
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_close_member" => tool_team_run_close_member(store, &arguments),
+        "team_run_reopen_member" => tool_team_run_reopen_member(store, resolved, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
     };
@@ -232,6 +234,29 @@ fn tool_team_run_close_member(store: &HarnessStore, arguments: &Value) -> Result
     let member_run_id = required_str(arguments, "member_run_id")?;
     close_team_member_value(store, team_run_id, member_run_id, arguments)
         .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_reopen_member(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    let reopened = reopen_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())?;
+    if reopened_member_requires_supervisor_start(store, team_run_id, member_run_id)
+        .map_err(|error| error.to_string())?
+    {
+        let mut start_arguments = arguments.clone();
+        start_arguments["team_run_id"] = Value::String(team_run_id.to_string());
+        let start = tool_team_run_start(store, resolved, &start_arguments)?;
+        return Ok(json!({
+            "reopen": reopened,
+            "runtime_start": start,
+        }));
+    }
+    Ok(json!({"reopen": reopened}))
 }
 
 fn tool_team_run_resolve_interaction(
@@ -847,21 +872,63 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         }
     });
     let sender_kind = parse_team_actor_kind(&sender_kind).map_err(|error| error.to_string())?;
+    let sender_id =
+        optional_str(arguments, "sender_id")?.unwrap_or_else(|| from_member_id.to_string());
+    let mut authn_source = "mcp".to_string();
     if matches!(
         sender_kind,
         TeamActorKind::MemberRun | TeamActorKind::AgentMember
     ) {
-        return Err(
-            "unbound MCP connections may not author MemberRun or AgentMember messages; \
-             member-originated messages must come from that member's bound provider runtime"
-                .to_string(),
-        );
+        // The unbound-client impersonation invariant holds for driven
+        // members: their mail must originate from the bound provider runtime.
+        // The declared exception is a non-driven external_interactive member,
+        // whose user-driven session has no bound runtime and whose mail is
+        // accepted from this trusted loopback client with explicit provenance.
+        let external_member = latest_member_runs_in_append_order(store)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|member| member.team_run_id == team_run_id)
+            .find(|member| match sender_kind {
+                TeamActorKind::MemberRun => member.id == sender_id,
+                TeamActorKind::AgentMember => {
+                    member.agent_member_id.as_deref() == Some(sender_id.as_str())
+                }
+                _ => false,
+            });
+        match external_member {
+            Some(member)
+                if member.is_external_interactive()
+                    && member.coordination_is_active()
+                    && !matches!(
+                        member.status,
+                        MemberRunStatus::Completed
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                    ) =>
+            {
+                authn_source = "mcp:external_interactive".to_string();
+            }
+            Some(member) if member.is_external_interactive() => {
+                return Err(format!(
+                    "member {} coordination is {} and runtime status is {}; explicitly Reopen a closed member or create a replacement for a retired member",
+                    member.id,
+                    serde_snake_label(&member.coordination_status),
+                    serde_snake_label(&member.status)
+                ));
+            }
+            _ => {
+                return Err(
+                    "unbound MCP connections may not author MemberRun or AgentMember messages; \
+                     member-originated messages must come from that member's bound provider runtime \
+                     (declared external_interactive members excepted)"
+                        .to_string(),
+                );
+            }
+        }
     }
     if sender_kind == TeamActorKind::Host && from_member_id != "host" {
         return Err("sender_kind=host requires from_member_id=host".to_string());
     }
-    let sender_id =
-        optional_str(arguments, "sender_id")?.unwrap_or_else(|| from_member_id.to_string());
     let message = send_team_message_as(
         store,
         team_run_id,
@@ -869,7 +936,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             kind: sender_kind,
             id: sender_id,
             display_name: optional_str(arguments, "sender_name")?,
-            authn_source: Some("mcp".to_string()),
+            authn_source: Some(authn_source),
         },
         to_member_ids,
         kind,
@@ -1126,8 +1193,8 @@ fn tool_definitions() -> Value {
                             "properties": {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
-                                "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
-                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; codex_exec and claude_cli are workflow-only."},
+                                "provider": {"type": "string", "minLength": 1, "description": "Provider label. Harness-driven modes require a registered codex, kimi, or claude adapter; external_interactive accepts any non-empty label because Harness does not execute it."},
+                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk", "external_interactive"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; codex_exec and claude_cli are workflow-only. external_interactive declares the user's own already-open session: Harness spawns no provider process, does not constrain its provider label, and the member polls its own inbox."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "effort": {"type": "string", "minLength": 1, "description": "Optional provider-neutral reasoning-effort request. The adapter must record the provider-confirmed effective value or an unsupported/review_required status."},
                                 "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
@@ -1158,7 +1225,7 @@ fn tool_definitions() -> Value {
                             "name": {"type": "string", "minLength": 1},
                             "role": {"type": "string", "minLength": 1},
                             "provider": {"type": "string", "minLength": 1},
-                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"]},
+                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk", "external_interactive"]},
                             "model": {"type": "string", "minLength": 1},
                             "effort": {"type": "string", "minLength": 1},
                             "service_tier": {"type": "string", "minLength": 1},
@@ -1201,7 +1268,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Kimi ACP (kimi_acp), and Claude Agent SDK streaming (claude_agent_sdk). Bounded codex_exec and claude_cli are workflow-only and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Kimi ACP (kimi_acp), and Claude Agent SDK streaming (claude_agent_sdk); declared external_interactive members are user-driven and skipped by the supervisor. Bounded codex_exec and claude_cli are workflow-only and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1287,7 +1354,7 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "from_member_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
-                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author MemberRun or AgentMember messages; those originate from the bound provider runtime."},
+                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "member_run", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author MemberRun or AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
                     "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to from_member_id."},
                     "sender_name": {"type": "string"},
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
@@ -1377,7 +1444,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_close_member",
-            "description": "Explicitly end one Member runtime under Host ownership. A live Codex app-server, Kimi ACP, or Claude Agent SDK transport receives its real close/cancel protocol; an unstarted member is durably deactivated. Completed/failed/stopped members are idempotent. The live request must be sent through the same Host server process that started the TeamRun.",
+            "description": "Explicitly close one Member runtime while preserving the same MemberRun, native-session binding, and frozen mailbox for a later reopen. Managed adapters release their Harness-owned process; external_interactive only closes Harness coordination because its process is user-owned. The live request must be sent through the same Host server process that started the TeamRun.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1385,6 +1452,22 @@ fn tool_definitions() -> Value {
                     "member_run_id": {"type": "string"},
                     "reason": {"type": "string"},
                     "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id"]
+            }
+        },
+        {
+            "name": "team_run_reopen_member",
+            "description": "Reopen a closed MemberRun in place. Managed adapters increment runtime_generation, start a new adapter process, and resume the exact provider-native session; Harness never reconstructs a transcript or silently starts fresh. external_interactive reopens only the coordination binding because its process and conversation are user-owned. Retired members cannot reopen.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "reopened_by": {"type": "string", "default": "host"},
+                    "max_concurrency": {"type": "integer", "minimum": 1, "default": 4},
+                    "idle_timeout_s": {"type": "integer", "minimum": 1, "default": 120}
                 },
                 "required": ["team_run_id", "member_run_id"]
             }

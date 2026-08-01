@@ -191,6 +191,65 @@ checks, artifacts, blockers, handoffs, and review results are recorded), and
 assignments may carry forward unchanged). Review depth is proportional to risk;
 Proposal/Decision/outcome evaluation is not a universal product chain.
 
+Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
+capability, execution-mode capability, adapter coverage, and product permission
+are separate claims. Provider-native questions, approvals, or plan reviews that
+actually pause a turn must be routed as PendingInteraction records. Ordinary
+Host/Member planning remains correlated TeamMessage conversation. A provider
+`completed` status is not by itself proof of semantic success, answer, or
+approval.
+
+The current trusted-development Team policy gives Codex, Claude, and Kimi
+members full execution access so unattended work is not blocked by ordinary
+tool authorization. This is a product policy, not a Provider capability and not
+approval for protected external effects. Members decide when isolation is
+useful and may create their own same-repository Git worktree; the Host declares
+owned/conflicting paths and acceptance boundaries, not Git mechanics. Members
+must report the actual worktree, branch, commit, checks, and conflicts.
+
+New Agent Team members use only their persistent bidirectional mode:
+`codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
+`codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
+reads; they are not Team fallbacks. The one declared exception is
+`external_interactive`: a user's own already-open interactive provider CLI
+session may join a run as a non-driven member that Harness never spawns or
+drives — it polls its inbox and replies over the trusted loopback CLI/MCP,
+and it has no provider-native session record (evidence claims about its work
+cannot resolve to one). The Host explicitly creates, messages,
+inspects, interrupts, closes, reopens, and retires members. Interrupt stops one
+current turn. Close releases the managed runtime and freezes the mailbox while
+retaining the same MemberRun and provider-native session; Reopen increments its
+runtime generation and resumes that exact session. Deactivate/Retire is the
+permanent coordination end. Wave or TeamRun completion never implies Close.
+Physical live control handles remain process-local to the Harness
+service that started them. A durable Team Supervisor lease is the cross-process
+control authority and contains a loopback service locator. Dashboard, CLI, and
+MCP clients route controls to that owner; the owner revalidates supervisor id,
+generation, status, and expiry immediately before driving its handle. After a
+crash, a new Supervisor generation reattaches the recorded native sessions;
+uncertain claimed deliveries require explicit reconciliation, never blind
+replay.
+
+Harness has no Plan Mode or Plan Gate. When the Host wants a plan first, it asks
+through an ordinary correlated Markdown message; the Member replies, the Host
+argues or approves in the same chain, and provider-native plan/goal features
+remain internal execution aids.
+
+An Assignment is durable work ownership; a provider-native Goal is only one
+possible continuation mechanism for executing it. Each active MemberRun/native
+session/writable Workspace must have exactly one top-level execution driver:
+either Harness starts the next provider cycle (`host_driven`) or an observed
+provider-native continuation loop does (`provider_driven`). Never activate a
+native goal and also issue an ordinary Harness start for the same work. A
+provider-driven member may complete many native cycles without creating a new
+MemberRun, but provider satisfaction never implies Host acceptance. Providers
+without a reviewed native continuation capability remain first-class
+host-driven members. See `docs/member-continuation-model.md` and ADR 0041.
+
+Provider-native or chat-side subagents are implementation details of the Host
+or member that invoked them. Optional hooks may record honest attribution, but
+the harness must not claim lifecycle control it does not have.
+
 Do not claim that Mission-scoped Agent Team work was accepted unless the store
 shows the native Mission, its linked `AgentTeam`, the relevant Host-plan Wave,
 Mission-scoped `AgentTeamRun` records, role-specific MemberRuns with assignment

@@ -142,8 +142,9 @@ Native invariants:
    native receipt separately from semantic reply and recipient ACK.
 7. Typed sender/recipient identity is structural. Unbound API/MCP/UI callers
    cannot author Member-originated messages.
-8. Explicit Close is terminal and latched; idle, Handoff, Wave advance, TeamRun
-   completion, or Mission closeout never implies Close.
+8. Explicit Close is latched and terminal for one runtime generation; idle,
+   Handoff, Wave advance, TeamRun completion, or Mission closeout never implies
+   Close. Reopen preserves the MemberRun/native session; Retire is permanent.
 9. New provider transcripts, tool/command/file event streams, and thinking are
    never mirrored into durable Harness actions, snapshots, replay, evidence,
    or peer messages.
