@@ -55,6 +55,65 @@
         "thinking_transient_only": { "type": "boolean" }
       }
     },
+    "provider_capacity": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Last observed runtime availability of this member's provider account. Absent or null means nothing was observed; it never means available, and it is independent of provider_profile.compatibility_status.",
+      "required": ["provider", "execution_mode", "account", "state", "observed_at", "observed_unix_ms", "evidence_source", "confidence"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "execution_mode": { "type": "string", "minLength": 1 },
+        "account": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source"],
+          "properties": {
+            "source": { "type": "string", "minLength": 1 },
+            "identifier": { "type": ["string", "null"], "minLength": 1 },
+            "plan": { "type": ["string", "null"], "minLength": 1 }
+          }
+        },
+        "state": { "type": "string", "enum": ["available", "limited", "exhausted", "unauthorized", "unknown"] },
+        "observed_at": { "type": "string", "minLength": 1 },
+        "observed_unix_ms": { "type": "integer", "minimum": 0 },
+        "reset_at": { "type": ["string", "null"], "minLength": 1 },
+        "evidence_source": {
+          "type": "string",
+          "enum": ["provider_quota_api", "auth_metadata", "execution_canary", "provider_error", "not_exposed", "probe_failed", "none"]
+        },
+        "confidence": { "type": "string", "enum": ["observed", "inferred", "unknown"] },
+        "windows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "limit_id": { "type": ["string", "null"], "minLength": 1 },
+              "used_percent": { "type": ["integer", "null"] },
+              "window_duration_mins": { "type": ["integer", "null"] },
+              "resets_at": { "type": ["string", "null"], "minLength": 1 }
+            }
+          }
+        },
+        "diagnosis": { "type": ["string", "null"] },
+        "runtime_context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "present"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "present": { "type": "boolean" },
+              "note": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
     "coordination_status": {
       "type": "string",
       "enum": ["active", "closed", "retired"],
