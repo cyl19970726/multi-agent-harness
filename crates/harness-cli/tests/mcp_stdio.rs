@@ -224,6 +224,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_steer_member",
             "team_run_interrupt_member",
             "team_run_close_member",
+            "team_run_reopen_member",
             "team_run_events"
         ]
     );
@@ -1213,9 +1214,8 @@ fn mcp_stdio_external_interactive_member_authorship() {
         "acked mail leaves the actionable inbox: {inbox}"
     );
 
-    // Close ends only the Harness coordination identity, but that identity is
-    // genuinely terminal: the still-running external process cannot keep
-    // authoring MemberRun mail through the unbound MCP exception.
+    // Close freezes only the Harness coordination binding. The still-running
+    // external process cannot author MemberRun mail until explicit Reopen.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1248,5 +1248,46 @@ fn mcp_stdio_external_interactive_member_authorship() {
     assert!(response["result"]["content"][0]["text"]
         .as_str()
         .expect("closed external error")
-        .contains("unbound MCP connections may not author"));
+        .contains("coordination is closed"));
+
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_reopen_member",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "member_run_id": member_ids[1],
+                "reason": "continue external review"
+            }
+        }),
+    );
+    let reopened = call_payload(&response);
+    assert_eq!(
+        reopened["reopen"]["member_run"]["id"].as_str(),
+        Some(member_ids[1].as_str())
+    );
+    assert_eq!(
+        reopened["reopen"]["member_run"]["runtime_generation"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        reopened["reopen"]["runtime_activation"].as_str(),
+        Some("external_user_driven")
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": member_ids[1],
+                "sender_kind": "member_run",
+                "to_member_ids": ["host"],
+                "kind": "message",
+                "body": "authoring resumes after explicit reopen",
+                "correlation_id": assignment_correlation
+            }
+        }),
+    );
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
 }

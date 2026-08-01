@@ -29,6 +29,8 @@
     "observes_background_tasks": false,
     "thinking_transient_only": true
   },
+  "coordination_status": "active",
+  "runtime_generation": 1,
   "status": "idle",
   "native_session": null,
   "worktree_ref": null,

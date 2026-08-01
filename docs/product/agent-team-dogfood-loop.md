@@ -105,7 +105,8 @@ At minimum, a mixed-Team run exercises:
 - one observed tool-authorization path proving the trusted-development member
   does not stall on an ordinary permission prompt;
 - one real supported Steer or queued-next-round result;
-- Interrupt and explicit Close with terminal acknowledgement;
+- Interrupt, explicit Close with runtime acknowledgement, same-session Reopen,
+  and permanent Retire where the scenario covers lifecycle controls;
 - CLI and Dashboard reconstruction of the same coordination state.
 
 The Host may add a Repair Member or reviewer after observing a problem. It does

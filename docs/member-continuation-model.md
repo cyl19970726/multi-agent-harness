@@ -146,7 +146,9 @@ Harness remains the communication authority in both driver modes:
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
 | Provider asks for authority | Create `PendingInteraction`; do not infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await Handoff/Host acceptance as required. |
-| Host explicitly closes Member | Latch terminal Close before teardown; no driver, delivery, or later Supervisor may revive it. |
+| Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
+| Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
+| Host deactivates/retires Member | End coordination permanently; delivery and Reopen are rejected. |
 
 Ordinary message visibility is an explicit execution-mode capability, not a
 uniform mailbox promise:

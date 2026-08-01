@@ -133,8 +133,10 @@ mail to that owner. A Wave or TeamRun completing does not close a Member.
 
 Use `team-run send`, `inbox`, `host-inbox`, `status`, and `events` for durable
 coordination. Ordinary Message queues for the next safe provider cycle; Steer
-is a distinct real same-turn control where supported. Only explicit
-`close-member` ends the native runtime.
+is a distinct real same-turn control where supported. `close-member` releases
+the native runtime while retaining the MemberRun/session; `reopen-member`
+starts a new adapter generation on the same native session; `deactivate-member`
+retires the coordination identity permanently.
 
 ## 5. Author + run a Dynamic Workflow
 

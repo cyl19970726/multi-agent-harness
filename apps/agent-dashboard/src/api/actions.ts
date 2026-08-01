@@ -550,7 +550,7 @@ export function interruptTeamMember(
   };
 }
 
-/** Explicitly end a Team Member runtime under Host lifecycle ownership. */
+/** Close a Team Member runtime while retaining its resumable identity/history. */
 export function closeTeamMember(
   teamRunId: string,
   memberRunId: string,
@@ -560,6 +560,19 @@ export function closeTeamMember(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/close`,
     body: { reason, requested_by: "host" },
+  };
+}
+
+/** Reopen the same MemberRun; the server resumes its native session when managed. */
+export function reopenTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  reason = "Host reopened member runtime",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/reopen`,
+    body: { reason, reopened_by: "host" },
   };
 }
 

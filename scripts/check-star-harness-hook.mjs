@@ -42,7 +42,7 @@ elif [[ "\${1:-} \${2:-}" == "member-run show" ]]; then
   if [[ "\$member_id" == "member-run-driven" ]]; then
     printf '%s\\n' '{"member_run":{"id":"member-run-driven","team_run_id":"run-1","status":"running","provider_profile":{"execution_mode":"codex_app_server","execution_driver":"host_driven"}}}'
   elif [[ "\$member_id" == "member-run-stopped" ]]; then
-    printf '%s\\n' '{"member_run":{"id":"member-run-stopped","team_run_id":"run-1","status":"stopped","provider_profile":{"execution_mode":"external_interactive","execution_driver":"user_driven"}}}'
+    printf '%s\\n' '{"member_run":{"id":"member-run-stopped","team_run_id":"run-1","coordination_status":"closed","status":"idle","provider_profile":{"execution_mode":"external_interactive","execution_driver":"user_driven"}}}'
   else
     printf '{"member_run":{"id":"%s","team_run_id":"run-1","status":"idle","provider_profile":{"execution_mode":"external_interactive","execution_driver":"user_driven"}}}\\n' "\$member_id"
   fi
@@ -330,7 +330,7 @@ try {
     HARNESS_MEMBER_RUN_ID: "member-run-stopped",
   });
   if (stoppedBinding.trim()) {
-    throw new Error("A terminal external MemberRun binding must not intake mail");
+    throw new Error("A closed external MemberRun binding must not intake mail");
   }
 
   const drivenPrecedence = run("SessionStart", {

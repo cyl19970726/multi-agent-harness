@@ -3043,7 +3043,17 @@ fn host_can_explicitly_close_a_live_codex_member() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
+    let resume_marker = home.base().join("codex-close-resume.log");
+    let resume_marker_value = resume_marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_RESUME_MARKER", resume_marker_value.as_str()),
+        ],
+    );
     let (_, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -3065,15 +3075,19 @@ fn host_can_explicitly_close_a_live_codex_member() {
     );
     assert_eq!(status, 202);
     let mut running = false;
+    let mut native_session_id = None;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         running = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|member| {
-                member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("running")
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| {
+                native_session_id = member["native_session"]["native_session_id"]
+                    .as_str()
+                    .map(str::to_string);
+                member["status"].as_str() == Some("running") && native_session_id.is_some()
             });
         if running {
             break;
@@ -3081,6 +3095,7 @@ fn host_can_explicitly_close_a_live_codex_member() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(running, "Codex member never became live");
+    let native_session_id = native_session_id.expect("Codex native session before close");
 
     let (status, result) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
@@ -3102,6 +3117,7 @@ fn host_can_explicitly_close_a_live_codex_member() {
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("stopped")
+                    && member["coordination_status"].as_str() == Some("closed")
             });
         if stopped {
             break;
@@ -3109,6 +3125,57 @@ fn host_can_explicitly_close_a_live_codex_member() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(stopped, "Codex member did not terminate after Host close");
+
+    let (status, reopened) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
+        &serde_json::json!({"reopened_by": "host", "reason": "continue same conversation"}),
+    );
+    assert_eq!(status, 202, "body: {reopened}");
+    assert_eq!(
+        reopened["result"]["member_run"]["id"].as_str(),
+        Some(member_id.as_str())
+    );
+    assert_eq!(
+        reopened["result"]["member_run"]["runtime_generation"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        reopened["result"]["member_run"]["native_session"]["native_session_id"].as_str(),
+        Some(native_session_id.as_str())
+    );
+
+    let mut resumed = false;
+    for _ in 0..150 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        resumed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| {
+                matches!(member["status"].as_str(), Some("running" | "idle"))
+                    && member["coordination_status"].as_str() == Some("active")
+                    && member["runtime_generation"].as_u64() == Some(2)
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some(native_session_id.as_str())
+            });
+        if resumed && resume_marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(resumed, "reopened Codex member did not run generation 2");
+    let resume_log = std::fs::read_to_string(&resume_marker).expect("Codex resume marker");
+    assert!(
+        resume_log.contains(&native_session_id),
+        "reopen did not call thread/resume with the preserved session: {resume_log}"
+    );
+
+    let (status, result) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"requested_by": "host", "reason": "reopen acceptance complete"}),
+    );
+    assert_eq!(status, 200, "body: {result}");
 }
 
 #[test]
@@ -4631,8 +4698,8 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         Some(host_message_id.as_str())
     );
 
-    // Closing an external member only records the terminal status; there is
-    // no provider runtime or native session to clean up.
+    // Closing an external member freezes its Harness coordination; there is
+    // no provider runtime or native session under Harness control to clean up.
     let closed = team_run_json(
         &home,
         &project_id,
@@ -4666,6 +4733,10 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         .find(|member| member.id == helper_id)
         .expect("helper member row");
     assert_eq!(helper.status, harness_core::MemberRunStatus::Stopped);
+    assert_eq!(
+        helper.coordination_status,
+        harness_core::MemberCoordinationStatus::Closed
+    );
     assert!(
         store
             .latest_team_member_close_request(&helper_id)
@@ -4675,7 +4746,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     );
 
     // An external-only TeamRun remains Host-controlled: after a correlated
-    // Handoff the Host may close the coordination identity and explicitly
+    // Handoff the Host may close the coordination binding and explicitly
     // complete the run without claiming that any external process was stopped.
     let out = run_harness(
         &home,
@@ -4707,8 +4778,8 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Leave one message queued so Close can prove that the terminal
-    // coordination identity cannot continue sending, receiving, or ACKing.
+    // Leave one message queued so Close can prove that the frozen coordination
+    // binding cannot send, receive, or ACK until explicit Reopen.
     let out = run_harness(
         &home,
         home.base(),
@@ -4806,12 +4877,113 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         let out = run_harness(&home, home.base(), &args);
         assert!(
             !out.status.success()
-                && String::from_utf8_lossy(&out.stderr).contains("closed coordination identity"),
+                && String::from_utf8_lossy(&out.stderr).contains("coordination is closed"),
             "closed external coordination must reject {args:?}: stdout={} stderr={}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    let reopened = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "reopen-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--reason",
+            "continue the same external review",
+        ],
+    );
+    assert_eq!(reopened["member_run"]["id"].as_str(), Some(ext_id.as_str()));
+    assert_eq!(
+        reopened["member_run"]["coordination_status"].as_str(),
+        Some("active")
+    );
+    assert_eq!(
+        reopened["member_run"]["runtime_generation"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        reopened["runtime_activation"].as_str(),
+        Some("external_user_driven")
+    );
+    let reopened_inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
+    );
+    assert!(
+        reopened_inbox.as_array().is_some_and(|messages| messages
+            .iter()
+            .any(|message| { message["id"].as_str() == Some(queued_before_close_id.as_str()) })),
+        "mail queued before close must thaw after reopen: {reopened_inbox}"
+    );
+    let ack = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "ack",
+            "--id",
+            &run_id,
+            "--member-id",
+            &ext_id,
+            "--message-id",
+            &queued_before_close_id,
+        ],
+    );
+    assert!(
+        ack.status.success(),
+        "reopened external member must ACK frozen mail: {}",
+        String::from_utf8_lossy(&ack.stderr)
+    );
+
+    let retired = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "deactivate-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--reason",
+            "external reviewer retired",
+        ],
+    );
+    assert_eq!(retired["coordination_status"].as_str(), Some("retired"));
+    let reopen_retired = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "reopen-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+        ],
+    );
+    assert!(
+        !reopen_retired.status.success()
+            && String::from_utf8_lossy(&reopen_retired.stderr).contains("is retired"),
+        "retired member must not reopen: {}",
+        String::from_utf8_lossy(&reopen_retired.stderr)
+    );
 
     let completed = team_run_json(&home, &project_id, &["complete", "--id", &run_id, "--json"]);
     assert_eq!(completed["status"].as_str(), Some("completed"));

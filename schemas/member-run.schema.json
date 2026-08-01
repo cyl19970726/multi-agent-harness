@@ -55,6 +55,16 @@
         "thinking_transient_only": { "type": "boolean" }
       }
     },
+    "coordination_status": {
+      "type": "string",
+      "enum": ["active", "closed", "retired"],
+      "default": "active"
+    },
+    "runtime_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1
+    },
     "status": {
       "type": "string",
       "enum": ["starting", "idle", "queued", "running", "waiting", "disconnected", "reviewing", "blocked", "completed", "failed", "stopped"]

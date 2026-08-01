@@ -2609,6 +2609,8 @@ mod tests {
             model: Some("kimi-k2".into()),
             provider_controls: Default::default(),
             provider_profile: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
             worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
@@ -2642,6 +2644,8 @@ mod tests {
         let sparse = &runs[1];
         assert_eq!(sparse.id, "mr-sparse");
         assert_eq!(sparse.status, MemberRunStatus::Idle);
+        assert!(sparse.coordination_is_active());
+        assert_eq!(sparse.runtime_generation, 1);
         assert!(sparse.slot_id.is_none());
         assert!(sparse.agent_member_id.is_none());
         assert!(sparse.model.is_none());
@@ -3111,6 +3115,8 @@ mod tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
             worktree_ref: None,

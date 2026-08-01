@@ -219,10 +219,42 @@ SUGGESTED NEXT:
 - integration, review, or follow-up
 ```
 
-Remain available. The lane ends only when the Host sends an ordinary message
-accepting the Handoff, deactivates the member, or ends the run. Address review
-findings in the same MemberRun, Assignment correlation, Workspace, and native
-session unless the Host explicitly changes the contract.
+Remain available. Assignment acceptance does not close the runtime. Address
+review findings in the same MemberRun, Assignment correlation, Workspace, and
+native session unless the Host explicitly changes the contract.
+
+## Respect Close, Reopen, And Retire
+
+Treat provider work status and Harness coordination status as separate facts:
+
+- `active`: read/ACK mail and send correlated replies normally;
+- `closed`: stop coordination. Do not send, receive, or ACK. Mail queued before
+  Close is frozen, not cancelled;
+- `retired`: the MemberRun is permanently read-only and cannot reopen.
+
+For a managed member, Host Close releases the Harness-owned adapter process but
+retains this MemberRun, Assignment correlations, Workspace reference,
+`NativeSessionRef`, and provider-native history. Explicit Reopen increments
+`runtime_generation`, starts a new adapter process, and resumes the exact
+recorded native session. It must never rebuild history from Harness messages or
+silently start a fresh conversation. Ordinary mail cannot reopen you.
+The only fresh-session case is a Member closed before its first provider-native
+session ever existed; Harness labels that explicitly instead of claiming
+history continuity.
+
+CLI and MCP controls are:
+
+```bash
+"$HARNESS_BIN" team-run close-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reason <reason>
+"$HARNESS_BIN" team-run reopen-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reason <reason>
+"$HARNESS_BIN" team-run deactivate-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reason <reason>
+```
+
+Use `team_run_close_member` and `team_run_reopen_member` over MCP. Close is the
+reversible runtime release; Deactivate/Retire is the permanent identity end.
 
 ## Joining As An External Interactive Session
 
@@ -311,8 +343,10 @@ is rejected for driven members; it is accepted only for declared
 `external_interactive` members and recorded with
 `authn_source=mcp:external_interactive`.
 
-Closing this MemberRun closes only its Harness coordination identity. It does
+Closing this MemberRun closes only its Harness coordination binding. It does
 not stop, cancel, or otherwise modify your external provider process; continue
-or exit that process yourself. The closed identity can no longer send or
-receive TeamMessages or acknowledge previously queued mail; joining again
-requires a new MemberRun.
+or exit that process yourself. While closed you cannot send, receive, or ACK.
+Explicit Reopen keeps the same MemberRun and thaws mail queued before Close,
+but you remain responsible for reopening or continuing the external provider
+conversation and Harness cannot claim its history continuity. Deactivate is
+permanent and requires a new MemberRun to join again.

@@ -35,6 +35,7 @@ use crate::{
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     parse_team_actor_kind, parse_team_message_kind, parse_wave_executor_kind,
     prepare_team_run_start, reconcile_team_message_delivery_value, rename_team_run_member,
+    reopen_team_member_value, reopened_member_requires_supervisor_start,
     resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
     revise_wave, route_agent_inbox_messages, send_team_message_as, serde_snake_label,
     steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
@@ -197,6 +198,7 @@ fn call_tool(
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
         "team_run_close_member" => tool_team_run_close_member(store, &arguments),
+        "team_run_reopen_member" => tool_team_run_reopen_member(store, resolved, &arguments),
         "team_run_events" => tool_team_run_events(store, &arguments),
         _ => return Err((-32602, format!("unknown tool: {name}"))),
     };
@@ -232,6 +234,29 @@ fn tool_team_run_close_member(store: &HarnessStore, arguments: &Value) -> Result
     let member_run_id = required_str(arguments, "member_run_id")?;
     close_team_member_value(store, team_run_id, member_run_id, arguments)
         .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_reopen_member(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let member_run_id = required_str(arguments, "member_run_id")?;
+    let reopened = reopen_team_member_value(store, team_run_id, member_run_id, arguments)
+        .map_err(|error| error.to_string())?;
+    if reopened_member_requires_supervisor_start(store, team_run_id, member_run_id)
+        .map_err(|error| error.to_string())?
+    {
+        let mut start_arguments = arguments.clone();
+        start_arguments["team_run_id"] = Value::String(team_run_id.to_string());
+        let start = tool_team_run_start(store, resolved, &start_arguments)?;
+        return Ok(json!({
+            "reopen": reopened,
+            "runtime_start": start,
+        }));
+    }
+    Ok(json!({"reopen": reopened}))
 }
 
 fn tool_team_run_resolve_interaction(
@@ -873,6 +898,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         match external_member {
             Some(member)
                 if member.is_external_interactive()
+                    && member.coordination_is_active()
                     && !matches!(
                         member.status,
                         MemberRunStatus::Completed
@@ -881,6 +907,14 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
                     ) =>
             {
                 authn_source = "mcp:external_interactive".to_string();
+            }
+            Some(member) if member.is_external_interactive() => {
+                return Err(format!(
+                    "member {} coordination is {} and runtime status is {}; explicitly Reopen a closed member or create a replacement for a retired member",
+                    member.id,
+                    serde_snake_label(&member.coordination_status),
+                    serde_snake_label(&member.status)
+                ));
             }
             _ => {
                 return Err(
@@ -1405,7 +1439,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_close_member",
-            "description": "Explicitly end one Member runtime under Host ownership. A live Codex app-server, Kimi ACP, or Claude Agent SDK transport receives its real close/cancel protocol; an unstarted member is durably deactivated. Completed/failed/stopped members are idempotent. The live request must be sent through the same Host server process that started the TeamRun.",
+            "description": "Explicitly close one Member runtime while preserving the same MemberRun, native-session binding, and frozen mailbox for a later reopen. Managed adapters release their Harness-owned process; external_interactive only closes Harness coordination because its process is user-owned. The live request must be sent through the same Host server process that started the TeamRun.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1413,6 +1447,22 @@ fn tool_definitions() -> Value {
                     "member_run_id": {"type": "string"},
                     "reason": {"type": "string"},
                     "requested_by": {"type": "string", "default": "host"}
+                },
+                "required": ["team_run_id", "member_run_id"]
+            }
+        },
+        {
+            "name": "team_run_reopen_member",
+            "description": "Reopen a closed MemberRun in place. Managed adapters increment runtime_generation, start a new adapter process, and resume the exact provider-native session; Harness never reconstructs a transcript or silently starts fresh. external_interactive reopens only the coordination binding because its process and conversation are user-owned. Retired members cannot reopen.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "member_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "reopened_by": {"type": "string", "default": "host"},
+                    "max_concurrency": {"type": "integer", "minimum": 1, "default": 4},
+                    "idle_timeout_s": {"type": "integer", "minimum": 1, "default": 120}
                 },
                 "required": ["team_run_id", "member_run_id"]
             }

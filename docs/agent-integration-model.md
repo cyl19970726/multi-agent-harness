@@ -54,7 +54,9 @@ Supervisor protocol. Only the latest `TeamSupervisorLease` generation may own
 the provider transport, claim delivery, or execute live controls. The adapter
 must verify transport health before claiming mail, record a provider-native
 receipt, preserve recipient ACK separately, reattach the recorded native
-session after lease rollover, and treat explicit Close as terminal and latched.
+session after lease rollover, and treat explicit Close as a latched reversible
+runtime shutdown. Reopen must use the recorded native session; Retire is the
+permanent coordination transition.
 Typed sender and recipient provenance is part of the envelope; an unbound
 external client cannot impersonate a Member.
 
@@ -63,9 +65,11 @@ execution mode. An `external_interactive` member is a user's own already-open
 interactive provider session that Harness never spawns or drives: the
 Supervisor starts no adapter for it, its non-empty provider label is
 informational rather than adapter registration, deliveries stay queued until
-the session polls its inbox, and Close only records the terminal coordination
-status with no external runtime effect. A closed external coordination identity
-cannot send or receive new TeamMessages or acknowledge previously queued mail.
+the session polls its inbox, and Close only records closed Harness coordination
+with no external runtime effect. A closed external binding cannot send or
+receive TeamMessages or acknowledge previously queued mail. Reopen keeps the
+same MemberRun and thaws that mailbox, but Harness still cannot restart or
+prove history continuity for the user-owned external conversation.
 Because such a member is explicitly declared non-driven, its mail is accepted
 from unbound trusted-local CLI/MCP clients
 and recorded with `authn_source = "mcp:external_interactive"` (or the local

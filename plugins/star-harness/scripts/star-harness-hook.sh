@@ -121,6 +121,7 @@ valid = (
     and member.get("team_run_id") == os.environ.get("TEAM_RUN_ID")
     and profile.get("execution_mode") == "external_interactive"
     and profile.get("execution_driver") == "user_driven"
+    and member.get("coordination_status", "active") == "active"
     and member.get("status") not in {"completed", "failed", "stopped"}
 )
 raise SystemExit(0 if valid else 1)

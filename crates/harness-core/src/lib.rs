@@ -1155,6 +1155,11 @@ pub trait Validate {
 pub enum ValidationError {
     #[error("{field} is required")]
     Required { field: &'static str },
+    #[error("{field} is invalid: {reason}")]
+    Invalid {
+        field: &'static str,
+        reason: &'static str,
+    },
 }
 
 fn require_non_empty(value: &str, field: &'static str) -> Result<(), ValidationError> {
@@ -1816,6 +1821,21 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// Durable coordination lifecycle of one MemberRun, separate from its
+/// provider runtime/work status. Close is reversible; Retire is permanent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberCoordinationStatus {
+    #[default]
+    Active,
+    Closed,
+    Retired,
+}
+
+const fn default_member_runtime_generation() -> u64 {
+    1
+}
+
 /// A provider-owned conversation/runtime that contains the execution truth for
 /// one member. Harness persists this locator and capability snapshot, but does
 /// not copy the provider's transcript, tool stream, command output, or turns.
@@ -1964,6 +1984,14 @@ pub struct MemberRun {
     /// and execution mode have actually wired for the run.
     #[serde(default)]
     pub provider_profile: Option<ProviderIntegrationProfile>,
+    /// Durable mailbox/participation state, independent of the process state
+    /// represented by `status`.
+    #[serde(default)]
+    pub coordination_status: MemberCoordinationStatus,
+    /// Monotonic activation generation. Explicit Reopen increments this so a
+    /// live Supervisor can start a new process for the same MemberRun id.
+    #[serde(default = "default_member_runtime_generation")]
+    pub runtime_generation: u64,
     pub status: MemberRunStatus,
     #[serde(default)]
     pub native_session: Option<NativeSessionRef>,
@@ -1983,6 +2011,18 @@ pub struct MemberRun {
 }
 
 impl MemberRun {
+    pub fn coordination_is_active(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Active
+    }
+
+    pub fn coordination_is_closed(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Closed
+    }
+
+    pub fn coordination_is_retired(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Retired
+    }
+
     /// Whether this is a declared non-driven external interactive member (see
     /// [`EXECUTION_MODE_EXTERNAL_INTERACTIVE`]). The Supervisor must not spawn
     /// a provider adapter for it; its deliveries stay queued until the
@@ -2070,6 +2110,12 @@ impl Validate for MemberRun {
         require_non_empty(&self.role, "MemberRun.role")?;
         require_non_empty(&self.provider, "MemberRun.provider")?;
         require_non_empty(&self.started_at, "MemberRun.started_at")?;
+        if self.runtime_generation == 0 {
+            return Err(ValidationError::Invalid {
+                field: "MemberRun.runtime_generation",
+                reason: "must be at least 1",
+            });
+        }
         if let Some(worktree_ref) = &self.worktree_ref {
             require_non_empty(worktree_ref, "MemberRun.worktree_ref")?;
         }
