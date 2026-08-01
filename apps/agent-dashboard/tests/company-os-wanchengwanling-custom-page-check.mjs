@@ -40,12 +40,19 @@ async function main() {
   try {
     const selectionModule = await import(pathToFileURL(selectionTarget).href);
     const installLocation = (search) => {
-      let pushedUrl = "";
+      const calls = { push: [], replace: [] };
       globalThis.window = {
         location: { pathname: "/", search, hash: "" },
-        history: { pushState: (_state, _title, url) => { pushedUrl = String(url); } },
+        history: {
+          pushState: (_state, _title, url) => { calls.push.push(String(url)); },
+          replaceState: (_state, _title, url) => { calls.replace.push(String(url)); },
+        },
       };
-      return () => pushedUrl;
+      return {
+        pushed: () => calls.push.at(-1) ?? "",
+        pushCount: () => calls.push.length,
+        replaceCount: () => calls.replace.length,
+      };
     };
 
     installLocation("?page=page-wcw-command-center");
@@ -54,12 +61,16 @@ async function main() {
 
     const pushedPage = installLocation("?company=agent-company&api=http%3A%2F%2Flocalhost%3A8787");
     selectionModule.syncSelectionToLocation({ surface: "docs", customPageId: "page-wcw-command-center" });
-    const pageUrl = pushedPage();
+    const pageUrl = pushedPage.pushed();
     check(pageUrl.includes("surface=docs") && pageUrl.includes("page=page-wcw-command-center") && pageUrl.includes("company=agent-company") && pageUrl.includes("api="), "selection sync writes the canonical surface=docs&page custom page URL while preserving Company Store and API context");
 
-    const pushedCanonicalPage = installLocation("?surface=docs&page=page-wcw-command-center");
+    // Trailing Company/API context makes this load-bearing: a
+    // delete-all-then-set param mutation re-appends surface/page after the
+    // surviving context keys, so the location is rewritten (pushState, or
+    // replaceState under semantic canonicalization) and this assertion fails.
+    const pushedCanonicalPage = installLocation("?surface=docs&page=page-wcw-command-center&company=agent-company&api=http%3A%2F%2Flocalhost%3A8787");
     selectionModule.syncSelectionToLocation({ surface: "docs", customPageId: "page-wcw-command-center" });
-    check(pushedCanonicalPage() === "", "an already-canonical custom page URL is not rewritten, so browser Back/Forward stays clean");
+    check(pushedCanonicalPage.pushCount() === 0 && pushedCanonicalPage.replaceCount() === 0, "an already-canonical custom page URL with trailing Company Store and API context is not rewritten, so browser Back/Forward stays clean (fails under delete-all-then-set)");
   } finally {
     delete globalThis.window;
     await rm(directory, { recursive: true, force: true });
