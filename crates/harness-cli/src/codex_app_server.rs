@@ -326,16 +326,19 @@ impl CodexAppServerClient {
         &mut self,
         timeout: Duration,
     ) -> CliResult<CodexAccountCapacityRead> {
+        // Assert BEFORE the reads. Checking afterwards would pass trivially,
+        // because neither read can set a thread id; the invariant worth
+        // guarding is that the CALLER never opened one.
+        debug_assert!(
+            self.thread_id.is_empty(),
+            "the capacity preflight must run on a client that never opened a thread"
+        );
         let account = self.request_blocking(ACCOUNT_READ_METHOD, serde_json::json!({}), timeout)?;
         let rate_limits = self.request_blocking(
             ACCOUNT_RATE_LIMITS_READ_METHOD,
             serde_json::json!({}),
             timeout,
         )?;
-        debug_assert!(
-            self.thread_id.is_empty(),
-            "the capacity preflight must never open a thread"
-        );
         Ok(CodexAccountCapacityRead {
             account: account
                 .get("result")
@@ -570,52 +573,85 @@ fn unix_seconds_to_harness_timestamp(seconds: i64) -> Option<String> {
     (seconds > 0).then(|| format!("unix-ms:{}", (seconds as i128) * 1000))
 }
 
+/// Read a provider number that the schema types as an integer but a future
+/// wire format could send as a float. `as_i64` alone returns `None` for `3.0`,
+/// which would silently empty every window and make the probe inert.
+fn provider_number(value: Option<&serde_json::Value>) -> Option<i64> {
+    let value = value?;
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|number| number.round() as i64))
+}
+
 fn window_from_json(
     label: &str,
     limit_id: Option<&str>,
     window: &serde_json::Value,
 ) -> Option<ProviderCapacityWindow> {
-    let used_percent = window.get("usedPercent").and_then(|value| value.as_i64());
     // `usedPercent` is the only required field of a provider window. Without it
     // there is no number to report, and inventing one is exactly what this
     // WorkItem forbids.
-    used_percent?;
+    let used_percent = provider_number(window.get("usedPercent"))?;
     Some(ProviderCapacityWindow {
         label: label.to_string(),
         limit_id: limit_id.map(str::to_string),
-        used_percent,
-        window_duration_mins: window
-            .get("windowDurationMins")
-            .and_then(|value| value.as_i64()),
-        resets_at: window
-            .get("resetsAt")
-            .and_then(|value| value.as_i64())
+        used_percent: Some(used_percent),
+        window_duration_mins: provider_number(window.get("windowDurationMins")),
+        resets_at: provider_number(window.get("resetsAt"))
             .and_then(unix_seconds_to_harness_timestamp),
     })
 }
 
-/// Flatten every reported bucket/window into provider-neutral windows.
+/// Windows of ONE bucket snapshot, used both for reporting and for the state
+/// claim made from that same bucket.
+fn windows_of_snapshot(
+    limit_id: Option<&str>,
+    snapshot: &serde_json::Value,
+) -> Vec<ProviderCapacityWindow> {
+    let name = limit_id
+        .or_else(|| snapshot.get("limitId").and_then(|value| value.as_str()))
+        .unwrap_or("account");
+    ["primary", "secondary"]
+        .into_iter()
+        .filter_map(|key| {
+            let window = snapshot.get(key).filter(|value| !value.is_null())?;
+            window_from_json(&format!("{name}.{key}"), Some(name), window)
+        })
+        .collect()
+}
+
+/// The single bucket a state claim may be made from.
 ///
-/// `rateLimitsByLimitId` is preferred because it names each metered bucket;
-/// `rateLimits` remains the backward-compatible single-bucket mirror and is
-/// only used when the keyed view is absent.
+/// Buckets are NOT interchangeable: a saturated per-model bucket must not be
+/// read as "the account is out of capacity" while the account bucket still has
+/// headroom. `rateLimits` is the provider's own account-level mirror, so it is
+/// the only bucket that speaks for the account. A payload that reports several
+/// buckets and no account mirror is not attributable, and stays unknown.
+fn classification_snapshot(rate_limits: &serde_json::Value) -> Option<&serde_json::Value> {
+    if let Some(account) = rate_limits
+        .get("rateLimits")
+        .filter(|value| value.is_object())
+    {
+        return Some(account);
+    }
+    let by_limit = rate_limits
+        .get("rateLimitsByLimitId")
+        .and_then(|value| value.as_object())?;
+    match by_limit.len() {
+        1 => by_limit.values().next(),
+        _ => None,
+    }
+}
+
+/// Flatten every reported bucket into provider-neutral windows FOR REPORTING.
+///
+/// Every metered bucket is visible so an operator can see which one is hot.
+/// The state claim is made from one bucket only — see
+/// [`classification_snapshot`] — because a saturated per-model bucket is not an
+/// account-level verdict.
 pub(crate) fn capacity_windows_from_rate_limits(
     rate_limits: &serde_json::Value,
 ) -> Vec<ProviderCapacityWindow> {
-    let mut windows = Vec::new();
-    let mut push_snapshot = |limit_id: Option<&str>, snapshot: &serde_json::Value| {
-        let name = limit_id
-            .or_else(|| snapshot.get("limitId").and_then(|value| value.as_str()))
-            .unwrap_or("account");
-        for key in ["primary", "secondary"] {
-            if let Some(window) = snapshot.get(key).filter(|value| !value.is_null()) {
-                if let Some(parsed) = window_from_json(&format!("{name}.{key}"), Some(name), window)
-                {
-                    windows.push(parsed);
-                }
-            }
-        }
-    };
     match rate_limits
         .get("rateLimitsByLimitId")
         .and_then(|value| value.as_object())
@@ -623,20 +659,16 @@ pub(crate) fn capacity_windows_from_rate_limits(
         Some(by_limit) if !by_limit.is_empty() => {
             let mut keys = by_limit.keys().collect::<Vec<_>>();
             keys.sort();
-            for key in keys {
-                push_snapshot(Some(key.as_str()), &by_limit[key]);
-            }
+            keys.into_iter()
+                .flat_map(|key| windows_of_snapshot(Some(key.as_str()), &by_limit[key]))
+                .collect()
         }
-        _ => {
-            if let Some(snapshot) = rate_limits
-                .get("rateLimits")
-                .filter(|value| !value.is_null())
-            {
-                push_snapshot(None, snapshot);
-            }
-        }
+        _ => rate_limits
+            .get("rateLimits")
+            .filter(|value| !value.is_null())
+            .map(|snapshot| windows_of_snapshot(None, snapshot))
+            .unwrap_or_default(),
     }
-    windows
 }
 
 /// Classify the reviewed `account/rateLimits/read` payload.
@@ -658,84 +690,114 @@ pub(crate) fn codex_capacity_snapshot(
         .get("requiresOpenaiAuth")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let mut detail = None;
-    let mut state = if account.source == "signed_out" && requires_auth {
-        detail = Some(
-            "codex app-server reports no signed-in account while OpenAI auth is required"
-                .to_string(),
-        );
-        ProviderCapacityState::Unauthorized
-    } else if read.rate_limits.is_null() {
-        detail = Some("codex app-server returned no rate-limit payload".to_string());
-        ProviderCapacityState::Unknown
-    } else {
-        ProviderCapacityState::Available
+    // A signed-out account outranks any usage number: there is nothing to spend.
+    if account.source == "signed_out" && requires_auth {
+        return ProviderCapacitySnapshot {
+            provider: "codex".to_string(),
+            execution_mode: execution_mode.to_string(),
+            account,
+            state: ProviderCapacityState::Unauthorized,
+            observed_at: observed_at.to_string(),
+            observed_unix_ms,
+            reset_at: None,
+            // This came from the provider's account endpoint, not from a quota
+            // reading: it proves credential absence, not spent capacity.
+            evidence_source: ProviderCapacityEvidence::AuthMetadata,
+            confidence: ProviderCapacityConfidence::Observed,
+            windows,
+            diagnosis: None,
+            runtime_context: Vec::new(),
+            detail: Some(
+                "codex app-server reports no signed-in account while OpenAI auth is required"
+                    .to_string(),
+            ),
+        };
+    }
+    // Every state signal below is read from ONE bucket, so a reached flag can
+    // never be paired with another bucket's percentage.
+    let Some(bucket) = classification_snapshot(&read.rate_limits) else {
+        let detail = if read.rate_limits.is_null() {
+            "codex app-server returned no rate-limit payload".to_string()
+        } else {
+            "codex app-server reported several metered buckets and no account-level mirror, so no \
+             bucket speaks for the account"
+                .to_string()
+        };
+        return ProviderCapacitySnapshot {
+            provider: "codex".to_string(),
+            execution_mode: execution_mode.to_string(),
+            account,
+            state: ProviderCapacityState::Unknown,
+            observed_at: observed_at.to_string(),
+            observed_unix_ms,
+            reset_at: None,
+            evidence_source: ProviderCapacityEvidence::ProviderQuotaApi,
+            confidence: ProviderCapacityConfidence::Unknown,
+            windows,
+            diagnosis: None,
+            runtime_context: Vec::new(),
+            detail: Some(detail),
+        };
     };
-    let reached_type = read
-        .rate_limits
-        .pointer("/rateLimits/rateLimitReachedType")
+    let bucket_windows = windows_of_snapshot(None, bucket);
+    let reached_type = bucket
+        .get("rateLimitReachedType")
         .and_then(|value| value.as_str());
-    let spend_control_reached = read
-        .rate_limits
-        .pointer("/rateLimits/spendControlReached")
+    let spend_control_reached = bucket
+        .get("spendControlReached")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    if state == ProviderCapacityState::Available {
-        let peak = windows
-            .iter()
-            .filter_map(|window| window.used_percent)
-            .max()
-            .unwrap_or(0);
-        if let Some(reached) = reached_type {
-            state = ProviderCapacityState::Exhausted;
-            detail = Some(format!("provider reported rateLimitReachedType {reached}"));
-        } else if spend_control_reached {
-            state = ProviderCapacityState::Exhausted;
-            detail = Some("provider reported spendControlReached".to_string());
-        } else if peak >= EXHAUSTED_USED_PERCENT {
-            state = ProviderCapacityState::Exhausted;
-            detail = Some(format!("provider reported {peak}% of a window used"));
-        } else if peak >= LIMITED_USED_PERCENT {
-            state = ProviderCapacityState::Limited;
-            detail = Some(format!("provider reported {peak}% of a window used"));
-        } else if windows.is_empty() {
-            // A payload with no parsable window is not proof of headroom.
-            state = ProviderCapacityState::Unknown;
-            detail = Some("codex app-server reported no usable rate-limit window".to_string());
-        } else {
-            detail = Some(format!("highest reported window usage is {peak}%"));
-        }
-    }
-    // Only report a reset for a state a reset would actually clear, and only
-    // from the window that is actually constraining.
+    let peak = bucket_windows
+        .iter()
+        .filter_map(|window| window.used_percent)
+        .max();
+    let (state, detail) = match (reached_type, spend_control_reached, peak) {
+        (Some(reached), _, _) => (
+            ProviderCapacityState::Exhausted,
+            format!("provider reported rateLimitReachedType {reached}"),
+        ),
+        (None, true, _) => (
+            ProviderCapacityState::Exhausted,
+            "provider reported spendControlReached".to_string(),
+        ),
+        // A payload with no parsable window is not proof of headroom.
+        (None, false, None) => (
+            ProviderCapacityState::Unknown,
+            "codex app-server reported no usable rate-limit window".to_string(),
+        ),
+        (None, false, Some(peak)) if peak >= EXHAUSTED_USED_PERCENT => (
+            ProviderCapacityState::Exhausted,
+            format!("provider reported {peak}% of the account window used"),
+        ),
+        (None, false, Some(peak)) if peak >= LIMITED_USED_PERCENT => (
+            ProviderCapacityState::Limited,
+            format!("provider reported {peak}% of the account window used"),
+        ),
+        (None, false, Some(peak)) => (
+            ProviderCapacityState::Available,
+            format!("highest reported account window usage is {peak}%"),
+        ),
+    };
+    // Report a reset only for a state a reset would clear, and take it from the
+    // LATEST constraining window: the account is usable again only once every
+    // window that is holding it back has reopened.
     let reset_at = match state {
-        ProviderCapacityState::Exhausted | ProviderCapacityState::Limited => windows
+        ProviderCapacityState::Exhausted | ProviderCapacityState::Limited => bucket_windows
             .iter()
             .filter(|window| window.used_percent.unwrap_or(0) >= LIMITED_USED_PERCENT)
-            .filter_map(|window| window.resets_at.clone())
-            .min()
-            .or_else(|| {
-                windows
-                    .iter()
-                    .filter_map(|window| window.resets_at.clone())
-                    .min()
-            }),
+            .filter_map(|window| window.resets_at.as_deref())
+            .filter_map(harness_core::parse_harness_unix_ms)
+            .max()
+            .map(|millis| format!("unix-ms:{millis}")),
         _ => None,
     };
-    let (evidence_source, confidence) = match state {
-        ProviderCapacityState::Unknown => (
-            ProviderCapacityEvidence::ProviderQuotaApi,
-            ProviderCapacityConfidence::Unknown,
-        ),
-        ProviderCapacityState::Unauthorized => (
-            ProviderCapacityEvidence::AuthMetadata,
-            ProviderCapacityConfidence::Observed,
-        ),
-        _ => (
-            ProviderCapacityEvidence::ProviderQuotaApi,
-            ProviderCapacityConfidence::Observed,
-        ),
+    let confidence = if state == ProviderCapacityState::Unknown {
+        ProviderCapacityConfidence::Unknown
+    } else {
+        ProviderCapacityConfidence::Observed
     };
+    let evidence_source = ProviderCapacityEvidence::ProviderQuotaApi;
+    let detail = Some(detail);
     ProviderCapacitySnapshot {
         provider: "codex".to_string(),
         execution_mode: execution_mode.to_string(),
@@ -1062,6 +1124,132 @@ mod tests {
         let snapshot = codex_capacity_snapshot("codex_app_server", &unusable, "unix-ms:1", 1);
         assert!(snapshot.windows.is_empty());
         assert_eq!(snapshot.state, ProviderCapacityState::Unknown);
+    }
+
+    #[test]
+    fn a_saturated_per_model_bucket_is_not_an_account_verdict() {
+        // Live payloads carry several metered buckets (`codex`,
+        // `codex_bengalfox`). Reading the peak across all of them would refuse
+        // every codex member because one per-model bucket is spent, while the
+        // account bucket the member would actually draw on is at 3%.
+        let mut read = live_capacity_read(3, None);
+        read.rate_limits["rateLimitsByLimitId"]["codex_bengalfox"]["primary"]["usedPercent"] =
+            serde_json::json!(100);
+
+        let snapshot = codex_capacity_snapshot("codex_app_server", &read, "unix-ms:1000", 1_000);
+
+        assert_eq!(
+            snapshot.state,
+            ProviderCapacityState::Available,
+            "the account bucket has headroom: {:?}",
+            snapshot.detail
+        );
+        // The hot bucket is still visible so an operator can see it.
+        assert!(snapshot
+            .windows
+            .iter()
+            .any(
+                |window| window.limit_id.as_deref() == Some("codex_bengalfox")
+                    && window.used_percent == Some(100)
+            ));
+    }
+
+    #[test]
+    fn a_reached_flag_is_read_from_the_same_bucket_as_the_percentage() {
+        // The account mirror and the keyed view must never be mixed: a reached
+        // flag in one and a low percentage in the other previously produced
+        // `available` with `observed` confidence.
+        let read = CodexAccountCapacityRead {
+            account: serde_json::json!({
+                "account": {"type": "chatgpt", "email": "a@b.c", "planType": "pro"},
+                "requiresOpenaiAuth": true
+            }),
+            rate_limits: serde_json::json!({
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "limitId": "codex",
+                        "primary": {"usedPercent": 40, "resetsAt": 1_786_161_121i64},
+                        "rateLimitReachedType": "rate_limit_reached"
+                    }
+                }
+            }),
+        };
+
+        let snapshot = codex_capacity_snapshot("codex_app_server", &read, "unix-ms:1000", 1_000);
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Exhausted);
+        assert!(snapshot
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("rate_limit_reached"));
+    }
+
+    #[test]
+    fn several_buckets_without_an_account_mirror_are_not_attributable() {
+        let read = CodexAccountCapacityRead {
+            account: serde_json::json!({
+                "account": {"type": "chatgpt", "email": "a@b.c", "planType": "pro"},
+                "requiresOpenaiAuth": true
+            }),
+            rate_limits: serde_json::json!({
+                "rateLimitsByLimitId": {
+                    "codex": {"limitId": "codex", "primary": {"usedPercent": 4}},
+                    "codex_bengalfox": {"limitId": "codex_bengalfox", "primary": {"usedPercent": 99}}
+                }
+            }),
+        };
+
+        let snapshot = codex_capacity_snapshot("codex_app_server", &read, "unix-ms:1000", 1_000);
+
+        // Neither `available` (which would ignore the hot bucket) nor
+        // `exhausted` (which would refuse a healthy account) is honest here.
+        assert_eq!(snapshot.state, ProviderCapacityState::Unknown);
+        assert_eq!(snapshot.confidence, ProviderCapacityConfidence::Unknown);
+        assert_eq!(snapshot.windows.len(), 2, "both buckets stay visible");
+    }
+
+    #[test]
+    fn reset_reports_when_the_last_constraining_window_reopens() {
+        let read = CodexAccountCapacityRead {
+            account: serde_json::json!({
+                "account": {"type": "chatgpt", "email": "a@b.c", "planType": "pro"},
+                "requiresOpenaiAuth": true
+            }),
+            rate_limits: serde_json::json!({
+                "rateLimits": {
+                    "limitId": "codex",
+                    // Saturated for five more days...
+                    "primary": {"usedPercent": 100, "resetsAt": 1_786_600_000i64},
+                    // ...while a second constrained window reopens in an hour.
+                    "secondary": {"usedPercent": 95, "resetsAt": 1_786_100_000i64}
+                }
+            }),
+        };
+
+        let snapshot = codex_capacity_snapshot("codex_app_server", &read, "unix-ms:1000", 1_000);
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Exhausted);
+        assert_eq!(
+            snapshot.reset_at.as_deref(),
+            Some("unix-ms:1786600000000"),
+            "the account is usable again only when the LAST constraint reopens"
+        );
+    }
+
+    #[test]
+    fn float_usage_percentages_are_read_rather_than_silently_dropped() {
+        let mut read = live_capacity_read(3, None);
+        read.rate_limits["rateLimits"]["primary"]["usedPercent"] = serde_json::json!(93.4);
+
+        let snapshot = codex_capacity_snapshot("codex_app_server", &read, "unix-ms:1000", 1_000);
+
+        assert_eq!(
+            snapshot.state,
+            ProviderCapacityState::Limited,
+            "a float window must not empty the probe: {:?}",
+            snapshot.detail
+        );
     }
 
     #[test]

@@ -10269,17 +10269,25 @@ impl Default for CapacityProbeOptions {
 }
 
 fn capacity_now() -> (String, u64) {
-    let millis = current_unix_ms();
-    (format!("unix-ms:{millis}"), millis as u64)
+    let millis = current_unix_ms_u64();
+    (format!("unix-ms:{millis}"), millis)
 }
 
-/// Resolve the execution mode a capacity snapshot describes. Capacity claims
-/// are mode-specific: `codex_exec` and `codex_app_server` are different
-/// products even though both are spelled "codex".
-fn capacity_execution_mode(provider: &str, requested: Option<&str>) -> String {
-    match requested {
-        Some(mode) if !mode.trim().is_empty() => mode.to_string(),
-        _ => team_member_provider_profile(provider).execution_mode,
+/// Resolve the execution mode a capacity snapshot describes.
+///
+/// Capacity claims are mode-specific: `codex_exec` and `codex_app_server` are
+/// different products even though both are spelled "codex". Only the mode this
+/// preflight actually probes may be named, so a caller cannot ask for one mode
+/// and receive another mode's observation under its label.
+fn capacity_execution_mode(provider: &str, requested: Option<&str>) -> CliResult<String> {
+    let probed = team_member_provider_profile(provider).execution_mode;
+    match requested.map(str::trim).filter(|mode| !mode.is_empty()) {
+        Some(mode) if mode == probed => Ok(probed),
+        Some(mode) => Err(CliError::Usage(format!(
+            "capacity is observed for {provider}'s Agent Team mode `{probed}`, not `{mode}`; \
+             a snapshot must never label another mode's observation"
+        ))),
+        None => Ok(probed),
     }
 }
 
@@ -10315,6 +10323,41 @@ fn codex_capacity_probe(
 
 /// Observe the non-secret runtime facts that decide whether a Claude request
 /// can reach the API. This is what turns "403" into an actionable diagnosis.
+/// Reduce a proxy/base URL to the routing facts an operator needs, with any
+/// credential removed.
+///
+/// Corporate proxies are routinely `http://user:secret@host:8080`, and a
+/// gateway base URL can carry a token in its path or query. The durable ledger
+/// and CI logs must never receive either, so keep only scheme, host, and port.
+fn redact_url_to_origin(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, trimmed),
+    };
+    // Everything before `@` is userinfo; everything after the first `/`, `?`,
+    // or `#` is a path/query that may carry a token.
+    let authority = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+    let host = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(authority)
+        .trim();
+    let redacted_userinfo = rest.contains('@');
+    let origin = match scheme {
+        Some(scheme) if !host.is_empty() => format!("{scheme}://{host}"),
+        _ if !host.is_empty() => host.to_string(),
+        // An unparsable value is reported as present without content rather
+        // than echoed: presence is the fact, the value is not.
+        _ => return "set (value withheld)".to_string(),
+    };
+    if redacted_userinfo {
+        format!("{origin} (credentials redacted)")
+    } else {
+        origin
+    }
+}
+
 fn claude_runtime_context_facts() -> Vec<ProviderRuntimeContextFact> {
     let mut facts: Vec<ProviderRuntimeContextFact> = CLAUDE_RUNTIME_CONTEXT_KEYS
         .iter()
@@ -10323,8 +10366,14 @@ fn claude_runtime_context_facts() -> Vec<ProviderRuntimeContextFact> {
             ProviderRuntimeContextFact {
                 key: (*key).to_string(),
                 present: value.is_some(),
-                // A proxy URL is routing configuration, not a credential.
-                note: Some(value.unwrap_or_else(|| "absent".to_string())),
+                // Routing only. A proxy URL can embed credentials, so it is
+                // reduced to its origin before it reaches the ledger.
+                note: Some(
+                    value
+                        .as_deref()
+                        .map(redact_url_to_origin)
+                        .unwrap_or_else(|| "absent".to_string()),
+                ),
             }
         })
         .collect();
@@ -10512,6 +10561,12 @@ fn claude_execution_canary(cwd: &Path, timeout: Duration) -> Result<String, Stri
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // Kill the whole isolated group BEFORE joining. `claude` can leave a
+    // grandchild (an MCP stdio server, a helper) holding the inherited stdout
+    // fd; without this the reader never sees EOF and `join()` blocks past the
+    // caller's timeout. This is the same failure the NDJSON worker path
+    // already documents.
+    kill_worker_tree(&mut guard);
     guard.disarm();
     let stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default().trim().to_string();
@@ -10767,13 +10822,22 @@ fn capacity_from_provider_error_actions(
     now_unix_ms: u64,
     ttl_ms: u64,
 ) -> Option<ProviderCapacitySnapshot> {
-    let action = actions.iter().rfind(|action| {
-        action.member_run_id == member_run_id
-            && action.action_type == "provider_error"
-            && parse_unix_ms_timestamp(&action.started_at)
-                .is_some_and(|stamp| stamp <= now_unix_ms && now_unix_ms - stamp <= ttl_ms)
-    })?;
-    let (state, detail) = capacity_state_from_provider_error(&action.summary)?;
+    // Classify INSIDE the search. Selecting the newest provider_error first and
+    // classifying afterwards would let one unclassifiable row (an empty-report
+    // round, say) hide a real 403 recorded seconds earlier.
+    let (action, (state, detail)) = actions
+        .iter()
+        .rev()
+        .filter(|action| {
+            action.member_run_id == member_run_id
+                && action.action_type == "provider_error"
+                && parse_unix_ms_timestamp(&action.started_at)
+                    .is_some_and(|stamp| stamp <= now_unix_ms && now_unix_ms - stamp <= ttl_ms)
+        })
+        .find_map(|action| {
+            capacity_state_from_provider_error(&action.summary)
+                .map(|classified| (action, classified))
+        })?;
     let observed_unix_ms = parse_unix_ms_timestamp(&action.started_at).unwrap_or(now_unix_ms);
     Some(ProviderCapacitySnapshot {
         provider: provider.to_string(),
@@ -10793,7 +10857,7 @@ fn capacity_from_provider_error_actions(
 }
 
 fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
-    raw.strip_prefix("unix-ms:")?.trim().parse::<u64>().ok()
+    harness_core::parse_harness_unix_ms(raw)
 }
 
 /// Observe this member's provider capacity and decide whether it may start.
@@ -10809,13 +10873,17 @@ fn provider_capacity_start_gate(
     if !capacity_preflight_enabled() {
         return Ok(None);
     }
-    let execution_mode = capacity_execution_mode(
+    // A member pinned to a mode this preflight does not probe is simply not
+    // gated: no observation is honest here, and no observation never blocks.
+    let Ok(execution_mode) = capacity_execution_mode(
         &member.provider,
         member
             .provider_profile
             .as_ref()
             .map(|profile| profile.execution_mode.as_str()),
-    );
+    ) else {
+        return Ok(None);
+    };
     let mut snapshot = provider_capacity_probe(
         &member.provider,
         &execution_mode,
@@ -10823,7 +10891,7 @@ fn provider_capacity_start_gate(
         CapacityProbeOptions::default(),
     );
     let ttl_ms = capacity_ttl_ms();
-    let now_unix_ms = current_unix_ms() as u64;
+    let now_unix_ms = current_unix_ms_u64();
     // A live provider answer wins. Recorded terminal errors are consulted only
     // when the probe itself could not observe a state.
     if snapshot.state == ProviderCapacityState::Unknown {
@@ -10847,8 +10915,13 @@ fn provider_capacity_start_gate(
     }
     // Blocked: record provider_unavailable and stop. Nothing above this point
     // claimed, delivered, or consumed a TeamMessage.
+    //
+    // Every write below is BEST EFFORT and this function still returns the
+    // blocking outcome. A `?` here would turn a journal failure into `Err`,
+    // and the caller treats `Err` as "carry on" — so a store hiccup would let
+    // the member start on the exhausted account this gate just refused. The
+    // decision is the product fact; the journal is its record, not its gate.
     member.status = MemberRunStatus::Blocked;
-    ledger.save_member_run(member)?;
     let summary = format!(
         "{} (evidence {:?}, confidence {:?}){}",
         decision.reason(),
@@ -10860,36 +10933,57 @@ fn provider_capacity_start_gate(
             .map(|diagnosis| format!("; {diagnosis}"))
             .unwrap_or_default()
     );
-    let action = ledger.append_action(
+    let mut journal_errors = Vec::new();
+    if let Err(error) = ledger.save_member_run(member) {
+        journal_errors.push(error.to_string());
+    }
+    let state_label = serde_json::to_value(snapshot.state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    match ledger.append_action(
         &member.id,
         "provider_unavailable",
         MemberActionStatus::Failed,
         "provider capacity preflight blocked start",
         &summary,
-    )?;
-    let state_label = serde_json::to_value(snapshot.state)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string());
-    ledger.fold_event(
-        TeamRunEventSourceKind::Host,
-        Some(member.id.clone()),
-        "action",
-        &action.id,
-        "created",
-        &format!(
-            "{} not started: provider_unavailable ({state_label})",
-            member.name
-        ),
-    )?;
-    ledger.fold_event(
+    ) {
+        Ok(action) => {
+            if let Err(error) = ledger.fold_event(
+                TeamRunEventSourceKind::Host,
+                Some(member.id.clone()),
+                "action",
+                &action.id,
+                "created",
+                &format!(
+                    "{} not started: provider_unavailable ({state_label})",
+                    member.name
+                ),
+            ) {
+                journal_errors.push(error.to_string());
+            }
+        }
+        Err(error) => journal_errors.push(error.to_string()),
+    }
+    if let Err(error) = ledger.fold_event(
         TeamRunEventSourceKind::Host,
         Some(member.id.clone()),
         "member_run",
         &member.id,
         "provider_unavailable",
         &summary,
-    )?;
+    ) {
+        journal_errors.push(error.to_string());
+    }
+    let summary = if journal_errors.is_empty() {
+        summary
+    } else {
+        format!(
+            "{summary}; the block is authoritative but {} journal write(s) failed: {}",
+            journal_errors.len(),
+            journal_errors.join("; ")
+        )
+    };
     Ok(Some(MemberOutcome::new(
         member,
         MemberRunStatus::Blocked,
@@ -10908,18 +11002,18 @@ fn provider_preflight_row(
     cwd: &Path,
     options: CapacityProbeOptions,
     ttl_ms: u64,
-) -> serde_json::Value {
-    let execution_mode = capacity_execution_mode(provider, requested_mode);
-    let mut profile = team_member_provider_profile_for_mode(provider, requested_mode);
+) -> CliResult<serde_json::Value> {
+    let execution_mode = capacity_execution_mode(provider, requested_mode)?;
+    let mut profile = team_member_provider_profile_for_mode(provider, Some(&execution_mode));
     let detected = team_member_provider_version_output(provider);
     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
     let capacity = provider_capacity_probe(provider, &execution_mode, cwd, options);
     // Read the clock AFTER the probe: a probe that takes seconds must not make
     // its own answer look future-dated, which would report it as stale.
-    let now_unix_ms = current_unix_ms() as u64;
+    let now_unix_ms = current_unix_ms_u64();
     let decision =
         harness_core::provider_capacity_start_decision(Some(&capacity), now_unix_ms, ttl_ms);
-    serde_json::json!({
+    Ok(serde_json::json!({
         "provider": provider,
         "execution_mode": execution_mode,
         "capacity": capacity,
@@ -10932,7 +11026,7 @@ fn provider_preflight_row(
             "adapter_contract_version": profile.adapter_contract_version,
             "version_probe_error": detected.err(),
         },
-    })
+    }))
 }
 
 fn member_preflight_command(args: &[String]) -> CliResult<()> {
@@ -10966,7 +11060,7 @@ fn member_preflight_command(args: &[String]) -> CliResult<()> {
         .map(|provider| {
             provider_preflight_row(provider, requested_mode.as_deref(), &cwd, options, ttl_ms)
         })
-        .collect::<Vec<_>>();
+        .collect::<CliResult<Vec<_>>>()?;
     let blocked = rows
         .iter()
         .filter(|row| row.pointer("/start_decision/decision") == Some(&serde_json::json!("block")))
@@ -17097,7 +17191,14 @@ struct MemberRoundRecord<'a> {
 
 enum RoundHandoffRecord {
     Recorded(Box<TeamMessage>),
-    Deferred { pending_count: usize },
+    Deferred {
+        pending_count: usize,
+    },
+    /// The round produced no member report AND the member published no Handoff
+    /// of its own, so there is nothing to hand off. Fabricating one here would
+    /// publish an empty Handoff and a `completed` action no member ever wrote.
+    /// The caller records a provider error instead.
+    EmptyProviderRound,
 }
 
 fn record_round_handoff(
@@ -17148,6 +17249,15 @@ fn record_round_handoff(
         }
         return Ok(RoundHandoffRecord::Recorded(Box::new(explicit)));
     }
+    // Only reached when Harness would MINT the handoff. A member that published
+    // its own Handoff, or a round deferred behind newer mail, already returned
+    // above — so classifying silence here cannot mislabel either of them.
+    if canonical_member_report_text(record.final_text)
+        .trim()
+        .is_empty()
+    {
+        return Ok(RoundHandoffRecord::EmptyProviderRound);
+    }
     let handoff = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: ledger.run_id.clone(),
@@ -17197,31 +17307,45 @@ fn record_round_handoff(
     Ok(RoundHandoffRecord::Recorded(Box::new(handoff)))
 }
 
-/// Ledger writes for one completed member round: handoff to Host, action row,
-/// and member status.
-/// Decide whether a finished round is a provider failure rather than a member
-/// answer.
-///
-/// A classified provider error obviously is one. So is an EMPTY final report:
-/// a terminal provider error the adapter could not classify still ends the
-/// round with no text, and `parse_round_result("")` reads as `Done` — which
-/// would publish an empty Handoff and a `completed` action that no member ever
-/// wrote. Silence is never semantic completion.
-fn effective_round_provider_error(
-    provider_error: Option<&str>,
-    final_text: &str,
-) -> Option<String> {
-    if let Some(provider_error) = provider_error {
-        return Some(provider_error.to_string());
-    }
-    canonical_member_report_text(final_text)
-        .trim()
-        .is_empty()
-        .then(|| {
-            "empty_final_report (the provider ended the round without an agent message)".to_string()
-        })
+/// Record a round the provider failed: a failed `provider_error` action, no
+/// handoff, and a member that stays `idle` and re-deliverable.
+fn record_provider_error_round(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    record: &MemberRoundRecord<'_>,
+    provider_error: &str,
+) -> CliResult<(MemberRunStatus, String)> {
+    let detail = format!(
+        "provider turn failed: {provider_error}: {}",
+        record.final_text.lines().next().unwrap_or("")
+    );
+    let action = ledger.append_action(
+        &member_row.id,
+        "provider_error",
+        MemberActionStatus::Failed,
+        &format!("round {} provider_error", record.round),
+        &detail,
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "action",
+        &action.id,
+        "created",
+        &format!("{} round {}: provider_error", member_row.name, record.round),
+    )?;
+    member_row.status = MemberRunStatus::Idle;
+    member_row.finished_at = None;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(member_row)?;
+    Ok((
+        MemberRunStatus::Idle,
+        format!("provider turn failed: {provider_error}"),
+    ))
 }
 
+/// Ledger writes for one completed member round: handoff to Host, action row,
+/// and member status.
 fn record_member_round(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
@@ -17230,44 +17354,26 @@ fn record_member_round(
     // A provider-error round produced no member report: the provider itself
     // failed the turn. Recording a handoff here would impersonate a member
     // answer, so the ledger gets a failed provider_error action instead.
-    //
-    // An EMPTY final report is the same failure wearing a different mask; see
-    // `effective_round_provider_error`.
-    let effective_provider_error =
-        effective_round_provider_error(record.provider_error, record.final_text);
-    if let Some(provider_error) = effective_provider_error.as_deref() {
-        let detail = format!(
-            "provider turn failed: {provider_error}: {}",
-            record.final_text.lines().next().unwrap_or("")
-        );
-        let action = ledger.append_action(
-            &member_row.id,
-            "provider_error",
-            MemberActionStatus::Failed,
-            &format!("round {} provider_error", record.round),
-            &detail,
-        )?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member_row.id.clone()),
-            "action",
-            &action.id,
-            "created",
-            &format!("{} round {}: provider_error", member_row.name, record.round),
-        )?;
-        member_row.status = MemberRunStatus::Idle;
-        member_row.finished_at = None;
-        member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(member_row)?;
-        return Ok((
-            MemberRunStatus::Idle,
-            format!("provider turn failed: {provider_error}"),
-        ));
+    if let Some(provider_error) = record.provider_error {
+        return record_provider_error_round(ledger, member_row, record, provider_error);
     }
 
     let handoff = record_round_handoff(ledger, member_row, record)?;
 
     let (action_type, action_status, action_summary) = match handoff {
+        // Silence that would have MINTED a handoff is the same failure as a
+        // classified provider error, wearing a different mask: a terminal error
+        // the adapter could not label still ends the round with no text, and
+        // `parse_round_result("")` reads as `Done`. Deferred rounds and rounds
+        // whose member published its own Handoff never reach here.
+        RoundHandoffRecord::EmptyProviderRound => {
+            return record_provider_error_round(
+                ledger,
+                member_row,
+                record,
+                "empty_final_report (the provider ended the round without an agent message)",
+            );
+        }
         RoundHandoffRecord::Deferred { pending_count } => (
             "continued",
             MemberActionStatus::Progress,
@@ -37068,15 +37174,58 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn capacity_execution_mode_defaults_to_the_registered_team_mode() {
-        assert_eq!(capacity_execution_mode("codex", None), "codex_app_server");
-        assert_eq!(capacity_execution_mode("claude", None), "claude_agent_sdk");
-        assert_eq!(capacity_execution_mode("kimi", None), "kimi_acp");
-        // A capacity claim is never carried across execution modes.
+    fn capacity_execution_mode_only_names_the_mode_it_probes() {
+        for (provider, mode) in [
+            ("codex", "codex_app_server"),
+            ("claude", "claude_agent_sdk"),
+            ("kimi", "kimi_acp"),
+        ] {
+            assert_eq!(capacity_execution_mode(provider, None).unwrap(), mode);
+            assert_eq!(capacity_execution_mode(provider, Some(mode)).unwrap(), mode);
+        }
+        // A capacity claim is never carried across execution modes: asking for
+        // a mode this preflight does not probe is refused rather than answered
+        // with another mode's observation under that label.
+        let error = capacity_execution_mode("codex", Some("codex_exec"))
+            .expect_err("codex_exec is not the probed mode");
+        assert!(error.to_string().contains("codex_app_server"), "{error}");
+        assert!(capacity_execution_mode("codex", Some("totally-bogus")).is_err());
+    }
+
+    #[test]
+    fn runtime_context_reports_proxy_routing_without_its_credentials() {
+        // Corporate proxies routinely embed userinfo, and a gateway base URL
+        // can carry a token in its path or query. Neither may reach the durable
+        // ledger or a CI log.
         assert_eq!(
-            capacity_execution_mode("codex", Some("codex_exec")),
-            "codex_exec"
+            redact_url_to_origin("http://alice:s3cret@corp-proxy:8080"),
+            "http://corp-proxy:8080 (credentials redacted)"
         );
+        assert_eq!(
+            redact_url_to_origin("https://gateway.example.com/v1?token=abcd1234"),
+            "https://gateway.example.com"
+        );
+        // A plain proxy is routing information and stays readable.
+        assert_eq!(
+            redact_url_to_origin("http://127.0.0.1:7897"),
+            "http://127.0.0.1:7897"
+        );
+        // A NO_PROXY host list carries no credential and is left intact.
+        assert_eq!(
+            redact_url_to_origin("localhost,127.0.0.1,.local"),
+            "localhost,127.0.0.1,.local"
+        );
+        for secret in ["s3cret", "abcd1234"] {
+            for raw in [
+                "http://alice:s3cret@corp-proxy:8080",
+                "https://gateway.example.com/v1?token=abcd1234",
+            ] {
+                assert!(
+                    !redact_url_to_origin(raw).contains(secret),
+                    "redaction leaked {secret} from {raw}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -37220,27 +37369,56 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn an_empty_final_report_is_a_provider_error_not_a_completed_round() {
-        // The defect this closes: `parse_round_result("")` reads as Done, so an
-        // unclassified terminal provider error would publish an empty Handoff
-        // and a `completed` action no member ever wrote.
-        assert_eq!(parse_round_result(""), MemberRoundResult::Done);
+    fn an_unclassifiable_error_never_hides_a_classifiable_one() {
+        // The empty-report rule manufactures unclassifiable `provider_error`
+        // rows. Selecting the NEWEST row and classifying afterwards would let
+        // one of them bury a real 403 recorded seconds earlier, and the member
+        // would start and burn its Assignment on a rejected credential.
+        let actions = vec![
+            provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: api_error (HTTP 403): ",
+            ),
+            provider_error_action(
+                "member-run-1",
+                "unix-ms:1200",
+                "provider turn failed: empty_final_report (the provider ended the round without \
+                 an agent message): ",
+            ),
+        ];
 
+        let snapshot = capacity_from_provider_error_actions(
+            &actions,
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("the classifiable 403 must still be found");
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Unauthorized);
+        assert_eq!(snapshot.observed_unix_ms, 1_000);
+    }
+
+    #[test]
+    fn silence_is_only_a_provider_error_when_harness_would_mint_the_handoff() {
+        // `parse_round_result("")` reads as Done, which is why silence needs a
+        // rule at all.
+        assert_eq!(parse_round_result(""), MemberRoundResult::Done);
+        // The rule lives at the one place a handoff would be MINTED, so a
+        // deferred round and a member-published handoff keep their own
+        // meanings; only fabrication is refused.
         for silence in ["", "   ", "\n\n", "\t\r\n "] {
-            let derived = effective_round_provider_error(None, silence)
-                .unwrap_or_else(|| panic!("silence must be a provider error: {silence:?}"));
-            assert!(derived.starts_with("empty_final_report"), "{derived}");
+            assert!(
+                canonical_member_report_text(silence).trim().is_empty(),
+                "{silence:?} must read as silence"
+            );
         }
-        // A real report is untouched.
-        assert_eq!(
-            effective_round_provider_error(None, "## RESULT\ndone\n"),
-            None
-        );
-        // A classified provider error keeps its own reason.
-        assert_eq!(
-            effective_round_provider_error(Some("api_error (HTTP 403)"), ""),
-            Some("api_error (HTTP 403)".to_string())
-        );
+        assert!(!canonical_member_report_text("## RESULT\ndone\n")
+            .trim()
+            .is_empty());
     }
 
     #[test]

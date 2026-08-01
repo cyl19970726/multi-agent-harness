@@ -1975,8 +1975,9 @@ impl ProviderCapacityState {
 pub enum ProviderCapacityEvidence {
     /// A reviewed provider RPC/endpoint that reports account limits.
     ProviderQuotaApi,
-    /// Local credential/auth metadata only. It proves a credential exists, not
-    /// that a request would succeed.
+    /// Credential/auth metadata — read locally OR from a provider account
+    /// endpoint. It proves a credential's presence or absence, never that a
+    /// request would succeed.
     AuthMetadata,
     /// A real, minimal provider request issued through the execution path.
     ExecutionCanary,
@@ -2139,6 +2140,15 @@ pub enum ProviderCapacityFreshness {
 
 /// Default staleness bound for a start-time capacity decision: five minutes.
 pub const PROVIDER_CAPACITY_DEFAULT_TTL_MS: u64 = 5 * 60 * 1000;
+
+/// Parse a `unix-ms:<millis>` harness timestamp.
+///
+/// Timestamps must be compared as numbers. String ordering happens to agree
+/// only while every stamp has the same digit count, which is a bug waiting for
+/// a boundary rather than a comparison.
+pub fn parse_harness_unix_ms(raw: &str) -> Option<u64> {
+    raw.strip_prefix("unix-ms:")?.trim().parse::<u64>().ok()
+}
 
 /// Whether a MemberRun may claim and consume its Assignment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

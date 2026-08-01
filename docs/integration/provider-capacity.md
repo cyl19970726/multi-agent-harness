@@ -51,7 +51,7 @@ provider-neutral and execution-mode-specific:
 | `confidence` | `observed` \| `inferred` \| `unknown` |
 | `windows` | Provider-reported usage windows only. An adapter never synthesises `used_percent`. |
 | `diagnosis` | Why a failure happened when the cause is runtime context rather than an account limit. |
-| `runtime_context` | Non-secret environment facts (proxy keys, base URL, credential-key presence). Credential values are never recorded. |
+| `runtime_context` | Non-secret environment facts. Credential keys record presence only; proxy and base URLs are reduced to `scheme://host:port`, because a corporate proxy routinely embeds `user:password@` and a gateway URL can carry a token. |
 
 ### Honesty Rules
 
@@ -75,11 +75,23 @@ provider-neutral and execution-mode-specific:
 
 ### Codex Classification
 
-From the reviewed payload, in order: a non-null `rateLimitReachedType`, then
-`spendControlReached`, then the highest provider-reported `usedPercent`
-(`>= 100` is `exhausted`, `>= 90` is `limited`). A payload with no parsable
-window stays `unknown` — no window is not proof of headroom. A signed-out
-account while `requiresOpenaiAuth` is `unauthorized`, never `exhausted`.
+A live payload carries several metered buckets (`codex`, `codex_bengalfox`, …).
+Buckets are **not** interchangeable, so every state signal is read from ONE
+bucket: the account-level `rateLimits` mirror, or the single keyed bucket when
+that is all the provider returned. Several buckets with no account mirror are
+not attributable and stay `unknown`. All buckets still appear in `windows` so
+an operator can see which one is hot.
+
+Within that bucket, in order: a non-null `rateLimitReachedType`, then
+`spendControlReached`, then the highest `usedPercent` (`>= 100` is `exhausted`,
+`>= 90` is `limited`). A bucket with no parsable window stays `unknown` — no
+window is not proof of headroom. A signed-out account while `requiresOpenaiAuth`
+is `unauthorized`, never `exhausted`. `reset_at` is the time the LAST
+constraining window reopens, because the account is usable again only then.
+
+Only the reviewed Agent Team mode is probed, so `--execution-mode` accepts only
+that mode; asking for another is refused rather than answered with this mode's
+observation under a different label.
 
 ### Terminal Provider Errors as Evidence
 
@@ -102,6 +114,11 @@ proceed <=> anything else (no snapshot, unknown, available, limited, stale)
 Freshness uses `PROVIDER_CAPACITY_DEFAULT_TTL_MS` (5 minutes), overridable with
 `HARNESS_CAPACITY_TTL_MS`. A future-dated or unstamped observation is treated as
 unknown, never fresh.
+
+The block is the product fact and the journal is its record, not its gate: if a
+ledger write fails after the decision, the member is still refused and the
+failure is appended to the reason. Failing open there would let a store hiccup
+start the member on the very account the gate just refused.
 
 A blocked member:
 
@@ -130,6 +147,12 @@ Both a classified provider error and an empty final report now record a failed
 reconstructable: MemberRun id, Standing Agent link, correlation, Workspace
 snapshot, and the resumable `NativeSessionRef` are all preserved, so the Host
 can re-deliver rather than re-create.
+
+The silence rule fires at the ONE place Harness would mint a handoff, so it
+cannot mislabel the two legitimate text-less rounds: a round deferred behind
+newer inbound mail still records `continued`, and a member that published its
+own Handoff through `team-run send` still records `completed` and keeps its
+evidence refs.
 
 ## CLI
 
