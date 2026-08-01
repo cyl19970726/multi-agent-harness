@@ -1965,3 +1965,496 @@ fn archived_source_provenance_and_docs_health_reporting() {
     assert_eq!(finding["subject"]["id"], "work-legacy-missing-source");
     assert_eq!(health["result"]["counts"]["critical"], 1);
 }
+
+// --- work_item.update responsibility-ownership enforcement -----------------
+
+const ROUTING_DEFINITION: &str = "page-work-routing";
+const ROUTING_UPDATE_POLICY: &str = "page-work-routing:work_item.update";
+
+/// A `work_item.update` dispatch against the routing fixture.
+fn update_action(id: &str, requested_by: Value, record: Value) -> Value {
+    json!({
+        "id": id,
+        "command_name": "work_item.update",
+        "subject_ref": {"kind": "work_item", "id": "work-routing-target"},
+        "requested_by": requested_by,
+        "payload": {"definition_id": ROUTING_DEFINITION, "record": record},
+        "required_permission": "company.records.write",
+        "policy_ref": ROUTING_UPDATE_POLICY,
+        "risk_tier": "r2",
+        "requires_human_approval": false,
+        "approval_refs": [],
+        "status": "requested",
+        "audit_event_refs": [format!("{id}:policy-authorized")],
+        "requested_at": NOW,
+        "completed_at": null
+    })
+}
+
+fn dispatch_update(serve: &ServeHandle, body: &Value) -> (u16, Value) {
+    post_json(serve, "/v1/company-os/actions/dispatch", body)
+}
+
+/// Every responsibility rewrite through `work_item.update` needs explicit
+/// authority, and no path through it may hand the requesting Actor the
+/// ownership that `work_item.transition` checks.
+#[test]
+fn work_item_update_requires_explicit_responsibility_authority() {
+    let home = TempHome::new("company-os-work-update-ownership");
+    init_project(&home);
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("HARNESS_COMPANY_OS_TOKEN", TEST_TOKEN)],
+    );
+
+    post_ok(
+        &serve,
+        "/v1/company-os/actors",
+        human("human-brand-owner", "Brand Owner"),
+    );
+    for (id, name) in [
+        ("agent-work-owner", "Owner Agent"),
+        ("agent-work-assignee", "Assignee Agent"),
+        ("agent-work-reviewer", "Reviewer Agent"),
+        ("agent-outsider", "Unrelated Agent"),
+        ("agent-bystander", "Bystander Agent"),
+    ] {
+        post_ok(
+            &serve,
+            "/v1/company-os/actors",
+            admin(agent_record(id, name, "Hold governed company work")),
+        );
+    }
+    // The router is the only Actor holding explicit, policy-named update
+    // authority. It still holds nothing more than the same
+    // `company.records.write` every other agent has.
+    let mut router = agent_record("agent-work-router", "Routing Agent", "Route company work");
+    router["actor"]["permission_policy_refs"] = json!([
+        "company.records.write",
+        "company.work.execute",
+        ROUTING_UPDATE_POLICY
+    ]);
+    post_ok(&serve, "/v1/company-os/actors", admin(router));
+
+    let document = json!({
+        "id": "document-work-routing",
+        "space_id": "operations",
+        "parent_document_id": null,
+        "title": "Work routing",
+        "kind": "page",
+        "lifecycle_status": "active",
+        "block_ids": [],
+        "template_ref": null,
+        "permission_policy_refs": ["company.records.write"],
+        "reference_refs": [],
+        "created_by": actor("human", "human-brand-owner"),
+        "updated_by": actor("human", "human-brand-owner"),
+        "created_at": NOW,
+        "updated_at": NOW
+    });
+    post_ok(&serve, "/v1/company-os/documents", admin(document));
+    post_ok(
+        &serve,
+        "/v1/company-os/business-modules",
+        admin(json!({
+            "id": "module-work-routing",
+            "name": "Work routing",
+            "purpose": "Govern how company work is routed",
+            "root_document_ref": "document-work-routing",
+            "record_types": [],
+            "relation_rules": [],
+            "default_view_refs": [],
+            "policy_refs": [],
+            "lifecycle_rules": [],
+            "metric_definition_refs": [],
+            "custom_page_definition_refs": [],
+            "status": "draft",
+            "owner": actor("human", "human-brand-owner"),
+            "created_at": NOW,
+            "updated_at": NOW
+        })),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/views",
+        admin(json!({
+            "id": "view-work-routing-standard",
+            "module_id": "module-work-routing",
+            "title": "Routed work",
+            "mode": "table",
+            "source_kinds": ["work_item"],
+            "query": {"module_id": "module-work-routing"},
+            "owner": actor("human", "human-brand-owner"),
+            "policy_refs": [],
+            "created_at": NOW,
+            "updated_at": NOW
+        })),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/custom-page-packages",
+        admin(json!({
+            "id": "package-work-routing",
+            "definition_id": ROUTING_DEFINITION,
+            "version": "1.0.0",
+            "kind": "react",
+            "artifact_ref": "artifact://work-routing-page",
+            "entrypoint": "WorkRoutingPage",
+            "integrity_digest": "sha256:test",
+            "built_at": NOW
+        })),
+    );
+    post_ok(
+        &serve,
+        "/v1/company-os/custom-page-definitions",
+        admin(json!({
+            "id": ROUTING_DEFINITION,
+            "module_id": "module-work-routing",
+            "purpose": "Route governed company work",
+            "allowed_data_queries": [{
+                "id": "query-routed-work",
+                "source_kind": "work_item",
+                "source_scope": "module-work-routing",
+                "permission_policy_ref": "company.records.write"
+            }],
+            "approved_ui_components": ["WorkItemCard"],
+            "action_command_refs": ["work_item.update"],
+            "standard_view_fallback_ref": "view-work-routing-standard",
+            "owner": actor("human", "human-brand-owner"),
+            "package_ref": "package-work-routing",
+            "package_version": "1.0.0",
+            "fixture_ref": "company-os-work-routing-v1",
+            "visual_contract_ref": "visual-contract-v1",
+            "policy_refs": [ROUTING_UPDATE_POLICY],
+            "created_at": NOW,
+            "updated_at": NOW
+        })),
+    );
+
+    let work_item = json!({
+        "id": "work-routing-target",
+        "title": "Governed work with a named owner",
+        "objective": "Prove responsibility rewrites are authorized",
+        "description": null,
+        "acceptance_criteria": [],
+        "context_refs": [],
+        "deliverable_refs": [],
+        "status": "in_progress",
+        "source_document_ref": "document-work-routing",
+        "source_record_refs": [],
+        "milestone_ref": null,
+        "work_type": "development",
+        "business_module_ref": "module-work-routing",
+        "result_document_ref": null,
+        "result_record_refs": [],
+        "submitted_by": actor("human", "human-brand-owner"),
+        "requested_by": actor("human", "human-brand-owner"),
+        "accountable_owner": actor("agent", "agent-work-owner"),
+        "assignees": [actor("agent", "agent-work-assignee")],
+        "contributors": [],
+        "reviewer": actor("agent", "agent-work-reviewer"),
+        "approver": null,
+        "execution_mode": "direct",
+        "execution_refs": [],
+        "approval_refs": [],
+        "evidence_refs": [],
+        "artifact_refs": [],
+        "outcome_summary": null,
+        "due_at": null,
+        "priority": "high",
+        "risk_level": "high",
+        "created_at": NOW,
+        "updated_at": NOW,
+        "completed_at": null
+    });
+    post_ok(
+        &serve,
+        "/v1/company-os/work-items",
+        admin(work_item.clone()),
+    );
+
+    // An unrelated Actor may still edit non-responsibility business context.
+    // The gate must close authority, not ordinary authorship.
+    let mut retitled = work_item.clone();
+    retitled["title"] = json!("Retitled by an unrelated records author");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-outsider-retitle",
+            actor("agent", "agent-outsider"),
+            retitled,
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // An unrelated Actor cannot rewrite responsibility, even holding the
+    // blanket company.records.write that authorized the retitle above.
+    let mut reassigned = work_item.clone();
+    reassigned["title"] = json!("Retitled by an unrelated records author");
+    reassigned["accountable_owner"] = actor("agent", "agent-bystander");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-outsider-reassign",
+            actor("agent", "agent-outsider"),
+            reassigned,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    let detail = body["detail"].as_str().unwrap_or_default().to_string();
+    assert!(
+        detail.contains("agent-outsider")
+            && detail.contains("accountable_owner")
+            && detail.contains("work-routing-target")
+            && detail.contains(ROUTING_UPDATE_POLICY),
+        "denial must name actor, field, WorkItem, and missing authority: {detail}"
+    );
+
+    // Authority laundering: writing itself into executor standing is refused.
+    let mut self_assigned = work_item.clone();
+    self_assigned["title"] = json!("Retitled by an unrelated records author");
+    self_assigned["assignees"] = json!([
+        actor("agent", "agent-work-assignee"),
+        actor("agent", "agent-outsider")
+    ]);
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-outsider-self-grant",
+            actor("agent", "agent-outsider"),
+            self_assigned,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    let detail = body["detail"].as_str().unwrap_or_default().to_string();
+    assert!(
+        detail.contains("grant itself") && detail.contains("assignees"),
+        "self-grant denial must name the laundering attempt: {detail}"
+    );
+
+    // The same refusal holds for the closer role.
+    let mut self_reviewer = work_item.clone();
+    self_reviewer["title"] = json!("Retitled by an unrelated records author");
+    self_reviewer["reviewer"] = actor("agent", "agent-outsider");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-outsider-self-reviewer",
+            actor("agent", "agent-outsider"),
+            self_reviewer,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("grant itself") && detail.contains("reviewer")));
+
+    // Policy-named authority routes work to others but still cannot be used
+    // to take the work. Laundering is refused independently of authority.
+    let mut router_self_grant = work_item.clone();
+    router_self_grant["title"] = json!("Retitled by an unrelated records author");
+    router_self_grant["accountable_owner"] = actor("agent", "agent-work-router");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-router-self-grant",
+            actor("agent", "agent-work-router"),
+            router_self_grant,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"].as_str().is_some_and(
+        |detail| detail.contains("grant itself") && detail.contains("accountable_owner")
+    ));
+
+    // Every denied attempt above left durable, reconstructable evidence.
+    let (status, commands) = serve.get_json("/v1/company-os/action-commands");
+    assert_eq!(status, 200, "{commands}");
+    for denied_id in [
+        "action-outsider-reassign",
+        "action-outsider-self-grant",
+        "action-outsider-self-reviewer",
+        "action-router-self-grant",
+    ] {
+        let command = commands["result"]["items"]
+            .as_array()
+            .expect("action command items")
+            .iter()
+            .find(|row| row["id"] == denied_id)
+            .unwrap_or_else(|| panic!("denied ActionCommand {denied_id} was not recorded"));
+        assert_eq!(command["status"], "rejected", "{command}");
+    }
+    let (status, audits) = serve.get_json("/v1/company-os/audit-events");
+    assert_eq!(status, 200, "{audits}");
+    let laundering = audits["result"]["items"]
+        .as_array()
+        .expect("audit items")
+        .iter()
+        .find(|row| row["id"] == "action-outsider-self-grant:rejected")
+        .expect("denial AuditEvent was not recorded");
+    assert_eq!(laundering["event_kind"], "failed");
+    assert_eq!(laundering["actor_ref"]["actor_id"], "agent-outsider");
+    assert_eq!(laundering["subject_ref"]["id"], "work-routing-target");
+    assert_eq!(laundering["detail"]["denial_kind"], "authority_laundering");
+    assert_eq!(laundering["detail"]["rejected_fields"][0], "assignees");
+    assert_eq!(
+        laundering["detail"]["previous_responsibility"]["assignees"][0]["actor_id"],
+        "agent-work-assignee"
+    );
+    assert_eq!(
+        laundering["detail"]["requested_responsibility"]["assignees"][1]["actor_id"],
+        "agent-outsider"
+    );
+    let missing_authority = audits["result"]["items"]
+        .as_array()
+        .expect("audit items")
+        .iter()
+        .find(|row| row["id"] == "action-outsider-reassign:rejected")
+        .expect("denial AuditEvent was not recorded");
+    assert_eq!(
+        missing_authority["detail"]["denial_kind"],
+        "missing_update_authority"
+    );
+
+    // Replaying a denied command repeats the refusal instead of degrading
+    // into a generic conflict.
+    let mut replay = work_item.clone();
+    replay["title"] = json!("Retitled by an unrelated records author");
+    replay["accountable_owner"] = actor("agent", "agent-bystander");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-outsider-reassign",
+            actor("agent", "agent-outsider"),
+            replay,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("already denied")));
+
+    // The accountable owner may re-route its own WorkItem.
+    let mut owner_routed = work_item.clone();
+    owner_routed["title"] = json!("Retitled by an unrelated records author");
+    owner_routed["contributors"] = json!([actor("agent", "agent-bystander")]);
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-owner-adds-contributor",
+            actor("agent", "agent-work-owner"),
+            owner_routed.clone(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // So may the assignee and the reviewer.
+    let mut assignee_routed = owner_routed.clone();
+    assignee_routed["approver"] = actor("human", "human-brand-owner");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-assignee-sets-approver",
+            actor("agent", "agent-work-assignee"),
+            assignee_routed.clone(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let mut reviewer_routed = assignee_routed.clone();
+    reviewer_routed["contributors"] = json!([]);
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-reviewer-clears-contributor",
+            actor("agent", "agent-work-reviewer"),
+            reviewer_routed.clone(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // Governed routing by explicit policy-named authority stays open, as long
+    // as the router hands the work to somebody other than itself.
+    let mut router_routed = reviewer_routed.clone();
+    router_routed["accountable_owner"] = actor("agent", "agent-bystander");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-router-reassigns",
+            actor("agent", "agent-work-router"),
+            router_routed.clone(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, detail) = serve.get_json("/v1/company-os/work-items/work-routing-target");
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(
+        detail["result"]["accountable_owner"]["actor_id"],
+        "agent-bystander"
+    );
+    // The displaced owner is no longer a controller and cannot take it back.
+    let mut former_owner_reclaims = router_routed;
+    former_owner_reclaims["accountable_owner"] = actor("agent", "agent-work-owner");
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-former-owner-reclaims",
+            actor("agent", "agent-work-owner"),
+            former_owner_reclaims,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("grant itself")));
+
+    // Two-step escalation is closed too. The router may write itself in as a
+    // contributor, because a contributor can neither execute nor close...
+    let mut router_contributes = router_routed_after_reassign(&work_item);
+    router_contributes["contributors"] = json!([actor("agent", "agent-work-router")]);
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-router-self-contributor",
+            actor("agent", "agent-work-router"),
+            router_contributes.clone(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // ...but that contributor seat is a dead end: it confers no control, so
+    // the second step into executor standing is still refused.
+    let mut router_escalates = router_contributes;
+    router_escalates["assignees"] = json!([
+        actor("agent", "agent-work-assignee"),
+        actor("agent", "agent-work-router")
+    ]);
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-router-escalates",
+            actor("agent", "agent-work-router"),
+            router_escalates,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("grant itself") && detail.contains("assignees")),
+        "contributor standing must not escalate into executor standing: {body}"
+    );
+}
+
+/// The fixture WorkItem as it stands after the governed reassignment above.
+fn router_routed_after_reassign(work_item: &Value) -> Value {
+    let mut record = work_item.clone();
+    record["title"] = json!("Retitled by an unrelated records author");
+    record["accountable_owner"] = actor("agent", "agent-bystander");
+    record["approver"] = actor("human", "human-brand-owner");
+    record["contributors"] = json!([]);
+    record
+}

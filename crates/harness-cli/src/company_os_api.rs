@@ -1839,6 +1839,15 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
                 return execute_authorized_action(store, existing, &record, &definition_id, true)
             }
             ActionCommandStatus::Requested => {}
+            // A denied command stays denied. Replaying it must repeat the
+            // refusal rather than degrade into a generic conflict that hides
+            // why the attempt was refused.
+            ActionCommandStatus::Rejected => {
+                return Err(ApiError::forbidden(format!(
+                    "ActionCommand {} was already denied; see AuditEvent {}:rejected",
+                    existing.id, existing.id
+                )))
+            }
             _ => {
                 return Err(ApiError::conflict(format!(
                     "ActionCommand {} is already {:?}",
@@ -2586,6 +2595,241 @@ fn validate_work_item_create(
     Ok(())
 }
 
+/// Responsibility fields decide who may execute, review, or close a WorkItem.
+/// Rewriting one is an authority change, not an ordinary edit, so each is named
+/// explicitly rather than inferred from a diff of the whole record.
+fn changed_responsibility_fields(previous: &WorkItem, target: &WorkItem) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    if previous.accountable_owner != target.accountable_owner {
+        changed.push("accountable_owner");
+    }
+    if previous.assignees != target.assignees {
+        changed.push("assignees");
+    }
+    if previous.contributors != target.contributors {
+        changed.push("contributors");
+    }
+    if previous.reviewer != target.reviewer {
+        changed.push("reviewer");
+    }
+    if previous.approver != target.approver {
+        changed.push("approver");
+    }
+    changed
+}
+
+/// Executor or closer standing, using the same actor set as
+/// `validate_work_item_transition`. Contributors are deliberately excluded:
+/// a contributor can neither execute nor close, so counting one as a
+/// controller would reopen the laundering path this gate closes.
+fn controls_work_item(actor: &ActorRef, item: &WorkItem) -> bool {
+    *actor == item.accountable_owner
+        || item.assignees.contains(actor)
+        || item.reviewer.as_ref() == Some(actor)
+}
+
+/// The executor/closer roles the requesting Actor would gain for itself.
+fn self_granted_roles(
+    actor: &ActorRef,
+    previous: &WorkItem,
+    target: &WorkItem,
+) -> Vec<&'static str> {
+    let mut roles = Vec::new();
+    if target.accountable_owner == *actor && previous.accountable_owner != *actor {
+        roles.push("accountable_owner");
+    }
+    if target.assignees.contains(actor) && !previous.assignees.contains(actor) {
+        roles.push("assignees");
+    }
+    if target.reviewer.as_ref() == Some(actor) && previous.reviewer.as_ref() != Some(actor) {
+        roles.push("reviewer");
+    }
+    roles
+}
+
+/// Explicit, policy-named update authority. The Actor ledger must name this
+/// exact ActionPolicyDefinition id, or the company admin permission. The
+/// blanket `company.records.write` that every records author holds never
+/// satisfies this, which is what keeps the exemption declared in policy
+/// instead of implied by having any write permission at all.
+fn holds_named_update_authority(
+    store: &HarnessStore,
+    actor_ref: &ActorRef,
+    policy_ref: &str,
+) -> Result<bool, ApiError> {
+    let actor = store
+        .latest_actor(actor_ref)?
+        .ok_or_else(|| ApiError::not_found(format!("actor:{}", actor_ref.actor_id)))?;
+    let names = |refs: &[String]| {
+        refs.iter()
+            .any(|value| value == policy_ref || value == COMPANY_OS_ADMIN_PERMISSION)
+    };
+    Ok(match actor {
+        CompanyActor::Human(actor) => {
+            names(&actor.permission_policy_refs) || names(&actor.authority_policy_refs)
+        }
+        CompanyActor::Agent(actor) => names(&actor.permission_policy_refs),
+        CompanyActor::External(actor) => names(&actor.restricted_permission_refs),
+        CompanyActor::Service(actor) => names(&actor.permission_policy_refs),
+    })
+}
+
+fn responsibility_snapshot(item: &WorkItem) -> Value {
+    json!({
+        "accountable_owner": item.accountable_owner,
+        "assignees": item.assignees,
+        "contributors": item.contributors,
+        "reviewer": item.reviewer,
+        "approver": item.approver,
+    })
+}
+
+/// Gate every responsibility rewrite on explicit authority, and forbid
+/// self-elevation outright.
+///
+/// Two paths stay open: an Actor that already owns, is assigned to, or reviews
+/// the WorkItem may re-route it, and an Actor holding explicit policy-named
+/// update authority may perform governed routing. Neither path may be used to
+/// hand the requesting Actor executor or closer standing it did not already
+/// hold, so `work_item.update` can never be used to pass the
+/// `work_item.transition` ownership check.
+fn require_work_item_responsibility_authority(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    previous: &WorkItem,
+    target: &WorkItem,
+) -> Result<(), ApiError> {
+    let changed = changed_responsibility_fields(previous, target);
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let requester = &command.requested_by;
+    let controlled_before = controls_work_item(requester, previous);
+    let laundered = self_granted_roles(requester, previous, target);
+
+    // Checked before the authority paths so that self-elevation is refused
+    // even for an Actor that holds policy-named routing authority. Routing
+    // work to someone else stays separable from taking the work.
+    if !controlled_before && !laundered.is_empty() {
+        return Err(deny_work_item_update(
+            store,
+            command,
+            previous,
+            target,
+            &changed,
+            "authority_laundering",
+            format!(
+                "Actor {} cannot use work_item.update to grant itself {} on WorkItem {}: \
+                 the requesting Actor is not already its accountable_owner, an assignee, \
+                 or its reviewer, and work_item.update must never create the ownership \
+                 that work_item.transition checks",
+                requester.actor_id,
+                laundered.join(", "),
+                previous.id
+            ),
+        ));
+    }
+    if controlled_before {
+        return Ok(());
+    }
+    if holds_named_update_authority(store, requester, &command.policy_ref)? {
+        return Ok(());
+    }
+    Err(deny_work_item_update(
+        store,
+        command,
+        previous,
+        target,
+        &changed,
+        "missing_update_authority",
+        format!(
+            "Actor {} does not own this WorkItem responsibility update: changing {} on \
+             WorkItem {} requires being its accountable_owner, an assignee, or its \
+             reviewer, or holding explicit update authority for policy {}",
+            requester.actor_id,
+            changed.join(", "),
+            previous.id,
+            command.policy_ref
+        ),
+    ))
+}
+
+/// Record a governed denial durably, then return it.
+///
+/// A refused responsibility rewrite must leave the same reconstructable trail
+/// as an executed one, so the attempt is claimed and driven to `Rejected` with
+/// a terminal AuditEvent naming the Actor, the WorkItem, the refused fields,
+/// and the previous and requested role refs.
+fn deny_work_item_update(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    previous: &WorkItem,
+    target: &WorkItem,
+    changed: &[&'static str],
+    denial_kind: &str,
+    reason: String,
+) -> ApiError {
+    let detail = json!({
+        "command_name": command.command_name,
+        "policy_ref": command.policy_ref,
+        "target_id": previous.id,
+        "denial_kind": denial_kind,
+        "denied_reason": reason,
+        "requested_by": command.requested_by,
+        "required_permission": command.required_permission,
+        "rejected_fields": changed,
+        "previous_responsibility": responsibility_snapshot(previous),
+        "requested_responsibility": responsibility_snapshot(target),
+    });
+    match record_action_denial(store, command, &detail) {
+        Ok(()) => ApiError::forbidden(reason),
+        Err(error) => error,
+    }
+}
+
+/// Drive one refused ActionCommand to a durable `Rejected` terminal state with
+/// its denial AuditEvent. Replay of an already-denied command id is a no-op so
+/// the terminal row stays immutable.
+fn record_action_denial(
+    store: &HarnessStore,
+    command: &ActionCommand,
+    detail: &Value,
+) -> Result<(), ApiError> {
+    let denial_audit_id = format!("{}:rejected", command.id);
+    let mut denied = command.clone();
+    denied.status = ActionCommandStatus::Requested;
+    match store.claim_action_command(&denied)? {
+        ActionCommandClaimResult::Claimed(_) => {}
+        ActionCommandClaimResult::Replay(existing) => {
+            if existing.status != ActionCommandStatus::Requested {
+                return Ok(());
+            }
+        }
+        ActionCommandClaimResult::Conflict(existing) => {
+            return Err(ApiError::conflict(format!(
+                "ActionCommand id {} already belongs to {}",
+                existing.id, existing.command_name
+            )))
+        }
+    }
+    let occurred_at = now_string();
+    denied.audit_event_refs.push(denial_audit_id.clone());
+    denied.status = ActionCommandStatus::Rejected;
+    denied.completed_at = Some(occurred_at.clone());
+    store.append_action_command(&denied)?;
+    store.append_audit_event(&AuditEvent {
+        id: denial_audit_id,
+        action_command_id: command.id.clone(),
+        event_kind: AuditEventKind::Failed,
+        actor_ref: command.requested_by.clone(),
+        subject_ref: command.subject_ref.clone(),
+        detail: detail.clone(),
+        evidence_refs: Vec::new(),
+        occurred_at,
+    })?;
+    Ok(())
+}
+
 fn validate_work_item_update(
     store: &HarnessStore,
     command: &ActionCommand,
@@ -2602,6 +2846,10 @@ fn validate_work_item_update(
         .into_iter()
         .find(|candidate| candidate.id == target.id)
         .ok_or_else(|| ApiError::not_found(format!("WorkItem:{}", target.id)))?;
+    // Authority is decided before shape. A refused responsibility rewrite must
+    // be denied and recorded even when the same payload is malformed in some
+    // other way, so the denial evidence is never lost to an earlier 409.
+    require_work_item_responsibility_authority(store, command, &previous, &target)?;
     if previous.status != target.status {
         return Err(ApiError::conflict(
             "work_item.update cannot change lifecycle status; use work_item.transition",
