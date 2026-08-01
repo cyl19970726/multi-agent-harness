@@ -30,6 +30,22 @@ writeFileSync(
 set -euo pipefail
 if [[ "\${1:-} \${2:-}" == "team-run host-inbox" ]]; then
   printf '%s\\n' '[{"team_run_id":"run-1","team_run_status":"running","mission_id":"mission-1","messages":[{"id":"msg-1","from_member_id":"member-1","kind":"handoff","correlation_id":"corr-1","body":"RESULT: done\\nChecks passed"}]}]'
+elif [[ "\${1:-} \${2:-}" == "member-run show" ]]; then
+  member_id=""
+  while [[ \$# -gt 0 ]]; do
+    if [[ "\$1" == "--id" ]]; then
+      member_id="\${2:-}"
+      break
+    fi
+    shift
+  done
+  if [[ "\$member_id" == "member-run-driven" ]]; then
+    printf '%s\\n' '{"member_run":{"id":"member-run-driven","team_run_id":"run-1","status":"running","provider_profile":{"execution_mode":"codex_app_server","execution_driver":"host_driven"}}}'
+  elif [[ "\$member_id" == "member-run-stopped" ]]; then
+    printf '%s\\n' '{"member_run":{"id":"member-run-stopped","team_run_id":"run-1","status":"stopped","provider_profile":{"execution_mode":"external_interactive","execution_driver":"user_driven"}}}'
+  else
+    printf '{"member_run":{"id":"%s","team_run_id":"run-1","status":"idle","provider_profile":{"execution_mode":"external_interactive","execution_driver":"user_driven"}}}\\n' "\$member_id"
+  fi
 elif [[ "\${1:-} \${2:-}" == "team-run inbox" ]]; then
   printf '%s\\n' '[{"id":"mmsg-1","from_member_id":"member-run-greeter","kind":"message","correlation_id":"corr-9","body":"hello external member","deliveries":[{"member_id":"member-run-ext","status":"queued"}]}]'
 elif [[ "\${1:-} \${2:-}" == "hook record" ]]; then
@@ -234,19 +250,34 @@ try {
   const extStopped = JSON.parse(
     run("Stop", memberEnv, { turn_id: "turn-9", stop_hook_active: false }),
   );
-  if (
-    extStopped.decision !== "block" ||
-    !extStopped.reason.includes("Member Inbox") ||
-    !extStopped.reason.includes("mmsg-1") ||
-    !extStopped.reason.includes("--member-id member-run-ext")
-  ) {
+  if (Object.keys(extStopped).length !== 0) {
     throw new Error(
-      "Codex Stop must continue the same native task with bounded member mail",
+      "External Codex Stop must remain user-driven by default",
     );
   }
 
+  const extOptedIn = JSON.parse(
+    run(
+      "Stop",
+      { ...memberEnv, HARNESS_EXTERNAL_AUTO_CONTINUE: "1" },
+      { turn_id: "turn-10", stop_hook_active: false },
+    ),
+  );
+  if (
+    extOptedIn.decision !== "block" ||
+    !extOptedIn.reason.includes("Member Inbox") ||
+    !extOptedIn.reason.includes("mmsg-1") ||
+    !extOptedIn.reason.includes("--member-id member-run-ext")
+  ) {
+    throw new Error("Opted-in external Codex Stop must continue with bounded mail");
+  }
+
   const extContinued = JSON.parse(
-    run("Stop", memberEnv, { turn_id: "turn-10", stop_hook_active: true }),
+    run(
+      "Stop",
+      { ...memberEnv, HARNESS_EXTERNAL_AUTO_CONTINUE: "true" },
+      { turn_id: "turn-11", stop_hook_active: true },
+    ),
   );
   if (Object.keys(extContinued).length !== 0) {
     throw new Error("A continued member Stop hook must not create a loop");
@@ -261,13 +292,45 @@ try {
     },
     { stop_hook_active: false },
   );
+  if (extKimiStopped.status !== 0 || extKimiStopped.stderr.trim()) {
+    throw new Error(
+      `External Kimi Stop must remain user-driven by default; status=${extKimiStopped.status} stderr=${extKimiStopped.stderr}`,
+    );
+  }
+
+  const extKimiOptedIn = runRaw(
+    "Stop",
+    {
+      KIMI_PLUGIN_ROOT: temp,
+      HARNESS_TEAM_RUN_ID: "run-1",
+      HARNESS_MEMBER_RUN_ID: "member-run-ext",
+      HARNESS_EXTERNAL_AUTO_CONTINUE: "yes",
+    },
+    { stop_hook_active: false },
+  );
   if (
-    extKimiStopped.status !== 2 ||
-    !extKimiStopped.stderr.includes("mmsg-1")
+    extKimiOptedIn.status !== 2 ||
+    !extKimiOptedIn.stderr.includes("mmsg-1")
   ) {
     throw new Error(
-      `Kimi member Stop must block through exit 2 with a reason; status=${extKimiStopped.status} stderr=${extKimiStopped.stderr}`,
+      `Opted-in external Kimi Stop must block through exit 2; status=${extKimiOptedIn.status} stderr=${extKimiOptedIn.stderr}`,
     );
+  }
+
+  const drivenBinding = run("SessionStart", {
+    HARNESS_TEAM_RUN_ID: "run-1",
+    HARNESS_MEMBER_RUN_ID: "member-run-driven",
+  });
+  if (drivenBinding.trim()) {
+    throw new Error("An unverified driven MemberRun binding must not intake its Inbox");
+  }
+
+  const stoppedBinding = run("SessionStart", {
+    HARNESS_TEAM_RUN_ID: "run-1",
+    HARNESS_MEMBER_RUN_ID: "member-run-stopped",
+  });
+  if (stoppedBinding.trim()) {
+    throw new Error("A terminal external MemberRun binding must not intake mail");
   }
 
   const drivenPrecedence = run("SessionStart", {

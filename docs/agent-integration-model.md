@@ -60,17 +60,23 @@ external client cannot impersonate a Member.
 
 The declared exception to that invariant is the `external_interactive`
 execution mode. An `external_interactive` member is a user's own already-open
-interactive provider CLI session (Kimi Code, Codex, or Claude Code) that
-Harness never spawns or drives: the Supervisor starts no adapter for it,
-deliveries stay queued until the session polls its inbox, and Close only
-records the terminal status. Because such a member is explicitly declared
-non-driven, its mail is accepted from unbound trusted-local CLI/MCP clients
+interactive provider session that Harness never spawns or drives: the
+Supervisor starts no adapter for it, its non-empty provider label is
+informational rather than adapter registration, deliveries stay queued until
+the session polls its inbox, and Close only records the terminal coordination
+status with no external runtime effect. Because such a member is explicitly
+declared non-driven, its mail is accepted from unbound trusted-local CLI/MCP clients
 and recorded with `authn_source = "mcp:external_interactive"` (or the local
 CLI equivalent). Driven members keep the full invariant: their
 member-originated messages must come from the bound provider runtime. An
 external interactive member has no provider-native session record, so its
 execution truth is NOT in Harness and evidence claims about its work cannot
 resolve to a provider-native session.
+
+The bundled Codex, Claude, and Kimi hooks may inject a verified external
+MemberRun's queued mail at native prompt boundaries. Stop remains user-driven
+by default; cooperative same-task continuation is opt-in and never upgrades
+the member to a Harness-controlled runtime.
 
 An `AgentMember` (see [agent-control-plane.md](company-os/execution-foundation.md)) is a
 durable identity. To make that identity *executable on a given platform* you

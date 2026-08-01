@@ -1102,7 +1102,10 @@ fn mcp_stdio_external_interactive_member_authorship() {
         .collect();
     assert_eq!(member_ids.len(), 2, "member ids: {payload}");
     let assignment = &payload["assignment_messages"][1];
-    let assignment_id = assignment["id"].as_str().expect("assignment id").to_string();
+    let assignment_id = assignment["id"]
+        .as_str()
+        .expect("assignment id")
+        .to_string();
     let assignment_correlation = assignment["correlation_id"]
         .as_str()
         .expect("assignment correlation")
@@ -1141,7 +1144,10 @@ fn mcp_stdio_external_interactive_member_authorship() {
         .find(|message| message.id == reply_id)
         .expect("external reply row");
     assert_eq!(
-        reply.sender.as_ref().and_then(|sender| sender.authn_source.as_deref()),
+        reply
+            .sender
+            .as_ref()
+            .and_then(|sender| sender.authn_source.as_deref()),
         Some("mcp:external_interactive"),
         "external authorship provenance: {reply:?}"
     );

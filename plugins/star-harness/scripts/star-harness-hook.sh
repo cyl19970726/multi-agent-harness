@@ -95,6 +95,43 @@ if [[ -n "${HARNESS_MEMBER_RUN_ID:-}" ]]; then
       ;;
   esac
 
+  # Environment variables are routing hints, not proof that this session owns
+  # an external MemberRun. Verify the durable binding before reading any mail
+  # so a stale or mistyped id cannot intake a driven Member's Inbox.
+  member_detail_json="$("$harness_bin" member-run show \
+    --id "$member_run_id" --json 2>/dev/null)" || {
+    if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+      printf '{}\n'
+    fi
+    exit 0
+  }
+  if ! MEMBER_DETAIL_JSON="$member_detail_json" TEAM_RUN_ID="$team_run_id" \
+    MEMBER_RUN_ID="$member_run_id" python3 - 2>/dev/null <<'PY'
+import json
+import os
+
+try:
+    detail = json.loads(os.environ.get("MEMBER_DETAIL_JSON", "") or "{}")
+except ValueError:
+    raise SystemExit(1)
+member = detail.get("member_run", {}) if isinstance(detail, dict) else {}
+profile = member.get("provider_profile", {}) if isinstance(member, dict) else {}
+valid = (
+    member.get("id") == os.environ.get("MEMBER_RUN_ID")
+    and member.get("team_run_id") == os.environ.get("TEAM_RUN_ID")
+    and profile.get("execution_mode") == "external_interactive"
+    and profile.get("execution_driver") == "user_driven"
+    and member.get("status") not in {"completed", "failed", "stopped"}
+)
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+      printf '{}\n'
+    fi
+    exit 0
+  fi
+
   member_inbox_json="$("$harness_bin" team-run inbox \
     --id "$team_run_id" --member-run-id "$member_run_id" --json 2>/dev/null)" || {
     if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
@@ -104,8 +141,18 @@ if [[ -n "${HARNESS_MEMBER_RUN_ID:-}" ]]; then
   }
 
   if [[ "$event_name" == "Stop" || "$event_name" == "stop" ]]; then
-    # Stop is the provider-reviewed safe boundary for an external Member task,
-    # identical to the Host Inbox continuation below.
+    # A user-driven external session must remain free to stop by default.
+    # Operators who explicitly want queued mail to continue the same native
+    # task may opt in for this session. This is cooperative hook behavior, not
+    # a Harness lifecycle-control claim.
+    case "${HARNESS_EXTERNAL_AUTO_CONTINUE:-false}" in
+      1|true|TRUE|yes|YES|on|ON) external_auto_continue=true ;;
+      *) external_auto_continue=false ;;
+    esac
+    if [[ "$external_auto_continue" != "true" ]]; then
+      [[ "$host_surface" != "kimi-cli" ]] && printf '{}\n'
+      exit 0
+    fi
     if [[ "$stop_hook_active" == "true" ]]; then
       [[ "$host_surface" != "kimi-cli" ]] && printf '{}\n'
       exit 0

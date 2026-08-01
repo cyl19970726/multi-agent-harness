@@ -9761,21 +9761,23 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
     }
     if member.execution_mode.as_deref() == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
         // An external interactive member is the user's own already-open
-        // provider session; there is no provider-native session to resume.
+        // provider session; there is no provider-native session to resume and
+        // no Harness adapter whose registry should constrain the provider
+        // label. Known providers may use the plugin hook while any other
+        // non-empty label remains usable through the same trusted-local
+        // inbox/send/ack contract.
         if member.resume_native_session_id.is_some() {
             return Err(CliError::Usage(
                 "external_interactive members have no provider-native session to resume"
                     .to_string(),
             ));
         }
+        return Ok(());
     }
     if let Some(mode) = member.execution_mode.as_deref() {
         let allowed = matches!(
             (member.provider.as_str(), mode),
-            ("codex", "codex_app_server")
-                | ("kimi", "kimi_acp")
-                | ("claude", "claude_agent_sdk")
-                | ("codex" | "kimi" | "claude", EXECUTION_MODE_EXTERNAL_INTERACTIVE)
+            ("codex", "codex_app_server") | ("kimi", "kimi_acp") | ("claude", "claude_agent_sdk")
         );
         if !allowed {
             return Err(CliError::Usage(format!(
@@ -17238,16 +17240,12 @@ pub(crate) fn acknowledge_team_message(
     // on its own: the trusted loopback inbox read IS its delivery channel and
     // its ack may proceed straight from `queued`. Driven members keep the
     // delivered-first invariant enforced by the store.
-    let queued_external_delivery = message
-        .deliveries
-        .iter()
-        .any(|delivery| {
-            delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
-        })
-        && latest_member_runs_in_append_order(store)?
-            .into_iter()
-            .find(|member| member.id == member_id && member.team_run_id == message.team_run_id)
-            .is_some_and(|member| member.is_external_interactive());
+    let queued_external_delivery = message.deliveries.iter().any(|delivery| {
+        delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+    }) && latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_id && member.team_run_id == message.team_run_id)
+        .is_some_and(|member| member.is_external_interactive());
     let message = if queued_external_delivery {
         let mut updated = message.clone();
         let delivery = updated
@@ -20210,8 +20208,8 @@ fn close_team_member_value(
 ) -> CliResult<serde_json::Value> {
     let requested_by =
         optional_json_string(body, "requested_by")?.unwrap_or_else(|| "host".to_string());
-    let reason = optional_json_string(body, "reason")?
-        .unwrap_or_else(|| "Host closed member runtime".to_string());
+    let reason =
+        optional_json_string(body, "reason")?.unwrap_or_else(|| "Host closed member".to_string());
     let run = latest_team_run(store, team_run_id)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
@@ -20223,6 +20221,7 @@ fn close_team_member_value(
         .into_iter()
         .find(|member| member.id == member_run_id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    let external_interactive = member.is_external_interactive();
     if matches!(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
@@ -20238,7 +20237,9 @@ fn close_team_member_value(
         return Ok(serde_json::json!({
             "member_run_id": member.id,
             "status": serde_snake_label(&member.status),
-            "runtime": "not_live",
+            "runtime": if external_interactive { "external_unmanaged" } else { "not_live" },
+            "runtime_effect": if external_interactive { "none" } else { "already_terminal" },
+            "coordination_effect": "already_closed",
             "idempotent": true,
         }));
     }
@@ -20285,7 +20286,9 @@ fn close_team_member_value(
     Ok(serde_json::json!({
         "member_run_id": member.id,
         "status": "stopped",
-        "runtime": "not_started",
+        "runtime": if external_interactive { "external_unmanaged" } else { "not_started" },
+        "runtime_effect": if external_interactive { "none" } else { "not_started" },
+        "coordination_effect": "member_closed",
         "idempotent": false,
     }))
 }

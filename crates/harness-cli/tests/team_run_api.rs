@@ -4301,8 +4301,8 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let home = TempHome::new("team-run-external-interactive");
     let project_id = init_project(&home, "alpha");
 
-    // A declared external interactive member is rejected for providers with no
-    // registered Agent Team mode.
+    // A declared external interactive member may use an arbitrary provider
+    // label because Harness never executes it or claims adapter capability.
     let out = run_harness(
         &home,
         home.base(),
@@ -4312,21 +4312,29 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             "team-run",
             "create",
             "--objective",
-            "bad provider",
+            "custom external provider",
             "--member",
-            "bad:reviewer:unknown/external_interactive",
+            "custom-reviewer:reviewer:local-agent/external_interactive",
         ],
     );
     assert!(
-        !out.status.success(),
-        "unknown provider must be rejected: {}",
-        String::from_utf8_lossy(&out.stdout)
+        out.status.success(),
+        "custom external provider must be accepted: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .contains("execution mode external_interactive is not registered for provider unknown"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+    let custom_run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let custom = team_run_json(
+        &home,
+        &project_id,
+        &["status", "--id", &custom_run_id, "--json"],
+    );
+    assert_eq!(
+        custom["members"][0]["member_run"]["provider"],
+        "local-agent"
+    );
+    assert_eq!(
+        custom["members"][0]["member_run"]["provider_profile"]["execution_driver"],
+        "user_driven"
     );
 
     // Create a run whose only member is the user's own external interactive
@@ -4410,7 +4418,14 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let out = run_harness(
         &home,
         home.base(),
-        &["--project", &project_id, "team-run", "start", "--id", &run_id],
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
     );
     assert!(
         out.status.success(),
@@ -4425,7 +4440,9 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
     assert_eq!(status["team_run"]["status"].as_str(), Some("running"));
     for entry in status["members"].as_array().expect("members") {
-        let member_status = entry["member_run"]["status"].as_str().expect("member status");
+        let member_status = entry["member_run"]["status"]
+            .as_str()
+            .expect("member status");
         assert!(
             !matches!(member_status, "failed" | "disconnected"),
             "external member must not be marked {member_status}: {entry}"
@@ -4437,7 +4454,14 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let assignment = team_run_json(
         &home,
         &project_id,
-        &["inbox", "--id", &run_id, "--member-run-id", &ext_id, "--json"],
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
     );
     let assignment = assignment
         .as_array()
@@ -4450,7 +4474,10 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         .as_str()
         .expect("assignment correlation")
         .to_string();
-    let assignment_id = assignment["id"].as_str().expect("assignment id").to_string();
+    let assignment_id = assignment["id"]
+        .as_str()
+        .expect("assignment id")
+        .to_string();
 
     let out = run_harness(
         &home,
@@ -4488,7 +4515,14 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let inbox = team_run_json(
         &home,
         &project_id,
-        &["inbox", "--id", &run_id, "--member-run-id", &ext_id, "--json"],
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
     );
     let inbox_ids: Vec<&str> = inbox
         .as_array()
@@ -4497,7 +4531,8 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         .filter_map(|message| message["id"].as_str())
         .collect();
     assert!(
-        inbox_ids.contains(&assignment_id.as_str()) && inbox_ids.contains(&host_message_id.as_str()),
+        inbox_ids.contains(&assignment_id.as_str())
+            && inbox_ids.contains(&host_message_id.as_str()),
         "external inbox ids: {inbox_ids:?}"
     );
     let out = run_harness(
@@ -4524,7 +4559,14 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let inbox = team_run_json(
         &home,
         &project_id,
-        &["inbox", "--id", &run_id, "--member-run-id", &ext_id, "--json"],
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
     );
     assert_eq!(
         inbox.as_array().map(Vec::len),
@@ -4567,7 +4609,14 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let host_inbox = team_run_json(
         &home,
         &project_id,
-        &["inbox", "--id", &run_id, "--member-run-id", "host", "--json"],
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            "host",
+            "--json",
+        ],
     );
     let reply = host_inbox
         .as_array()
@@ -4597,7 +4646,17 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             "review pair no longer needed",
         ],
     );
-    assert_eq!(closed["status"].as_str(), Some("stopped"), "close: {closed}");
+    assert_eq!(
+        closed["status"].as_str(),
+        Some("stopped"),
+        "close: {closed}"
+    );
+    assert_eq!(closed["runtime"].as_str(), Some("external_unmanaged"));
+    assert_eq!(closed["runtime_effect"].as_str(), Some("none"));
+    assert_eq!(
+        closed["coordination_effect"].as_str(),
+        Some("member_closed")
+    );
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let helper = store
         .member_runs()
@@ -4614,4 +4673,53 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             .is_some_and(|close| close.status == harness_core::TeamMemberCloseStatus::Applied),
         "close request must be applied without a supervisor"
     );
+
+    // An external-only TeamRun remains Host-controlled: after a correlated
+    // Handoff the Host may close the coordination identity and explicitly
+    // complete the run without claiming that any external process was stopped.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            &ext_id,
+            "--to",
+            "host",
+            "--kind",
+            "handoff",
+            "--body",
+            "External review handoff: checks reported by the user-driven member",
+            "--correlation-id",
+            &correlation,
+            "--causation-id",
+            &host_message_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "external handoff failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reviewer_closed = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--reason",
+            "Host accepted external review",
+        ],
+    );
+    assert_eq!(reviewer_closed["runtime_effect"].as_str(), Some("none"));
+    let completed = team_run_json(&home, &project_id, &["complete", "--id", &run_id, "--json"]);
+    assert_eq!(completed["status"].as_str(), Some("completed"));
 }
