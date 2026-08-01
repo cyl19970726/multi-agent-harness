@@ -784,6 +784,33 @@ impl HarnessStore {
         self.append_action_transition_with_events_atomic(value, events)
     }
 
+    /// Atomically append a Rejected command snapshot and its denial audit
+    /// events under one write lock, using the same invariant as the
+    /// executed/failed terminal path: a refused command may not become
+    /// terminal unless its denial evidence lands in the same transaction.
+    /// Exact replay is safe.
+    pub fn reject_action_command_atomic(
+        &self,
+        value: &ActionCommand,
+        events: &[AuditEvent],
+    ) -> StoreResult<()> {
+        if value.status != ActionCommandStatus::Rejected {
+            return Err(StoreError::Conflict(
+                "reject_action_command_atomic requires rejected status".into(),
+            ));
+        }
+        if events.is_empty()
+            || !events
+                .iter()
+                .any(|event| event.event_kind == AuditEventKind::Failed)
+        {
+            return Err(StoreError::Conflict(
+                "a rejected action transition requires a terminal denial audit event".into(),
+            ));
+        }
+        self.append_action_transition_with_events_atomic(value, events)
+    }
+
     /// Atomically install one Custom Page Definition and all of its server
     /// Action policies. Conflicts are discovered before either ledger changes.
     pub fn append_custom_page_bundle_atomic(

@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { EditorialTitle, ObjectEmblem } from "../visuals";
 
 import { buildDocsAppendBlockCommands, buildDocsChildDocumentCommand, buildDocsInstantiateTemplateBlockCommands, buildDocsReorderBlocksCommand } from "./documentAction";
+import { filterDocumentTree, isDocumentTreeNode, selectDocumentDirectoryAnchor } from "./documentTree";
 import { RelationChips } from "./RelationChips";
 import type { CompanyOsDocsActionCommand, CompanyOsDocumentBlock, CompanyOsDocumentPageData, CompanyOsLink, CompanyOsWorkspaceTreeItem } from "./types";
 import { preserveCompanyOsWorkbenchContext } from "./url";
@@ -93,6 +94,37 @@ function ContextBlock({ label, links }: { label: string; links?: CompanyOsDocume
   return <section className="space-y-2"><h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</h2><RelationChips links={links} /></section>;
 }
 
+/**
+ * Navigable location trail. Ancestor crumbs link to their Documents; the current
+ * Document renders as plain text. The leading space label is the only non-linked
+ * crumb because a grouping space is not a durable Document.
+ */
+function DocumentBreadcrumbs({ document }: { document: CompanyOsDocumentPageData }) {
+  const trail = document.breadcrumbs ?? [];
+  if (!trail.length) {
+    return document.breadcrumb?.length ? <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">{document.breadcrumb.join(" / ")}</nav> : null;
+  }
+  const spaceLabel = document.breadcrumb && document.breadcrumb.length === trail.length + 1 ? document.breadcrumb[0] : undefined;
+  const items: Array<{ key: string; label: string; href?: string; ref?: string }> = [
+    ...(spaceLabel ? [{ key: "space", label: spaceLabel }] : []),
+    ...trail.map((link) => ({ key: link.id, label: link.label, href: link.href, ref: link.id })),
+  ];
+  return (
+    <nav aria-label="Breadcrumb" data-docs-breadcrumbs="true" className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+      {items.map((item, index) => (
+        <span key={item.key} className="flex min-w-0 items-center gap-1.5">
+          {index > 0 && <span aria-hidden>/</span>}
+          {item.href ? (
+            <a href={preserveCompanyOsWorkbenchContext(item.href)} data-company-os-ref={item.ref} className="break-words hover:text-primary hover:underline">{item.label}</a>
+          ) : (
+            <span data-company-os-ref={item.ref} className={item.ref ? "break-words text-foreground" : "break-words"}>{item.label}</span>
+          )}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
 function DocumentArchitectureTreeItem({ item, depth = 0 }: { item: CompanyOsWorkspaceTreeItem; depth?: number }) {
   const hasChildren = Boolean(item.children?.length);
   const className = cn(
@@ -123,7 +155,10 @@ function DocumentArchitectureTreeItem({ item, depth = 0 }: { item: CompanyOsWork
 }
 
 function DocumentArchitecture({ tree }: { tree?: CompanyOsDocumentPageData["documentTree"] }) {
-  if (!tree?.length) return null;
+  // A document tree renders real Documents and their grouping spaces only;
+  // BusinessModule nodes stay in the workspace navigation, not in a document directory.
+  const documentOnlyTree = filterDocumentTree(tree);
+  if (!documentOnlyTree.length) return null;
   return (
     <section className="space-y-2 rounded-lg border border-border bg-card/70 p-3" aria-label="Document architecture" data-docs-document-architecture="true">
       <div>
@@ -131,7 +166,7 @@ function DocumentArchitecture({ tree }: { tree?: CompanyOsDocumentPageData["docu
         <p className="mt-1 text-[11px] leading-5 text-muted-foreground">Store projection directory. Links preserve the current api/project context.</p>
       </div>
       <ul className="max-h-[22rem] space-y-0.5 overflow-auto pr-1">
-        {tree.map((item) => <DocumentArchitectureTreeItem key={item.id} item={item} />)}
+        {documentOnlyTree.map((item) => <DocumentArchitectureTreeItem key={item.id} item={item} />)}
       </ul>
     </section>
   );
@@ -331,8 +366,14 @@ function WcwLinkCard({ link }: { link: CompanyOsLink }) {
 }
 
 function WcwDocumentDirectory({ tree }: { tree?: CompanyOsDocumentPageData["documentTree"] }) {
-  const wcwRoot = tree?.find((item) => /wanchengwanling|万城万灵/i.test(`${item.label} ${item.ref}`)) ?? tree?.[0];
-  const children = wcwRoot?.children ?? tree ?? [];
+  // The projection tree is a real parent_document_id hierarchy, so the Wanchengwanling
+  // pages sit under a document root rather than directly under the space node. Anchor
+  // by Document child count: the space node also holds every BusinessModule, so raw
+  // child count would pick the space and expose one page instead of eleven.
+  const wcwRoot = selectDocumentDirectoryAnchor(tree, /wanchengwanling|万城万灵/i);
+  // A directory card must be a real Document page: module children sharing the
+  // anchor never render as documents.
+  const children = (wcwRoot?.children ?? tree ?? []).filter(isDocumentTreeNode);
   if (!children.length) return null;
   return (
     <section className="rounded-2xl border border-border bg-card/80 p-4 shadow-sm" data-docs-document-architecture="true">
@@ -532,7 +573,8 @@ function WanchengwanlingDocumentPage({
       <div className="mx-auto grid min-w-0 max-w-[1500px] gap-6 px-5 py-7 lg:grid-cols-[minmax(0,1fr)_330px] lg:px-9">
         <div className="min-w-0 space-y-6">
           <header className="rounded-3xl border border-border bg-card/75 p-6 shadow-sm">
-            {document.breadcrumb?.length ? <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">{document.breadcrumb.join(" / ")}</nav> : null}
+            {document.breadcrumbs?.length ? <DocumentBreadcrumbs document={document} /> : document.breadcrumb?.length ? <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">{document.breadcrumb.join(" / ")}</nav> : null}
+            {document.lifecycleStatus === "archived" && <div role="status" data-docs-archived-history="true" className="mt-4 flex gap-2 rounded-lg border border-status-warn/30 bg-status-warn/[0.07] px-3 py-2.5 text-sm leading-5"><Archive className="mt-0.5 size-4 shrink-0 text-status-warn" /><span><strong>Archived history.</strong> This source remains readable and navigable for Work provenance, but Store-live authoring is withdrawn for archived Documents.</span></div>}
             <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-3">
@@ -586,6 +628,8 @@ function WanchengwanlingDocumentPage({
             <h2 className="text-sm font-semibold">Operating links</h2>
             <div className="mt-3 space-y-2">
               <ContextBlock label="Source" links={document.sourceLinks} />
+              <ContextBlock label="Child pages" links={document.childDocuments} />
+              <ContextBlock label="Backlinks" links={document.backlinks} />
               <ContextBlock label="Results" links={document.resultLinks} />
               <ContextBlock label="Connected records" links={document.connectedRecords} />
             </div>
@@ -608,7 +652,7 @@ function WanchengwanlingDocumentPage({
           ) : null}
           <section className="rounded-2xl border border-primary/20 bg-primary/[0.055] p-4 text-xs leading-5" aria-label="Store-live Docs authoring" data-docs-authoring-panel="document-focus">
             <h2 className="text-sm font-semibold text-foreground">Write boundary</h2>
-            <p className="mt-2 text-muted-foreground">This page is optimized for human review. Durable edits should normally be made by Docs CLI or a governed Agent action. Browser writing is {actionEnabled ? "available when a capability token is supplied" : "disabled until Store-live action capability is connected"}.</p>
+            <p className="mt-2 text-muted-foreground">This page is optimized for human review. Durable edits should normally be made by Docs CLI or a governed Agent action. Browser writing is {document.lifecycleStatus === "archived" ? "withdrawn because this Document is archived history" : actionEnabled ? "available when a capability token is supplied" : "disabled until Store-live action capability is connected"}.</p>
           </section>
         </aside>
       </div>
@@ -639,13 +683,21 @@ export function BasicDocumentPage({
   const [submitting, setSubmitting] = useState(false);
   const intentIds = useRef<Record<string, string>>({});
   const canAuthor = Boolean(actionEnabled && onDocsAction && document.authoring);
-  const unavailableReason = !actionEnabled
-    ? "Connect a Store-live project and provide a session capability before dispatching governed Docs actions."
-    : !document.authoring
-      ? "This projection does not expose a CustomPageDefinition with document.append and block.append policies."
-      : !capabilityToken.trim()
-        ? "Enter the session capability before writing Docs truth."
-        : undefined;
+  // The archived lifecycle is itself the authoring boundary: name it instead of
+  // blaming a missing policy context, which would be a false reason.
+  const archivedReason = document.lifecycleStatus === "archived"
+    ? "This Document is archived history: it stays readable and navigable for provenance, and governed Store-live authoring Actions are withdrawn for archived Documents."
+    : undefined;
+  const unavailableReason = archivedReason
+    ?? (document.missingDocumentId
+      ? "The requested Document is not present in this projection, so there is no Document to author."
+      : !actionEnabled
+        ? "Connect a Store-live project and provide a session capability before dispatching governed Docs actions."
+        : !document.authoring
+          ? "This projection does not expose a CustomPageDefinition with document.append and block.append policies."
+          : !capabilityToken.trim()
+            ? "Enter the session capability before writing Docs truth."
+            : undefined);
   const selectedBlockKind = blockKindOptions.find((option) => option.value === blockKind) ?? blockKindOptions[0];
   const activeTemplate = document.authoring?.templateOptions?.find((template) => template.id === document.authoring?.templateRef);
   const selectedChildTemplate = document.authoring?.templateOptions?.find((template) => template.id === childTemplateRef);
@@ -763,8 +815,8 @@ export function BasicDocumentPage({
       <div className="mx-auto grid min-w-0 max-w-[1250px] gap-7 lg:grid-cols-[minmax(0,1fr)_260px]">
         <DocumentSurface className="mx-0 min-w-0 max-w-[800px] space-y-6">
           <header className="space-y-3 border-b border-border pb-5">
-            {document.breadcrumb?.length ? <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">{document.breadcrumb.join(" / ")}</nav> : null}
-            {document.lifecycleStatus === "archived" && <div role="status" data-docs-archived-history="true" className="flex gap-2 rounded-lg border border-status-warn/30 bg-status-warn/[0.07] px-3 py-2.5 text-sm leading-5"><Archive className="mt-0.5 size-4 shrink-0 text-status-warn" /><span><strong>Archived history.</strong> This source remains readable and navigable for Work provenance, but Store-live authoring is disabled.</span></div>}
+            <DocumentBreadcrumbs document={document} />
+            {document.lifecycleStatus === "archived" && <div role="status" data-docs-archived-history="true" className="flex gap-2 rounded-lg border border-status-warn/30 bg-status-warn/[0.07] px-3 py-2.5 text-sm leading-5"><Archive className="mt-0.5 size-4 shrink-0 text-status-warn" /><span><strong>Archived history.</strong> This source remains readable and navigable for Work provenance, but Store-live authoring is withdrawn for archived Documents.</span></div>}
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 space-y-2"><h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{document.title}</h1>{document.description && <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{document.description}</p>}</div>
               <div className="flex shrink-0 gap-1.5"><Button variant="outline" size="sm" disabled={!onRequestAction} title={!onRequestAction ? "No governed action transport is connected." : undefined} onClick={() => onRequestAction?.("new-action", document)}>New action</Button><Button size="sm" disabled={!onRequestAction} title={!onRequestAction ? "No Standing Agent Inbox transport is connected." : undefined} onClick={() => onRequestAction?.("ask-agent", document)}>Ask an agent</Button><Button variant="ghost" size="icon" aria-label="More document options"><MoreHorizontal /></Button></div>
@@ -772,15 +824,19 @@ export function BasicDocumentPage({
             {document.properties?.length ? <dl className="flex min-w-0 flex-wrap gap-1.5">{document.properties.map((property, index) => <div key={`${property.ref ?? "property"}:${property.label}:${index}`} data-company-os-ref={property.ref} data-actor-type={property.actorType} className="flex max-w-full min-w-0 items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs"><dt className="shrink-0 text-muted-foreground">{property.label}:</dt><dd className="min-w-0 break-words font-medium text-foreground">{property.value}</dd></div>)}</dl> : null}
           </header>
           <article className="min-w-0 space-y-4">
-            {document.blocks.length
-              ? document.blocks.map((block) => <Block key={block.id} block={block} />)
-              : <div className="rounded-xl border border-dashed border-border bg-muted/25 p-6 text-sm leading-6 text-muted-foreground" data-docs-empty-document="true">This Document has no Blocks yet. Use the governed composer to append the first durable Block; empty UI state is not company truth.</div>}
+            {document.missingDocumentId
+              ? <div className="rounded-xl border border-dashed border-status-warn/40 bg-status-warn/[0.06] p-6 text-sm leading-6 text-foreground" data-docs-document-not-found="true">No Document with id <code>{document.missingDocumentId}</code> is present in this projection. The link may reference a Document outside this Company Store or one that was pruned; nothing else is substituted under the requested id.</div>
+              : document.blocks.length
+                ? document.blocks.map((block) => <Block key={block.id} block={block} />)
+                : <div className="rounded-xl border border-dashed border-border bg-muted/25 p-6 text-sm leading-6 text-muted-foreground" data-docs-empty-document="true">This Document has no Blocks yet. Use the governed composer to append the first durable Block; empty UI state is not company truth.</div>}
           </article>
           {document.updatedLabel && <p className="border-t border-border pt-4 text-xs text-muted-foreground">{document.updatedLabel}</p>}
         </DocumentSurface>
         <aside className="space-y-5 border-t border-border pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0" aria-label="Document context">
           <DocumentArchitecture tree={document.documentTree} />
           <ContextBlock label="Source" links={document.sourceLinks} />
+          <ContextBlock label="Child pages" links={document.childDocuments} />
+          <ContextBlock label="Backlinks" links={document.backlinks} />
           <ContextBlock label="Results" links={document.resultLinks} />
           <ContextBlock label="Connected records" links={document.connectedRecords} />
           {document.activity?.length ? <section className="space-y-2"><h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Activity</h2><ol className="space-y-3 border-l border-border pl-3">{document.activity.map((item) => <li key={item.id} className="space-y-0.5"><p className="text-xs font-medium text-foreground">{item.label}</p>{item.detail && <p className="text-xs leading-5 text-muted-foreground">{item.detail}</p>}{item.at && <time className="text-[11px] text-muted-foreground">{item.at}</time>}</li>)}</ol></section> : null}
@@ -873,7 +929,7 @@ export function BasicDocumentPage({
             <p className={feedback && !/created|appended/i.test(feedback) ? "rounded-md border border-status-warn/35 bg-status-warn/10 px-2 py-1.5 text-[11px] leading-5 text-foreground" : "text-[11px] leading-5 text-muted-foreground"} role="status" data-docs-authoring-state={canAuthor ? "available" : "unavailable"} data-docs-authoring-error-boundary={feedback && !/created|appended/i.test(feedback) ? "true" : undefined}>{feedback ?? unavailableReason ?? "The server validates definition, policy, actor permission, module scope and idempotency before writing."}</p>
           </section>
           <BlockOrderBoundary blocks={document.blocks} canReorder={canAuthor && Boolean(capabilityToken.trim()) && displayedBlocksMatchNativeOrder} submitting={submitting} unavailableReason={reorderUnavailableReason} onReorder={(blockIds) => void reorderBlocks(blockIds)} />
-          {!document.sourceLinks?.length && !document.resultLinks?.length && !document.connectedRecords?.length && <p className="rounded-md border border-dashed border-border p-3 text-xs leading-5 text-muted-foreground"><Link2 className="mr-1 inline size-3.5" />Connected records appear here when the host resolves them.</p>}
+          {!document.sourceLinks?.length && !document.resultLinks?.length && !document.connectedRecords?.length && !document.childDocuments?.length && !document.backlinks?.length && <p className="rounded-md border border-dashed border-border p-3 text-xs leading-5 text-muted-foreground"><Link2 className="mr-1 inline size-3.5" />Connected records appear here when the host resolves them.</p>}
         </aside>
       </div>
     </main>

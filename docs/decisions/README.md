@@ -46,6 +46,7 @@ consequences, affected modules, and validation path.
 | [0046](0046-supervised-agentos-self-hosting-loop.md) | active | Supervising Operator, durable Lead, Runtime Supervisor, and continuous Docs/Work/Org self-hosting remain distinct |
 | [0047](0047-scoped-company-authority-broker.md) | accepted target; implementation pending | Company-side one-command authority broker binds exact Standing Agent execution and delivered Work Assignment to a short, non-secret, auditable capability receipt |
 | [0048](0048-human-rooted-company-constitution.md) | accepted target; implementation pending | Human Principal roots Company authority; Leads operate through one attenuating grant lineage while the Runtime Supervisor remains provenance-only |
+| [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
 
 ## Split Rule
 

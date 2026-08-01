@@ -789,11 +789,17 @@ impl HarnessStore {
                 )));
             }
         }
+        // A pending inbound delivery that explicitly requires a response
+        // fences a same-correlation Handoff as stale. Informational or
+        // acknowledgement-only mail does not start rounds, so it must not
+        // fence either — otherwise a Handoff would deadlock behind mail that
+        // is intentionally never driven on its own (ADR 0046 §4).
         if value.kind == harness_core::TeamMessageKind::Handoff
             && messages.values().any(|message| {
                 message.team_run_id == value.team_run_id
                     && message.correlation_id == value.correlation_id
                     && message.from_member_id != value.from_member_id
+                    && message.requires_response()
                     && message.deliveries.iter().any(|delivery| {
                         delivery.member_id == value.from_member_id
                             && matches!(
@@ -1807,14 +1813,31 @@ impl HarnessStore {
             return Ok(Vec::new());
         }
 
-        let file = File::open(path)?;
+        // A writer holds the store flock, but ordinary projections deliberately
+        // do not: Dashboard/API reads must remain concurrent with one another.
+        // `write_all` still may expose a short prefix before the trailing
+        // newline becomes visible, so take a byte snapshot and retry only that
+        // unmistakably incomplete final-row state. A complete snapshot is
+        // immutable in memory even if another append starts immediately after.
+        // The bounded retry preserves honest corruption reporting for a file
+        // that remains truncated instead of silently dropping its final row.
+        const INCOMPLETE_ROW_RETRY: Duration = Duration::from_secs(1);
+        const INCOMPLETE_ROW_POLL: Duration = Duration::from_millis(5);
+        let deadline = Instant::now() + INCOMPLETE_ROW_RETRY;
+        let snapshot = loop {
+            let bytes = fs::read(&path)?;
+            if bytes.is_empty() || bytes.ends_with(b"\n") || Instant::now() >= deadline {
+                break bytes;
+            }
+            thread::sleep(INCOMPLETE_ROW_POLL);
+        };
+
         let mut values = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        for line in snapshot.split(|byte| *byte == b'\n') {
+            if line.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
-            values.push(serde_json::from_str(&line)?);
+            values.push(serde_json::from_slice(line)?);
         }
         Ok(values)
     }
@@ -1877,7 +1900,8 @@ mod tests {
         DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus,
         MemberWorkspaceSnapshot, MessageKind, Mission, MissionStatus, SenderKind,
         TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
-        TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
+        TeamMessageResponseIntent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
+        WaveGateStatus, WaveStatus,
     };
 
     use super::*;
@@ -2372,6 +2396,44 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn jsonl_read_retries_a_concurrently_incomplete_final_row() {
+        let root = team_test_root("concurrent-partial-row");
+        let store = HarnessStore::new(&root);
+        store.init().expect("initialize store");
+        let path = root.join("concurrent.jsonl");
+        let (partial_ready_tx, partial_ready_rx) = std::sync::mpsc::channel();
+
+        let writer_store = store.clone();
+        let writer = std::thread::spawn(move || {
+            let _lock = writer_store.acquire_write_lock().expect("writer lock");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open concurrent ledger");
+            file.write_all(br#"{"id":"row-1""#)
+                .expect("write partial row");
+            file.flush().expect("flush partial row");
+            partial_ready_tx.send(()).expect("announce partial row");
+            std::thread::sleep(Duration::from_millis(30));
+            file.write_all(b",\"value\":1}\n")
+                .expect("finish concurrent row");
+            file.sync_all().expect("sync concurrent row");
+        });
+
+        partial_ready_rx.recv().expect("wait for partial row");
+        let rows = store
+            .read_jsonl::<serde_json::Value>("concurrent.jsonl")
+            .expect("reader waits for the complete final row");
+        writer.join().expect("writer completes");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "row-1");
+        assert_eq!(rows[0]["value"], 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
     fn seed_lease_run(store: &HarnessStore, id: &str) {
         store
             .append_team_run(&AgentTeamRun {
@@ -2610,6 +2672,8 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
             worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
@@ -2643,6 +2707,8 @@ mod tests {
         let sparse = &runs[1];
         assert_eq!(sparse.id, "mr-sparse");
         assert_eq!(sparse.status, MemberRunStatus::Idle);
+        assert!(sparse.coordination_is_active());
+        assert_eq!(sparse.runtime_generation, 1);
         assert!(sparse.slot_id.is_none());
         assert!(sparse.agent_member_id.is_none());
         assert!(sparse.model.is_none());
@@ -2671,6 +2737,7 @@ mod tests {
             body: "Take task-1".into(),
             correlation_id: "corr-1".into(),
             causation_id: None,
+            response_intent: None,
             evidence_refs: vec!["ev-1".into()],
             deliveries: vec![TeamMessageDelivery {
                 member_id: "mr-1".into(),
@@ -2727,6 +2794,9 @@ mod tests {
             body: "Use the corrected requirement".into(),
             correlation_id: "corr-fence".into(),
             causation_id: Some("tm-assignment".into()),
+            // Explicit response intent: this correction must reach the
+            // provider before any Handoff, so it fences (ADR 0046 §4).
+            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "mr-kimi".into(),
@@ -2758,6 +2828,7 @@ mod tests {
             body: "done".into(),
             correlation_id: "corr-fence".into(),
             causation_id: Some("tm-assignment".into()),
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "host".into(),
@@ -2805,6 +2876,143 @@ mod tests {
     }
 
     #[test]
+    fn informational_mail_neither_fences_handoff_nor_requires_response() {
+        let root = team_test_root("handoff-informational-fence");
+        let store = HarnessStore::new(&root);
+        // Acknowledgement-only peer mail: kind `message` with no explicit
+        // intent is informational by default (ADR 0046 §4).
+        let ack_only = TeamMessage {
+            id: "tm-ack".into(),
+            team_run_id: "tr-info".into(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "mr-peer".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["mr-kimi".into()],
+            kind: TeamMessageKind::Message,
+            body: "ACK: noted, no reply needed".into(),
+            correlation_id: "corr-info".into(),
+            causation_id: Some("tm-assignment".into()),
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "mr-kimi".into(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                updated_at: "unix-ms:1".into(),
+            }],
+            created_at: "unix-ms:1".into(),
+        };
+        assert!(!ack_only.requires_response());
+        store
+            .append_team_message_checked(&ack_only)
+            .expect("append informational mail");
+        let handoff = TeamMessage {
+            id: "tm-handoff".into(),
+            team_run_id: "tr-info".into(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "mr-kimi".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["host".into()],
+            kind: TeamMessageKind::Handoff,
+            body: "done".into(),
+            correlation_id: "corr-info".into(),
+            causation_id: Some("tm-assignment".into()),
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".into(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("harness-control-plane".into()),
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        // Informational mail never starts a provider round on its own, so it
+        // must not fence a Handoff either — otherwise the Handoff would
+        // deadlock behind mail that is intentionally never driven.
+        store
+            .append_team_message_checked(&handoff)
+            .expect("informational mail must not fence handoff");
+
+        // The same pending delivery with explicit response intent fences.
+        let question = TeamMessage {
+            id: "tm-question".into(),
+            correlation_id: "corr-info-q".into(),
+            causation_id: None,
+            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+            created_at: "unix-ms:3".into(),
+            ..ack_only.clone()
+        };
+        assert!(question.requires_response());
+        store
+            .append_team_message_checked(&question)
+            .expect("append response-required question");
+        let fenced = TeamMessage {
+            id: "tm-handoff-q".into(),
+            correlation_id: "corr-info-q".into(),
+            causation_id: Some("tm-assignment-q".into()),
+            created_at: "unix-ms:4".into(),
+            ..handoff.clone()
+        };
+        let error = store
+            .append_team_message_checked(&fenced)
+            .expect_err("response-required question must fence stale handoff");
+        assert!(error.to_string().contains("queued or claimed"));
+
+        // Safety regression guard: a Host mid-round correction is ordinary
+        // `message` mail with no explicit intent, but it is sender-aware
+        // response-required, so it MUST still fence a same-correlation Handoff
+        // — otherwise a member could hand off work that never absorbed the
+        // correction.
+        let host_correction = TeamMessage {
+            id: "tm-host-correction".into(),
+            from_member_id: "host".into(),
+            correlation_id: "corr-info-host".into(),
+            causation_id: None,
+            response_intent: None,
+            body: "Revise: drop the extra scope before handing off".into(),
+            created_at: "unix-ms:5".into(),
+            ..ack_only.clone()
+        };
+        assert!(
+            host_correction.requires_response(),
+            "Host ordinary mail defaults to response_required"
+        );
+        store
+            .append_team_message_checked(&host_correction)
+            .expect("append host correction");
+        let stale = TeamMessage {
+            id: "tm-handoff-host".into(),
+            correlation_id: "corr-info-host".into(),
+            causation_id: Some("tm-assignment-host".into()),
+            created_at: "unix-ms:6".into(),
+            ..handoff.clone()
+        };
+        let error = store
+            .append_team_message_checked(&stale)
+            .expect_err("pending Host correction must fence stale handoff");
+        assert!(error.to_string().contains("queued or claimed"));
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
     fn concurrent_same_turn_handoffs_allow_exactly_one_append() {
         let root = team_test_root("same-turn-handoff");
         let store = Arc::new(HarnessStore::new(&root));
@@ -2820,6 +3028,7 @@ mod tests {
             body: "Own the convergence fix".into(),
             correlation_id: "corr-converge".into(),
             causation_id: None,
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "mr-codex".into(),
@@ -2851,6 +3060,7 @@ mod tests {
             body: "## RESULT\ndone".into(),
             correlation_id: assignment.correlation_id.clone(),
             causation_id: Some(assignment.id.clone()),
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "host".into(),
@@ -2956,6 +3166,7 @@ mod tests {
             body: "only once".into(),
             correlation_id: "corr-claim".into(),
             causation_id: None,
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "mr-claim".into(),
@@ -3113,6 +3324,8 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
             worktree_ref: None,

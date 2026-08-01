@@ -115,7 +115,14 @@ async function main() {
     closeRuntime.path === "/v1/team-runs/run%2Fa/members/member%2Fb/close"
       && closeRuntime.body.reason === "lane accepted"
       && closeRuntime.body.requested_by === "host",
-    "Host close ends one Member runtime through an explicit action",
+    "Host close releases one Member runtime through an explicit action",
+  );
+  const reopenRuntime = actions.reopenTeamMember("run/a", "member/b", "continue same lane");
+  check(
+    reopenRuntime.path === "/v1/team-runs/run%2Fa/members/member%2Fb/reopen"
+      && reopenRuntime.body.reason === "continue same lane"
+      && reopenRuntime.body.reopened_by === "host",
+    "Host reopen resumes the same MemberRun through an explicit action",
   );
 
   const [teamSource, missionSource, memberSource, appSource, apiSource] = await Promise.all([
@@ -193,10 +200,12 @@ async function main() {
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
       && memberSource.includes("closeTeamMember(")
+      && memberSource.includes("reopenTeamMember(")
+      && memberSource.includes('context.member.coordination_status === "closed"')
       && memberSource.includes("supports_cancel")
       && memberSource.includes("interruptUnavailableReason(context.member)")
       && memberSource.includes("does not support provider-native cancellation"),
-    "Member Focus exposes real capability-gated controls and explains unavailable provider-native Interrupt",
+    "Member Focus exposes capability-gated Interrupt, Close, and same-MemberRun Reopen controls",
   );
   check(
     memberSource.includes("claudeDesktopSessionUri")

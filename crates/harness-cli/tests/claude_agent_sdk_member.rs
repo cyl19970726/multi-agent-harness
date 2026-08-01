@@ -194,6 +194,7 @@ for await (const line of rl) {{
         "--from", "host",
         "--to", cfg.memberRunId,
         "--kind", "message",
+        "--response-required",
         "--body", "late follow-up",
         "--correlation-id", payload.correlation_id,
         "--causation-id", payload.id,

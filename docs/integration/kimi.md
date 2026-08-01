@@ -238,13 +238,14 @@ version.
   returns the MemberRun to `idle`. An earlier canary incorrectly sent the
   notification as a request and received `-32601 Method not found`; that was a
   Harness framing defect, not evidence that 0.31.0 lacked cancellation.
-  Explicit Host Close instead latches terminal intent and terminates the
-  Harness-owned ACP process; it does not claim a provider-native close or
-  cancellation receipt.
+  Explicit Host Close instead latches runtime-shutdown intent and terminates
+  the Harness-owned ACP process; it does not claim a provider-native close or
+  cancellation receipt. Reopen starts a higher adapter generation and resumes
+  the exact recorded ACP session.
   Kimi ACP still does not support same-turn steer, so
   ordinary Message is queued for the next provider round. An attempted Steer
-  fails rather than being silently converted. Only explicit Member Close
-  records `stopped`.
+  fails rather than being silently converted. Close records `stopped`; Reopen
+  returns the same MemberRun to a new active runtime generation.
 - The current durable Team Supervisor generation atomically claims one queued
   delivery before `session/prompt`, but only after proving the ACP transport is
   live; failed preflight leaves mail queued and reconnects the recorded

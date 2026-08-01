@@ -416,6 +416,90 @@ fn team_run_cli_create_list_status_send_events() {
             .is_empty(),
         "correlation id assigned"
     );
+    assert!(
+        message["response_intent"].is_null(),
+        "peer-to-peer message mail carries no explicit intent (informational by default): {message:?}"
+    );
+
+    // Sender-aware default (ADR 0046 §4): the same bare `--kind message` from
+    // Host stays response-required, because `message` is the only legal
+    // carrier for Host questions, revisions, and acceptance decisions.
+    let host_mail = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            member_ids[0],
+            "--kind",
+            "message",
+            "--body",
+            "Revise the API surface and report back",
+            "--json",
+        ],
+    );
+    assert!(
+        host_mail["response_intent"].is_null(),
+        "Host mail also carries no explicit intent; the default is sender-aware: {host_mail:?}"
+    );
+
+    // --informational is the explicit downward override for Host mail that is
+    // genuinely FYI-only, mirroring the HTTP/MCP `response_intent` field.
+    let host_fyi = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            member_ids[0],
+            "--kind",
+            "message",
+            "--informational",
+            "--body",
+            "FYI: the nightly gate is green",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        host_fyi["response_intent"].as_str(),
+        Some("informational"),
+        "CLI --informational sets the explicit downward override: {host_fyi:?}"
+    );
+
+    // --response-required marks mail that must wake an idle peer into a new
+    // provider round (ADR 0046 §4).
+    let flagged = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            member_ids[1],
+            "--to",
+            member_ids[0],
+            "--kind",
+            "message",
+            "--response-required",
+            "--body",
+            "QUESTION: which API revision should the peer lane implement?",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        flagged["response_intent"].as_str(),
+        Some("response_required"),
+        "CLI --response-required sets explicit intent: {flagged:?}"
+    );
     let inbox = team_run_json(
         &home,
         &project_id,
@@ -437,12 +521,16 @@ fn team_run_cli_create_list_status_send_events() {
         "CLI inbox must expose peer coordination mail: {inbox}"
     );
 
-    // events --json: 5 create-time events + 1 send event, seq 1..=6 in order.
+    // events --json: 5 create-time events + 4 send events, seq 1..=9 in order.
     let events = team_run_json(&home, &project_id, &["events", "--id", &run_id, "--json"]);
     let events = events.as_array().expect("events array");
-    assert_eq!(events.len(), 6, "events: {events:?}");
+    assert_eq!(events.len(), 9, "events: {events:?}");
     let seqs: Vec<u64> = events.iter().filter_map(|e| e["seq"].as_u64()).collect();
-    assert_eq!(seqs, vec![1, 2, 3, 4, 5, 6], "seq strictly increasing");
+    assert_eq!(
+        seqs,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "seq strictly increasing"
+    );
     assert_eq!(events[0]["entity_type"].as_str(), Some("team_run"));
     assert_eq!(events[0]["operation"].as_str(), Some("created"));
     assert_eq!(events[0]["source_kind"].as_str(), Some("host"));
@@ -452,15 +540,16 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(last["source_kind"].as_str(), Some("member"));
     assert_eq!(last["member_run_id"].as_str(), Some(member_ids[1]));
 
-    // events --after-seq 5: only the send event remains.
+    // events --after-seq 5: only the four send events remain.
     let tail = team_run_json(
         &home,
         &project_id,
         &["events", "--id", &run_id, "--after-seq", "5", "--json"],
     );
     let tail = tail.as_array().expect("tail array");
-    assert_eq!(tail.len(), 1, "tail: {tail:?}");
-    assert_eq!(tail[0]["seq"].as_u64(), Some(6));
+    assert_eq!(tail.len(), 4, "tail: {tail:?}");
+    let tail_seqs: Vec<u64> = tail.iter().filter_map(|e| e["seq"].as_u64()).collect();
+    assert_eq!(tail_seqs, vec![6, 7, 8, 9]);
 
     // Member-to-Host mail is actionable immediately; CLI ACK is the complete
     // control-plane path and removes it from the default Inbox without erasing
@@ -1769,6 +1858,7 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
             "from_member_id": reviewer_id,
             "to_member_ids": [builder_id],
             "kind": "message",
+            "response_intent": "response_required",
             "body": "PEER FOLLOW-UP after TeamRun completion",
             "correlation_id": assignment_correlation,
             "causation_id": assignment_id,
@@ -3043,7 +3133,17 @@ fn host_can_explicitly_close_a_live_codex_member() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let serve = ServeHandle::spawn_with_env(&home, home.base(), &[], &[("PATH", path.as_str())]);
+    let resume_marker = home.base().join("codex-close-resume.log");
+    let resume_marker_value = resume_marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("PATH", path.as_str()),
+            ("FAKE_CODEX_RESUME_MARKER", resume_marker_value.as_str()),
+        ],
+    );
     let (_, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -3065,15 +3165,19 @@ fn host_can_explicitly_close_a_live_codex_member() {
     );
     assert_eq!(status, 202);
     let mut running = false;
+    let mut native_session_id = None;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         running = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|member| {
-                member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("running")
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| {
+                native_session_id = member["native_session"]["native_session_id"]
+                    .as_str()
+                    .map(str::to_string);
+                member["status"].as_str() == Some("running") && native_session_id.is_some()
             });
         if running {
             break;
@@ -3081,6 +3185,7 @@ fn host_can_explicitly_close_a_live_codex_member() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(running, "Codex member never became live");
+    let native_session_id = native_session_id.expect("Codex native session before close");
 
     let (status, result) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
@@ -3102,6 +3207,7 @@ fn host_can_explicitly_close_a_live_codex_member() {
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("stopped")
+                    && member["coordination_status"].as_str() == Some("closed")
             });
         if stopped {
             break;
@@ -3109,6 +3215,57 @@ fn host_can_explicitly_close_a_live_codex_member() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(stopped, "Codex member did not terminate after Host close");
+
+    let (status, reopened) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
+        &serde_json::json!({"reopened_by": "host", "reason": "continue same conversation"}),
+    );
+    assert_eq!(status, 202, "body: {reopened}");
+    assert_eq!(
+        reopened["result"]["member_run"]["id"].as_str(),
+        Some(member_id.as_str())
+    );
+    assert_eq!(
+        reopened["result"]["member_run"]["runtime_generation"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        reopened["result"]["member_run"]["native_session"]["native_session_id"].as_str(),
+        Some(native_session_id.as_str())
+    );
+
+    let mut resumed = false;
+    for _ in 0..150 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        resumed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| {
+                matches!(member["status"].as_str(), Some("running" | "idle"))
+                    && member["coordination_status"].as_str() == Some("active")
+                    && member["runtime_generation"].as_u64() == Some(2)
+                    && member["native_session"]["native_session_id"].as_str()
+                        == Some(native_session_id.as_str())
+            });
+        if resumed && resume_marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(resumed, "reopened Codex member did not run generation 2");
+    let resume_log = std::fs::read_to_string(&resume_marker).expect("Codex resume marker");
+    assert!(
+        resume_log.contains(&native_session_id),
+        "reopen did not call thread/resume with the preserved session: {resume_log}"
+    );
+
+    let (status, result) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"requested_by": "host", "reason": "reopen acceptance complete"}),
+    );
+    assert_eq!(status, 200, "body: {result}");
 }
 
 #[test]
@@ -3461,6 +3618,11 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
         }),
     );
     assert_eq!(status, 200, "body: {sent}");
+    assert!(
+        sent["result"]["response_intent"].is_null(),
+        "bare Host follow-up carries no explicit intent yet still wakes the idle Kimi member \
+         via the sender-aware default: {sent}"
+    );
     let message_id = sent["result"]["id"].as_str().unwrap().to_string();
 
     let mut second_round = false;
@@ -4294,4 +4456,1421 @@ fn sse_streams_team_run_events() {
         }),
         "expected a team_run created frame for {run_id}; got: {frames:?}"
     );
+}
+
+#[test]
+fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_trigger() {
+    let home = TempHome::new("team-run-two-peer-convergence");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let ack_config = home.base().join("kimi-peer-ack-config");
+    let ack_marker = home.base().join("kimi-peer-ack-send");
+    let prompts = home.base().join("kimi-prompts.jsonl");
+    let ack_config_value = ack_config.display().to_string();
+    let ack_marker_value = ack_marker.display().to_string();
+    let prompts_value = prompts.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            ("FAKE_KIMI_PEER_ACK_CONFIG", ack_config_value.as_str()),
+            ("FAKE_KIMI_PEER_ACK_MARKER", ack_marker_value.as_str()),
+            ("FAKE_KIMI_PROMPT_MARKER", prompts_value.as_str()),
+            // Keep idle members inside their wake loop for the whole scenario;
+            // the default 250ms test grace would retire them before the later
+            // response-required triggers arrive.
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Two-peer bounded convergence on acknowledgement-only mail",
+            "members": [
+                {"name": "peer-a", "role": "implementer", "provider": "kimi"},
+                {"name": "peer-b", "role": "reviewer", "provider": "kimi"}
+            ]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_a = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_b = created["result"]["member_runs"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let correlation_a = created["result"]["assignment_messages"][0]["correlation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let correlation_b = created["result"]["assignment_messages"][1]["correlation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    std::fs::write(&ack_config, format!("{member_a}\n{member_b}\n")).expect("ack config");
+
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let snapshot_messages = |serve: &ServeHandle| -> Vec<serde_json::Value> {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        snapshot["team_messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let member_status = |serve: &ServeHandle, member_id: &str| -> Option<String> {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id))
+            .and_then(|member| member["status"].as_str().map(str::to_string))
+    };
+    let handoffs_from =
+        |messages: &[serde_json::Value], member_id: &str| -> Vec<serde_json::Value> {
+            messages
+                .iter()
+                .filter(|message| {
+                    message["from_member_id"].as_str() == Some(member_id)
+                        && message["kind"].as_str() == Some("handoff")
+                })
+                .cloned()
+                .collect()
+        };
+    let follow_up_rounds = |prompts: &std::path::Path| -> usize {
+        std::fs::read_to_string(prompts)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("FOLLOW-UP MESSAGES"))
+            .count()
+    };
+
+    let mut round_one = false;
+    for _ in 0..300 {
+        let messages = snapshot_messages(&serve);
+        round_one = handoffs_from(&messages, &member_a).len() == 1
+            && handoffs_from(&messages, &member_b).len() == 1
+            && member_status(&serve, &member_a).as_deref() == Some("idle")
+            && member_status(&serve, &member_b).as_deref() == Some("idle");
+        if round_one {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(round_one, "both peers must finish round one and go idle");
+
+    // Ack-only PEER mail must NOT wake an idle peer into a provider round
+    // (ADR 0046 §4); the delivery stays durable and queued. This is the
+    // sender-aware default: no explicit intent is set on the wire, only
+    // explicit member provenance.
+    let (status, fyi) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_kind": "member_run",
+            "sender_id": member_b,
+            "from_member_id": member_b,
+            "to_member_ids": [member_a],
+            "kind": "message",
+            "body": "ACK: your lane note landed; no reply needed",
+            "correlation_id": correlation_a,
+        }),
+    );
+    assert_eq!(status, 200, "body: {fyi}");
+    let fyi_id = fyi["result"]["id"].as_str().unwrap().to_string();
+    assert!(fyi["result"]["response_intent"].is_null());
+
+    // Host mail is response-required by DEFAULT (Host questions, revisions,
+    // and acceptance decisions all ride on `message`), so an FYI-only Host
+    // note must say so explicitly. That explicit override is also non-waking.
+    let (status, host_fyi) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_a],
+            "kind": "message",
+            "response_intent": "informational",
+            "body": "FYI: the wave advanced; no reply needed",
+            "correlation_id": correlation_a,
+        }),
+    );
+    assert_eq!(status, 200, "body: {host_fyi}");
+    let host_fyi_id = host_fyi["result"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        host_fyi["result"]["response_intent"].as_str(),
+        Some("informational")
+    );
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        follow_up_rounds(&prompts),
+        0,
+        "informational mail must not start a provider round: {}",
+        std::fs::read_to_string(&prompts).unwrap_or_default()
+    );
+    assert_eq!(
+        member_status(&serve, &member_a).as_deref(),
+        Some("idle"),
+        "informational mail must not even mark the member busy"
+    );
+    for queued_id in [&fyi_id, &host_fyi_id] {
+        let delivery = snapshot_messages(&serve)
+            .into_iter()
+            .find(|message| message["id"].as_str() == Some(queued_id.as_str()))
+            .and_then(|message| message["deliveries"][0].clone().into());
+        let delivery: serde_json::Value = delivery.expect("informational delivery row");
+        assert_eq!(delivery["status"].as_str(), Some("queued"), "{queued_id}");
+        assert_eq!(delivery["attempt"].as_u64(), Some(0), "{queued_id}");
+    }
+
+    // A response-required question wakes peer A. During that round the
+    // scripted provider answers with acknowledgement-only mail to peer B.
+    let (status, question) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_a],
+            "kind": "message",
+            "response_intent": "response_required",
+            "body": "QUESTION: confirm your lane state",
+            "correlation_id": correlation_a,
+        }),
+    );
+    assert_eq!(status, 200, "body: {question}");
+    let question_id = question["result"]["id"].as_str().unwrap().to_string();
+
+    let mut a_second_round = false;
+    for _ in 0..300 {
+        let messages = snapshot_messages(&serve);
+        a_second_round = handoffs_from(&messages, &member_a)
+            .iter()
+            .any(|message| message["causation_id"].as_str() == Some(question_id.as_str()))
+            && ack_marker.exists()
+            && member_status(&serve, &member_a).as_deref() == Some("idle");
+        if a_second_round {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        a_second_round,
+        "response-required question must drive exactly one follow-up round on peer A"
+    );
+    assert!(
+        std::fs::read_to_string(&ack_marker)
+            .expect("ack send marker")
+            .trim()
+            .starts_with("tmsg-"),
+        "peer A ack-only mail must be authored during its follow-up round"
+    );
+    // Both earlier informational notes (the bare peer ack and the explicitly
+    // informational Host FYI) rode along with the triggered round and were
+    // delivered exactly once with that round's receipt.
+    let messages = snapshot_messages(&serve);
+    for queued_id in [&fyi_id, &host_fyi_id] {
+        let delivery = messages
+            .iter()
+            .find(|message| message["id"].as_str() == Some(queued_id.as_str()))
+            .map(|message| message["deliveries"][0].clone())
+            .expect("informational delivery");
+        assert_eq!(
+            delivery["status"].as_str(),
+            Some("delivered"),
+            "{queued_id}"
+        );
+        assert_eq!(delivery["attempt"].as_u64(), Some(1), "{queued_id}");
+        assert!(
+            delivery["provider_receipt_id"]
+                .as_str()
+                .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")),
+            "{queued_id}"
+        );
+    }
+
+    // Bounded convergence: peer B must NOT start a round for the ack-only
+    // mail. Wait long enough for any erroneous round to begin.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        follow_up_rounds(&prompts),
+        1,
+        "ack-only peer mail must not trigger another provider round: {}",
+        std::fs::read_to_string(&prompts).unwrap_or_default()
+    );
+    let messages = snapshot_messages(&serve);
+    let ack_message = messages
+        .iter()
+        .find(|message| {
+            message["from_member_id"].as_str() == Some(member_a.as_str())
+                && message["to_member_ids"][0].as_str() == Some(member_b.as_str())
+        })
+        .expect("peer ack message")
+        .clone();
+    assert_eq!(
+        ack_message["deliveries"][0]["status"].as_str(),
+        Some("queued"),
+        "ack-only mail stays durable and queued without a round"
+    );
+    assert_eq!(handoffs_from(&messages, &member_b).len(), 1);
+    assert_eq!(member_status(&serve, &member_b).as_deref(), Some("idle"));
+
+    // An ordinary Host message now triggers peer B on the sender-aware
+    // default alone (no explicit intent on the wire); the queued ack batches
+    // into that round and both are delivered exactly once with the same
+    // provider receipt.
+    let (status, b_trigger) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_b],
+            "kind": "message",
+            "body": "Start your reviewed lane now",
+            "correlation_id": correlation_b,
+        }),
+    );
+    assert_eq!(status, 200, "body: {b_trigger}");
+    let b_trigger_id = b_trigger["result"]["id"].as_str().unwrap().to_string();
+    let mut b_second_round = false;
+    for _ in 0..300 {
+        let messages = snapshot_messages(&serve);
+        b_second_round = handoffs_from(&messages, &member_b)
+            .iter()
+            .any(|message| message["causation_id"].as_str() == Some(b_trigger_id.as_str()));
+        if b_second_round {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        b_second_round,
+        "ordinary Host mail must drive peer B's follow-up round on the sender-aware default"
+    );
+    let messages = snapshot_messages(&serve);
+    let delivery_of = |message_id: &str| -> serde_json::Value {
+        messages
+            .iter()
+            .find(|message| message["id"].as_str() == Some(message_id))
+            .map(|message| message["deliveries"][0].clone())
+            .expect("delivery row")
+    };
+    let ack_delivery = delivery_of(ack_message["id"].as_str().unwrap());
+    let trigger_delivery = delivery_of(&b_trigger_id);
+    assert_eq!(ack_delivery["status"].as_str(), Some("delivered"));
+    assert_eq!(ack_delivery["attempt"].as_u64(), Some(1));
+    assert_eq!(trigger_delivery["status"].as_str(), Some("delivered"));
+    assert_eq!(trigger_delivery["attempt"].as_u64(), Some(1));
+    assert_eq!(
+        ack_delivery["provider_receipt_id"].as_str(),
+        trigger_delivery["provider_receipt_id"].as_str(),
+        "queued informational mail batches into the triggered round"
+    );
+    // Exactly two follow-up rounds happened in the whole team (A then B):
+    // convergence is bounded, no acknowledgement ping-pong.
+    assert_eq!(follow_up_rounds(&prompts), 2);
+    let prompt_log = std::fs::read_to_string(&prompts).expect("prompt log");
+    let b_round_line = prompt_log
+        .lines()
+        .filter(|line| line.contains("FOLLOW-UP MESSAGES"))
+        .find(|line| line.contains("Start your reviewed lane now"))
+        .expect("peer B follow-up prompt");
+    let ack_position = b_round_line
+        .find("ACK: noted, no reply needed")
+        .expect("ack batched first");
+    let trigger_position = b_round_line
+        .find("Start your reviewed lane now")
+        .expect("trigger batched second");
+    assert!(
+        ack_position < trigger_position,
+        "batched mail preserves append order: {b_round_line}"
+    );
+}
+
+#[test]
+fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_recovers() {
+    let home = TempHome::new("team-run-kimi-provider-error");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let error_once = home.base().join("kimi-prompt-error-once");
+    let error_once_value = error_once.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            (
+                "FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER",
+                error_once_value.as_str(),
+            ),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Kimi provider failure parity",
+            "members": [{"name": "kimi-fail", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment_id = created["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let correlation = created["result"]["assignment_messages"][0]["correlation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut provider_error_recorded = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let messages = snapshot["team_messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let handoffs = messages
+            .iter()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        let provider_error = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("provider_error")
+                    && action["status"].as_str() == Some("failed")
+            });
+        let idle = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("idle")
+            });
+        assert_eq!(
+            handoffs, 0,
+            "a provider-failed turn must never fabricate a handoff"
+        );
+        provider_error_recorded = provider_error && idle;
+        if provider_error_recorded {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        provider_error_recorded,
+        "non-retryable Kimi provider failure must record a failed provider_error round and stay idle"
+    );
+    assert!(error_once.exists(), "the scripted provider error fired");
+    // The provider did accept the prompt before failing the turn: the
+    // assignment delivery keeps its honest receipt and is never replayed.
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let assignment_delivery = snapshot["team_messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|message| message["id"].as_str() == Some(assignment_id.as_str()))
+        .map(|message| message["deliveries"][0].clone())
+        .expect("assignment delivery");
+    assert_eq!(assignment_delivery["status"].as_str(), Some("delivered"));
+    assert_eq!(assignment_delivery["attempt"].as_u64(), Some(1));
+    assert!(assignment_delivery["provider_receipt_id"]
+        .as_str()
+        .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")));
+
+    // The member stays usable: the next response-required message runs a new
+    // round on the same member, which then produces its first real handoff.
+    let (status, follow_up) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "response_intent": "response_required",
+            "body": "Retry the lane after the provider outage",
+            "correlation_id": correlation,
+            "causation_id": assignment_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {follow_up}");
+    let follow_up_id = follow_up["result"]["id"].as_str().unwrap().to_string();
+    let mut recovered = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let messages = snapshot["team_messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let handoffs: Vec<&serde_json::Value> = messages
+            .iter()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .collect();
+        let completed = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("completed")
+                    && action["status"].as_str() == Some("succeeded")
+            });
+        recovered = handoffs.len() == 1
+            && handoffs[0]["causation_id"].as_str() == Some(follow_up_id.as_str())
+            && completed;
+        if recovered {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        recovered,
+        "the recovered round must produce exactly one honest handoff caused by the retry"
+    );
+}
+
+/// A prompt the provider rejects BEFORE any session/update was never accepted.
+/// Publishing a provider receipt for it would complete the Assignment delivery
+/// and burn the work: the member would go idle with no Handoff and nothing for
+/// Host to act on, and the Assignment could never be replayed.
+#[test]
+fn kimi_prompt_rejected_before_any_update_never_burns_the_assignment() {
+    let home = TempHome::new("team-run-kimi-reject-before-update");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let reject_once = home.base().join("kimi-reject-before-update-once");
+    let reject_once_value = reject_once.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            (
+                "FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER",
+                reject_once_value.as_str(),
+            ),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Kimi immediate rejection must not burn the assignment",
+            "members": [{"name": "kimi-reject", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment_id = created["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut rejected = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let provider_error = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("provider_error")
+                    && action["status"].as_str() == Some("failed")
+            });
+        let handoffs = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        assert_eq!(
+            handoffs, 0,
+            "a rejected prompt must never fabricate a handoff"
+        );
+        rejected = provider_error;
+        if rejected {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        rejected,
+        "an immediately rejected Kimi prompt must record a failed provider_error round"
+    );
+    assert!(reject_once.exists(), "the scripted rejection fired");
+
+    // The core contract: no receipt was published for a turn the provider
+    // never accepted, so the Assignment delivery is not completed and stays
+    // replayable rather than silently burned.
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let assignment_delivery = snapshot["team_messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|message| message["id"].as_str() == Some(assignment_id.as_str()))
+        .map(|message| message["deliveries"][0].clone())
+        .expect("assignment delivery");
+    assert_ne!(
+        assignment_delivery["status"].as_str(),
+        Some("delivered"),
+        "a rejected prompt must not complete the assignment delivery: {assignment_delivery}"
+    );
+    assert!(
+        assignment_delivery["provider_receipt_id"].is_null(),
+        "a rejected prompt must publish no provider receipt: {assignment_delivery}"
+    );
+    assert!(
+        !snapshot["team_run_events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|event| {
+                event["entity_id"].as_str() == Some(assignment_id.as_str())
+                    && event["summary"]
+                        .as_str()
+                        .is_some_and(|summary| summary.contains("accepted by provider"))
+            }),
+        "a rejected prompt must not journal `assignment accepted by provider`: {}",
+        snapshot["team_run_events"]
+    );
+}
+
+/// JSON-RPC servers that serialize every field return `"error": null` on
+/// success. `frame.get("error").is_some()` is true for that key, so a naive
+/// check turns every successful round into a provider failure and loses the
+/// member's entire output.
+#[test]
+fn kimi_null_error_key_on_a_successful_response_is_not_a_provider_error() {
+    let home = TempHome::new("team-run-kimi-null-error-key");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            ("FAKE_KIMI_NULL_ERROR_KEY", "1"),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Null error key is still a successful round",
+            "members": [{"name": "kimi-null-error", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut completed = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        assert!(
+            !snapshot["member_actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|action| {
+                    action["member_run_id"].as_str() == Some(member_id.as_str())
+                        && action["action_type"].as_str() == Some("provider_error")
+                }),
+            "`error: null` is an empty key, not a provider failure"
+        );
+        let handoffs = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        completed = handoffs == 1;
+        if completed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        completed,
+        "a successful round carrying `error: null` must still produce its handoff"
+    );
+}
+
+/// `max_tokens`, `refusal`, and `max_turn_requests` all stop the turn before
+/// the member finished its work. Recording them as completed/succeeded is the
+/// same "partial handoff plus false completion" class as an unclassified
+/// JSON-RPC error, so they must record a failed provider_error round instead.
+#[test]
+fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
+    for stop_reason in ["max_tokens", "refusal", "max_turn_requests"] {
+        let home = TempHome::new(&format!("team-run-kimi-stop-{stop_reason}"));
+        let _project_id = init_project(&home, "alpha");
+        let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+        let fake_kimi = fake_bin.join("kimi").display().to_string();
+        let serve = ServeHandle::spawn_with_env(
+            &home,
+            home.base(),
+            &[],
+            &[
+                ("KIMI_CODE_BIN", fake_kimi.as_str()),
+                ("FAKE_KIMI_RESULT", "done"),
+                ("FAKE_KIMI_STOP_REASON", stop_reason),
+                ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+            ],
+        );
+        let (_, created) = serve.post_json(
+            "/v1/team-runs",
+            &serde_json::json!({
+                "objective": format!("Kimi {stop_reason} must not read as success"),
+                "members": [{"name": "kimi-stop", "role": "implementer", "provider": "kimi"}]
+            }),
+        );
+        let run_id = created["result"]["team_run"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let member_id = created["result"]["member_runs"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (status, started) = serve.post_json(
+            &format!("/v1/team-runs/{run_id}/start"),
+            &serde_json::json!({}),
+        );
+        assert_eq!(status, 202, "body: {started}");
+
+        let mut failed = false;
+        for _ in 0..300 {
+            let (_, snapshot) = serve.get_json("/v1/snapshot");
+            let actions: Vec<&serde_json::Value> = snapshot["member_actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|action| action["member_run_id"].as_str() == Some(member_id.as_str()))
+                .collect();
+            assert!(
+                !actions.iter().any(|action| {
+                    action["action_type"].as_str() == Some("completed")
+                        && action["status"].as_str() == Some("succeeded")
+                }),
+                "{stop_reason} must never be recorded as a succeeded completion"
+            );
+            let handoffs = snapshot["team_messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|message| {
+                    message["from_member_id"].as_str() == Some(member_id.as_str())
+                        && message["kind"].as_str() == Some("handoff")
+                })
+                .count();
+            assert_eq!(handoffs, 0, "{stop_reason} must never fabricate a handoff");
+            failed = actions.iter().any(|action| {
+                action["action_type"].as_str() == Some("provider_error")
+                    && action["status"].as_str() == Some("failed")
+            });
+            if failed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            failed,
+            "stopReason {stop_reason} must record a failed provider_error round"
+        );
+    }
+}
+
+#[test]
+fn external_interactive_member_joins_and_exchanges_mail() {
+    let home = TempHome::new("team-run-external-interactive");
+    let project_id = init_project(&home, "alpha");
+
+    // A declared external interactive member may use an arbitrary provider
+    // label because Harness never executes it or claims adapter capability.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "custom external provider",
+            "--member",
+            "custom-reviewer:reviewer:local-agent/external_interactive",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "custom external provider must be accepted: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let custom_run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let custom = team_run_json(
+        &home,
+        &project_id,
+        &["status", "--id", &custom_run_id, "--json"],
+    );
+    assert_eq!(
+        custom["members"][0]["member_run"]["provider"],
+        "local-agent"
+    );
+    assert_eq!(
+        custom["members"][0]["member_run"]["provider_profile"]["execution_driver"],
+        "user_driven"
+    );
+
+    // Create a run whose only member is the user's own external interactive
+    // session; Harness spawns nothing for it.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Review the external lane",
+            "--member",
+            "ext-reviewer:reviewer:kimi/external_interactive",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    let members = status["members"].as_array().expect("members");
+    assert_eq!(members.len(), 1, "members: {members:?}");
+    let ext = &members[0]["member_run"];
+    let ext_id = ext["id"].as_str().expect("external member id").to_string();
+    assert_eq!(ext["status"].as_str(), Some("idle"));
+    assert_eq!(
+        ext["provider_profile"]["execution_mode"].as_str(),
+        Some("external_interactive")
+    );
+    assert_eq!(
+        ext["provider_profile"]["execution_driver"].as_str(),
+        Some("user_driven")
+    );
+    assert!(
+        ext["native_session"].is_null(),
+        "external members have no native session record: {ext}"
+    );
+    assert!(
+        ext["workspace_snapshot"].is_null(),
+        "external members get no Harness workspace snapshot: {ext}"
+    );
+
+    // add-member accepts the same mode on an active run and records the
+    // correlated Assignment.
+    let added = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "add-member",
+            "--id",
+            &run_id,
+            "--member",
+            "ext-helper:helper:codex/external_interactive",
+            "--assignment",
+            "Pair on the review",
+        ],
+    );
+    let helper_id = added["member_run"]["id"]
+        .as_str()
+        .expect("helper member id")
+        .to_string();
+    assert_eq!(
+        added["member_run"]["provider_profile"]["execution_mode"].as_str(),
+        Some("external_interactive")
+    );
+    assert_eq!(
+        added["assignment"]["kind"].as_str(),
+        Some("assignment"),
+        "assignment message: {added}"
+    );
+
+    // The Supervisor starts the run without spawning an adapter for external
+    // members: no adapter error, no Failed status, and start returns promptly
+    // because there is nothing to drive.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        !stdout.contains("adapter not implemented"),
+        "start output: {stdout}"
+    );
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    assert_eq!(status["team_run"]["status"].as_str(), Some("running"));
+    for entry in status["members"].as_array().expect("members") {
+        let member_status = entry["member_run"]["status"]
+            .as_str()
+            .expect("member status");
+        assert!(
+            !matches!(member_status, "failed" | "disconnected"),
+            "external member must not be marked {member_status}: {entry}"
+        );
+    }
+
+    // Host → external member: the delivery stays queued until the session
+    // polls its inbox itself.
+    let assignment = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
+    );
+    let assignment = assignment
+        .as_array()
+        .expect("external inbox")
+        .iter()
+        .find(|message| message["kind"].as_str() == Some("assignment"))
+        .expect("assignment in external inbox")
+        .clone();
+    let correlation = assignment["correlation_id"]
+        .as_str()
+        .expect("assignment correlation")
+        .to_string();
+    let assignment_id = assignment["id"]
+        .as_str()
+        .expect("assignment id")
+        .to_string();
+
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &ext_id,
+            "--kind",
+            "message",
+            "--body",
+            "Please review crates/harness-core",
+            "--correlation-id",
+            &correlation,
+            "--causation-id",
+            &assignment_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "host send failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let host_message_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // The external session polls: both the Assignment and the follow-up are
+    // actionable; it acks what it consumed.
+    let inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
+    );
+    let inbox_ids: Vec<&str> = inbox
+        .as_array()
+        .expect("inbox")
+        .iter()
+        .filter_map(|message| message["id"].as_str())
+        .collect();
+    assert!(
+        inbox_ids.contains(&assignment_id.as_str())
+            && inbox_ids.contains(&host_message_id.as_str()),
+        "external inbox ids: {inbox_ids:?}"
+    );
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "ack",
+            "--id",
+            &run_id,
+            "--member-id",
+            &ext_id,
+            "--message-id",
+            &format!("{assignment_id},{host_message_id}"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "external ack failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
+    );
+    assert_eq!(
+        inbox.as_array().map(Vec::len),
+        Some(0),
+        "acked mail leaves the actionable inbox: {inbox}"
+    );
+
+    // External member → Host reply keeps the Assignment correlation and names
+    // its direct cause.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            &ext_id,
+            "--to",
+            "host",
+            "--kind",
+            "message",
+            "--body",
+            "Review done: no defects found",
+            "--correlation-id",
+            &correlation,
+            "--causation-id",
+            &host_message_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "external reply failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reply_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let host_inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            "host",
+            "--json",
+        ],
+    );
+    let reply = host_inbox
+        .as_array()
+        .expect("host inbox")
+        .iter()
+        .find(|message| message["id"].as_str() == Some(reply_id.as_str()))
+        .expect("reply in host inbox");
+    assert_eq!(reply["from_member_id"].as_str(), Some(ext_id.as_str()));
+    assert_eq!(reply["correlation_id"].as_str(), Some(correlation.as_str()));
+    assert_eq!(
+        reply["causation_id"].as_str(),
+        Some(host_message_id.as_str())
+    );
+
+    // Closing an external member freezes its Harness coordination; there is
+    // no provider runtime or native session under Harness control to clean up.
+    let closed = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &helper_id,
+            "--reason",
+            "review pair no longer needed",
+        ],
+    );
+    assert_eq!(
+        closed["status"].as_str(),
+        Some("stopped"),
+        "close: {closed}"
+    );
+    assert_eq!(closed["runtime"].as_str(), Some("external_unmanaged"));
+    assert_eq!(closed["runtime_effect"].as_str(), Some("none"));
+    assert_eq!(
+        closed["coordination_effect"].as_str(),
+        Some("member_closed")
+    );
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let helper = store
+        .member_runs()
+        .expect("member rows")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == helper_id)
+        .expect("helper member row");
+    assert_eq!(helper.status, harness_core::MemberRunStatus::Stopped);
+    assert_eq!(
+        helper.coordination_status,
+        harness_core::MemberCoordinationStatus::Closed
+    );
+    assert!(
+        store
+            .latest_team_member_close_request(&helper_id)
+            .expect("close request")
+            .is_some_and(|close| close.status == harness_core::TeamMemberCloseStatus::Applied),
+        "close request must be applied without a supervisor"
+    );
+
+    // An external-only TeamRun remains Host-controlled: after a correlated
+    // Handoff the Host may close the coordination binding and explicitly
+    // complete the run without claiming that any external process was stopped.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            &ext_id,
+            "--to",
+            "host",
+            "--kind",
+            "handoff",
+            "--body",
+            "External review handoff: checks reported by the user-driven member",
+            "--correlation-id",
+            &correlation,
+            "--causation-id",
+            &host_message_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "external handoff failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Leave one message queued so Close can prove that the frozen coordination
+    // binding cannot send, receive, or ACK until explicit Reopen.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &ext_id,
+            "--kind",
+            "message",
+            "--body",
+            "Queued before coordination close",
+            "--correlation-id",
+            &correlation,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "pre-close send failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let queued_before_close_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let reviewer_closed = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--reason",
+            "Host accepted external review",
+        ],
+    );
+    assert_eq!(reviewer_closed["runtime_effect"].as_str(), Some("none"));
+
+    for args in [
+        vec![
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            &ext_id,
+            "--to",
+            "host",
+            "--kind",
+            "message",
+            "--body",
+            "must not send after close",
+            "--correlation-id",
+            &correlation,
+        ],
+        vec![
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &ext_id,
+            "--kind",
+            "message",
+            "--body",
+            "must not queue after close",
+            "--correlation-id",
+            &correlation,
+        ],
+        vec![
+            "--project",
+            &project_id,
+            "team-run",
+            "ack",
+            "--id",
+            &run_id,
+            "--member-id",
+            &ext_id,
+            "--message-id",
+            &queued_before_close_id,
+        ],
+    ] {
+        let out = run_harness(&home, home.base(), &args);
+        assert!(
+            !out.status.success()
+                && String::from_utf8_lossy(&out.stderr).contains("coordination is closed"),
+            "closed external coordination must reject {args:?}: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let reopened = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "reopen-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--reason",
+            "continue the same external review",
+        ],
+    );
+    assert_eq!(reopened["member_run"]["id"].as_str(), Some(ext_id.as_str()));
+    assert_eq!(
+        reopened["member_run"]["coordination_status"].as_str(),
+        Some("active")
+    );
+    assert_eq!(
+        reopened["member_run"]["runtime_generation"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        reopened["runtime_activation"].as_str(),
+        Some("external_user_driven")
+    );
+    let reopened_inbox = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--json",
+        ],
+    );
+    assert!(
+        reopened_inbox.as_array().is_some_and(|messages| messages
+            .iter()
+            .any(|message| { message["id"].as_str() == Some(queued_before_close_id.as_str()) })),
+        "mail queued before close must thaw after reopen: {reopened_inbox}"
+    );
+    let ack = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "ack",
+            "--id",
+            &run_id,
+            "--member-id",
+            &ext_id,
+            "--message-id",
+            &queued_before_close_id,
+        ],
+    );
+    assert!(
+        ack.status.success(),
+        "reopened external member must ACK frozen mail: {}",
+        String::from_utf8_lossy(&ack.stderr)
+    );
+
+    let retired = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "deactivate-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+            "--reason",
+            "external reviewer retired",
+        ],
+    );
+    assert_eq!(retired["coordination_status"].as_str(), Some("retired"));
+    let reopen_retired = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "reopen-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &ext_id,
+        ],
+    );
+    assert!(
+        !reopen_retired.status.success()
+            && String::from_utf8_lossy(&reopen_retired.stderr).contains("is retired"),
+        "retired member must not reopen: {}",
+        String::from_utf8_lossy(&reopen_retired.stderr)
+    );
+
+    let completed = team_run_json(&home, &project_id, &["complete", "--id", &run_id, "--json"]);
+    assert_eq!(completed["status"].as_str(), Some("completed"));
 }

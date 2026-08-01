@@ -1155,6 +1155,11 @@ pub trait Validate {
 pub enum ValidationError {
     #[error("{field} is required")]
     Required { field: &'static str },
+    #[error("{field} is invalid: {reason}")]
+    Invalid {
+        field: &'static str,
+        reason: &'static str,
+    },
 }
 
 fn require_non_empty(value: &str, field: &'static str) -> Result<(), ValidationError> {
@@ -1816,6 +1821,21 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// Durable coordination lifecycle of one MemberRun, separate from its
+/// provider runtime/work status. Close is reversible; Retire is permanent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberCoordinationStatus {
+    #[default]
+    Active,
+    Closed,
+    Retired,
+}
+
+const fn default_member_runtime_generation() -> u64 {
+    1
+}
+
 /// A provider-owned conversation/runtime that contains the execution truth for
 /// one member. Harness persists this locator and capability snapshot, but does
 /// not copy the provider's transcript, tool stream, command output, or turns.
@@ -2266,6 +2286,14 @@ pub struct MemberRun {
     /// independent of `provider_profile.compatibility_status`.
     #[serde(default)]
     pub provider_capacity: Option<ProviderCapacitySnapshot>,
+    /// Durable mailbox/participation state, independent of the process state
+    /// represented by `status`.
+    #[serde(default)]
+    pub coordination_status: MemberCoordinationStatus,
+    /// Monotonic activation generation. Explicit Reopen increments this so a
+    /// live Supervisor can start a new process for the same MemberRun id.
+    #[serde(default = "default_member_runtime_generation")]
+    pub runtime_generation: u64,
     pub status: MemberRunStatus,
     #[serde(default)]
     pub native_session: Option<NativeSessionRef>,
@@ -2282,6 +2310,31 @@ pub struct MemberRun {
     pub last_event_at: Option<String>,
     #[serde(default)]
     pub finished_at: Option<String>,
+}
+
+impl MemberRun {
+    pub fn coordination_is_active(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Active
+    }
+
+    pub fn coordination_is_closed(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Closed
+    }
+
+    pub fn coordination_is_retired(&self) -> bool {
+        self.coordination_status == MemberCoordinationStatus::Retired
+    }
+
+    /// Whether this is a declared non-driven external interactive member (see
+    /// [`EXECUTION_MODE_EXTERNAL_INTERACTIVE`]). The Supervisor must not spawn
+    /// a provider adapter for it; its deliveries stay queued until the
+    /// external session polls and acks.
+    pub fn is_external_interactive(&self) -> bool {
+        self.provider_profile.as_ref().is_some_and(|profile| {
+            profile.execution_mode == EXECUTION_MODE_EXTERNAL_INTERACTIVE
+                && profile.execution_driver == MemberExecutionDriver::UserDriven
+        })
+    }
 }
 
 impl Validate for AgentTeamRun {
@@ -2359,6 +2412,12 @@ impl Validate for MemberRun {
         require_non_empty(&self.role, "MemberRun.role")?;
         require_non_empty(&self.provider, "MemberRun.provider")?;
         require_non_empty(&self.started_at, "MemberRun.started_at")?;
+        if self.runtime_generation == 0 {
+            return Err(ValidationError::Invalid {
+                field: "MemberRun.runtime_generation",
+                reason: "must be at least 1",
+            });
+        }
         if let Some(worktree_ref) = &self.worktree_ref {
             require_non_empty(worktree_ref, "MemberRun.worktree_ref")?;
         }
@@ -2368,6 +2427,14 @@ impl Validate for MemberRun {
         Ok(())
     }
 }
+
+/// Execution mode of a declared non-driven member: the user's own
+/// already-open interactive provider CLI session (Kimi Code, Codex, or Claude
+/// Code), which Harness never spawns or drives. The session polls its Harness
+/// inbox and replies through the trusted loopback CLI/MCP; there is no
+/// provider-native session record, so evidence claims about this member's
+/// work cannot resolve to provider-native execution truth.
+pub const EXECUTION_MODE_EXTERNAL_INTERACTIVE: &str = "external_interactive";
 
 /// How one provider member is executed by Harness. Capability claims are
 /// mode-specific: `codex_exec` and `kimi_acp` are different products even when
@@ -2433,6 +2500,10 @@ pub enum MemberExecutionDriver {
     #[default]
     HostDriven,
     ProviderDriven,
+    /// Declared external interactive members only: the human drives their own
+    /// already-open provider session out-of-band. Harness never starts a
+    /// provider cycle for this member and no native continuation loop exists.
+    UserDriven,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2635,6 +2706,24 @@ pub enum TeamDeliveryStatus {
     Expired,
 }
 
+/// Explicit response intent carried by a [`TeamMessage`] (ADR 0046 §4). A
+/// transport delivery and a semantic reply are distinct facts: mail that only
+/// informs or acknowledges must stay durable and correlated without starting
+/// another provider round, so two Agents can converge instead of bouncing
+/// acknowledgement-only mail back and forth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageResponseIntent {
+    /// Durable, correlated mail that does not by itself start a provider
+    /// round. It is batched into the next round some response-required
+    /// message triggers, and it never fences a same-correlation Handoff.
+    Informational,
+    /// The sender asks for a semantic reply: an idle recipient starts a new
+    /// provider round for this message, and a pending delivery fences a
+    /// same-correlation Handoff as stale.
+    ResponseRequired,
+}
+
 /// One recipient's delivery record inside a [`TeamMessage`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMessageDelivery {
@@ -2688,11 +2777,66 @@ pub struct TeamMessage {
     pub correlation_id: String,
     #[serde(default)]
     pub causation_id: Option<String>,
+    /// Explicit response intent. Absent on historical rows; the effective
+    /// intent then derives from `kind` (see
+    /// [`TeamMessage::effective_response_intent`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_intent: Option<TeamMessageResponseIntent>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default)]
     pub deliveries: Vec<TeamMessageDelivery>,
     pub created_at: String,
+}
+
+impl TeamMessage {
+    /// Effective response intent: the explicit field always wins; otherwise
+    /// kind **and sender** decide (ADR 0046 §4).
+    ///
+    /// Assignments, Handoffs, and Control records carry real work or runtime
+    /// semantics and always require a response round regardless of sender.
+    ///
+    /// Ordinary `message` mail is sender-aware, because `message` is the only
+    /// legal carrier for every remaining semantic category after ADR 0039
+    /// retired the typed question/blocker/review kinds:
+    /// - a coordination-plane sender (Host, Operator, Service) is directing the
+    ///   member — questions, revisions, acceptance decisions — so it defaults to
+    ///   `response_required` and wakes an idle member;
+    /// - a peer member sender is confirming or informing another member, so it
+    ///   defaults to `informational` and the team converges without
+    ///   confirmation ping-pong.
+    pub fn effective_response_intent(&self) -> TeamMessageResponseIntent {
+        if let Some(intent) = self.response_intent {
+            return intent;
+        }
+        match self.kind {
+            TeamMessageKind::Assignment | TeamMessageKind::Handoff | TeamMessageKind::Control => {
+                TeamMessageResponseIntent::ResponseRequired
+            }
+            _ if self.sent_by_peer_member() => TeamMessageResponseIntent::Informational,
+            _ => TeamMessageResponseIntent::ResponseRequired,
+        }
+    }
+
+    /// True when this message was authored by another team member rather than
+    /// by the coordination plane (Host, Operator, Service). Historical rows
+    /// carry no typed `sender`, so they fall back to the reserved `"host"`
+    /// `from_member_id` convention.
+    fn sent_by_peer_member(&self) -> bool {
+        match self.sender.as_ref().map(|sender| sender.kind) {
+            Some(TeamActorKind::MemberRun) | Some(TeamActorKind::AgentMember) => true,
+            Some(TeamActorKind::Host)
+            | Some(TeamActorKind::Operator)
+            | Some(TeamActorKind::Service) => false,
+            None => self.from_member_id != "host",
+        }
+    }
+
+    /// True when this message may trigger a new provider round for an idle
+    /// recipient and fences a same-correlation Handoff while still pending.
+    pub fn requires_response(&self) -> bool {
+        self.effective_response_intent() == TeamMessageResponseIntent::ResponseRequired
+    }
 }
 
 /// Status of a single [`MemberAction`].
@@ -2846,6 +2990,140 @@ mod tests {
         // Unknown providers round-trip without losing fidelity.
         assert_eq!(kind.to_string(), "gemini");
         assert_eq!(ProviderKind::from("gemini".to_string()), kind);
+    }
+
+    fn bare_team_message(kind: TeamMessageKind) -> TeamMessage {
+        TeamMessage {
+            id: "tmsg-1".to_string(),
+            team_run_id: "run-1".to_string(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".to_string(),
+            recipients: Vec::new(),
+            to_member_ids: Vec::new(),
+            kind,
+            body: "body".to_string(),
+            correlation_id: "corr-1".to_string(),
+            causation_id: None,
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: Vec::new(),
+            created_at: "now".to_string(),
+        }
+    }
+
+    fn peer_team_message(kind: TeamMessageKind) -> TeamMessage {
+        let mut message = bare_team_message(kind);
+        message.from_member_id = "member-run-2".to_string();
+        message.sender = Some(TeamActorRef {
+            kind: TeamActorKind::MemberRun,
+            id: "member-run-2".to_string(),
+            display_name: None,
+            authn_source: None,
+        });
+        message
+    }
+
+    #[test]
+    fn team_message_response_intent_defaults_from_kind() {
+        // Work-carrying kinds require a response round from every sender.
+        for kind in [
+            TeamMessageKind::Assignment,
+            TeamMessageKind::Handoff,
+            TeamMessageKind::Control,
+        ] {
+            assert!(bare_team_message(kind).requires_response(), "{kind:?}");
+            assert!(peer_team_message(kind).requires_response(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_message_response_intent_defaults_from_sender() {
+        for kind in [
+            TeamMessageKind::Message,
+            TeamMessageKind::Question,
+            TeamMessageKind::Answer,
+            TeamMessageKind::Progress,
+            TeamMessageKind::Blocker,
+        ] {
+            // `message` is the only legal carrier for Host questions,
+            // revisions, and acceptance decisions: Host mail must stay waking.
+            assert!(
+                bare_team_message(kind).requires_response(),
+                "host {kind:?} must default to response_required"
+            );
+            // Peer-to-peer confirmations converge without a new round.
+            assert!(
+                !peer_team_message(kind).requires_response(),
+                "peer {kind:?} must default to informational"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_message_intent_treats_operator_and_service_as_coordination_plane() {
+        // ADR 0012: the Dashboard is the control plane, so an Operator reply
+        // must wake an idle member exactly like a Host reply. Routed Company OS
+        // inbox mail arrives as a Service sender and must execute, not idle.
+        for actor_kind in [
+            TeamActorKind::Host,
+            TeamActorKind::Operator,
+            TeamActorKind::Service,
+        ] {
+            let mut message = bare_team_message(TeamMessageKind::Message);
+            message.from_member_id = format!("{actor_kind:?}-sender");
+            message.sender = Some(TeamActorRef {
+                kind: actor_kind,
+                id: "sender-1".to_string(),
+                display_name: None,
+                authn_source: None,
+            });
+            assert!(message.requires_response(), "{actor_kind:?}");
+        }
+    }
+
+    #[test]
+    fn historical_rows_without_sender_fall_back_to_from_member_id() {
+        let mut historical = bare_team_message(TeamMessageKind::Message);
+        historical.sender = None;
+        assert!(historical.requires_response(), "from_member_id == host");
+        historical.from_member_id = "member-run-9".to_string();
+        assert!(
+            !historical.requires_response(),
+            "historical peer mail stays informational"
+        );
+    }
+
+    #[test]
+    fn team_message_explicit_response_intent_wins_over_kind_default() {
+        // Override upward: an ack-only peer note that genuinely needs action.
+        let mut ack_only = peer_team_message(TeamMessageKind::Message);
+        assert_eq!(
+            ack_only.effective_response_intent(),
+            TeamMessageResponseIntent::Informational
+        );
+        ack_only.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
+        assert!(ack_only.requires_response());
+        // Override downward: Host mail that is deliberately FYI-only.
+        let mut host_fyi = bare_team_message(TeamMessageKind::Message);
+        assert!(host_fyi.requires_response());
+        host_fyi.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(!host_fyi.requires_response());
+        // Override downward on a work-carrying kind too.
+        let mut control = bare_team_message(TeamMessageKind::Control);
+        control.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(!control.requires_response());
+        // The explicit field round-trips through serde; an absent field keeps
+        // historical rows on their kind+sender-derived default.
+        let json = serde_json::to_string(&ack_only).expect("serialize");
+        assert!(json.contains("\"response_intent\":\"response_required\""));
+        let without = peer_team_message(TeamMessageKind::Message);
+        let json = serde_json::to_string(&without).expect("serialize");
+        assert!(!json.contains("response_intent"));
+        let historical: TeamMessage =
+            serde_json::from_str(&json).expect("deserialize without the field");
+        assert_eq!(historical.response_intent, None);
+        assert!(!historical.requires_response());
     }
 
     #[test]

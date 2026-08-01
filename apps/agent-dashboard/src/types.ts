@@ -333,6 +333,9 @@ export type MemberRunStatus =
   | "failed"
   | "stopped";
 
+/** Durable mailbox/participation lifecycle, independent of provider work status. */
+export type MemberCoordinationStatus = "active" | "closed" | "retired";
+
 /** Non-secret, immutable-at-start facts about the member's provider workspace. */
 export interface MemberWorkspaceSnapshot {
   /** Actual process cwd used to spawn the provider member. */
@@ -380,6 +383,8 @@ export interface MemberRun {
   model?: string | null;
   provider_controls?: ProviderExecutionControls | null;
   provider_profile?: ProviderIntegrationProfile | null;
+  coordination_status?: MemberCoordinationStatus | string;
+  runtime_generation?: number;
   status?: MemberRunStatus | string;
   native_session?: NativeSessionRef | null;
   /** Optional member-specific Git worktree override of the TeamRun execution root. */
@@ -506,6 +511,48 @@ export type TeamMessageKind =
   | "broadcast";
 
 /**
+ * Explicit response intent on a {@link TeamMessage} (ADR 0046 §4).
+ * `informational` mail is durable and correlated but never starts a provider
+ * round on its own; `response_required` asks the recipient for a semantic
+ * reply and wakes an idle provider member.
+ */
+export type TeamMessageResponseIntent = "informational" | "response_required";
+
+/**
+ * Effective response intent: the explicit field wins; otherwise kind AND
+ * sender decide — assignment/handoff/control always require a response round,
+ * and ordinary message mail requires one unless a peer member sent it
+ * (mirrors the Rust `TeamMessage::effective_response_intent` contract).
+ */
+export function effectiveTeamMessageResponseIntent(
+  message: Pick<TeamMessage, "kind" | "response_intent" | "sender" | "from_member_id">,
+): TeamMessageResponseIntent {
+  if (message.response_intent === "informational" || message.response_intent === "response_required") {
+    return message.response_intent;
+  }
+  if (message.kind === "assignment" || message.kind === "handoff" || message.kind === "control") {
+    return "response_required";
+  }
+  return sentByPeerMember(message) ? "informational" : "response_required";
+}
+
+/**
+ * True when a team message was authored by another member rather than by the
+ * coordination plane (Host, Operator, Service). Historical rows carry no typed
+ * `sender`, so they fall back to the reserved `"host"` `from_member_id`.
+ */
+function sentByPeerMember(message: Pick<TeamMessage, "sender" | "from_member_id">): boolean {
+  const senderKind = message.sender?.kind;
+  if (senderKind === "member_run" || senderKind === "agent_member") {
+    return true;
+  }
+  if (senderKind === "host" || senderKind === "operator" || senderKind === "service") {
+    return false;
+  }
+  return message.from_member_id !== "host";
+}
+
+/**
  * One message on a team run's handoff chain. `from_member_id` is `"host"` or a
  * member run id; `deliveries` tracks per-recipient ack state (an unacknowledged
  * delivery is a needs-you signal for the operator).
@@ -522,6 +569,7 @@ export interface TeamMessage {
   body?: string;
   correlation_id?: string | null;
   causation_id?: string | null;
+  response_intent?: TeamMessageResponseIntent | string | null;
   evidence_refs?: string[];
   deliveries?: TeamMessageDelivery[];
   created_at?: string;

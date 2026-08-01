@@ -55,6 +55,7 @@ import {
 import type { WorkbenchModel } from "../model/readModel";
 import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
 import type { MemberRun, PendingInteraction, TeamMessage, Wave } from "../types";
+import { effectiveTeamMessageResponseIntent } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -1022,6 +1023,11 @@ function LeadInbox({
                     <span>correlation · {message.correlation_id ? shortId(message.correlation_id) : "missing"}</span>
                     <span>caused by · {message.causation_id ? shortId(message.causation_id) : "root message"}</span>
                     <span>delivery · {delivery?.policy ?? "unknown"} / {delivery?.status ?? "unknown"}</span>
+                    {effectiveTeamMessageResponseIntent(message) === "response_required" ? (
+                      <span className="text-status-warn">intent · response required</span>
+                    ) : (
+                      <span>intent · informational</span>
+                    )}
                     {delivery?.provider_receipt_id && <span className="text-status-good">provider receipt · {shortId(delivery.provider_receipt_id)}</span>}
                     {delivery?.status === "acknowledged" && <span className="text-status-good">ACK</span>}
                   </div>
@@ -1335,11 +1341,17 @@ function summarizeDeliveries(message: TeamMessage, members: Map<string, MemberRu
   if (acknowledged === deliveries.length) return `ACK ${acknowledged}/${deliveries.length}`;
   if (claimed) return `${claimed} provider receipt pending${queued ? ` · ${queued} queued` : ""}`;
   if (queued) {
+    // Informational mail never starts a provider round on its own (ADR 0046
+    // §4): show that it waits for the next response-required trigger instead
+    // of implying an imminent delivery.
+    if (effectiveTeamMessageResponseIntent(message) === "informational") {
+      return `${queued} informational · batched on next response round${delivered || acknowledged ? ` · ${delivered + acknowledged} received` : ""}`;
+    }
     const queuedLabel = nextRoundBatched === queued
-      ? `${queued} deferred · next provider round`
+      ? `${queued} response required · next provider round`
       : nextRoundBatched
-        ? `${queued} queued · ${nextRoundBatched} next-round`
-        : `${queued} queued`;
+        ? `${queued} response required · ${nextRoundBatched} next-round`
+        : `${queued} response required · queued`;
     return `${queuedLabel}${delivered || acknowledged ? ` · ${delivered + acknowledged} received` : ""}`;
   }
   return `${delivered} delivered${acknowledged ? ` · ${acknowledged} ACK` : ""}`;

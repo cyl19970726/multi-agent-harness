@@ -37,6 +37,22 @@ async function loadSelectors() {
   }
 }
 
+async function loadTypes() {
+  const { default: ts } = await import("typescript");
+  const directory = await mkdtemp(join(tmpdir(), "team-types-"));
+  try {
+    const source = await readFile(join(here, "..", "src", "types.ts"), "utf8");
+    const output = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const path = join(directory, "types.mjs");
+    await writeFile(path, output, "utf8");
+    return await import(pathToFileURL(path).href);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 function fixture() {
   return {
     missions: [{ id: "mission-1", title: "Build console", objective: "ship" }],
@@ -133,6 +149,30 @@ async function main() {
     ok("Stable activity has deterministic chronological tie-breaking and excludes thinking");
   } else {
     bad(`Stable activity was ${activity.map((item) => item.id).join(",")}`);
+  }
+
+  const types = await loadTypes();
+  const intent = types.effectiveTeamMessageResponseIntent;
+  const peer = { kind: "message", sender: { kind: "member_run", id: "member-run-2" }, from_member_id: "member-run-2" };
+  const informationalAck = intent(peer) === "informational"
+    && intent({ ...peer, response_intent: "informational" }) === "informational"
+    && intent({ kind: "message", from_member_id: "member-run-2" }) === "informational";
+  const requiredByKind = intent({ kind: "assignment" }) === "response_required"
+    && intent({ kind: "handoff" }) === "response_required"
+    && intent({ kind: "control" }) === "response_required"
+    && intent({ ...peer, kind: "assignment" }) === "response_required";
+  // Sender-aware default: the coordination plane (Host, Operator via the
+  // Dashboard, Service via routed inbox mail) wakes an idle member.
+  const requiredBySender = intent({ kind: "message", from_member_id: "host" }) === "response_required"
+    && intent({ kind: "message", sender: { kind: "host", id: "host" }, from_member_id: "host" }) === "response_required"
+    && intent({ kind: "message", sender: { kind: "operator", id: "op-1" }, from_member_id: "operator:op-1" }) === "response_required"
+    && intent({ kind: "message", sender: { kind: "service", id: "svc-1" }, from_member_id: "service:svc-1" }) === "response_required";
+  const explicitWins = intent({ ...peer, response_intent: "response_required" }) === "response_required"
+    && intent({ kind: "message", from_member_id: "host", response_intent: "informational" }) === "informational";
+  if (informationalAck && requiredByKind && requiredBySender && explicitWins) {
+    ok("Response intent distinguishes informational delivery from response-required (kind + sender default, explicit override both ways)");
+  } else {
+    bad(`Response intent resolution was ack=${informationalAck} kind=${requiredByKind} sender=${requiredBySender} explicit=${explicitWins}`);
   }
 
   console.log(`\n   team selector checks: ${passed} pass, ${failed} fail`);

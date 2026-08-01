@@ -130,9 +130,10 @@ pointing to the exact Host or peer follow-up that caused that provider round.
 - Make it clear that Host-authored coordination comes from the Team Lead;
   Human/operator authorship remains separately attributable where supported.
 - Create a correlated assignment with optional origin Wave metadata.
-- Add, rename, deactivate, steer, interrupt, explicitly close, or resume a
+- Add, rename, deactivate, steer, interrupt, explicitly close, or reopen a
   member where the selected provider mode honestly supports it. Interrupt ends
-  one turn; Close ends the runtime.
+  one turn; Close ends one runtime generation; Reopen resumes the same
+  MemberRun/native session; Deactivate retires permanently.
 - Roll up pending `TeamMemberCloseRequest` rows in the Team header so a lost
   Supervisor connection cannot make an accepted Close disappear from view.
 - Inspect delivery/ACK/correlation lineage and answer PendingInteractions.

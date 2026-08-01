@@ -72,18 +72,40 @@ state:
 
 - **busy:** queue or use a reviewed provider-native steer path; never start a
   second top-level writable turn;
-- **idle:** deliver and start the next provider cycle;
+- **idle:** deliver and start the next provider cycle for response-required
+  mail; informational mail stays durable and queued and is batched into the
+  next response-required round (see the response-intent rule below);
 - **offline/dead:** retain the message, recover or resume the runtime from its
   native session, and deliver exactly once;
 - **closed:** reject or require an explicit reopen/resume decision.
 
 Message acceptance, transport delivery, provider receipt, semantic reply, and
 WorkItem acceptance are distinct facts. A transport ACK or receipt-only peer
-confirmation does not itself require a semantic reply. Messages that require a
-new provider round must carry explicit response intent; otherwise idle Agents
-may converge without emitting acknowledgement-only mail. This prevents
-confirmation ping-pong while preserving durable questions, blockers, reviews,
-handoffs, and Host decisions.
+confirmation does not itself require a semantic reply.
+
+Every message therefore carries a **response intent** — `response_required` or
+`informational`. An explicit intent always wins. When it is absent, the
+effective intent is derived from kind **and sender**:
+
+| Kind | Sender | Default intent |
+| --- | --- | --- |
+| `assignment`, `handoff`, `control` | any | `response_required` |
+| `message` (and historical intent labels) | coordination plane: Host, Operator, Service | `response_required` |
+| `message` (and historical intent labels) | peer: another MemberRun or Agent Member | `informational` |
+
+The default is sender-aware rather than kind-aware because ADR 0039 retired the
+typed `question`/`blocker`/`review_request` kinds: `message` is now the only
+legal carrier for durable questions, blockers, reviews, and **Host decisions**.
+Making all `message` mail informational would leave an idle Member unreachable
+by the Host; making all of it waking would restore confirmation ping-pong
+between peers. Splitting on sender preserves both properties, so no Host-side,
+Operator-side, or routed-inbox surface has to be retrained to reach a Member.
+
+Informational mail is still durable and correlated: it stays queued, batches
+into the next response-required round with that round's provider receipt, and —
+because it never starts a round — it does not fence a same-correlation Handoff.
+Response-required mail does fence it, which is what keeps a Host mid-round
+correction from being handed off past.
 
 ### 5. Dogfood is a continuous coequal-system loop
 
