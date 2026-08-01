@@ -68,8 +68,15 @@ export interface SelectionState {
   workflowRunId?: string;
 }
 
+/**
+ * The Work operating board (its overview tab) is the default Company OS
+ * operating surface for the wanchengwanling and agentos Company Stores
+ * (work-wcw-agentos-work-overview-ui). Home stays reachable through the
+ * navigation rail and an explicit `?surface=home` deep link; every entity
+ * deep link below still implies its own surface.
+ */
 export const defaultSelection: SelectionState = {
-  surface: "home",
+  surface: "work",
 };
 
 const surfaceIds: SurfaceId[] = [
@@ -235,13 +242,17 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
  * Reflect a user selection into browser history without reloading so entity
  * deep links are shareable and Back/Forward returns through the workbench
  * journey. The selected agent is written as `?agent=<id>`; query-form routing
- * keeps the static `base: "./"` Vite build working from any path.
+ * keeps the static `base: "./"` Vite build working from any path. The default
+ * surface is omitted from the URL so a bare link round-trips to the same
+ * default, while an explicit non-default surface (including `?surface=home`)
+ * stays addressable. Company Store, Execution Space, Project Binding, and API
+ * params are owned by App-level sync and are never deleted here.
  */
 export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
   for (const key of selectionParamKeys) params.delete(key);
-  if (selection.surface && selection.surface !== "home") {
+  if (selection.surface && selection.surface !== defaultSelection.surface) {
     params.set("surface", selection.surface);
   }
   if (selection.documentId) params.set("document", selection.documentId);

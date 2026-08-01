@@ -128,7 +128,19 @@ async function main() {
 
   const { module: selection, directory } = await loadSelection();
   try {
-    check(selection.defaultSelection.surface === "home", "Home is the default product surface");
+    check(selection.defaultSelection.surface === "work", "Work overview is the default Company OS operating board (N6)");
+
+    installLocation("");
+    const bare = selection.selectionFromLocation(selection.defaultSelection);
+    check(bare.surface === "work" && !bare.workItemId && !bare.documentId, "a bare URL lands on the Work overview operating board without inventing record focus");
+
+    installLocation("?surface=home");
+    const explicitHome = selection.selectionFromLocation(selection.defaultSelection);
+    check(explicitHome.surface === "home", "Home remains explicitly addressable after Work became the default surface");
+
+    installLocation("?company=agent-company&space=agentos&project=star-harness&workItem=work-wcw-agentos-work-overview-ui");
+    const contextual = selection.selectionFromLocation(selection.defaultSelection);
+    check(contextual.surface === "work" && contextual.workItemId === "work-wcw-agentos-work-overview-ui", "a deep link carrying Company Store, Execution Space, and Project Binding context keeps the selected WorkItem on the Work surface");
 
     const routeCases = [
       ["?surface=docs&document=document-brand-a-content-operating-plan", "docs", "documentId", "document-brand-a-content-operating-plan"],
@@ -150,6 +162,19 @@ async function main() {
     const pushed = installLocation("?api=http%3A%2F%2Flocalhost%3A8787");
     selection.syncSelectionToLocation({ surface: "organization", standingAgentId: "actor-agent-document-architecture" });
     check(pushed().includes("surface=organization") && pushed().includes("agent=actor-agent-document-architecture") && pushed().includes("api="), "selection sync preserves unrelated URL configuration, writes organization identity, and creates a Back/Forward history entry");
+
+    const pushedContext = installLocation("?company=agent-company&space=agentos&project=star-harness&api=http%3A%2F%2Flocalhost%3A8787");
+    selection.syncSelectionToLocation({ surface: "work", workItemId: "work-wcw-agentos-work-overview-ui" });
+    const contextUrl = pushedContext();
+    check(contextUrl.includes("workItem=work-wcw-agentos-work-overview-ui") && contextUrl.includes("company=agent-company") && contextUrl.includes("space=agentos") && contextUrl.includes("project=star-harness") && contextUrl.includes("api=") && !contextUrl.includes("surface="), "selection sync preserves Company Store, Execution Space, Project Binding, and API context while omitting the default Work surface");
+
+    const pushedHome = installLocation("");
+    selection.syncSelectionToLocation({ surface: "home" });
+    check(pushedHome().includes("surface=home"), "an explicit Home selection stays URL-addressable");
+
+    const pushedDefault = installLocation("");
+    selection.syncSelectionToLocation({ surface: selection.defaultSelection.surface });
+    check(!pushedDefault().includes("surface="), "the default Work surface is omitted from the URL so a bare link round-trips to the Work overview");
   } finally {
     delete globalThis.window;
     await rm(directory, { recursive: true, force: true });
