@@ -4106,6 +4106,106 @@ mod tests {
         )
         .is_blocked());
     }
+
+    /// The emit/schema contract for MemberRun.
+    ///
+    /// `schemas/member-run.schema.json` keeps `additionalProperties: false`, so
+    /// any field the emitter serialises that the schema does not declare makes
+    /// an emitted MemberRun fail validation against its own schema. This test
+    /// round-trips a MemberRun carrying `provider_capacity` and asserts every
+    /// emitted key — top level and inside the capacity snapshot — is declared.
+    /// It fails on the next undeclared field, not just on `provider_capacity`.
+    #[test]
+    fn emitted_member_run_keys_are_declared_in_member_run_schema() {
+        let schema: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/member-run.schema.json"
+            ))
+            .expect("read member-run schema"),
+        )
+        .expect("parse member-run schema");
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::Value::Bool(false),
+            "this test only means something while the schema is closed"
+        );
+
+        let snapshot = ProviderCapacitySnapshot {
+            provider: "claude".to_string(),
+            execution_mode: "sdk".to_string(),
+            account: ProviderAccountRef {
+                source: "oauth_credentials_file".to_string(),
+                identifier: Some("acct-primary".to_string()),
+                plan: Some("max".to_string()),
+            },
+            state: ProviderCapacityState::Limited,
+            observed_at: "unix-ms:1785591600000".to_string(),
+            observed_unix_ms: 1_785_591_600_000,
+            reset_at: Some("unix-ms:1785595200000".to_string()),
+            evidence_source: ProviderCapacityEvidence::ProviderQuotaApi,
+            confidence: ProviderCapacityConfidence::Observed,
+            windows: vec![ProviderCapacityWindow {
+                label: "five_hour".to_string(),
+                limit_id: Some("limit-5h".to_string()),
+                used_percent: Some(82),
+                window_duration_mins: Some(300),
+                resets_at: Some("unix-ms:1785595200000".to_string()),
+            }],
+            diagnosis: Some("Account usage is high but not blocking.".to_string()),
+            runtime_context: vec![ProviderRuntimeContextFact {
+                key: "HTTPS_PROXY".to_string(),
+                present: true,
+                note: Some("set".to_string()),
+            }],
+            detail: Some("Provider quota API reported 82% of the five-hour window.".to_string()),
+        };
+        let row = serde_json::json!({
+            "id": "member-run-capacity-1",
+            "team_run_id": "team-run-capacity-1",
+            "name": "Platform Development",
+            "role": "Platform Development",
+            "provider": "claude",
+            "status": "idle",
+            "started_at": "unix-ms:1785591600000"
+        });
+        let mut member: MemberRun = serde_json::from_value(row).expect("member run");
+        member.provider_capacity = Some(snapshot.clone());
+
+        let encoded = serde_json::to_value(&member).expect("encode member run");
+        let declared = schema["properties"].as_object().expect("schema properties");
+        let undeclared = encoded
+            .as_object()
+            .expect("encoded member run")
+            .keys()
+            .filter(|key| !declared.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            undeclared.is_empty(),
+            "emitted MemberRun fields are not declared in member-run.schema.json              (additionalProperties is false, so these cannot validate): {undeclared:?}"
+        );
+
+        let declared_capacity = declared["provider_capacity"]["properties"]
+            .as_object()
+            .expect("schema must declare provider_capacity as an object with properties");
+        let undeclared_capacity = encoded["provider_capacity"]
+            .as_object()
+            .expect("provider_capacity must serialise as an object when present")
+            .keys()
+            .filter(|key| !declared_capacity.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            undeclared_capacity.is_empty(),
+            "emitted provider_capacity fields are not declared in member-run.schema.json:              {undeclared_capacity:?}"
+        );
+
+        // Round-trip: the snapshot survives encode/decode unchanged, so the
+        // schema is describing the shape the runtime actually persists.
+        let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
+        assert_eq!(decoded.provider_capacity, Some(snapshot));
+    }
 }
 
 /// Skill reference resolution: maps skill_refs to SKILL.md content.
