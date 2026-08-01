@@ -95,6 +95,35 @@ function ContextBlock({ label, links }: { label: string; links?: CompanyOsDocume
 }
 
 /**
+ * A Document whose Store record declares no Blocks says so, on every layout. Both the
+ * standard article and the Wanchengwanling operating layout render this same state, so
+ * an empty Document can never read as a page that simply failed to render.
+ */
+function EmptyDocumentState({ className }: { className?: string }) {
+  return (
+    <div className={cn("rounded-xl border border-dashed border-border bg-muted/25 p-6 text-sm leading-6 text-muted-foreground", className)} data-docs-empty-document="true">
+      This Document has no Blocks yet. Use the governed composer to append the first durable Block; empty UI state is not company truth.
+    </div>
+  );
+}
+
+/**
+ * Related work, not "Results": a WorkItem may reference this Document as its source, as
+ * context, or as the Document it produced, and only the last of those is a result. Each
+ * entry names its own reasons, so the panel never implies a provenance it does not have.
+ */
+function RelatedWorkBlock({ links }: { links?: CompanyOsDocumentPageData["relatedWork"] }) {
+  if (!links?.length) return null;
+  return (
+    <section className="space-y-2" data-docs-related-work="true" data-docs-related-work-count={links.length}>
+      <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Related work</h2>
+      <p className="text-[11px] leading-4 text-muted-foreground">Deduplicated from WorkItem source, context, and result references. Each item states why it is listed.</p>
+      <RelationChips links={links} />
+    </section>
+  );
+}
+
+/**
  * Navigable location trail. Ancestor crumbs link to their Documents; the current
  * Document renders as plain text. The leading space label is the only non-linked
  * crumb because a grouping space is not a durable Document.
@@ -613,11 +642,15 @@ function WanchengwanlingDocumentPage({
             </section>
           ) : null}
 
-          <WcwNarrativeSections blocks={narrativeBlocks} />
+          {document.blocks.length ? (
+            <>
+              <WcwNarrativeSections blocks={narrativeBlocks} />
 
-          <div className="space-y-5">
-            {tableBlocks.map((block) => <WcwTableCards key={block.id} block={block} />)}
-          </div>
+              <div className="space-y-5">
+                {tableBlocks.map((block) => <WcwTableCards key={block.id} block={block} />)}
+              </div>
+            </>
+          ) : <EmptyDocumentState className="rounded-2xl bg-card/60" />}
 
           {document.updatedLabel && <p className="text-xs text-muted-foreground">{document.updatedLabel}</p>}
         </div>
@@ -630,7 +663,7 @@ function WanchengwanlingDocumentPage({
               <ContextBlock label="Source" links={document.sourceLinks} />
               <ContextBlock label="Child pages" links={document.childDocuments} />
               <ContextBlock label="Backlinks" links={document.backlinks} />
-              <ContextBlock label="Results" links={document.resultLinks} />
+              <RelatedWorkBlock links={document.relatedWork} />
               <ContextBlock label="Connected records" links={document.connectedRecords} />
             </div>
           </section>
@@ -828,7 +861,7 @@ export function BasicDocumentPage({
               ? <div className="rounded-xl border border-dashed border-status-warn/40 bg-status-warn/[0.06] p-6 text-sm leading-6 text-foreground" data-docs-document-not-found="true">No Document with id <code>{document.missingDocumentId}</code> is present in this projection. The link may reference a Document outside this Company Store or one that was pruned; nothing else is substituted under the requested id.</div>
               : document.blocks.length
                 ? document.blocks.map((block) => <Block key={block.id} block={block} />)
-                : <div className="rounded-xl border border-dashed border-border bg-muted/25 p-6 text-sm leading-6 text-muted-foreground" data-docs-empty-document="true">This Document has no Blocks yet. Use the governed composer to append the first durable Block; empty UI state is not company truth.</div>}
+                : <EmptyDocumentState />}
           </article>
           {document.updatedLabel && <p className="border-t border-border pt-4 text-xs text-muted-foreground">{document.updatedLabel}</p>}
         </DocumentSurface>
@@ -837,7 +870,7 @@ export function BasicDocumentPage({
           <ContextBlock label="Source" links={document.sourceLinks} />
           <ContextBlock label="Child pages" links={document.childDocuments} />
           <ContextBlock label="Backlinks" links={document.backlinks} />
-          <ContextBlock label="Results" links={document.resultLinks} />
+          <RelatedWorkBlock links={document.relatedWork} />
           <ContextBlock label="Connected records" links={document.connectedRecords} />
           {document.activity?.length ? <section className="space-y-2"><h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Activity</h2><ol className="space-y-3 border-l border-border pl-3">{document.activity.map((item) => <li key={item.id} className="space-y-0.5"><p className="text-xs font-medium text-foreground">{item.label}</p>{item.detail && <p className="text-xs leading-5 text-muted-foreground">{item.detail}</p>}{item.at && <time className="text-[11px] text-muted-foreground">{item.at}</time>}</li>)}</ol></section> : null}
           <section className="space-y-3 rounded-lg border border-border bg-card/70 p-3" aria-label="Store-live Docs authoring" data-docs-authoring-panel="document-focus">

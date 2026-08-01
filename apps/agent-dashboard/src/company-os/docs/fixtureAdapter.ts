@@ -133,6 +133,17 @@ function entityRefs(value: unknown): Array<{ kind: string; id: string }> {
     : [];
 }
 
+/**
+ * WorkItem.context_refs is written either as `{ kind, id }` entity refs or as bare id
+ * strings depending on the writer, so both shapes have to resolve to the same ids.
+ */
+function contextRefIds(entry: JsonRecord): string[] {
+  return distinct([
+    ...entityRefs(entry.context_refs).map((reference) => reference.id),
+    ...strings(entry.context_refs),
+  ]).filter(Boolean);
+}
+
 function docsDocumentHref(id: string): string | undefined {
   return id ? `?surface=docs&document=${encodeURIComponent(id)}` : undefined;
 }
@@ -930,6 +941,29 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     return link && isArchived(entry) ? { ...link, meta: "Archived history" } : link;
   }));
   const focusResultLinks = linkEntries(focusWorkItems.map(workItemLink));
+  // Related work is the deduplicated union of every canonical WorkItem -> Document
+  // reference, because no document -> work_item Relations exist in the ledger to read.
+  // A WorkItem appears once no matter how many refs point here, and carries the reasons
+  // it appears, so "why is this listed" never has to be guessed from the title.
+  const focusWorkRelations = focusDocumentId
+    ? workItems
+      .map((entry) => {
+        const reasons = [
+          text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId ? "Source document" : "",
+          contextRefIds(entry).includes(focusDocumentId) ? "Context reference" : "",
+          text(entry.result_document_ref, text(entry.result_document_id)) === focusDocumentId ? "Result document" : "",
+          focusTypedRecordIds.has(text(entry.business_record_ref, text(entry.source_record_ref))) ? "Linked record" : "",
+        ].filter(Boolean);
+        return { entry, reasons };
+      })
+      .filter((candidate) => candidate.reasons.length)
+      .filter((candidate, index, values) => values.findIndex((other) => text(other.entry.id) === text(candidate.entry.id)) === index)
+    : [];
+  const focusRelatedWorkLinks = linkEntries(focusWorkRelations.map(({ entry, reasons }) => {
+    const link = workItemLink(entry);
+    const workId = text(entry.id);
+    return link ? { ...link, href: workId ? `?surface=work&workItem=${encodeURIComponent(workId)}` : undefined, meta: reasons.join(" · ") } : undefined;
+  }));
   const focusConnectedRecordLinks = linkEntries([
     ...focusTypedRecords.map(typedRecordLink),
     ...focusApprovals.map((entry) => {
@@ -1053,10 +1087,17 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ...explicitDocumentActors.filter((actor) => actor.id !== owner?.id && actor.id !== strategyPartner?.id).slice(0, 2).map((actor) => ({ label: "Participant", value: `${actor.label} · ${actor.actorType}`, ref: actor.id, actorType: actor.actorType })),
   ].filter(Boolean) as NonNullable<CompanyOsDocumentPageData["properties"]>;
   const storeDocumentBlocks = projectedDocumentBlocks(focusDocument, blocks);
+  // A Document that carries a block_ids array is describing its own Blocks, so an empty
+  // array is a Store assertion that it has none. Synthesizing narrative Blocks there
+  // would invent company memory under a real Document id. A projection that omits
+  // block_ids entirely is not making that assertion, and keeps the prototype narrative.
+  const declaresBlockIds = Array.isArray(focusDocument?.block_ids);
   const documentBlocks: CompanyOsDocumentPageData["blocks"] = storeDocumentBlocks.length
     ? storeDocumentBlocks
-    : focusDocument
-      ? [
+    : focusDocument && declaresBlockIds
+      ? []
+      : focusDocument
+        ? [
         { id: "what", type: "heading", content: "What this plan coordinates" },
         { id: "what-copy", type: "paragraph", content: `This page keeps ${text(focusDocument.title, "the selected document")} connected to its related operating records.` },
         { id: "why", type: "heading", content: "Why this context matters" },
@@ -1099,8 +1140,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
           },
         }] : []),
         { id: "linked-work", type: "relations", label: "Linked records", links: linkEntries([workLink, applicationLink, approvalLink, financeLink]) },
-      ]
-      : [{ id: "empty", type: "paragraph", content: "No rich document blocks are supplied." }];
+        ]
+        : [{ id: "empty", type: "paragraph", content: "No rich document blocks are supplied." }];
   const documentActivity = [
     focusDocument?.updated_at && { id: `document:${text(focusDocument.id)}`, label: "Document updated", at: humanTimestamp(focusDocument.updated_at) },
     ...focusWorkItems.map((entry) => entry.updated_at && { id: `work:${text(entry.id)}`, label: "Linked work updated", detail: text(entry.title), at: humanTimestamp(entry.updated_at) }),
@@ -1401,6 +1442,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       blocks: documentBlocks,
       sourceLinks: documentSourceLinks,
       resultLinks: documentResultLinks,
+      relatedWork: focusRelatedWorkLinks,
       connectedRecords: documentConnectedRecords,
       activity: documentActivity,
       authoring: documentAuthoring,

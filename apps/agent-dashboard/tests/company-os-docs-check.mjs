@@ -729,6 +729,86 @@ async function main() {
     check(missing.length === 0, `${page} has visible document/application/work/approval/commitment reference nodes (${missing.join(", ") || "complete"})`);
   }
 
+  // M1/M2 behavioural regression against Store-shaped records (ids and shapes lifted
+  // from the live agent-company Company Store).
+  const iaFixture = JSON.parse(await readFile(join(dashboardRoot, "fixtures", "company-os-docs-ia-v1", "projection.json"), "utf8"));
+  const iaEmpty = adaptCompanyOsDocsProjection(iaFixture, { documentId: "document-wcw-root" });
+  const iaEmptySource = iaFixture.documents.find((entry) => entry.id === "document-wcw-root");
+  check(
+    Array.isArray(iaEmptySource.block_ids) && iaEmptySource.block_ids.length === 0
+      && iaEmpty.document.id === "document-wcw-root"
+      && iaEmpty.document.blocks.length === 0
+      && !JSON.stringify(iaEmpty.document.blocks).includes("What this plan coordinates"),
+    "a Store Document asserting block_ids: [] renders zero Blocks instead of synthesized narrative, so the empty state is reachable",
+  );
+  const iaWithBlocks = adaptCompanyOsDocsProjection(iaFixture, { documentId: "document-agentos-01-agentos-dogfood" });
+  check(
+    iaWithBlocks.document.blocks.length === 12 && iaWithBlocks.document.id === "document-agentos-01-agentos-dogfood",
+    "a Store Document that does declare Blocks still renders exactly its projected Blocks",
+  );
+  // The discriminator is the Document's own assertion, not the absence of Blocks: a
+  // projection that never mentions block_ids is not claiming the Document is empty.
+  const undeclaredBlockIds = adaptCompanyOsDocsProjection({
+    documents: [{ id: "document-no-block-ids-key", title: "Prototype document", space: "Operations" }],
+  }, { documentId: "document-no-block-ids-key" });
+  const declaredEmptyBlockIds = adaptCompanyOsDocsProjection({
+    documents: [{ id: "document-declared-empty", title: "Store document", space: "Operations", block_ids: [] }],
+  }, { documentId: "document-declared-empty" });
+  check(
+    undeclaredBlockIds.document.blocks.length > 0 && declaredEmptyBlockIds.document.blocks.length === 0,
+    "an explicit empty block_ids is what suppresses synthesis; a projection that omits block_ids keeps its prototype narrative",
+  );
+  check(
+    document.includes('data-docs-empty-document="true"') && document.includes("empty UI state is not company truth") && document.includes("document.blocks.length"),
+    "Document Focus renders the empty-document state directly from the projected Block count",
+  );
+  // document-wcw-root renders through the Wanchengwanling operating layout, not the
+  // standard article, so suppressing synthesis there would have produced a silently
+  // blank page rather than a stated empty state.
+  check(
+    (document.match(/data-docs-empty-document="true"/g) ?? []).length === 1
+      && document.includes("function EmptyDocumentState")
+      && (document.match(/<EmptyDocumentState/g) ?? []).length === 2
+      && document.includes("{document.blocks.length ? (") && document.includes(': <EmptyDocumentState className="rounded-2xl bg-card/60" />}'),
+    "the Wanchengwanling operating layout and the standard article render one shared empty-document state, so neither can go silently blank",
+  );
+
+  const iaRelated = adaptCompanyOsDocsProjection(iaFixture, { documentId: "document-agentos-03-org-work-doc-loop" });
+  const relatedWork = iaRelated.document.relatedWork ?? [];
+  const relatedById = new Map(relatedWork.map((link) => [link.id, link]));
+  const iaSourceCount = iaFixture.work_items.filter((entry) => entry.source_document_ref === "document-agentos-03-org-work-doc-loop").length;
+  const iaContextCount = iaFixture.work_items.filter((entry) => (entry.context_refs ?? []).some((ref) => (ref?.id ?? ref) === "document-agentos-03-org-work-doc-loop")).length;
+  const iaResultCount = iaFixture.work_items.filter((entry) => entry.result_document_ref === "document-agentos-03-org-work-doc-loop").length;
+  check(
+    relatedWork.length === 17 && relatedById.size === 17,
+    `related work for document-agentos-03-org-work-doc-loop is the deduplicated union of ${iaSourceCount} source + ${iaContextCount} context + ${iaResultCount} result references (${iaSourceCount + iaContextCount + iaResultCount} refs -> ${relatedWork.length} distinct items)`,
+  );
+  check(
+    iaSourceCount + iaContextCount + iaResultCount > relatedWork.length
+      && relatedWork.every((link) => Boolean(link.meta))
+      && relatedById.get("work-agentos-org-work-doc-loop-v1")?.meta === "Source document · Context reference"
+      && relatedById.get("work-agentos-provider-capacity-preflight-v1")?.meta === "Context reference · Result document"
+      && relatedById.get("work-agentos-workitem-update-ownership-enforcement-v1")?.meta === "Source document · Result document",
+    "a WorkItem referenced more than once appears exactly once and states every reason it is related, rather than being listed twice or losing a reason",
+  );
+  check(
+    !relatedById.has("work-agentos-archived-source-provenance-v1") && !relatedById.has("work-agentos-doc-space-cleanup-v1")
+      && relatedWork.every((link) => link.kind === "work" && link.href?.startsWith("?surface=work&workItem=")),
+    "related work stays scoped to WorkItems that actually reference this Document and each entry routes to its WorkItem",
+  );
+  check(
+    adaptCompanyOsDocsProjection({
+      documents: [{ id: "document-context-string-refs", title: "Context ref shapes", space: "Operations", block_ids: [] }],
+      work_items: [{ id: "work-string-context", title: "String context ref", context_refs: ["document-context-string-refs"] }],
+    }, { documentId: "document-context-string-refs" }).document.relatedWork?.[0]?.meta === "Context reference",
+    "context_refs written as bare id strings resolve the same as { kind, id } entity refs",
+  );
+  check(
+    document.includes('data-docs-related-work="true"') && document.includes("Related work") && document.includes("RelatedWorkBlock")
+      && document.includes("Each item states why it is listed") && !document.includes('ContextBlock label="Results"'),
+    "Document Focus renders related work in a panel named for what it holds instead of labelling context and source references as Results",
+  );
+
   console.log(`\n   Company OS Docs checks: ${passed} pass, ${failed} fail`);
   process.exit(failed === 0 ? 0 : 1);
 }
