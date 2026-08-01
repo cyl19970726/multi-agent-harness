@@ -1296,7 +1296,7 @@ fn tool_definitions() -> Value {
                     "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                     ,"origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
-                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind default: assignment/handoff/control require a response round; ordinary message mail stays informational and never starts a provider round on its own."}
+                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: assignment/handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
             }

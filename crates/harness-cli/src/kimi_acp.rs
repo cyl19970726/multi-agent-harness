@@ -507,16 +507,33 @@ impl KimiAcpClient {
             // completed turn for a dead session.
             match response.try_recv() {
                 Ok(frame) => {
-                    if !accepted {
+                    let outcome = prompt_outcome(&frame);
+                    // ...but the reader dispatched every update that preceded
+                    // the response on the wire BEFORE enqueueing it, so
+                    // draining here recovers the tail of the stream in order.
+                    // Drain BEFORE deciding acceptance: a buffered update is
+                    // proof the provider started this turn even when the
+                    // terminal frame won the same poll iteration.
+                    let mut tail = Vec::new();
+                    while let Ok(update) = self.updates.try_recv() {
+                        tail.push(update);
+                    }
+                    // Only a turn the provider actually started may publish a
+                    // receipt. A terminal frame with NO preceding session
+                    // update that carries a provider error (403/429, immediate
+                    // rejection) never started work: publishing a receipt for
+                    // it would complete the Assignment delivery and burn the
+                    // assignment with no Handoff and nothing to replay.
+                    if !accepted && (!tail.is_empty() || outcome.provider_error.is_none()) {
+                        // Publish the receipt before handling the tail so tools
+                        // invoked by this turn may immediately send a
+                        // correlation-valid handoff or peer message.
                         on_accepted(&provider_receipt_id)?;
                     }
-                    // ...but the reader dispatched every update that preceded
-                    // the response on the wire BEFORE enqueueing it, so a full
-                    // drain here replays the tail of the stream in order.
-                    while let Ok(update) = self.updates.try_recv() {
-                        self.handle_incoming(&update, &mut on_update, &mut on_request)?;
+                    for update in &tail {
+                        self.handle_incoming(update, &mut on_update, &mut on_request)?;
                     }
-                    return Ok(prompt_outcome(&frame));
+                    return Ok(outcome);
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
@@ -746,11 +763,14 @@ fn await_response(
 }
 
 /// Fold the terminal `session/prompt` response into a [`PromptOutcome`]. A
-/// JSON-RPC error frame or a response without `result.stopReason` means the
-/// provider failed the turn: surface it as `provider_error` so the caller
-/// records a failed provider_error round rather than a fabricated Handoff.
+/// JSON-RPC error frame, a response without `result.stopReason`, or a
+/// `stopReason` that did not complete the turn means the provider failed the
+/// turn: surface it as `provider_error` so the caller records a failed
+/// provider_error round rather than a fabricated Handoff.
 fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
-    if let Some(error) = frame.get("error") {
+    // `error: null` is a present-but-empty key: many JSON-RPC servers
+    // serialize every field. Only a non-null `error` object is a failure.
+    if let Some(error) = frame.get("error").filter(|error| !error.is_null()) {
         let code = error
             .get("code")
             .and_then(|code| code.as_i64())
@@ -765,15 +785,52 @@ fn prompt_outcome(frame: &serde_json::Value) -> PromptOutcome {
             provider_error: Some(format!("session/prompt rejected{code}: {message}")),
         };
     }
-    let stop_reason = frame
+    let Some(stop_reason) = frame
         .get("result")
         .and_then(|result| result.get("stopReason"))
-        .and_then(|reason| reason.as_str());
+        .and_then(|reason| reason.as_str())
+    else {
+        return PromptOutcome {
+            stop_reason: "unknown".to_string(),
+            provider_error: Some(format!(
+                "session/prompt response missing result.stopReason: {frame}"
+            )),
+        };
+    };
     PromptOutcome {
-        stop_reason: stop_reason.unwrap_or("unknown").to_string(),
-        provider_error: stop_reason
-            .is_none()
-            .then(|| format!("session/prompt response missing result.stopReason: {frame}")),
+        stop_reason: stop_reason.to_string(),
+        provider_error: stop_reason_failure(stop_reason),
+    }
+}
+
+/// Classify an ACP `stopReason`. Only `end_turn` completed the turn's work.
+/// `cancelled` is a Harness-requested outcome the caller records separately, so
+/// it is not a provider failure. Every other reason (`max_tokens`, `refusal`,
+/// `max_turn_requests`, or anything unknown) stopped the turn early: the
+/// member's output is truncated or absent, so it must record a failed
+/// provider_error round rather than a fabricated Handoff plus false completion.
+fn stop_reason_failure(stop_reason: &str) -> Option<String> {
+    match stop_reason {
+        "end_turn" | "cancelled" | "canceled" => None,
+        "max_tokens" => Some(
+            "session/prompt stopped on `max_tokens`: the provider truncated the turn, so any \
+             report it produced is incomplete"
+                .to_string(),
+        ),
+        "refusal" => Some(
+            "session/prompt stopped on `refusal`: the provider declined the turn and produced no \
+             completed work"
+                .to_string(),
+        ),
+        "max_turn_requests" => Some(
+            "session/prompt stopped on `max_turn_requests`: the provider hit its request budget \
+             before finishing the turn"
+                .to_string(),
+        ),
+        other => Some(format!(
+            "session/prompt stopped on unsupported stopReason `{other}`: Harness cannot claim the \
+             turn completed"
+        )),
     }
 }
 
@@ -842,5 +899,57 @@ mod tests {
             .provider_error
             .as_deref()
             .is_some_and(|error| error.contains("missing result.stopReason")));
+    }
+
+    #[test]
+    fn prompt_outcome_ignores_a_null_error_key() {
+        // Servers that serialize every field (serde without
+        // skip_serializing_if, Python dataclasses.asdict) emit `error: null`
+        // on success. `frame.get("error").is_some()` is true for that key, so
+        // a non-null filter is what separates success from failure.
+        let success = prompt_outcome(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 5, "result": {"stopReason": "end_turn"}, "error": null
+        }));
+        assert_eq!(success.stop_reason, "end_turn");
+        assert_eq!(success.provider_error, None);
+
+        // The mirrored shape: a real error alongside a null result.
+        let failure = prompt_outcome(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 5, "result": null,
+            "error": {"code": -32000, "message": "rate limited"}
+        }));
+        assert_eq!(failure.stop_reason, "error");
+        assert!(failure.provider_error.is_some());
+    }
+
+    #[test]
+    fn prompt_outcome_refuses_to_call_an_incomplete_stop_reason_a_success() {
+        for (stop_reason, expected_fragment) in [
+            ("max_tokens", "truncated the turn"),
+            ("refusal", "declined the turn"),
+            ("max_turn_requests", "request budget"),
+            ("wat", "unsupported stopReason"),
+        ] {
+            let outcome = prompt_outcome(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 5, "result": {"stopReason": stop_reason}
+            }));
+            assert_eq!(outcome.stop_reason, stop_reason);
+            assert!(
+                outcome
+                    .provider_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains(expected_fragment)),
+                "{stop_reason} must record a provider_error, got {:?}",
+                outcome.provider_error
+            );
+        }
+        // Harness-requested cancellation is recorded by the caller as a
+        // cancelled round, not as a provider failure.
+        for stop_reason in ["cancelled", "canceled"] {
+            let outcome = prompt_outcome(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 5, "result": {"stopReason": stop_reason}
+            }));
+            assert_eq!(outcome.provider_error, None, "{stop_reason}");
+        }
     }
 }

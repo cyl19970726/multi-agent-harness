@@ -101,18 +101,23 @@ lane merges, other live lanes reconcile per the rolling rule.
 ### N1. work-agentos-team-message-convergence-v1
 
 - Owner: agent-agentos-platform-development
-- Status: submitted; nothing implemented — `TeamMessage` has no
-  `response_required`/response-intent field (`crates/harness-core/src/lib.rs`);
-  ADR 0046 states the intent contract but is design-only today
+- Status: implemented — `TeamMessage.response_intent` plus the sender-aware
+  `effective_response_intent` default (`crates/harness-core/src/lib.rs`), the
+  response-intent delivery/fence gate (`crates/harness-store/src/lib.rs`,
+  `crates/harness-cli/src/main.rs`), `--response-required`/`--informational` on
+  the CLI, `response_intent` on HTTP/MCP, and the Dashboard read-side label.
+  ADR 0046 §4 now states the sender-aware rule and is no longer design-only
 - Dependencies: none
 - Collision boundary: `crates/harness-core/src/lib.rs` (TeamMessage),
   `crates/harness-cli/src/main.rs` (team-run send/gateway), `crates/harness-store`,
   message schemas, `apps/agent-dashboard/src/surfaces/TeamWarRoom.tsx`.
   Sequence before N2 (both touch `harness-core` and schemas)
 - Acceptance: ack-only peer mail triggers no provider round unless
-  `response_required` is explicit; questions/blockers/reviews/handoffs stay
-  durable and correlated; deterministic two-peer bounded-convergence test;
-  Dashboard distinguishes informational delivery from response-required
+  `response_required` is explicit; Host/Operator/Service mail still wakes an
+  idle Member by default so questions, blockers, reviews, Host decisions, and
+  handoffs stay durable, correlated, and reachable; deterministic two-peer
+  bounded-convergence test; Dashboard distinguishes informational delivery from
+  response-required
 
 ### N2. work-agentos-runtime-upgrade-reconciliation-v1
 

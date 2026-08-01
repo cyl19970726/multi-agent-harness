@@ -131,6 +131,22 @@ for the peer's next available round. Read the Inbox again after meaningful
 milestones and before handoff. Never assume a provider assistant reply is team
 state unless a `TeamMessage` records it.
 
+**Response intent (ADR 0046 §4).** Your mail to `host` is `response_required`
+by default, so questions, blockers, and plans always reach the Host. Ordinary
+`message` mail to a PEER member is `informational` by default: it is durable
+and correlated, but it never wakes that idle peer into a new provider round.
+That is deliberate — it lets acknowledgement-only notes converge instead of
+ping-ponging. Two explicit overrides exist:
+
+- `--response-required` on peer mail you genuinely need the peer to act on and
+  answer (`QUESTION:`, `BLOCKER:`, a review request).
+- `--informational` on Host mail that is genuinely FYI-only and should not cost
+  the Host a round.
+
+Do not add `--response-required` to a peer acknowledgement just to be sure it
+was seen; the peer will read it in its Inbox on its next round, and the delivery
+row records it either way.
+
 Sending to `host` means the durable Lead Inbox has received the envelope; it
 does not interrupt the Host's current turn or prove the Host has read it. Wait
 for a causation-linked Host reply or explicit acceptance when your work depends

@@ -191,7 +191,7 @@ The harness owns delivery policy:
 
 | Member state | Message policy |
 | --- | --- |
-| `idle` | deliver next eligible message |
+| `idle` | deliver the next eligible response-required message and start a round; informational mail stays queued and batches into that round |
 | `running` | enqueue normal messages; allow explicit interrupt only by policy |
 | `waiting_for_input` | deliver clarification or decision messages |
 | `waiting_for_approval` | deliver approval decision or keep queued |
@@ -241,9 +241,13 @@ Crash recovery depends on the last durable boundary:
   ask the Member to inspect its native state/workspace and finish or restate
   the result without duplicating the Assignment.
 
-A Member cannot write a Handoff while newer same-correlation input is `queued`
-or `claimed`. This fence preserves the difference between a pre-correction
-result and the result that actually absorbed the Host's latest instruction.
+A Member cannot write a Handoff while newer same-correlation **response-required**
+input is `queued` or `claimed`. This fence preserves the difference between a
+pre-correction result and the result that actually absorbed the Host's latest
+instruction — an ordinary Host `message` is response-required by default, so a
+mid-round correction always fences. Informational mail (peer-to-peer
+acknowledgements) never starts a round, so fencing on it would deadlock the
+Handoff behind mail that is intentionally never driven; it does not fence.
 
 Closed, closing, or retired members cannot be revived by delivery. A provider
 may expose an explicit reopen operation later, but normal message delivery and

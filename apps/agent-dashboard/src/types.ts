@@ -514,20 +514,37 @@ export type TeamMessageKind =
 export type TeamMessageResponseIntent = "informational" | "response_required";
 
 /**
- * Effective response intent: the explicit field wins; otherwise the kind
- * decides — assignment/handoff/control always require a response round,
- * ordinary message mail defaults to informational (mirrors the Rust
- * `TeamMessage::effective_response_intent` contract).
+ * Effective response intent: the explicit field wins; otherwise kind AND
+ * sender decide — assignment/handoff/control always require a response round,
+ * and ordinary message mail requires one unless a peer member sent it
+ * (mirrors the Rust `TeamMessage::effective_response_intent` contract).
  */
 export function effectiveTeamMessageResponseIntent(
-  message: Pick<TeamMessage, "kind" | "response_intent">,
+  message: Pick<TeamMessage, "kind" | "response_intent" | "sender" | "from_member_id">,
 ): TeamMessageResponseIntent {
   if (message.response_intent === "informational" || message.response_intent === "response_required") {
     return message.response_intent;
   }
-  return message.kind === "assignment" || message.kind === "handoff" || message.kind === "control"
-    ? "response_required"
-    : "informational";
+  if (message.kind === "assignment" || message.kind === "handoff" || message.kind === "control") {
+    return "response_required";
+  }
+  return sentByPeerMember(message) ? "informational" : "response_required";
+}
+
+/**
+ * True when a team message was authored by another member rather than by the
+ * coordination plane (Host, Operator, Service). Historical rows carry no typed
+ * `sender`, so they fall back to the reserved `"host"` `from_member_id`.
+ */
+function sentByPeerMember(message: Pick<TeamMessage, "sender" | "from_member_id">): boolean {
+  const senderKind = message.sender?.kind;
+  if (senderKind === "member_run" || senderKind === "agent_member") {
+    return true;
+  }
+  if (senderKind === "host" || senderKind === "operator" || senderKind === "service") {
+    return false;
+  }
+  return message.from_member_id !== "host";
 }
 
 /**

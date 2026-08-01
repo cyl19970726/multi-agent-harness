@@ -374,6 +374,24 @@ harness wave update --id <wave-id> --context "<revised-markdown>" \
   --updated-by host
 ```
 
+**Response intent (ADR 0046 §4).** Your ordinary `--kind message` mail is
+`response_required` by default, so an answer, revision, acceptance decision, or
+plan request always wakes an idle Member into a new provider round. The normal
+case needs no flag. Two explicit overrides exist:
+
+- `--informational` — the note is genuinely FYI-only. It stays durable and
+  correlated, starts no round, and batches into the Member's next round. Use it
+  for broadcasts that must not cost a turn.
+- `--response-required` — force a round for mail that would otherwise default
+  to informational, i.e. peer-to-peer member mail.
+
+Informational mail does not fence a same-correlation Handoff; response-required
+mail does. That is why a mid-round correction sent as ordinary `message` mail
+still stops a Member from handing off work that never absorbed it. The same two
+values are spelled `"response_intent": "informational" | "response_required"`
+on the HTTP and MCP surfaces; a Dashboard reply is an Operator write and is
+response-required by the same default.
+
 Read Lead and member mailboxes:
 
 ```bash

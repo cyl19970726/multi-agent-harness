@@ -4134,8 +4134,21 @@
    ],
    "reorgTrigger": "Supervising Operator, durable Lead, Runtime Supervisor, Standing Agent Inbox, or Company OS self-hosting semantics change.",
    "authorityClass": "canonical_contract",
-   "implementationState": "design_only",
-   "truthRefs": []
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "store",
+     "ref": "crates/harness-store/src/lib.rs"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/team-message.schema.json"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
   },
   {
    "path": "docs/company-os/scoped-authority-broker.md",

@@ -418,7 +418,60 @@ fn team_run_cli_create_list_status_send_events() {
     );
     assert!(
         message["response_intent"].is_null(),
-        "ordinary message mail carries no explicit intent (informational by default): {message:?}"
+        "peer-to-peer message mail carries no explicit intent (informational by default): {message:?}"
+    );
+
+    // Sender-aware default (ADR 0046 §4): the same bare `--kind message` from
+    // Host stays response-required, because `message` is the only legal
+    // carrier for Host questions, revisions, and acceptance decisions.
+    let host_mail = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            member_ids[0],
+            "--kind",
+            "message",
+            "--body",
+            "Revise the API surface and report back",
+            "--json",
+        ],
+    );
+    assert!(
+        host_mail["response_intent"].is_null(),
+        "Host mail also carries no explicit intent; the default is sender-aware: {host_mail:?}"
+    );
+
+    // --informational is the explicit downward override for Host mail that is
+    // genuinely FYI-only, mirroring the HTTP/MCP `response_intent` field.
+    let host_fyi = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            member_ids[0],
+            "--kind",
+            "message",
+            "--informational",
+            "--body",
+            "FYI: the nightly gate is green",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        host_fyi["response_intent"].as_str(),
+        Some("informational"),
+        "CLI --informational sets the explicit downward override: {host_fyi:?}"
     );
 
     // --response-required marks mail that must wake an idle peer into a new
@@ -468,12 +521,16 @@ fn team_run_cli_create_list_status_send_events() {
         "CLI inbox must expose peer coordination mail: {inbox}"
     );
 
-    // events --json: 5 create-time events + 2 send events, seq 1..=7 in order.
+    // events --json: 5 create-time events + 4 send events, seq 1..=9 in order.
     let events = team_run_json(&home, &project_id, &["events", "--id", &run_id, "--json"]);
     let events = events.as_array().expect("events array");
-    assert_eq!(events.len(), 7, "events: {events:?}");
+    assert_eq!(events.len(), 9, "events: {events:?}");
     let seqs: Vec<u64> = events.iter().filter_map(|e| e["seq"].as_u64()).collect();
-    assert_eq!(seqs, vec![1, 2, 3, 4, 5, 6, 7], "seq strictly increasing");
+    assert_eq!(
+        seqs,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "seq strictly increasing"
+    );
     assert_eq!(events[0]["entity_type"].as_str(), Some("team_run"));
     assert_eq!(events[0]["operation"].as_str(), Some("created"));
     assert_eq!(events[0]["source_kind"].as_str(), Some("host"));
@@ -483,16 +540,16 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(last["source_kind"].as_str(), Some("member"));
     assert_eq!(last["member_run_id"].as_str(), Some(member_ids[1]));
 
-    // events --after-seq 5: only the two send events remain.
+    // events --after-seq 5: only the four send events remain.
     let tail = team_run_json(
         &home,
         &project_id,
         &["events", "--id", &run_id, "--after-seq", "5", "--json"],
     );
     let tail = tail.as_array().expect("tail array");
-    assert_eq!(tail.len(), 2, "tail: {tail:?}");
-    assert_eq!(tail[0]["seq"].as_u64(), Some(6));
-    assert_eq!(tail[1]["seq"].as_u64(), Some(7));
+    assert_eq!(tail.len(), 4, "tail: {tail:?}");
+    let tail_seqs: Vec<u64> = tail.iter().filter_map(|e| e["seq"].as_u64()).collect();
+    assert_eq!(tail_seqs, vec![6, 7, 8, 9]);
 
     // Member-to-Host mail is actionable immediately; CLI ACK is the complete
     // control-plane path and removes it from the default Inbox without erasing
@@ -1788,7 +1845,6 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
             "from_member_id": "host",
             "to_member_ids": [builder_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "HOST FOLLOW-UP after TeamRun completion",
             "correlation_id": assignment_correlation,
             "causation_id": assignment_id,
@@ -2015,7 +2071,6 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "QUEUED_FOR_SUCCESSOR",
             "correlation_id": correlation,
             "causation_id": assignment_id,
@@ -2032,7 +2087,6 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "PROVIDER_ACCEPTED_BEFORE_LOSS",
             "correlation_id": correlation,
             "causation_id": queued_id,
@@ -2049,7 +2103,6 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "CLAIMED_WITHOUT_RECEIPT_BEFORE_LOSS",
             "correlation_id": correlation,
             "causation_id": accepted_id,
@@ -2904,7 +2957,6 @@ fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "OPEN NEXT ROUND after idle",
             "correlation_id": assignment_correlation,
             "causation_id": explicit_handoff_id,
@@ -2936,7 +2988,7 @@ fn codex_app_server_post_handoff_steer_converges_before_follow_up_round() {
     }
     assert!(
         next_round,
-        "post-idle follow-up with explicit response intent must open a new provider round"
+        "ordinary post-idle correlated follow-up must open a new provider round"
     );
 }
 
@@ -3021,7 +3073,6 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "continue after interrupt"
         }),
     );
@@ -3494,17 +3545,16 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "late Kimi follow-up",
             "correlation_id": assignment_correlation,
             "causation_id": first_handoff_id,
         }),
     );
     assert_eq!(status, 200, "body: {sent}");
-    assert_eq!(
-        sent["result"]["response_intent"].as_str(),
-        Some("response_required"),
-        "explicit response intent round-trips through the API: {sent}"
+    assert!(
+        sent["result"]["response_intent"].is_null(),
+        "bare Host follow-up carries no explicit intent yet still wakes the idle Kimi member \
+         via the sender-aware default: {sent}"
     );
     let message_id = sent["result"]["id"].as_str().unwrap().to_string();
 
@@ -3617,7 +3667,6 @@ fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
             "from_member_id": "host",
             "to_member_ids": [member_id],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "BUSY_CORRECTION_ONE",
             "correlation_id": correlation,
             "causation_id": assignment_id,
@@ -4457,21 +4506,47 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     }
     assert!(round_one, "both peers must finish round one and go idle");
 
-    // Informational Host mail must NOT wake an idle peer into a provider
-    // round (ADR 0046 §4); the delivery stays durable and queued.
+    // Ack-only PEER mail must NOT wake an idle peer into a provider round
+    // (ADR 0046 §4); the delivery stays durable and queued. This is the
+    // sender-aware default: no explicit intent is set on the wire, only
+    // explicit member provenance.
     let (status, fyi) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
+            "sender_kind": "member_run",
+            "sender_id": member_b,
+            "from_member_id": member_b,
             "to_member_ids": [member_a],
             "kind": "message",
-            "body": "FYI: the wave advanced; no reply needed",
+            "body": "ACK: your lane note landed; no reply needed",
             "correlation_id": correlation_a,
         }),
     );
     assert_eq!(status, 200, "body: {fyi}");
     let fyi_id = fyi["result"]["id"].as_str().unwrap().to_string();
     assert!(fyi["result"]["response_intent"].is_null());
+
+    // Host mail is response-required by DEFAULT (Host questions, revisions,
+    // and acceptance decisions all ride on `message`), so an FYI-only Host
+    // note must say so explicitly. That explicit override is also non-waking.
+    let (status, host_fyi) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "from_member_id": "host",
+            "to_member_ids": [member_a],
+            "kind": "message",
+            "response_intent": "informational",
+            "body": "FYI: the wave advanced; no reply needed",
+            "correlation_id": correlation_a,
+        }),
+    );
+    assert_eq!(status, 200, "body: {host_fyi}");
+    let host_fyi_id = host_fyi["result"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        host_fyi["result"]["response_intent"].as_str(),
+        Some("informational")
+    );
+
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(
         follow_up_rounds(&prompts),
@@ -4484,13 +4559,15 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         Some("idle"),
         "informational mail must not even mark the member busy"
     );
-    let delivery = snapshot_messages(&serve)
-        .into_iter()
-        .find(|message| message["id"].as_str() == Some(fyi_id.as_str()))
-        .and_then(|message| message["deliveries"][0].clone().into());
-    let delivery: serde_json::Value = delivery.expect("fyi delivery row");
-    assert_eq!(delivery["status"].as_str(), Some("queued"));
-    assert_eq!(delivery["attempt"].as_u64(), Some(0));
+    for queued_id in [&fyi_id, &host_fyi_id] {
+        let delivery = snapshot_messages(&serve)
+            .into_iter()
+            .find(|message| message["id"].as_str() == Some(queued_id.as_str()))
+            .and_then(|message| message["deliveries"][0].clone().into());
+        let delivery: serde_json::Value = delivery.expect("informational delivery row");
+        assert_eq!(delivery["status"].as_str(), Some("queued"), "{queued_id}");
+        assert_eq!(delivery["attempt"].as_u64(), Some(0), "{queued_id}");
+    }
 
     // A response-required question wakes peer A. During that round the
     // scripted provider answers with acknowledgement-only mail to peer B.
@@ -4532,19 +4609,29 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
             .starts_with("tmsg-"),
         "peer A ack-only mail must be authored during its follow-up round"
     );
-    // The earlier informational FYI rode along with the triggered round and
-    // was delivered exactly once with that round's receipt.
+    // Both earlier informational notes (the bare peer ack and the explicitly
+    // informational Host FYI) rode along with the triggered round and were
+    // delivered exactly once with that round's receipt.
     let messages = snapshot_messages(&serve);
-    let fyi_delivery = messages
-        .iter()
-        .find(|message| message["id"].as_str() == Some(fyi_id.as_str()))
-        .map(|message| message["deliveries"][0].clone())
-        .expect("fyi delivery");
-    assert_eq!(fyi_delivery["status"].as_str(), Some("delivered"));
-    assert_eq!(fyi_delivery["attempt"].as_u64(), Some(1));
-    assert!(fyi_delivery["provider_receipt_id"]
-        .as_str()
-        .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")));
+    for queued_id in [&fyi_id, &host_fyi_id] {
+        let delivery = messages
+            .iter()
+            .find(|message| message["id"].as_str() == Some(queued_id.as_str()))
+            .map(|message| message["deliveries"][0].clone())
+            .expect("informational delivery");
+        assert_eq!(
+            delivery["status"].as_str(),
+            Some("delivered"),
+            "{queued_id}"
+        );
+        assert_eq!(delivery["attempt"].as_u64(), Some(1), "{queued_id}");
+        assert!(
+            delivery["provider_receipt_id"]
+                .as_str()
+                .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")),
+            "{queued_id}"
+        );
+    }
 
     // Bounded convergence: peer B must NOT start a round for the ack-only
     // mail. Wait long enough for any erroneous round to begin.
@@ -4572,16 +4659,16 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     assert_eq!(handoffs_from(&messages, &member_b).len(), 1);
     assert_eq!(member_status(&serve, &member_b).as_deref(), Some("idle"));
 
-    // A response-required Host message now triggers peer B; the queued ack
-    // batches into that round and both are delivered exactly once with the
-    // same provider receipt.
+    // An ordinary Host message now triggers peer B on the sender-aware
+    // default alone (no explicit intent on the wire); the queued ack batches
+    // into that round and both are delivered exactly once with the same
+    // provider receipt.
     let (status, b_trigger) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
             "from_member_id": "host",
             "to_member_ids": [member_b],
             "kind": "message",
-            "response_intent": "response_required",
             "body": "Start your reviewed lane now",
             "correlation_id": correlation_b,
         }),
@@ -4601,7 +4688,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     }
     assert!(
         b_second_round,
-        "response-required mail must drive peer B's follow-up round"
+        "ordinary Host mail must drive peer B's follow-up round on the sender-aware default"
     );
     let messages = snapshot_messages(&serve);
     let delivery_of = |message_id: &str| -> serde_json::Value {
@@ -4807,4 +4894,290 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
         recovered,
         "the recovered round must produce exactly one honest handoff caused by the retry"
     );
+}
+
+/// A prompt the provider rejects BEFORE any session/update was never accepted.
+/// Publishing a provider receipt for it would complete the Assignment delivery
+/// and burn the work: the member would go idle with no Handoff and nothing for
+/// Host to act on, and the Assignment could never be replayed.
+#[test]
+fn kimi_prompt_rejected_before_any_update_never_burns_the_assignment() {
+    let home = TempHome::new("team-run-kimi-reject-before-update");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let reject_once = home.base().join("kimi-reject-before-update-once");
+    let reject_once_value = reject_once.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            (
+                "FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER",
+                reject_once_value.as_str(),
+            ),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Kimi immediate rejection must not burn the assignment",
+            "members": [{"name": "kimi-reject", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let assignment_id = created["result"]["assignment_messages"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut rejected = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let provider_error = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("provider_error")
+                    && action["status"].as_str() == Some("failed")
+            });
+        let handoffs = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        assert_eq!(
+            handoffs, 0,
+            "a rejected prompt must never fabricate a handoff"
+        );
+        rejected = provider_error;
+        if rejected {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        rejected,
+        "an immediately rejected Kimi prompt must record a failed provider_error round"
+    );
+    assert!(reject_once.exists(), "the scripted rejection fired");
+
+    // The core contract: no receipt was published for a turn the provider
+    // never accepted, so the Assignment delivery is not completed and stays
+    // replayable rather than silently burned.
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let assignment_delivery = snapshot["team_messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|message| message["id"].as_str() == Some(assignment_id.as_str()))
+        .map(|message| message["deliveries"][0].clone())
+        .expect("assignment delivery");
+    assert_ne!(
+        assignment_delivery["status"].as_str(),
+        Some("delivered"),
+        "a rejected prompt must not complete the assignment delivery: {assignment_delivery}"
+    );
+    assert!(
+        assignment_delivery["provider_receipt_id"].is_null(),
+        "a rejected prompt must publish no provider receipt: {assignment_delivery}"
+    );
+    assert!(
+        !snapshot["team_run_events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|event| {
+                event["entity_id"].as_str() == Some(assignment_id.as_str())
+                    && event["summary"]
+                        .as_str()
+                        .is_some_and(|summary| summary.contains("accepted by provider"))
+            }),
+        "a rejected prompt must not journal `assignment accepted by provider`: {}",
+        snapshot["team_run_events"]
+    );
+}
+
+/// JSON-RPC servers that serialize every field return `"error": null` on
+/// success. `frame.get("error").is_some()` is true for that key, so a naive
+/// check turns every successful round into a provider failure and loses the
+/// member's entire output.
+#[test]
+fn kimi_null_error_key_on_a_successful_response_is_not_a_provider_error() {
+    let home = TempHome::new("team-run-kimi-null-error-key");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+            ("FAKE_KIMI_NULL_ERROR_KEY", "1"),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Null error key is still a successful round",
+            "members": [{"name": "kimi-null-error", "role": "implementer", "provider": "kimi"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut completed = false;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        assert!(
+            !snapshot["member_actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|action| {
+                    action["member_run_id"].as_str() == Some(member_id.as_str())
+                        && action["action_type"].as_str() == Some("provider_error")
+                }),
+            "`error: null` is an empty key, not a provider failure"
+        );
+        let handoffs = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("handoff")
+            })
+            .count();
+        completed = handoffs == 1;
+        if completed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        completed,
+        "a successful round carrying `error: null` must still produce its handoff"
+    );
+}
+
+/// `max_tokens`, `refusal`, and `max_turn_requests` all stop the turn before
+/// the member finished its work. Recording them as completed/succeeded is the
+/// same "partial handoff plus false completion" class as an unclassified
+/// JSON-RPC error, so they must record a failed provider_error round instead.
+#[test]
+fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
+    for stop_reason in ["max_tokens", "refusal", "max_turn_requests"] {
+        let home = TempHome::new(&format!("team-run-kimi-stop-{stop_reason}"));
+        let _project_id = init_project(&home, "alpha");
+        let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+        let fake_kimi = fake_bin.join("kimi").display().to_string();
+        let serve = ServeHandle::spawn_with_env(
+            &home,
+            home.base(),
+            &[],
+            &[
+                ("KIMI_CODE_BIN", fake_kimi.as_str()),
+                ("FAKE_KIMI_RESULT", "done"),
+                ("FAKE_KIMI_STOP_REASON", stop_reason),
+                ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
+            ],
+        );
+        let (_, created) = serve.post_json(
+            "/v1/team-runs",
+            &serde_json::json!({
+                "objective": format!("Kimi {stop_reason} must not read as success"),
+                "members": [{"name": "kimi-stop", "role": "implementer", "provider": "kimi"}]
+            }),
+        );
+        let run_id = created["result"]["team_run"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let member_id = created["result"]["member_runs"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (status, started) = serve.post_json(
+            &format!("/v1/team-runs/{run_id}/start"),
+            &serde_json::json!({}),
+        );
+        assert_eq!(status, 202, "body: {started}");
+
+        let mut failed = false;
+        for _ in 0..300 {
+            let (_, snapshot) = serve.get_json("/v1/snapshot");
+            let actions: Vec<&serde_json::Value> = snapshot["member_actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|action| action["member_run_id"].as_str() == Some(member_id.as_str()))
+                .collect();
+            assert!(
+                !actions.iter().any(|action| {
+                    action["action_type"].as_str() == Some("completed")
+                        && action["status"].as_str() == Some("succeeded")
+                }),
+                "{stop_reason} must never be recorded as a succeeded completion"
+            );
+            let handoffs = snapshot["team_messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|message| {
+                    message["from_member_id"].as_str() == Some(member_id.as_str())
+                        && message["kind"].as_str() == Some("handoff")
+                })
+                .count();
+            assert_eq!(handoffs, 0, "{stop_reason} must never fabricate a handoff");
+            failed = actions.iter().any(|action| {
+                action["action_type"].as_str() == Some("provider_error")
+                    && action["status"].as_str() == Some("failed")
+            });
+            if failed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            failed,
+            "stopReason {stop_reason} must record a failed provider_error round"
+        );
+    }
 }

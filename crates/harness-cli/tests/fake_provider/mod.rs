@@ -189,6 +189,14 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
         continue
       fi
+      if [ -n "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}" ]; then
+        # Immediate non-retryable rejection with NO preceding session/update:
+        # the provider never accepted the prompt, so Harness must not publish
+        # a provider receipt for it and must leave the delivery replayable.
+        : > "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}"
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 429: rate limited before the turn started"}}\n' "$id"
+        continue
+      fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
       if [ -n "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}" ]; then
         # One non-retryable provider failure after partial content streamed:
@@ -248,7 +256,16 @@ while IFS= read -r line; do
           printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ordinary narration with no trailing newline"}}}}\n' "$session_id"
         fi
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member finished round\\n"}}}}\n' "$session_id" "$result"
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+        # FAKE_KIMI_STOP_REASON exercises non-`end_turn` terminal reasons
+        # (max_tokens/refusal/max_turn_requests). FAKE_KIMI_NULL_ERROR_KEY
+        # reproduces servers that serialize every field, so a SUCCESSFUL
+        # response still carries `"error": null`.
+        stop_reason="${FAKE_KIMI_STOP_REASON:-end_turn}"
+        if [ "${FAKE_KIMI_NULL_ERROR_KEY:-0}" = "1" ]; then
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"%s"},"error":null}\n' "$id" "$stop_reason"
+        else
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"%s"}}\n' "$id" "$stop_reason"
+        fi
       fi
       ;;
     *'"id":700'*'"optionId":"q0_opt_0"'*)

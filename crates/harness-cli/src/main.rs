@@ -11925,7 +11925,8 @@ fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
 }
 
 /// Parse an explicit team message response intent from its snake_case wire
-/// name (HTTP API and MCP tool surface; the CLI uses --response-required).
+/// name (HTTP API and MCP tool surface; the CLI spells the same two values as
+/// --response-required and --informational).
 fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseIntent> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -12468,11 +12469,25 @@ fn team_run_command(
             let from = required(args, "--from")?;
             let kind = parse_team_message_kind(&required(args, "--kind")?)?;
             let body = required(args, "--body")?;
-            // Explicit response intent (ADR 0046 §4): ordinary `message` mail
-            // defaults to informational and never starts a provider round on
-            // its own; --response-required marks mail that must.
-            let response_intent = has_flag(args, "--response-required")
-                .then_some(TeamMessageResponseIntent::ResponseRequired);
+            // Explicit response intent (ADR 0046 §4). The default is
+            // sender-aware: coordination-plane `message` mail wakes an idle
+            // member, peer-to-peer `message` mail stays informational. Both
+            // overrides exist so either default can be reversed explicitly,
+            // matching the HTTP/MCP `response_intent` field.
+            let response_intent = match (
+                has_flag(args, "--response-required"),
+                has_flag(args, "--informational"),
+            ) {
+                (true, true) => {
+                    return Err(CliError::Usage(
+                        "--response-required and --informational are mutually exclusive"
+                            .to_string(),
+                    ))
+                }
+                (true, false) => Some(TeamMessageResponseIntent::ResponseRequired),
+                (false, true) => Some(TeamMessageResponseIntent::Informational),
+                (false, false) => None,
+            };
             let message = if let Some(actor_kind) = value(args, "--actor-kind") {
                 send_team_message_as(
                     store,
@@ -18292,7 +18307,7 @@ fn contract_prompt(
          - Read all received coordination messages (latest stored state): \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
          - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Message a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
-         - Response intent: ordinary message mail is informational by default — durable and correlated, but it never wakes an idle peer into a new provider round, and acknowledgement-only mail must stay informational so the team converges. Add --response-required only when you explicitly need that peer to act and reply (QUESTION, BLOCKER, review request to a peer member).\n\
+         - Response intent: mail to Host is response-required by default, so your questions, blockers, and plans always reach Host. Ordinary message mail to a PEER member is informational by default — durable and correlated, but it never wakes that idle peer into a new provider round, so acknowledgement-only peer notes converge instead of ping-ponging. Add --response-required when you need a peer to act and reply (QUESTION, BLOCKER, review request); add --informational when a note to Host is genuinely FYI-only.\n\
          - Submit handoff: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Submit a requested plan/revision: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
          \n\
@@ -20887,6 +20902,12 @@ fn send_team_message_value(
             "missing JSON field: to_member_ids".to_string(),
         ));
     }
+    // Bare Dashboard writes default to the Operator control plane, which is
+    // response-required under the sender-aware default (ADR 0012: the
+    // Dashboard is a control plane, so an Operator reply must wake an idle
+    // member). An HTTP caller speaking FOR a member must say so explicitly
+    // with `sender_kind`/`sender_id`; `from_member_id` alone is a historical
+    // projection field and does not carry provenance.
     let sender_kind = json_string(body, "sender_kind").unwrap_or_else(|| "operator".to_string());
     let sender_id = json_string(body, "sender_id").unwrap_or_else(|| {
         if sender_kind == "host" || sender_kind == "member_run" {
@@ -20910,7 +20931,9 @@ fn send_team_message_value(
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
         json_string(body, "origin_wave_id"),
-        json_string(body, "response_intent")
+        // Strict: a present-but-not-a-string `response_intent` is a caller
+        // error, never a silent fall-through to the default.
+        optional_json_string(body, "response_intent")?
             .map(|intent| parse_team_message_response_intent(&intent))
             .transpose()?,
     )?;

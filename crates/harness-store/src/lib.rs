@@ -2915,6 +2915,40 @@ mod tests {
             .expect_err("response-required question must fence stale handoff");
         assert!(error.to_string().contains("queued or claimed"));
 
+        // Safety regression guard: a Host mid-round correction is ordinary
+        // `message` mail with no explicit intent, but it is sender-aware
+        // response-required, so it MUST still fence a same-correlation Handoff
+        // — otherwise a member could hand off work that never absorbed the
+        // correction.
+        let host_correction = TeamMessage {
+            id: "tm-host-correction".into(),
+            from_member_id: "host".into(),
+            correlation_id: "corr-info-host".into(),
+            causation_id: None,
+            response_intent: None,
+            body: "Revise: drop the extra scope before handing off".into(),
+            created_at: "unix-ms:5".into(),
+            ..ack_only.clone()
+        };
+        assert!(
+            host_correction.requires_response(),
+            "Host ordinary mail defaults to response_required"
+        );
+        store
+            .append_team_message_checked(&host_correction)
+            .expect("append host correction");
+        let stale = TeamMessage {
+            id: "tm-handoff-host".into(),
+            correlation_id: "corr-info-host".into(),
+            causation_id: Some("tm-assignment-host".into()),
+            created_at: "unix-ms:6".into(),
+            ..handoff.clone()
+        };
+        let error = store
+            .append_team_message_checked(&stale)
+            .expect_err("pending Host correction must fence stale handoff");
+        assert!(error.to_string().contains("queued or claimed"));
+
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

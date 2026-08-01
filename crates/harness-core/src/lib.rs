@@ -2417,19 +2417,46 @@ pub struct TeamMessage {
 }
 
 impl TeamMessage {
-    /// Effective response intent: the explicit field wins; otherwise the kind
-    /// decides. Assignments, Handoffs, and Control records carry real work or
-    /// runtime semantics and always require a response round. Ordinary
-    /// `message` mail (including acknowledgement-only notes with a readable
-    /// first-line intent) defaults to informational so peer Agents converge
-    /// without confirmation ping-pong (ADR 0046 §4).
+    /// Effective response intent: the explicit field always wins; otherwise
+    /// kind **and sender** decide (ADR 0046 §4).
+    ///
+    /// Assignments, Handoffs, and Control records carry real work or runtime
+    /// semantics and always require a response round regardless of sender.
+    ///
+    /// Ordinary `message` mail is sender-aware, because `message` is the only
+    /// legal carrier for every remaining semantic category after ADR 0039
+    /// retired the typed question/blocker/review kinds:
+    /// - a coordination-plane sender (Host, Operator, Service) is directing the
+    ///   member — questions, revisions, acceptance decisions — so it defaults to
+    ///   `response_required` and wakes an idle member;
+    /// - a peer member sender is confirming or informing another member, so it
+    ///   defaults to `informational` and the team converges without
+    ///   confirmation ping-pong.
     pub fn effective_response_intent(&self) -> TeamMessageResponseIntent {
-        self.response_intent.unwrap_or(match self.kind {
+        if let Some(intent) = self.response_intent {
+            return intent;
+        }
+        match self.kind {
             TeamMessageKind::Assignment | TeamMessageKind::Handoff | TeamMessageKind::Control => {
                 TeamMessageResponseIntent::ResponseRequired
             }
-            _ => TeamMessageResponseIntent::Informational,
-        })
+            _ if self.sent_by_peer_member() => TeamMessageResponseIntent::Informational,
+            _ => TeamMessageResponseIntent::ResponseRequired,
+        }
+    }
+
+    /// True when this message was authored by another team member rather than
+    /// by the coordination plane (Host, Operator, Service). Historical rows
+    /// carry no typed `sender`, so they fall back to the reserved `"host"`
+    /// `from_member_id` convention.
+    fn sent_by_peer_member(&self) -> bool {
+        match self.sender.as_ref().map(|sender| sender.kind) {
+            Some(TeamActorKind::MemberRun) | Some(TeamActorKind::AgentMember) => true,
+            Some(TeamActorKind::Host)
+            | Some(TeamActorKind::Operator)
+            | Some(TeamActorKind::Service) => false,
+            None => self.from_member_id != "host",
+        }
     }
 
     /// True when this message may trigger a new provider round for an idle
@@ -2612,15 +2639,33 @@ mod tests {
         }
     }
 
+    fn peer_team_message(kind: TeamMessageKind) -> TeamMessage {
+        let mut message = bare_team_message(kind);
+        message.from_member_id = "member-run-2".to_string();
+        message.sender = Some(TeamActorRef {
+            kind: TeamActorKind::MemberRun,
+            id: "member-run-2".to_string(),
+            display_name: None,
+            authn_source: None,
+        });
+        message
+    }
+
     #[test]
     fn team_message_response_intent_defaults_from_kind() {
+        // Work-carrying kinds require a response round from every sender.
         for kind in [
             TeamMessageKind::Assignment,
             TeamMessageKind::Handoff,
             TeamMessageKind::Control,
         ] {
             assert!(bare_team_message(kind).requires_response(), "{kind:?}");
+            assert!(peer_team_message(kind).requires_response(), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn ordinary_message_response_intent_defaults_from_sender() {
         for kind in [
             TeamMessageKind::Message,
             TeamMessageKind::Question,
@@ -2628,24 +2673,78 @@ mod tests {
             TeamMessageKind::Progress,
             TeamMessageKind::Blocker,
         ] {
-            assert!(!bare_team_message(kind).requires_response(), "{kind:?}");
+            // `message` is the only legal carrier for Host questions,
+            // revisions, and acceptance decisions: Host mail must stay waking.
+            assert!(
+                bare_team_message(kind).requires_response(),
+                "host {kind:?} must default to response_required"
+            );
+            // Peer-to-peer confirmations converge without a new round.
+            assert!(
+                !peer_team_message(kind).requires_response(),
+                "peer {kind:?} must default to informational"
+            );
         }
     }
 
     #[test]
+    fn ordinary_message_intent_treats_operator_and_service_as_coordination_plane() {
+        // ADR 0012: the Dashboard is the control plane, so an Operator reply
+        // must wake an idle member exactly like a Host reply. Routed Company OS
+        // inbox mail arrives as a Service sender and must execute, not idle.
+        for actor_kind in [
+            TeamActorKind::Host,
+            TeamActorKind::Operator,
+            TeamActorKind::Service,
+        ] {
+            let mut message = bare_team_message(TeamMessageKind::Message);
+            message.from_member_id = format!("{actor_kind:?}-sender");
+            message.sender = Some(TeamActorRef {
+                kind: actor_kind,
+                id: "sender-1".to_string(),
+                display_name: None,
+                authn_source: None,
+            });
+            assert!(message.requires_response(), "{actor_kind:?}");
+        }
+    }
+
+    #[test]
+    fn historical_rows_without_sender_fall_back_to_from_member_id() {
+        let mut historical = bare_team_message(TeamMessageKind::Message);
+        historical.sender = None;
+        assert!(historical.requires_response(), "from_member_id == host");
+        historical.from_member_id = "member-run-9".to_string();
+        assert!(
+            !historical.requires_response(),
+            "historical peer mail stays informational"
+        );
+    }
+
+    #[test]
     fn team_message_explicit_response_intent_wins_over_kind_default() {
-        let mut ack_only = bare_team_message(TeamMessageKind::Message);
+        // Override upward: an ack-only peer note that genuinely needs action.
+        let mut ack_only = peer_team_message(TeamMessageKind::Message);
         assert_eq!(
             ack_only.effective_response_intent(),
             TeamMessageResponseIntent::Informational
         );
         ack_only.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
         assert!(ack_only.requires_response());
+        // Override downward: Host mail that is deliberately FYI-only.
+        let mut host_fyi = bare_team_message(TeamMessageKind::Message);
+        assert!(host_fyi.requires_response());
+        host_fyi.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(!host_fyi.requires_response());
+        // Override downward on a work-carrying kind too.
+        let mut control = bare_team_message(TeamMessageKind::Control);
+        control.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(!control.requires_response());
         // The explicit field round-trips through serde; an absent field keeps
-        // historical rows on their kind-derived default.
+        // historical rows on their kind+sender-derived default.
         let json = serde_json::to_string(&ack_only).expect("serialize");
         assert!(json.contains("\"response_intent\":\"response_required\""));
-        let without = bare_team_message(TeamMessageKind::Message);
+        let without = peer_team_message(TeamMessageKind::Message);
         let json = serde_json::to_string(&without).expect("serialize");
         assert!(!json.contains("response_intent"));
         let historical: TeamMessage =
