@@ -196,7 +196,8 @@ Host.” Operator surfaces must keep those labels separate.
 Provider release review remains version and mode specific. Unsupported
 capability is an honest disabled state, not fallback to one-shot execution.
 Kimi Interrupt changes state only after the reviewed notification is durably
-requested; Host Close remains a separate terminal runtime operation.
+requested; Host Close remains a separate runtime-shutdown operation and Reopen
+resumes the same recorded native session.
 
 ## Durable Team Supervisor
 

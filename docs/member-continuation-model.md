@@ -54,6 +54,7 @@ must never become a second product Goal or silently replace Host acceptance.
 | --- | --- | --- |
 | `host_driven` | Harness claims eligible mail and starts the next provider cycle. | Default when native continuation is absent, unsafe or not observable. |
 | `provider_driven` | One provider-native continuation mechanism starts later cycles until its condition stops it. | Allowed only when the Adapter can inspect and control it honestly. |
+| `user_driven` | The human drives their own already-open interactive provider session out-of-band; Harness never starts a cycle and no native session record exists. | Declared `external_interactive` members only. |
 | `bounded` | One invocation owns a finite result and then exits. | Dynamic Workflow only; not a persistent Team Member mode. |
 
 One MemberRun must have exactly one active execution driver. Setting a native
@@ -145,7 +146,9 @@ Harness remains the communication authority in both driver modes:
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
 | Provider asks for authority | Create `PendingInteraction`; do not infer approval from tool completion. |
 | Native continuation satisfies its condition | Record/project the provider fact, then await Handoff/Host acceptance as required. |
-| Host explicitly closes Member | Latch terminal Close before teardown; no driver, delivery, or later Supervisor may revive it. |
+| Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
+| Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
+| Host deactivates/retires Member | End coordination permanently; delivery and Reopen are rejected. |
 
 Ordinary message visibility is an explicit execution-mode capability, not a
 uniform mailbox promise:

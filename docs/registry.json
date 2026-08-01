@@ -4267,6 +4267,47 @@
    "truthRefs": []
   },
   {
+   "path": "docs/decisions/0049-member-coordination-and-runtime-lifecycle.md",
+   "ownerRole": "architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "MemberRun Close, Reopen, Retire, mailbox freezing, runtime generations, and provider-native history continuity"
+   ],
+   "dependsOn": [
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0041-provider-neutral-member-continuation.md",
+    "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-31",
+   "lastVerifiedWith": [
+    "cargo test -p harness-cli --test team_run_api",
+    "cargo test -p harness-cli --test mcp_stdio",
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Close, Reopen, Retire, runtime generation, mailbox freeze, or native-session resume semantics change.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "schemas/member-run.schema.json"
+    },
+    {
+     "kind": "store",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
+  },
+  {
    "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md",
    "ownerRole": "product-design",
    "status": "planned",

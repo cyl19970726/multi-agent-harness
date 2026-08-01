@@ -199,4 +199,5 @@ Those remain readable from the provider-native session through its locator.
    Mission completion leave an unclosed Member available on the same native
    session.
 8. Unexpected transport loss is visible and recoverable without duplicate
-   Assignment delivery; explicit Close is the only normal terminal operation.
+   Assignment delivery; explicit Close is the only normal runtime-shutdown
+   operation. ADR 0049 adds explicit same-MemberRun Reopen and permanent Retire.

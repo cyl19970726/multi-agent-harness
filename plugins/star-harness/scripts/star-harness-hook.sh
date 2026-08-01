@@ -63,6 +63,210 @@ if [[ -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then
   exit 0
 fi
 
+# External interactive Member inbox push. A user-driven interactive session
+# (execution_mode=external_interactive) binds with HARNESS_TEAM_RUN_ID +
+# HARNESS_MEMBER_RUN_ID and receives its queued coordination mail as native
+# context; Harness never drives this Member, so this hook is its only push
+# channel. Driven Members (HARNESS_AGENT_MEMBER_ID above) own their inbox
+# through the Supervisor and must never enter this branch.
+if [[ -n "${HARNESS_MEMBER_RUN_ID:-}" ]]; then
+  member_run_id="$HARNESS_MEMBER_RUN_ID"
+  team_run_id="${HARNESS_TEAM_RUN_ID:-}"
+  if [[ -z "$team_run_id" || -z "$session_id" ]]; then
+    # Without the run binding or native identity there is no safe mailbox to
+    # inject, so fail open rather than reading every run.
+    if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+      printf '{}\n'
+    fi
+    exit 0
+  fi
+  case "$event_name" in
+    SessionStart|session_start)
+      show_binding=1
+      ;;
+    UserPromptSubmit|user_prompt_submit)
+      show_binding=0
+      ;;
+    Stop|stop)
+      show_binding=0
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+
+  # Environment variables are routing hints, not proof that this session owns
+  # an external MemberRun. Verify the durable binding before reading any mail
+  # so a stale or mistyped id cannot intake a driven Member's Inbox.
+  member_detail_json="$("$harness_bin" member-run show \
+    --id "$member_run_id" --json 2>/dev/null)" || {
+    if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+      printf '{}\n'
+    fi
+    exit 0
+  }
+  if ! MEMBER_DETAIL_JSON="$member_detail_json" TEAM_RUN_ID="$team_run_id" \
+    MEMBER_RUN_ID="$member_run_id" python3 - 2>/dev/null <<'PY'
+import json
+import os
+
+try:
+    detail = json.loads(os.environ.get("MEMBER_DETAIL_JSON", "") or "{}")
+except ValueError:
+    raise SystemExit(1)
+member = detail.get("member_run", {}) if isinstance(detail, dict) else {}
+profile = member.get("provider_profile", {}) if isinstance(member, dict) else {}
+valid = (
+    member.get("id") == os.environ.get("MEMBER_RUN_ID")
+    and member.get("team_run_id") == os.environ.get("TEAM_RUN_ID")
+    and profile.get("execution_mode") == "external_interactive"
+    and profile.get("execution_driver") == "user_driven"
+    and member.get("coordination_status", "active") == "active"
+    and member.get("status") not in {"completed", "failed", "stopped"}
+)
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+      printf '{}\n'
+    fi
+    exit 0
+  fi
+
+  member_inbox_json="$("$harness_bin" team-run inbox \
+    --id "$team_run_id" --member-run-id "$member_run_id" --json 2>/dev/null)" || {
+    if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
+      printf '{}\n'
+    fi
+    exit 0
+  }
+
+  if [[ "$event_name" == "Stop" || "$event_name" == "stop" ]]; then
+    # A user-driven external session must remain free to stop by default.
+    # Operators who explicitly want queued mail to continue the same native
+    # task may opt in for this session. This is cooperative hook behavior, not
+    # a Harness lifecycle-control claim.
+    case "${HARNESS_EXTERNAL_AUTO_CONTINUE:-false}" in
+      1|true|TRUE|yes|YES|on|ON) external_auto_continue=true ;;
+      *) external_auto_continue=false ;;
+    esac
+    if [[ "$external_auto_continue" != "true" ]]; then
+      [[ "$host_surface" != "kimi-cli" ]] && printf '{}\n'
+      exit 0
+    fi
+    if [[ "$stop_hook_active" == "true" ]]; then
+      [[ "$host_surface" != "kimi-cli" ]] && printf '{}\n'
+      exit 0
+    fi
+    if [[ "$host_surface" == "codex-app" && -z "$turn_id" ]]; then
+      printf '{}\n'
+      exit 0
+    fi
+    continuation_json="$(
+      INBOX_JSON="$member_inbox_json" TEAM_RUN_ID="$team_run_id" \
+      MEMBER_RUN_ID="$member_run_id" python3 - 2>/dev/null <<'PY'
+import json
+import os
+import re
+
+try:
+    entries = json.loads(os.environ.get("INBOX_JSON", ""))
+except ValueError:
+    entries = []
+messages = [m for m in entries if isinstance(m, dict)] if isinstance(entries, list) else []
+if not messages:
+    print("{}")
+    raise SystemExit(0)
+
+team_run_id = os.environ.get("TEAM_RUN_ID", "?")
+member_run_id = os.environ.get("MEMBER_RUN_ID", "?")
+lines = [
+    "Star Harness Member Inbox received new coordination mail while this Member was busy.",
+    "Process it now in the same native task. Read the full message before deciding; "
+    "reply in its correlation when needed, then ACK only after it has entered your working context.",
+]
+for message in messages[:5]:
+    body = re.sub(r"\s+", " ", str(message.get("body", ""))).strip()
+    if len(body) > 180:
+        body = body[:177] + "..."
+    lines.append(
+        f"- from={message.get('from_member_id', '?')} "
+        f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
+        f"correlation={message.get('correlation_id', '?')}: {body}"
+    )
+if len(messages) > 5:
+    lines.append(f"- ... and {len(messages) - 5} more; use `harness team-run inbox "
+                 f"--id {team_run_id} --member-run-id {member_run_id} --json`.")
+lines.append(
+    f"Use `harness team-run ack --id {team_run_id} --message-id <message-id> "
+    f"--member-id {member_run_id}` after intake. Do not treat transport ACK as semantic acceptance."
+)
+print(json.dumps({"decision": "block", "reason": "\n".join(lines)}))
+PY
+    )"
+    if [[ "$host_surface" == "kimi-cli" ]]; then
+      continuation_reason="$(
+        CONTINUATION_JSON="$continuation_json" python3 - 2>/dev/null <<'PY'
+import json
+import os
+try:
+    value = json.loads(os.environ.get("CONTINUATION_JSON", "") or "{}")
+except ValueError:
+    value = {}
+print(value.get("reason", "") if value.get("decision") == "block" else "")
+PY
+      )"
+      if [[ -n "$continuation_reason" ]]; then
+        printf '%s\n' "$continuation_reason" >&2
+        exit 2
+      fi
+      exit 0
+    fi
+    if [[ -z "$continuation_json" ]]; then
+      continuation_json='{}'
+    fi
+    printf '%s\n' "$continuation_json"
+    exit 0
+  fi
+
+  INBOX_JSON="$member_inbox_json" TEAM_RUN_ID="$team_run_id" \
+  MEMBER_RUN_ID="$member_run_id" SHOW_BINDING="$show_binding" python3 - 2>/dev/null <<'PY'
+import json
+import os
+import re
+
+try:
+    entries = json.loads(os.environ.get("INBOX_JSON", ""))
+except ValueError:
+    entries = []
+messages = [m for m in entries if isinstance(m, dict)] if isinstance(entries, list) else []
+
+team_run_id = os.environ.get("TEAM_RUN_ID", "?")
+member_run_id = os.environ.get("MEMBER_RUN_ID", "?")
+if os.environ.get("SHOW_BINDING") == "1":
+    print(f"[star-harness] External member binding: team_run={team_run_id} member_run={member_run_id}")
+if not messages:
+    raise SystemExit(0)
+print(f"[star-harness] Member mail: TeamRun={team_run_id} pending_member_messages={len(messages)}")
+for message in messages[:3]:
+    body = re.sub(r"\s+", " ", str(message.get("body", ""))).strip()
+    if len(body) > 120:
+        body = body[:117] + "..."
+    print(
+        f"- from={message.get('from_member_id', '?')} "
+        f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
+        f"correlation={message.get('correlation_id', '?')}: {body}"
+    )
+if len(messages) > 3:
+    print(f"- ... and {len(messages) - 3} more")
+print(
+    f"  read with `harness team-run inbox --id {team_run_id} "
+    f"--member-run-id {member_run_id} --json`; ACK only after intake"
+)
+PY
+  exit 0
+fi
+
 case "$event_name" in
   SessionStart|session_start)
     show_binding=1

@@ -44,7 +44,8 @@ MemberRun + correlated Assignment
   -> turn/start for queued ordinary mail
   -> turn/steer only for a real same-turn Steer
   -> turn/interrupt only for current-turn interruption
-  -> explicit Host Close ends the app-server runtime
+  -> explicit Host Close ends the app-server runtime but retains the thread id
+  -> explicit Reopen starts a new adapter generation with thread/resume
 ```
 
 The app-server handshake returns both thread identity and the effective model,
@@ -61,12 +62,15 @@ Close are different:
 
 - **Interrupt** requests `turn/interrupt`, waits for provider acknowledgement,
   and leaves the Member/native thread available for later mail.
-- **Close** ends the app-server process and records an explicit terminal
-  lifecycle acknowledgement. Wave advance, TeamRun completion, or an empty
-  mailbox never substitutes for Close.
-- **Resume** uses the recorded native thread id with the provider's real
+- **Close** ends the app-server process, freezes coordination, and retains the
+  same MemberRun/native thread for explicit Reopen. Wave advance, TeamRun
+  completion, or an empty mailbox never substitutes for Close.
+- **Reopen/Resume** increments the MemberRun runtime generation and uses the
+  recorded native thread id with the provider's real
   `thread/resume` operation. Harness never reconstructs a session by replaying
   its coordination records.
+- **Deactivate/Retire** permanently ends the coordination identity; it cannot
+  reopen.
 - **Disconnect** records a recoverable lifecycle action and resumes the same
   native thread under the TeamRun supervisor. It does not replay an already
   delivered Assignment.
@@ -248,11 +252,13 @@ explicitly close member runtime
 resume from native session
 ```
 
-MCP uses `team_run_close_member` for Close. CLI uses:
+MCP uses `team_run_close_member` and `team_run_reopen_member`. CLI uses:
 
 ```bash
 harness team-run close-member --id <team-run-id> \
-  --member-run-id <member-run-id> --closed-by host --reason <reason>
+  --member-run-id <member-run-id> --requested-by host --reason <reason>
+harness team-run reopen-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reopened-by host --reason <reason>
 ```
 
 ## Provider Version Review

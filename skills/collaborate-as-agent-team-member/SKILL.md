@@ -235,7 +235,134 @@ SUGGESTED NEXT:
 - integration, review, or follow-up
 ```
 
-Remain available. The lane ends only when the Host sends an ordinary message
-accepting the Handoff, deactivates the member, or ends the run. Address review
-findings in the same MemberRun, Assignment correlation, Workspace, and native
-session unless the Host explicitly changes the contract.
+Remain available. Assignment acceptance does not close the runtime. Address
+review findings in the same MemberRun, Assignment correlation, Workspace, and
+native session unless the Host explicitly changes the contract.
+
+## Respect Close, Reopen, And Retire
+
+Treat provider work status and Harness coordination status as separate facts:
+
+- `active`: read/ACK mail and send correlated replies normally;
+- `closed`: stop coordination. Do not send, receive, or ACK. Mail queued before
+  Close is frozen, not cancelled;
+- `retired`: the MemberRun is permanently read-only and cannot reopen.
+
+For a managed member, Host Close releases the Harness-owned adapter process but
+retains this MemberRun, Assignment correlations, Workspace reference,
+`NativeSessionRef`, and provider-native history. Explicit Reopen increments
+`runtime_generation`, starts a new adapter process, and resumes the exact
+recorded native session. It must never rebuild history from Harness messages or
+silently start a fresh conversation. Ordinary mail cannot reopen you.
+The only fresh-session case is a Member closed before its first provider-native
+session ever existed; Harness labels that explicitly instead of claiming
+history continuity.
+
+CLI and MCP controls are:
+
+```bash
+"$HARNESS_BIN" team-run close-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reason <reason>
+"$HARNESS_BIN" team-run reopen-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reason <reason>
+"$HARNESS_BIN" team-run deactivate-member --id <team-run-id> \
+  --member-run-id <member-run-id> --reason <reason>
+```
+
+Use `team_run_close_member` and `team_run_reopen_member` over MCP. Close is the
+reversible runtime release; Deactivate/Retire is the permanent identity end.
+
+## Joining As An External Interactive Session
+
+Your already-open interactive provider session can join an existing
+AgentTeamRun as a declared `external_interactive` member.
+Harness never spawns or drives you: no provider process, no adapter thread, no
+native-session record. Your deliveries stay `queued` until you poll your Inbox
+yourself, and evidence claims about your work cannot resolve to a
+provider-native session — so report your own files, commands, and test results
+in correlated messages and Handoffs.
+
+The Host (or you, from the trusted loopback CLI) adds the member with the
+`provider/mode` spec spelling:
+
+```bash
+"$HARNESS_BIN" team-run add-member --id <team-run-id> \
+  --member "<name>:<role>:<provider-label>/external_interactive" \
+  --assignment "<your brief>"
+```
+
+The provider label may be Codex, Kimi, Claude, a local agent, or another
+non-empty descriptive label. It is display/provenance metadata, not an adapter
+capability claim. The response carries your `member_run.id` and the Assignment
+message with its `correlation_id`. `team-run start` skips you: the Supervisor
+spawns no adapter and never marks you Failed for being undriven.
+
+Poll your Inbox and acknowledge what you consumed:
+
+```bash
+"$HARNESS_BIN" team-run inbox --id <team-run-id> \
+  --member-run-id <member-run-id> --json
+
+"$HARNESS_BIN" team-run ack --id <team-run-id> \
+  --member-id <member-run-id> --message-id <message-id>[,<message-id>...]
+```
+
+With the star-harness plugin installed, supported Codex, Claude, and Kimi hook
+surfaces can reduce polling. Export the binding before the session (or before
+the run starts); the hook verifies that the ids resolve to a non-terminal
+`external_interactive` MemberRun before it reads mail, then pushes queued mail
+as native context on `UserPromptSubmit`:
+
+```bash
+export HARNESS_TEAM_RUN_ID=<team-run-id>
+export HARNESS_MEMBER_RUN_ID=<member-run-id>
+```
+
+Stop remains under user control and is not blocked by default. If you
+explicitly want queued mail to continue the same native task at Stop, opt in
+for that session:
+
+```bash
+export HARNESS_EXTERNAL_AUTO_CONTINUE=1
+```
+
+That opt-in uses `decision=block` for Codex/Claude or exit 2 for Kimi at the
+provider's safe boundary. It is cooperative delivery, not Harness lifecycle
+control. Other provider labels continue to use polling or `team-run wait`.
+
+This push channel exists only for declared `external_interactive` members; a
+driven member's hook binding (`HARNESS_AGENT_MEMBER_ID`) stays telemetry-only
+because the Supervisor owns its Inbox.
+
+For a blocking wait instead of polling, watch the run's event log — every new
+TeamMessage folds an event:
+
+```bash
+"$HARNESS_BIN" team-run wait --id <team-run-id> --timeout-secs 600
+```
+
+Reply with the Assignment correlation stable and `causation-id` set to the
+exact message you are answering (the Assignment id for the first result, the
+follow-up's id afterwards). Never reuse a peer's Assignment correlation:
+
+```bash
+"$HARNESS_BIN" team-run send --id <team-run-id> \
+  --from <member-run-id> --to host --kind message \
+  --body "<decision-shaped answer, progress, or BLOCKER: ...>" \
+  --correlation-id <correlation-id> \
+  --causation-id <message-id>
+```
+
+Over MCP the same loop uses `team_run_inbox`, `team_message_acknowledge`, and
+`team_run_send_message` with `sender_kind=member_run`. Unbound MCP authorship
+is rejected for driven members; it is accepted only for declared
+`external_interactive` members and recorded with
+`authn_source=mcp:external_interactive`.
+
+Closing this MemberRun closes only its Harness coordination binding. It does
+not stop, cancel, or otherwise modify your external provider process; continue
+or exit that process yourself. While closed you cannot send, receive, or ACK.
+Explicit Reopen keeps the same MemberRun and thaws mail queued before Close,
+but you remain responsible for reopening or continuing the external provider
+conversation and Harness cannot claim its history continuity. Deactivate is
+permanent and requires a new MemberRun to join again.

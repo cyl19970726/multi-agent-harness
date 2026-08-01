@@ -84,8 +84,9 @@ The Host is the Team Lead and owns the Member runtime lifecycle:
 3. Deliver ordinary Host or peer messages through the Member mailbox.
 4. Interrupt only the current SDK query when needed.
 5. Continue on the same native session after interrupt.
-6. Close the Member explicitly when its runtime is no longer needed.
-7. Resume later only from an explicit provider-owned session id.
+6. Close the Member explicitly when its current runtime is no longer needed.
+7. Reopen the same MemberRun later from its recorded provider-owned session id.
+8. Deactivate only when the coordination identity must end permanently.
 
 Public controls:
 
@@ -95,6 +96,7 @@ team_run_send_message
 team_run_status / team_run_inbox / team_run_events
 team_run_interrupt_member
 team_run_close_member
+team_run_reopen_member
 team_run_create(resume_native_session_id=...)
 ```
 
@@ -103,8 +105,10 @@ then resumes the same session for subsequent mailbox input. It does not mean
 “remove this Member.”
 
 `Close` sends the runner's explicit close command. The runner emits
-`member_closed` and exits. Normal mailbox idleness never closes a production
-member. `HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` exists only to give
+`member_closed` and exits while the MemberRun, frozen mailbox, and native
+session locator remain. Reopen increments the runtime generation, starts a new
+runner, and resumes that exact session. Normal mailbox idleness never closes a
+production member. `HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` exists only to give
 deterministic foreground integration tests a bound.
 
 Physical SDK handles remain process-local. A close/interrupt request must route

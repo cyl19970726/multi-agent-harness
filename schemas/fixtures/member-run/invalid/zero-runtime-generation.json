@@ -1,0 +1,11 @@
+{
+  "id": "mrun-zero-generation",
+  "team_run_id": "trun-1",
+  "name": "worker-1",
+  "role": "worker",
+  "provider": "codex",
+  "coordination_status": "closed",
+  "runtime_generation": 0,
+  "status": "stopped",
+  "started_at": "2026-07-18T00:00:00Z"
+}

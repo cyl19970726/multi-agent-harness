@@ -339,6 +339,9 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s"}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
+        if [ -n "${FAKE_CODEX_RESUME_MARKER:-}" ]; then
+          printf '%s\n' "$line" >> "$FAKE_CODEX_RESUME_MARKER"
+        fi
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
         reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
         service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
