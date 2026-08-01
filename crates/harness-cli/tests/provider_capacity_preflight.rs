@@ -562,6 +562,50 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
         "a blocked member must not start a native thread: {}",
         std::fs::read_to_string(&thread_marker).unwrap_or_default()
     );
+
+    // 6. Preservation is actionable, not cosmetic: once the account recovers,
+    //    the SAME queued Assignment is claimed and delivered by a plain
+    //    re-start. No requeue, reconcile, or re-create is needed.
+    let recovered = FakeCodex {
+        rate_limits_json: Some(rate_limits_json(5, "null", false)),
+        thread_marker: Some(thread_marker.clone()),
+        ..FakeCodex::new(&bin)
+    };
+    let restart = recovered.run(
+        &home,
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        restart.status.success(),
+        "restart failed: {}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    let assignment = store_rows(&home, &project_id, "team_messages.jsonl")
+        .into_iter()
+        .find(|message| message["kind"].as_str() == Some("assignment"))
+        .expect("assignment message");
+    assert_eq!(
+        assignment["deliveries"][0]["status"],
+        serde_json::json!("delivered"),
+        "the preserved Assignment must be deliverable after recovery: {assignment}"
+    );
+    let member = store_rows(&home, &project_id, "member_runs.jsonl")
+        .into_iter()
+        .next()
+        .expect("member run");
+    assert_eq!(
+        member["provider_capacity"]["state"],
+        serde_json::json!("available"),
+        "the recovered observation replaces the blocking one"
+    );
+    assert_ne!(member["status"], serde_json::json!("blocked"));
 }
 
 #[test]
