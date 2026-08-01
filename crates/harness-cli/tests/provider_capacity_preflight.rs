@@ -479,6 +479,10 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
         &project_id,
         "codex-worker:implementer:codex:gpt-5.6",
     );
+    let before = store_rows(&home, &project_id, "member_runs.jsonl")
+        .into_iter()
+        .next()
+        .expect("member run before start");
 
     let start = fake.run(
         &home,
@@ -496,6 +500,33 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
         "start failed: {}",
         String::from_utf8_lossy(&start.stderr)
     );
+
+    // 0. Identity stays reconstructable. Everything a Host needs to resume the
+    //    same member — rather than create a new one — is byte-identical; only
+    //    the status, the new observation, and its timestamp moved.
+    let after = store_rows(&home, &project_id, "member_runs.jsonl")
+        .into_iter()
+        .next()
+        .expect("member run after start");
+    for field in [
+        "id",
+        "team_run_id",
+        "agent_member_id",
+        "name",
+        "role",
+        "provider",
+        "model",
+        "owned_paths",
+        "worktree_ref",
+        "native_session",
+        "started_at",
+        "provider_profile",
+    ] {
+        assert_eq!(
+            after[field], before[field],
+            "the capacity gate must not rewrite {field}: {after}"
+        );
+    }
 
     // 1. The Assignment was never claimed: it is still queued and deliverable.
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
