@@ -10902,6 +10902,19 @@ fn reconcile_recorded_capacity(
 
     // Otherwise the recorded state stands, but it inherits the probe's live
     // runtime facts and account boundary instead of discarding them.
+    //
+    // The DIAGNOSIS is not inherited when the recorded state is known
+    // unavailable. The probe's diagnosis is about reachability — it is set
+    // whenever no proxy is configured — and a spent quota is not caused by a
+    // missing proxy. Letting a recorded 429 inherit it would block correctly as
+    // `exhausted` while telling the operator to go fix their proxy, sending
+    // them after the wrong cause. The runtime facts still travel in
+    // `runtime_context`, where they are evidence rather than causation.
+    let diagnosis = match recorded.diagnosis {
+        Some(diagnosis) => Some(diagnosis),
+        None if recorded.state.is_known_unavailable() => None,
+        None => probe.diagnosis,
+    };
     ProviderCapacitySnapshot {
         account: if recorded.account.source == "unknown" {
             probe.account
@@ -10913,7 +10926,7 @@ fn reconcile_recorded_capacity(
         } else {
             recorded.runtime_context
         },
-        diagnosis: recorded.diagnosis.or(probe.diagnosis),
+        diagnosis,
         ..recorded
     }
 }
@@ -37676,6 +37689,76 @@ package:com.tencent.mm
         assert!(
             harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
                 .is_blocked()
+        );
+    }
+
+    #[test]
+    fn a_recorded_429_blocks_without_borrowing_the_proxy_diagnosis() {
+        // A spent quota is not caused by a missing proxy. The probe sets its
+        // missing-proxy diagnosis whenever no proxy is configured, so an
+        // unguarded `recorded.diagnosis.or(probe.diagnosis)` blocked correctly
+        // as `exhausted` while telling the operator to go fix their proxy.
+        let recorded = capacity_from_provider_error_actions(
+            &[provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: api_error (HTTP 429): ",
+                Some(
+                    &ProviderTerminalFailure {
+                        reason: "api_error".into(),
+                        http_status: Some(429),
+                    }
+                    .to_provider_status(),
+                ),
+            )],
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("a structured 429 is recorded evidence");
+        assert_eq!(recorded.state, ProviderCapacityState::Exhausted);
+
+        // No proxy configured: the probe carries a missing-proxy diagnosis.
+        let probe = claude_probe_snapshot(None);
+        let probe_diagnosis = claude_missing_proxy_diagnosis();
+        let probe = ProviderCapacitySnapshot {
+            diagnosis: Some(probe_diagnosis.clone()),
+            ..probe
+        };
+        assert!(!claude_has_proxy_configured(&probe.runtime_context));
+
+        let merged = reconcile_recorded_capacity(probe, recorded);
+
+        // Still blocks, and still as exhausted: a missing proxy does not
+        // excuse a spent quota the way it excuses a credential rejection.
+        assert_eq!(merged.state, ProviderCapacityState::Exhausted);
+        let decision = harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000);
+        assert!(decision.is_blocked());
+        assert!(
+            decision.reason().contains("exhausted"),
+            "{}",
+            decision.reason()
+        );
+
+        // But it must not claim proxy causation.
+        assert_eq!(
+            merged.diagnosis, None,
+            "a spent quota must not borrow the probe's missing-proxy diagnosis"
+        );
+        assert!(
+            !format!("{:?}", merged.diagnosis).contains("PROXY"),
+            "diagnosis leaked proxy causation: {:?}",
+            merged.diagnosis
+        );
+        // The runtime facts still travel as evidence, just not as cause.
+        assert!(
+            merged
+                .runtime_context
+                .iter()
+                .any(|fact| fact.key == "HTTPS_PROXY" && !fact.present),
+            "the probe's runtime facts must still be visible"
         );
     }
 

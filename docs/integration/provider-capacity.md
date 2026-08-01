@@ -147,6 +147,14 @@ Once a proxy **is** configured, the same recorded `403` does implicate the
 credential, becomes `unauthorized`, and blocks — while still carrying the
 probe's runtime facts.
 
+The precedence is scoped to credential rejections. A recorded **`429`** blocks
+as `exhausted` whether or not a proxy is configured, and it does **not** inherit
+the probe's missing-proxy diagnosis: a spent quota is not caused by a missing
+proxy, and pointing the operator at their proxy would send them after the wrong
+cause. More generally, a recorded known-unavailable state carries only its own
+diagnosis. The runtime facts still travel in `runtime_context`, where they are
+evidence rather than causation.
+
 ## Start Guard
 
 Before an Agent Member claims its Assignment, `team-run start` observes capacity
