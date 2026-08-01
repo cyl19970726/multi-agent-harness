@@ -142,6 +142,13 @@ than page-specific cards. Its default order is:
    Team Supervisor generation/heartbeat, provider-transport and reconnect
    state, Close latch, worktree lease, permission posture, and actionable
    failure state. It is operational context, not the primary page.
+   It also shows `MemberRun.provider_capacity` — account capacity state,
+   account/source boundary, observed time, reset time, evidence source and
+   confidence — as a row BESIDE adapter compatibility, never merged into it. A
+   `blocked` member whose latest action is `provider_unavailable` reads as
+   "not started, Assignment still queued", not as a failed member. `unknown`
+   renders as unknown; it must never render as healthy, and an absent snapshot
+   renders as "not observed".
 6. **DelegationSummary** — observed provider-native or orchestrated child work,
    with attribution and control limits made explicit.
 7. **CollaborationThread** — Host and same-Team peer messages for the current

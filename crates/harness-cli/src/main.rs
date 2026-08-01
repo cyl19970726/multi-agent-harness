@@ -21,16 +21,17 @@ use harness_core::{
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
     MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
     PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
-    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
+    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
+    ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
+    TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease,
+    Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
 };
 use harness_store::{
     HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
@@ -8699,8 +8700,11 @@ fn print_governance_report(report: &harness_governance::GovernanceReport, json: 
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member register|list|providers")?;
+    require_subcommand(args, "member register|list|providers|preflight")?;
     match args[0].as_str() {
+        // Runtime availability of each provider ACCOUNT, reported separately
+        // from adapter compatibility. See `member providers` for the latter.
+        "preflight" => member_preflight_command(&args[1..])?,
         "register" => {
             let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
             store.append_member(&member)?;
@@ -10218,6 +10222,774 @@ fn team_member_provider_version_output(provider: &str) -> Result<String, String>
     )
 }
 
+// ---------------------------------------------------------------------------
+// Provider capacity preflight
+//
+// Capacity answers "can this account execute a turn right now"; it is NEVER
+// derived from `ProviderIntegrationProfile.compatibility_status`, which answers
+// "is this adapter reviewed against the installed provider version". Wave 2
+// proved the two are independent: a reviewed-`current` Claude adapter returned
+// 403 because the Harness process had no proxy, and a reviewed-`current` Kimi
+// adapter returned a quota 403.
+// ---------------------------------------------------------------------------
+
+/// Non-secret environment keys that decide whether a Claude request can leave
+/// this machine at all. Only presence is recorded; values are never copied
+/// except for proxy URLs, which are not credentials.
+const CLAUDE_RUNTIME_CONTEXT_KEYS: &[&str] = &[
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "ANTHROPIC_BASE_URL",
+];
+
+/// Keys that indicate a credential exists, without revealing it.
+const CLAUDE_CREDENTIAL_ENV_KEYS: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
+#[derive(Clone, Copy)]
+struct CapacityProbeOptions {
+    /// Issue a real, minimal provider request. Off by default because a canary
+    /// consumes real quota; auth metadata alone must never be sold as one.
+    canary: bool,
+    timeout: Duration,
+}
+
+impl Default for CapacityProbeOptions {
+    fn default() -> Self {
+        Self {
+            canary: false,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+fn capacity_now() -> (String, u64) {
+    let millis = current_unix_ms();
+    (format!("unix-ms:{millis}"), millis as u64)
+}
+
+/// Resolve the execution mode a capacity snapshot describes. Capacity claims
+/// are mode-specific: `codex_exec` and `codex_app_server` are different
+/// products even though both are spelled "codex".
+fn capacity_execution_mode(provider: &str, requested: Option<&str>) -> String {
+    match requested {
+        Some(mode) if !mode.trim().is_empty() => mode.to_string(),
+        _ => team_member_provider_profile(provider).execution_mode,
+    }
+}
+
+/// Read one Codex account's capacity through the reviewed app-server account
+/// RPCs. The client is torn down without ever opening a thread.
+fn codex_capacity_probe(
+    execution_mode: &str,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+) -> ProviderCapacitySnapshot {
+    let (observed_at, observed_unix_ms) = capacity_now();
+    match codex_app_server::CodexAppServerClient::connect(cwd, &[])
+        .and_then(|mut client| client.read_account_capacity(options.timeout))
+    {
+        Ok(read) => codex_app_server::codex_capacity_snapshot(
+            execution_mode,
+            &read,
+            &observed_at,
+            observed_unix_ms,
+        ),
+        Err(error) => ProviderCapacitySnapshot::unknown(
+            "codex",
+            execution_mode,
+            observed_at,
+            observed_unix_ms,
+            ProviderCapacityEvidence::ProbeFailed,
+            format!(
+                "codex app-server account read failed before returning a provider answer: {error}"
+            ),
+        ),
+    }
+}
+
+/// Observe the non-secret runtime facts that decide whether a Claude request
+/// can reach the API. This is what turns "403" into an actionable diagnosis.
+fn claude_runtime_context_facts() -> Vec<ProviderRuntimeContextFact> {
+    let mut facts: Vec<ProviderRuntimeContextFact> = CLAUDE_RUNTIME_CONTEXT_KEYS
+        .iter()
+        .map(|key| {
+            let value = std::env::var(key).ok().filter(|raw| !raw.trim().is_empty());
+            ProviderRuntimeContextFact {
+                key: (*key).to_string(),
+                present: value.is_some(),
+                // A proxy URL is routing configuration, not a credential.
+                note: Some(value.unwrap_or_else(|| "absent".to_string())),
+            }
+        })
+        .collect();
+    for key in CLAUDE_CREDENTIAL_ENV_KEYS {
+        facts.push(ProviderRuntimeContextFact {
+            key: (*key).to_string(),
+            present: std::env::var(key)
+                .ok()
+                .is_some_and(|raw| !raw.trim().is_empty()),
+            // Never record the value: presence is the only non-secret fact.
+            note: Some("value withheld".to_string()),
+        });
+    }
+    facts
+}
+
+fn claude_has_proxy_configured(facts: &[ProviderRuntimeContextFact]) -> bool {
+    facts.iter().any(|fact| {
+        fact.present
+            && matches!(
+                fact.key.as_str(),
+                "HTTPS_PROXY"
+                    | "https_proxy"
+                    | "HTTP_PROXY"
+                    | "http_proxy"
+                    | "ALL_PROXY"
+                    | "all_proxy"
+            )
+    })
+}
+
+/// Local credential metadata for Claude. `credentials.json` is only one of the
+/// stores Claude Code uses (the macOS Keychain is another), so its absence is
+/// NOT evidence of a missing credential and must never become `unauthorized`.
+fn claude_auth_metadata() -> (ProviderAccountRef, String) {
+    for key in CLAUDE_CREDENTIAL_ENV_KEYS {
+        if std::env::var(key)
+            .ok()
+            .is_some_and(|raw| !raw.trim().is_empty())
+        {
+            return (
+                ProviderAccountRef {
+                    source: "api_key_env".to_string(),
+                    identifier: Some((*key).to_string()),
+                    plan: None,
+                },
+                format!("{key} is set in the Harness process environment"),
+            );
+        }
+    }
+    let credentials = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".claude/.credentials.json"));
+    match credentials {
+        Some(path) if path.is_file() => (
+            ProviderAccountRef {
+                source: "oauth_credentials_file".to_string(),
+                identifier: Some(path.display().to_string()),
+                plan: None,
+            },
+            "a local Claude credential file exists".to_string(),
+        ),
+        _ => (
+            ProviderAccountRef::unknown(),
+            "no Claude credential was found in the process environment or the local credential \
+             file; Claude Code may still hold one in an OS keychain, so this is not evidence of a \
+             missing credential"
+                .to_string(),
+        ),
+    }
+}
+
+/// Explain a failed Claude canary using the observed runtime context.
+///
+/// The Wave 2 failure was NOT an account limit: `claude auth status` reported
+/// logged-in while the request returned 403, because the Harness process had no
+/// HTTP(S)_PROXY and this machine's direct egress to the API is blocked. The
+/// same request succeeded through the proxy.
+fn claude_canary_diagnosis(
+    failure: &str,
+    facts: &[ProviderRuntimeContextFact],
+) -> (ProviderCapacityState, String) {
+    let lowered = failure.to_lowercase();
+    let auth_shaped = ["403", "401", "forbidden", "not allowed", "authenticate"]
+        .iter()
+        .any(|needle| lowered.contains(needle));
+    let network_shaped = [
+        "econnrefused",
+        "enotfound",
+        "etimedout",
+        "connect",
+        "network",
+        "tls",
+        "certificate",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle));
+    if !claude_has_proxy_configured(facts) && (auth_shaped || network_shaped) {
+        return (
+            // A blocked egress path is a runtime-context gap, not proof that
+            // the account is unauthorized. Reporting it as `unauthorized`
+            // would gate a healthy account behind a missing env var.
+            ProviderCapacityState::Unknown,
+            "a real Claude request failed while the Harness process has no HTTP(S)_PROXY set. \
+             Live Wave 2 evidence: local auth metadata reported logged-in and the identical \
+             request succeeded once the proxy was exported, so treat this as missing proxy/runtime \
+             context rather than an account limit until the request is retried through the proxy."
+                .to_string(),
+        );
+    }
+    if auth_shaped {
+        return (
+            ProviderCapacityState::Unauthorized,
+            "a real Claude request was rejected as unauthorized while a proxy is configured, so \
+             the credential itself is the most likely cause"
+                .to_string(),
+        );
+    }
+    if ["429", "rate limit", "quota", "usage limit"]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+    {
+        return (
+            ProviderCapacityState::Exhausted,
+            "a real Claude request was rejected for exceeding a usage limit".to_string(),
+        );
+    }
+    (
+        ProviderCapacityState::Unknown,
+        "a real Claude request failed for a reason this adapter has not reviewed".to_string(),
+    )
+}
+
+/// Run one bounded, real Claude request.
+///
+/// This shares credentials and HTTP egress with the `claude_agent_sdk` Team
+/// mode but is NOT the SDK runtime; the snapshot says so explicitly rather than
+/// implying the Team runtime itself was exercised.
+fn claude_execution_canary(cwd: &Path, timeout: Duration) -> Result<String, String> {
+    let mut command = Command::new("claude");
+    command
+        .arg("-p")
+        .arg("Reply with exactly: HARNESS-CAPACITY-OK")
+        .arg("--output-format")
+        .arg("json")
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_provider_child_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn the Claude canary: {error}"))?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let mut guard = ProviderChildGuard::new(child);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match guard.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => return Err(format!("failed to inspect the Claude canary: {error}")),
+        }
+        if Instant::now() >= deadline {
+            // Dropping the guard kills the whole process group, so a wedged
+            // canary can never outlive the preflight.
+            return Err(format!(
+                "the Claude canary did not answer within {}s",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    guard.disarm();
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default().trim().to_string();
+    if !status.success() {
+        let detail = if stderr.is_empty() { &stdout } else { &stderr };
+        return Err(format!(
+            "claude canary exited {}: {}",
+            status,
+            detail.trim()
+        ));
+    }
+    // `claude -p --output-format json` reports API failures in-band: the
+    // process still exits 0 with `is_error: true`. Trusting the exit code here
+    // is exactly the "provider-down round looked completed" defect.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("claude canary returned unparsable JSON: {error}"))?;
+    if parsed.get("is_error").and_then(|value| value.as_bool()) == Some(true) {
+        return Err(parsed
+            .get("result")
+            .and_then(|value| value.as_str())
+            .unwrap_or("claude canary reported is_error without a result")
+            .to_string());
+    }
+    Ok(parsed
+        .get("result")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// Claude capacity. Anthropic does not permit third-party products to surface
+/// claude.ai rate limits without prior approval, so this NEVER reports a quota
+/// percentage. It reports the auth/runtime facts it can observe and, when a
+/// canary is requested, what a real request actually did.
+fn claude_capacity_probe(
+    execution_mode: &str,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+) -> ProviderCapacitySnapshot {
+    let (observed_at, observed_unix_ms) = capacity_now();
+    let runtime_context = claude_runtime_context_facts();
+    let (account, metadata_detail) = claude_auth_metadata();
+    let mut snapshot = ProviderCapacitySnapshot {
+        provider: "claude".to_string(),
+        execution_mode: execution_mode.to_string(),
+        account,
+        // Auth metadata proves a credential exists, never that a request would
+        // succeed. It must stay `unknown`.
+        state: ProviderCapacityState::Unknown,
+        observed_at,
+        observed_unix_ms,
+        reset_at: None,
+        evidence_source: ProviderCapacityEvidence::AuthMetadata,
+        confidence: ProviderCapacityConfidence::Unknown,
+        windows: Vec::new(),
+        diagnosis: None,
+        runtime_context,
+        detail: Some(format!(
+            "{metadata_detail}. Auth metadata cannot prove capacity; run the preflight with \
+             --canary for a real request. Claude rate limits are not surfaced."
+        )),
+    };
+    if !claude_has_proxy_configured(&snapshot.runtime_context) {
+        snapshot.diagnosis = Some(
+            "no HTTP(S)_PROXY is set in the Harness process. On a host whose direct egress to the \
+             Claude API is blocked this alone makes every member turn fail with 403 while local \
+             auth metadata still reports logged-in."
+                .to_string(),
+        );
+    }
+    if !options.canary {
+        return snapshot;
+    }
+    match claude_execution_canary(cwd, options.timeout) {
+        Ok(reply) => {
+            snapshot.state = ProviderCapacityState::Available;
+            snapshot.evidence_source = ProviderCapacityEvidence::ExecutionCanary;
+            snapshot.confidence = ProviderCapacityConfidence::Observed;
+            snapshot.diagnosis = None;
+            snapshot.detail = Some(format!(
+                "a real bounded `claude -p` request succeeded ({}). It shares credentials and HTTP \
+                 egress with claude_agent_sdk but is not the Agent SDK runtime itself. No rate \
+                 limit is reported.",
+                reply.trim().chars().take(40).collect::<String>()
+            ));
+        }
+        Err(failure) => {
+            let (state, diagnosis) = claude_canary_diagnosis(&failure, &snapshot.runtime_context);
+            snapshot.state = state;
+            snapshot.evidence_source = ProviderCapacityEvidence::ExecutionCanary;
+            snapshot.confidence = if state == ProviderCapacityState::Unknown {
+                ProviderCapacityConfidence::Unknown
+            } else {
+                ProviderCapacityConfidence::Inferred
+            };
+            snapshot.diagnosis = Some(diagnosis);
+            snapshot.detail = Some(format!(
+                "a real bounded `claude -p` request failed: {failure}"
+            ));
+        }
+    }
+    snapshot
+}
+
+/// Kimi capacity. The reviewed ACP surface for `kimi_acp` is `initialize`,
+/// `session/{new,resume,load,set_config_option,prompt,cancel,update,
+/// request_permission}`. None of them reports quota, so the only honest answer
+/// is `unknown` — never a synthesised percentage.
+fn kimi_capacity_probe(execution_mode: &str) -> ProviderCapacitySnapshot {
+    let (observed_at, observed_unix_ms) = capacity_now();
+    let mut snapshot = ProviderCapacitySnapshot::unknown(
+        "kimi",
+        execution_mode,
+        observed_at,
+        observed_unix_ms,
+        ProviderCapacityEvidence::NotExposed,
+        "the reviewed Kimi ACP surface exposes no account, quota, or rate-limit method, so no \
+         usage number can be reported. Capacity becomes observable only from a real terminal \
+         provider error.",
+    );
+    snapshot.account = ProviderAccountRef {
+        source: "kimi_code_local_login".to_string(),
+        identifier: None,
+        plan: None,
+    };
+    snapshot
+}
+
+/// Provider-neutral entry point. Unregistered providers are honestly unknown
+/// rather than inheriting another provider's answer.
+fn provider_capacity_probe(
+    provider: &str,
+    execution_mode: &str,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+) -> ProviderCapacitySnapshot {
+    match provider {
+        "codex" => codex_capacity_probe(execution_mode, cwd, options),
+        "claude" => claude_capacity_probe(execution_mode, cwd, options),
+        "kimi" => kimi_capacity_probe(execution_mode),
+        other => {
+            let (observed_at, observed_unix_ms) = capacity_now();
+            ProviderCapacitySnapshot::unknown(
+                other,
+                execution_mode,
+                observed_at,
+                observed_unix_ms,
+                ProviderCapacityEvidence::NotExposed,
+                "no capacity probe is registered for this provider",
+            )
+        }
+    }
+}
+
+/// Classify a terminal provider error into a capacity state.
+///
+/// This is the only capacity signal available for execution modes with no
+/// quota API. It reads a message Harness already recorded; it never guesses
+/// from silence, and an unrecognised failure stays `None` rather than becoming
+/// a gate.
+fn capacity_state_from_provider_error(message: &str) -> Option<(ProviderCapacityState, String)> {
+    let lowered = message.to_lowercase();
+    if [
+        "429",
+        "rate limit",
+        "rate_limit",
+        "quota",
+        "usage limit",
+        "usage_limit",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+    {
+        return Some((
+            ProviderCapacityState::Exhausted,
+            "a terminal provider error reported a usage limit".to_string(),
+        ));
+    }
+    if [
+        "403",
+        "401",
+        "forbidden",
+        "unauthorized",
+        "not allowed",
+        "authenticate",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+    {
+        return Some((
+            ProviderCapacityState::Unauthorized,
+            "a terminal provider error reported a rejected credential".to_string(),
+        ));
+    }
+    None
+}
+
+/// Staleness bound for a start-time capacity decision, overridable for tests.
+fn capacity_ttl_ms() -> u64 {
+    std::env::var("HARNESS_CAPACITY_TTL_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS)
+}
+
+/// The start guard is on by default. `HARNESS_CAPACITY_PREFLIGHT=off` disables
+/// only the probe; the honest-unknown semantics are unchanged, because a
+/// disabled probe simply produces no snapshot and no snapshot never blocks.
+fn capacity_preflight_enabled() -> bool {
+    !matches!(
+        std::env::var("HARNESS_CAPACITY_PREFLIGHT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "off" | "0" | "false" | "no"
+    )
+}
+
+/// Derive a capacity snapshot from the terminal provider errors this member
+/// already recorded.
+///
+/// Execution modes with no quota API (Kimi ACP, and Claude, whose rate limits
+/// may not be surfaced) can only become "known unavailable" this way. Only
+/// errors newer than the TTL are considered, so a recovered account is not
+/// gated by yesterday's 403.
+fn capacity_from_recorded_provider_errors(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    execution_mode: &str,
+    now_unix_ms: u64,
+    ttl_ms: u64,
+) -> CliResult<Option<ProviderCapacitySnapshot>> {
+    let actions = ledger.store.member_actions()?;
+    Ok(capacity_from_provider_error_actions(
+        &actions,
+        &member.id,
+        &member.provider,
+        execution_mode,
+        now_unix_ms,
+        ttl_ms,
+    ))
+}
+
+/// Pure selection half of [`capacity_from_recorded_provider_errors`]: newest
+/// classifiable `provider_error` for this member that is still inside the TTL.
+fn capacity_from_provider_error_actions(
+    actions: &[MemberAction],
+    member_run_id: &str,
+    provider: &str,
+    execution_mode: &str,
+    now_unix_ms: u64,
+    ttl_ms: u64,
+) -> Option<ProviderCapacitySnapshot> {
+    let action = actions.iter().rfind(|action| {
+        action.member_run_id == member_run_id
+            && action.action_type == "provider_error"
+            && parse_unix_ms_timestamp(&action.started_at)
+                .is_some_and(|stamp| stamp <= now_unix_ms && now_unix_ms - stamp <= ttl_ms)
+    })?;
+    let (state, detail) = capacity_state_from_provider_error(&action.summary)?;
+    let observed_unix_ms = parse_unix_ms_timestamp(&action.started_at).unwrap_or(now_unix_ms);
+    Some(ProviderCapacitySnapshot {
+        provider: provider.to_string(),
+        execution_mode: execution_mode.to_string(),
+        account: ProviderAccountRef::unknown(),
+        state,
+        observed_at: action.started_at.clone(),
+        observed_unix_ms,
+        reset_at: None,
+        evidence_source: ProviderCapacityEvidence::ProviderError,
+        confidence: ProviderCapacityConfidence::Observed,
+        windows: Vec::new(),
+        diagnosis: None,
+        runtime_context: Vec::new(),
+        detail: Some(format!("{detail}: {}", action.summary)),
+    })
+}
+
+fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
+    raw.strip_prefix("unix-ms:")?.trim().parse::<u64>().ok()
+}
+
+/// Observe this member's provider capacity and decide whether it may start.
+///
+/// Returns `Some(outcome)` when the member must NOT proceed. The caller runs
+/// this BEFORE the adapter claims its Assignment, so a blocked member leaves
+/// its queued Assignment untouched and re-deliverable.
+fn provider_capacity_start_gate(
+    ledger: &TeamRunLedger,
+    member: &mut MemberRun,
+    cwd: &Path,
+) -> CliResult<Option<MemberOutcome>> {
+    if !capacity_preflight_enabled() {
+        return Ok(None);
+    }
+    let execution_mode = capacity_execution_mode(
+        &member.provider,
+        member
+            .provider_profile
+            .as_ref()
+            .map(|profile| profile.execution_mode.as_str()),
+    );
+    let mut snapshot = provider_capacity_probe(
+        &member.provider,
+        &execution_mode,
+        cwd,
+        CapacityProbeOptions::default(),
+    );
+    let ttl_ms = capacity_ttl_ms();
+    let now_unix_ms = current_unix_ms() as u64;
+    // A live provider answer wins. Recorded terminal errors are consulted only
+    // when the probe itself could not observe a state.
+    if snapshot.state == ProviderCapacityState::Unknown {
+        if let Some(recorded) = capacity_from_recorded_provider_errors(
+            ledger,
+            member,
+            &execution_mode,
+            now_unix_ms,
+            ttl_ms,
+        )? {
+            snapshot = recorded;
+        }
+    }
+    let decision =
+        harness_core::provider_capacity_start_decision(Some(&snapshot), now_unix_ms, ttl_ms);
+    member.provider_capacity = Some(snapshot.clone());
+    member.last_event_at = Some(now_string());
+    if !decision.is_blocked() {
+        ledger.save_member_run(member)?;
+        return Ok(None);
+    }
+    // Blocked: record provider_unavailable and stop. Nothing above this point
+    // claimed, delivered, or consumed a TeamMessage.
+    member.status = MemberRunStatus::Blocked;
+    ledger.save_member_run(member)?;
+    let summary = format!(
+        "{} (evidence {:?}, confidence {:?}){}",
+        decision.reason(),
+        snapshot.evidence_source,
+        snapshot.confidence,
+        snapshot
+            .diagnosis
+            .as_ref()
+            .map(|diagnosis| format!("; {diagnosis}"))
+            .unwrap_or_default()
+    );
+    let action = ledger.append_action(
+        &member.id,
+        "provider_unavailable",
+        MemberActionStatus::Failed,
+        "provider capacity preflight blocked start",
+        &summary,
+    )?;
+    let state_label = serde_json::to_value(snapshot.state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "action",
+        &action.id,
+        "created",
+        &format!(
+            "{} not started: provider_unavailable ({state_label})",
+            member.name
+        ),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "provider_unavailable",
+        &summary,
+    )?;
+    Ok(Some(MemberOutcome::new(
+        member,
+        MemberRunStatus::Blocked,
+        summary,
+    )))
+}
+
+/// One provider row of `harness member preflight`.
+///
+/// `capacity` and `compatibility` are deliberately SIBLINGS, never merged: a
+/// reviewed-current adapter with an exhausted account is a normal, expressible
+/// state and the Dashboard must be able to show both.
+fn provider_preflight_row(
+    provider: &str,
+    requested_mode: Option<&str>,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+    ttl_ms: u64,
+) -> serde_json::Value {
+    let execution_mode = capacity_execution_mode(provider, requested_mode);
+    let mut profile = team_member_provider_profile_for_mode(provider, requested_mode);
+    let detected = team_member_provider_version_output(provider);
+    apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
+    let capacity = provider_capacity_probe(provider, &execution_mode, cwd, options);
+    // Read the clock AFTER the probe: a probe that takes seconds must not make
+    // its own answer look future-dated, which would report it as stale.
+    let now_unix_ms = current_unix_ms() as u64;
+    let decision =
+        harness_core::provider_capacity_start_decision(Some(&capacity), now_unix_ms, ttl_ms);
+    serde_json::json!({
+        "provider": provider,
+        "execution_mode": execution_mode,
+        "capacity": capacity,
+        "capacity_freshness": capacity.freshness(now_unix_ms, ttl_ms),
+        "start_decision": decision,
+        "compatibility": {
+            "status": profile.compatibility_status,
+            "provider_version": profile.provider_version,
+            "reviewed_provider_versions": profile.reviewed_provider_versions,
+            "adapter_contract_version": profile.adapter_contract_version,
+            "version_probe_error": detected.err(),
+        },
+    })
+}
+
+fn member_preflight_command(args: &[String]) -> CliResult<()> {
+    let providers = {
+        let requested = many(args, "--provider");
+        if requested.is_empty() {
+            provider_registry()
+                .iter()
+                .map(|adapter| adapter.name().to_string())
+                .collect::<Vec<_>>()
+        } else {
+            requested
+        }
+    };
+    let requested_mode = value(args, "--execution-mode");
+    let options = CapacityProbeOptions {
+        canary: has_flag(args, "--canary"),
+        timeout: Duration::from_secs(
+            value(args, "--timeout-s")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(30),
+        ),
+    };
+    let cwd = std::env::current_dir().map_err(|error| {
+        CliError::Usage(format!("failed to resolve current directory: {error}"))
+    })?;
+    let ttl_ms = capacity_ttl_ms();
+    let rows = providers
+        .iter()
+        .map(|provider| {
+            provider_preflight_row(provider, requested_mode.as_deref(), &cwd, options, ttl_ms)
+        })
+        .collect::<Vec<_>>();
+    let blocked = rows
+        .iter()
+        .filter(|row| row.pointer("/start_decision/decision") == Some(&serde_json::json!("block")))
+        .count();
+    print_json(&serde_json::json!({
+        "command": "harness member preflight",
+        "ok": true,
+        "result": {
+            "generated_at": now_string(),
+            "ttl_ms": ttl_ms,
+            "canary": options.canary,
+            "cwd": cwd,
+            "providers": rows,
+        },
+    }))?;
+    if has_flag(args, "--fail-on-unavailable") && blocked > 0 {
+        return Err(CliError::Usage(format!(
+            "{blocked} provider(s) reported a fresh known-unavailable capacity state; inspect the JSON report"
+        )));
+    }
+    Ok(())
+}
+
 /// Parse one `--member name:role:provider[:model][@path1,path2][#brief]` spec.
 ///
 /// The brief is split off FIRST and is free text: it may contain `@` and `:`,
@@ -10429,6 +11201,9 @@ fn build_member_run_for_team(
             member.service_tier.clone(),
         ),
         provider_profile: Some(profile),
+        // Capacity is observed at start, never assumed at creation. An absent
+        // snapshot is honestly unknown, not available.
+        provider_capacity: None,
         status: MemberRunStatus::Idle,
         native_session,
         worktree_ref: member
@@ -14109,6 +14884,12 @@ impl ProviderChildGuard {
         self.armed = false;
         Ok(status)
     }
+
+    /// Mark an already-reaped child so `Drop` does not signal a pid that no
+    /// longer belongs to it.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 impl std::ops::Deref for ProviderChildGuard {
@@ -14516,6 +15297,30 @@ fn run_member_orchestration(
                 MemberRunStatus::Stopped,
                 "member runtime closed".to_string(),
             );
+        }
+        // Capacity preflight runs once, before the adapter claims anything.
+        // A blocked member returns here, so its Assignment stays `queued` and
+        // is still deliverable after the provider recovers.
+        if generation == 0 {
+            match provider_capacity_start_gate(ledger, &mut current, &context.cwd) {
+                Ok(Some(outcome)) => return outcome,
+                Ok(None) => {}
+                Err(error) => {
+                    // The guard must never invent a failure of its own: a
+                    // ledger write problem is journalled, not turned into a
+                    // provider verdict.
+                    ledger
+                        .fold_event(
+                            TeamRunEventSourceKind::Host,
+                            Some(current.id.clone()),
+                            "member_run",
+                            &current.id,
+                            "capacity_preflight_error",
+                            &format!("capacity preflight could not be recorded: {error}"),
+                        )
+                        .ok();
+                }
+            }
         }
         generation += 1;
         let execution_mode = current
@@ -16371,6 +17176,29 @@ fn record_round_handoff(
 
 /// Ledger writes for one completed member round: handoff to Host, action row,
 /// and member status.
+/// Decide whether a finished round is a provider failure rather than a member
+/// answer.
+///
+/// A classified provider error obviously is one. So is an EMPTY final report:
+/// a terminal provider error the adapter could not classify still ends the
+/// round with no text, and `parse_round_result("")` reads as `Done` — which
+/// would publish an empty Handoff and a `completed` action that no member ever
+/// wrote. Silence is never semantic completion.
+fn effective_round_provider_error(
+    provider_error: Option<&str>,
+    final_text: &str,
+) -> Option<String> {
+    if let Some(provider_error) = provider_error {
+        return Some(provider_error.to_string());
+    }
+    canonical_member_report_text(final_text)
+        .trim()
+        .is_empty()
+        .then(|| {
+            "empty_final_report (the provider ended the round without an agent message)".to_string()
+        })
+}
+
 fn record_member_round(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
@@ -16379,7 +17207,12 @@ fn record_member_round(
     // A provider-error round produced no member report: the provider itself
     // failed the turn. Recording a handoff here would impersonate a member
     // answer, so the ledger gets a failed provider_error action instead.
-    if let Some(provider_error) = record.provider_error {
+    //
+    // An EMPTY final report is the same failure wearing a different mask; see
+    // `effective_round_provider_error`.
+    let effective_provider_error =
+        effective_round_provider_error(record.provider_error, record.final_text);
+    if let Some(provider_error) = effective_provider_error.as_deref() {
         let detail = format!(
             "provider turn failed: {provider_error}: {}",
             record.final_text.lines().next().unwrap_or("")
@@ -29902,6 +30735,8 @@ fn print_help() {
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
+  member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
+                   [--timeout-s <n>] [--fail-on-unavailable] [--json]
   company init --id <company-id> [--name <name>]
   company list | company current | company switch <company-id> | company show [company-id]
   company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
@@ -34032,6 +34867,7 @@ mod tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            provider_capacity: None,
             status: MemberRunStatus::Idle,
             native_session: Some(NativeSessionRef {
                 provider: provider.into(),
@@ -36209,6 +37045,197 @@ package:com.tencent.mm
     }
 
     #[test]
+    fn capacity_execution_mode_defaults_to_the_registered_team_mode() {
+        assert_eq!(capacity_execution_mode("codex", None), "codex_app_server");
+        assert_eq!(capacity_execution_mode("claude", None), "claude_agent_sdk");
+        assert_eq!(capacity_execution_mode("kimi", None), "kimi_acp");
+        // A capacity claim is never carried across execution modes.
+        assert_eq!(
+            capacity_execution_mode("codex", Some("codex_exec")),
+            "codex_exec"
+        );
+    }
+
+    #[test]
+    fn kimi_capacity_is_unknown_with_no_invented_windows() {
+        let snapshot = kimi_capacity_probe("kimi_acp");
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Unknown);
+        assert_eq!(
+            snapshot.evidence_source,
+            ProviderCapacityEvidence::NotExposed
+        );
+        assert_eq!(snapshot.confidence, ProviderCapacityConfidence::Unknown);
+        assert!(snapshot.windows.is_empty());
+        assert_eq!(snapshot.reset_at, None);
+        let encoded = serde_json::to_string(&snapshot).expect("serialize");
+        assert!(
+            !encoded.contains("used_percent\":0"),
+            "an absent quota API must not become a zero percentage: {encoded}"
+        );
+    }
+
+    #[test]
+    fn a_failed_claude_request_without_a_proxy_is_a_runtime_gap_not_an_account_verdict() {
+        // Live Wave 2 evidence: auth metadata said logged-in, the request
+        // returned 403, and the identical request succeeded through the proxy.
+        let no_proxy = vec![ProviderRuntimeContextFact {
+            key: "HTTPS_PROXY".into(),
+            present: false,
+            note: Some("absent".into()),
+        }];
+        let (state, diagnosis) =
+            claude_canary_diagnosis("API Error: 403 Request not allowed", &no_proxy);
+        assert_eq!(
+            state,
+            ProviderCapacityState::Unknown,
+            "a missing proxy must not gate a possibly healthy account"
+        );
+        assert!(diagnosis.contains("PROXY"), "{diagnosis}");
+
+        // With a proxy configured, the same rejection does implicate the
+        // credential.
+        let with_proxy = vec![ProviderRuntimeContextFact {
+            key: "HTTPS_PROXY".into(),
+            present: true,
+            note: Some("http://127.0.0.1:7897".into()),
+        }];
+        let (state, _) = claude_canary_diagnosis("401 unauthorized", &with_proxy);
+        assert_eq!(state, ProviderCapacityState::Unauthorized);
+
+        let (state, _) = claude_canary_diagnosis("429 rate limit exceeded", &with_proxy);
+        assert_eq!(state, ProviderCapacityState::Exhausted);
+
+        // An unreviewed failure stays unknown instead of guessing.
+        let (state, _) = claude_canary_diagnosis("something unfamiliar", &with_proxy);
+        assert_eq!(state, ProviderCapacityState::Unknown);
+    }
+
+    #[test]
+    fn provider_error_text_classifies_only_reviewed_shapes() {
+        assert_eq!(
+            capacity_state_from_provider_error("api_error (HTTP 403)").map(|(state, _)| state),
+            Some(ProviderCapacityState::Unauthorized)
+        );
+        assert_eq!(
+            capacity_state_from_provider_error("kimi acp session/prompt rejected: quota exceeded")
+                .map(|(state, _)| state),
+            Some(ProviderCapacityState::Exhausted)
+        );
+        assert_eq!(
+            capacity_state_from_provider_error("transport disconnected"),
+            None,
+            "an unrecognised failure must never become a capacity gate"
+        );
+    }
+
+    fn provider_error_action(member_run_id: &str, started_at: &str, summary: &str) -> MemberAction {
+        MemberAction {
+            id: generated_id("mact"),
+            seq: 1,
+            team_run_id: "team-run-1".into(),
+            member_run_id: member_run_id.into(),
+            task_id: None,
+            provider_call_id: None,
+            action_type: "provider_error".into(),
+            status: MemberActionStatus::Failed,
+            provider_status: None,
+            semantic_status: None,
+            title: "round 1 provider_error".into(),
+            summary: summary.into(),
+            evidence_refs: Vec::new(),
+            started_at: started_at.into(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn recorded_provider_errors_expire_with_the_capacity_ttl() {
+        let actions = vec![provider_error_action(
+            "member-run-1",
+            "unix-ms:1000",
+            "provider turn failed: api_error (HTTP 403)",
+        )];
+
+        let fresh = capacity_from_provider_error_actions(
+            &actions,
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("a fresh 403 is observable capacity");
+        assert_eq!(fresh.state, ProviderCapacityState::Unauthorized);
+        assert_eq!(
+            fresh.evidence_source,
+            ProviderCapacityEvidence::ProviderError
+        );
+        assert_eq!(fresh.observed_unix_ms, 1_000);
+
+        // Past the TTL the same row is no longer evidence of "now".
+        assert!(capacity_from_provider_error_actions(
+            &actions,
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            100_000,
+            1_000,
+        )
+        .is_none());
+
+        // Another member's failure is never borrowed.
+        assert!(capacity_from_provider_error_actions(
+            &actions,
+            "member-run-2",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn an_empty_final_report_is_a_provider_error_not_a_completed_round() {
+        // The defect this closes: `parse_round_result("")` reads as Done, so an
+        // unclassified terminal provider error would publish an empty Handoff
+        // and a `completed` action no member ever wrote.
+        assert_eq!(parse_round_result(""), MemberRoundResult::Done);
+
+        for silence in ["", "   ", "\n\n", "\t\r\n "] {
+            let derived = effective_round_provider_error(None, silence)
+                .unwrap_or_else(|| panic!("silence must be a provider error: {silence:?}"));
+            assert!(derived.starts_with("empty_final_report"), "{derived}");
+        }
+        // A real report is untouched.
+        assert_eq!(
+            effective_round_provider_error(None, "## RESULT\ndone\n"),
+            None
+        );
+        // A classified provider error keeps its own reason.
+        assert_eq!(
+            effective_round_provider_error(Some("api_error (HTTP 403)"), ""),
+            Some("api_error (HTTP 403)".to_string())
+        );
+    }
+
+    #[test]
+    fn capacity_preflight_toggle_and_ttl_read_the_documented_env_contract() {
+        // Defaults are on and five minutes; this test asserts the parse rules,
+        // not the ambient process env.
+        assert_eq!(
+            harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS,
+            5 * 60 * 1000
+        );
+        assert_eq!(
+            parse_unix_ms_timestamp("unix-ms:1785573368310"),
+            Some(1785573368310)
+        );
+        assert_eq!(parse_unix_ms_timestamp("2026-08-01T00:00:00Z"), None);
+    }
+
+    #[test]
     fn new_agent_team_rejects_codex_exec_as_workflow_only() {
         let (store, root) = temp_store("team-reject-codex-exec");
         let result = create_team_run(
@@ -36970,6 +37997,7 @@ mod sse_tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            provider_capacity: None,
             status: MemberRunStatus::Idle,
             native_session: None,
             worktree_ref: None,

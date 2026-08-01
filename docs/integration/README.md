@@ -36,6 +36,8 @@ docs/integration/host-agent-mcp.md
                                  # Host MCP control contract and Codex setup
 docs/integration/native-session-storage.md
                                  # provider-native storage/read/resume contract
+docs/integration/provider-capacity.md
+                                 # capacity/auth preflight contract and truth matrix
 docs/integration/codex.md    # Codex implementation
 docs/integration/codex-message-delivery.md
                                  # Codex mailbox and turn delivery detail
@@ -63,6 +65,9 @@ Provider docs answer how a concrete provider implements:
 - native subagent or child-thread behavior;
 - evidence, proposal, and report extraction;
 - Dashboard-visible health and failure modes;
+- runtime account capacity and its reviewed evidence source, kept separate from
+  adapter compatibility — see
+  [provider-capacity.md](provider-capacity.md);
 - fallback modes and unsupported capabilities.
 
 Every claim must distinguish four layers:

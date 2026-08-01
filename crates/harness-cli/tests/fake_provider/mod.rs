@@ -280,13 +280,33 @@ if [ "$1" = "app-server" ]; then
   thread_id="thread_fake_codex_app_server"
   turn_id="turn_fake_codex_app_server"
   turn_seq=0
+  # Capacity fixtures. Assign the defaults here rather than inline in the
+  # printf: `${VAR:-{"a":1}}` terminates at the FIRST `}` of the default, which
+  # silently corrupts a JSON literal.
+  account_json="${FAKE_CODEX_ACCOUNT_JSON}"
+  if [ -z "$account_json" ]; then
+    account_json='{"account":{"type":"chatgpt","email":"fake@example.com","planType":"pro"},"requiresOpenaiAuth":true}'
+  fi
+  rate_limits_json="${FAKE_CODEX_RATE_LIMITS_JSON}"
+  if [ -z "$rate_limits_json" ]; then
+    rate_limits_json='{"rateLimits":{"limitId":"codex","primary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1786161121},"secondary":null,"rateLimitReachedType":null,"spendControlReached":false}}'
+  fi
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
     case "$line" in
       *'"method":"initialize"'*)
         printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
         ;;
+      *'"method":"account/read"'*)
+        printf '{"id":%s,"result":%s}\n' "$id" "$account_json"
+        ;;
+      *'"method":"account/rateLimits/read"'*)
+        printf '{"id":%s,"result":%s}\n' "$id" "$rate_limits_json"
+        ;;
       *'"method":"thread/start"'*)
+        if [ -n "${FAKE_CODEX_THREAD_MARKER:-}" ]; then
+          printf 'thread/start %s\n' "$line" >> "$FAKE_CODEX_THREAD_MARKER"
+        fi
         reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
         service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
         reasoning_json=null
@@ -296,6 +316,9 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s"}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
+        if [ -n "${FAKE_CODEX_THREAD_MARKER:-}" ]; then
+          printf 'thread/resume %s\n' "$line" >> "$FAKE_CODEX_THREAD_MARKER"
+        fi
         thread_id=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
         reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
         service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')

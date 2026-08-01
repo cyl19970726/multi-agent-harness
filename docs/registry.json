@@ -1628,6 +1628,54 @@
    ]
   },
   {
+   "path": "docs/integration/provider-capacity.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "provider capacity and authentication preflight contract",
+    "provider capacity truth matrix",
+    "capacity versus adapter compatibility separation",
+    "capacity start guard and provider_unavailable"
+   ],
+   "dependsOn": [
+    "docs/agent-runtime.md",
+    "docs/integration/README.md",
+    "docs/integration/codex.md",
+    "docs/integration/claude.md",
+    "docs/integration/kimi.md",
+    "docs/dashboard/pages/member-run-focus.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-01",
+   "lastVerifiedWith": [
+    "cargo test --workspace",
+    "harness member preflight --json",
+    "harness governance check"
+   ],
+   "reorgTrigger": "A provider exposes or retires a reviewed capacity API, or the capacity start-guard rule changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "crates/harness-core/src/lib.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/provider_capacity_preflight.rs"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
+    }
+   ]
+  },
+  {
    "path": "docs/governance-engine.md",
    "ownerRole": "architect",
    "status": "stable",

@@ -273,6 +273,20 @@ compatibility `current`, adapter contract `codex-app-server-v1`, reviewed on
 2026-07-28. This is a point-in-time execution fact; always rerun the provider
 audit instead of assuming it remains current.
 
+## Account Capacity
+
+Compatibility is not availability. Codex account capacity is read separately
+through the reviewed `account/read` and `account/rateLimits/read` app-server
+RPCs, which complete after `initialize` + `initialized` and therefore require
+no `thread/start`, no rollout, and no billable turn:
+
+```bash
+harness member preflight --provider codex --json
+```
+
+The contract, classification thresholds, start guard, and truth matrix live in
+[provider-capacity.md](provider-capacity.md).
+
 ## Acceptance
 
 A Codex Team integration claim requires:

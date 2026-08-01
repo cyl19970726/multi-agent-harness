@@ -351,6 +351,17 @@ Dashboard reads `runtime_health` / session records computed by harness-cli:
 Codex has process/socket/protocol/delivery. Kimi has no persistent process and no socket protocol,
 so the meaningful layers are binary endpoint, session, and delivery.
 
+### Account capacity is honestly unknown
+
+The reviewed ACP surface is `initialize` and
+`session/{new,resume,load,set_config_option,prompt,cancel,update,request_permission}`.
+None of them reports account quota, usage, or rate limits, so
+`harness member preflight --provider kimi` returns
+`state: unknown, evidence_source: not_exposed` with an empty `windows` list.
+No percentage may be approximated from local logs. Kimi capacity becomes
+observable only from a real terminal provider error — the Wave 2 quota `403`
+is exactly that case. See [provider-capacity.md](provider-capacity.md).
+
 ## Capabilities and Cost
 
 Kimi capability preset:
