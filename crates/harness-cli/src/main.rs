@@ -11061,6 +11061,22 @@ fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
     }
 }
 
+fn ensure_external_coordination_open(member: &MemberRun) -> CliResult<()> {
+    if member.is_external_interactive()
+        && matches!(
+            member.status,
+            MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+        )
+    {
+        return Err(CliError::Usage(format!(
+            "external interactive member {} has a closed coordination identity ({})",
+            member.id,
+            serde_snake_label(&member.status)
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum TeamMessageDeliveryMode {
     Routed,
@@ -11171,12 +11187,16 @@ fn prepare_team_message_as(
             "host".to_string()
         }
         TeamActorKind::MemberRun => {
-            if !run.member_run_ids.iter().any(|id| id == &sender.id) {
-                return Err(CliError::Usage(format!(
-                    "message sender {} does not belong to team run {team_run_id}",
-                    sender.id
-                )));
-            }
+            let member = member_runs
+                .iter()
+                .find(|member| member.id == sender.id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "message sender {} does not belong to team run {team_run_id}",
+                        sender.id
+                    ))
+                })?;
+            ensure_external_coordination_open(member)?;
             sender.id.clone()
         }
         TeamActorKind::AgentMember => {
@@ -11185,7 +11205,10 @@ fn prepare_team_message_as(
                 .filter(|member| member.agent_member_id.as_deref() == Some(sender.id.as_str()))
                 .collect::<Vec<_>>();
             match linked.as_slice() {
-                [member] => member.id.clone(),
+                [member] => {
+                    ensure_external_coordination_open(member)?;
+                    member.id.clone()
+                }
                 [] => {
                     return Err(CliError::Usage(format!(
                         "Agent identity {} has no MemberRun in team run {team_run_id}",
@@ -11219,6 +11242,17 @@ fn prepare_team_message_as(
             return Err(CliError::Usage(format!(
                 "duplicate message recipient: {recipient}"
             )));
+        }
+        if recipient != "host" {
+            let member = member_runs
+                .iter()
+                .find(|member| member.id == recipient.as_str())
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "message recipient {recipient} has no MemberRun projection in team run {team_run_id}"
+                    ))
+                })?;
+            ensure_external_coordination_open(member)?;
         }
     }
     if let Some(origin_wave_id) = origin_wave_id.as_deref() {
@@ -17240,11 +17274,15 @@ pub(crate) fn acknowledge_team_message(
     // on its own: the trusted loopback inbox read IS its delivery channel and
     // its ack may proceed straight from `queued`. Driven members keep the
     // delivered-first invariant enforced by the store.
+    let delivery_member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_id && member.team_run_id == message.team_run_id);
+    if let Some(member) = delivery_member.as_ref() {
+        ensure_external_coordination_open(member)?;
+    }
     let queued_external_delivery = message.deliveries.iter().any(|delivery| {
         delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
-    }) && latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .find(|member| member.id == member_id && member.team_run_id == message.team_run_id)
+    }) && delivery_member
         .is_some_and(|member| member.is_external_interactive());
     let message = if queued_external_delivery {
         let mut updated = message.clone();

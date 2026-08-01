@@ -1212,4 +1212,41 @@ fn mcp_stdio_external_interactive_member_authorship() {
         Some(0),
         "acked mail leaves the actionable inbox: {inbox}"
     );
+
+    // Close ends only the Harness coordination identity, but that identity is
+    // genuinely terminal: the still-running external process cannot keep
+    // authoring MemberRun mail through the unbound MCP exception.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_close_member",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "member_run_id": member_ids[1],
+                "reason": "external review accepted"
+            }
+        }),
+    );
+    let closed = call_payload(&response);
+    assert_eq!(closed["runtime_effect"].as_str(), Some("none"));
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": member_ids[1],
+                "sender_kind": "member_run",
+                "to_member_ids": ["host"],
+                "kind": "message",
+                "body": "must not author after coordination close",
+                "correlation_id": assignment_correlation
+            }
+        }),
+    );
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("closed external error")
+        .contains("unbound MCP connections may not author"));
 }

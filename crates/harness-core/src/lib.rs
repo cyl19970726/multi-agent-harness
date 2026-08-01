@@ -1988,9 +1988,10 @@ impl MemberRun {
     /// a provider adapter for it; its deliveries stay queued until the
     /// external session polls and acks.
     pub fn is_external_interactive(&self) -> bool {
-        self.provider_profile
-            .as_ref()
-            .is_some_and(|profile| profile.execution_mode == EXECUTION_MODE_EXTERNAL_INTERACTIVE)
+        self.provider_profile.as_ref().is_some_and(|profile| {
+            profile.execution_mode == EXECUTION_MODE_EXTERNAL_INTERACTIVE
+                && profile.execution_driver == MemberExecutionDriver::UserDriven
+        })
     }
 }
 

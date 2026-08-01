@@ -313,4 +313,6 @@ is rejected for driven members; it is accepted only for declared
 
 Closing this MemberRun closes only its Harness coordination identity. It does
 not stop, cancel, or otherwise modify your external provider process; continue
-or exit that process yourself.
+or exit that process yourself. The closed identity can no longer send or
+receive TeamMessages or acknowledge previously queued mail; joining again
+requires a new MemberRun.

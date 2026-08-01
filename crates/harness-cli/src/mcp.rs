@@ -20,8 +20,8 @@ use std::{
 };
 
 use harness_core::{
-    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLeaseStatus, WaveStatus,
+    MemberRunStatus, PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
@@ -871,7 +871,15 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
                 _ => false,
             });
         match external_member {
-            Some(member) if member.is_external_interactive() => {
+            Some(member)
+                if member.is_external_interactive()
+                    && !matches!(
+                        member.status,
+                        MemberRunStatus::Completed
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                    ) =>
+            {
                 authn_source = "mcp:external_interactive".to_string();
             }
             _ => {

@@ -4706,6 +4706,38 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         "external handoff failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+
+    // Leave one message queued so Close can prove that the terminal
+    // coordination identity cannot continue sending, receiving, or ACKing.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &ext_id,
+            "--kind",
+            "message",
+            "--body",
+            "Queued before coordination close",
+            "--correlation-id",
+            &correlation,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "pre-close send failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let queued_before_close_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
     let reviewer_closed = team_run_json(
         &home,
         &project_id,
@@ -4720,6 +4752,67 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         ],
     );
     assert_eq!(reviewer_closed["runtime_effect"].as_str(), Some("none"));
+
+    for args in [
+        vec![
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            &ext_id,
+            "--to",
+            "host",
+            "--kind",
+            "message",
+            "--body",
+            "must not send after close",
+            "--correlation-id",
+            &correlation,
+        ],
+        vec![
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &ext_id,
+            "--kind",
+            "message",
+            "--body",
+            "must not queue after close",
+            "--correlation-id",
+            &correlation,
+        ],
+        vec![
+            "--project",
+            &project_id,
+            "team-run",
+            "ack",
+            "--id",
+            &run_id,
+            "--member-id",
+            &ext_id,
+            "--message-id",
+            &queued_before_close_id,
+        ],
+    ] {
+        let out = run_harness(&home, home.base(), &args);
+        assert!(
+            !out.status.success()
+                && String::from_utf8_lossy(&out.stderr).contains("closed coordination identity"),
+            "closed external coordination must reject {args:?}: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     let completed = team_run_json(&home, &project_id, &["complete", "--id", &run_id, "--json"]);
     assert_eq!(completed["status"].as_str(), Some("completed"));
 }

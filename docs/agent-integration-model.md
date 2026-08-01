@@ -64,8 +64,10 @@ interactive provider session that Harness never spawns or drives: the
 Supervisor starts no adapter for it, its non-empty provider label is
 informational rather than adapter registration, deliveries stay queued until
 the session polls its inbox, and Close only records the terminal coordination
-status with no external runtime effect. Because such a member is explicitly
-declared non-driven, its mail is accepted from unbound trusted-local CLI/MCP clients
+status with no external runtime effect. A closed external coordination identity
+cannot send or receive new TeamMessages or acknowledge previously queued mail.
+Because such a member is explicitly declared non-driven, its mail is accepted
+from unbound trusted-local CLI/MCP clients
 and recorded with `authn_source = "mcp:external_interactive"` (or the local
 CLI equivalent). Driven members keep the full invariant: their
 member-originated messages must come from the bound provider runtime. An
