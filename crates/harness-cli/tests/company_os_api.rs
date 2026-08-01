@@ -1749,3 +1749,219 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         Some(3)
     );
 }
+
+#[test]
+fn archived_source_provenance_and_docs_health_reporting() {
+    let home = TempHome::new("company-os-archived-source");
+    let project_id = init_project(&home);
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("HARNESS_COMPANY_OS_TOKEN", TEST_TOKEN)],
+    );
+
+    // An empty store reports a passing Docs health report.
+    let (status, health) = serve.get_json("/v1/company-os/docs-health");
+    assert_eq!(status, 200, "{health}");
+    assert_eq!(health["result"]["status"], "pass");
+    assert_eq!(health["result"]["counts"]["findings"], 0);
+
+    post_ok(
+        &serve,
+        "/v1/company-os/actors",
+        human("human-brand-owner", "Brand Owner"),
+    );
+    let mut maintainer = agent_record("agent-docs", "Docs Agent", "Maintain company memory");
+    maintainer["actor"]["maintained_document_refs"] = json!(["document-operating-manual"]);
+    post_ok(&serve, "/v1/company-os/actors", admin(maintainer.clone()));
+
+    let document = json!({
+        "id": "document-operating-manual",
+        "space_id": "operations",
+        "parent_document_id": null,
+        "title": "Company operating manual",
+        "kind": "page",
+        "lifecycle_status": "active",
+        "block_ids": [],
+        "template_ref": null,
+        "permission_policy_refs": ["company.records.write"],
+        "reference_refs": [],
+        "created_by": actor("human", "human-brand-owner"),
+        "updated_by": actor("human", "human-brand-owner"),
+        "created_at": NOW,
+        "updated_at": NOW
+    });
+    post_ok(&serve, "/v1/company-os/documents", admin(document.clone()));
+
+    let work_item = json!({
+        "id": "work-refresh-operating-manual",
+        "title": "Refresh operating manual",
+        "objective": "Keep the operating manual current",
+        "status": "in_progress",
+        "source_document_ref": "document-operating-manual",
+        "source_record_refs": [],
+        "milestone_ref": null,
+        "work_type": "governance",
+        "business_module_ref": null,
+        "result_document_ref": null,
+        "result_record_refs": [],
+        "submitted_by": actor("agent", "agent-docs"),
+        "requested_by": actor("human", "human-brand-owner"),
+        "accountable_owner": actor("human", "human-brand-owner"),
+        "assignees": [actor("agent", "agent-docs")],
+        "contributors": [],
+        "reviewer": null,
+        "approver": null,
+        "execution_mode": "direct",
+        "execution_refs": [],
+        "approval_refs": [],
+        "evidence_refs": [],
+        "artifact_refs": [],
+        "outcome_summary": null,
+        "due_at": null,
+        "priority": "medium",
+        "risk_level": "governance",
+        "created_at": NOW,
+        "updated_at": NOW,
+        "completed_at": null
+    });
+    post_ok(
+        &serve,
+        "/v1/company-os/work-items",
+        admin(work_item.clone()),
+    );
+
+    // Active Work resolves to the active source Document with title+lifecycle.
+    let (status, provenance) = serve.get_json("/v1/company-os/work-provenance");
+    assert_eq!(status, 200, "{provenance}");
+    let item = &provenance["result"]["work_items"][0];
+    assert_eq!(item["work_item_id"], "work-refresh-operating-manual");
+    assert_eq!(item["is_active"], true);
+    assert_eq!(item["source"]["resolution"], "active");
+    assert_eq!(item["source"]["title"], "Company operating manual");
+    assert_eq!(item["source"]["lifecycle_status"], "active");
+    assert_eq!(provenance["result"]["summary"]["active_source_active"], 1);
+    let (status, health) = serve.get_json("/v1/company-os/docs-health");
+    assert_eq!(status, 200, "{health}");
+    assert_eq!(
+        health["result"]["status"], "pass",
+        "an active source must not produce findings: {health}"
+    );
+
+    // Archive the source Document through an ordinary governed append.
+    let mut archived_document = document.clone();
+    archived_document["lifecycle_status"] = json!("archived");
+    archived_document["updated_at"] = json!("2026-07-21T10:00:00+08:00");
+    post_ok(&serve, "/v1/company-os/documents", admin(archived_document));
+
+    // The active WorkItem now resolves to explicit archived-source history
+    // with title and lifecycle, never a bare id.
+    let (status, provenance) = serve.get_json("/v1/company-os/work-provenance");
+    assert_eq!(status, 200, "{provenance}");
+    let item = &provenance["result"]["work_items"][0];
+    assert_eq!(item["source"]["resolution"], "archived");
+    assert_eq!(item["source"]["title"], "Company operating manual");
+    assert_eq!(item["source"]["lifecycle_status"], "archived");
+    assert_eq!(provenance["result"]["summary"]["active_source_archived"], 1);
+    assert_eq!(provenance["result"]["summary"]["active_source_missing"], 0);
+
+    let (status, health) = serve.get_json("/v1/company-os/docs-health");
+    assert_eq!(status, 200, "{health}");
+    assert_eq!(health["result"]["status"], "issues");
+    let finding = health["result"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["kind"] == "work_item_source_document_archived")
+        .unwrap_or_else(|| panic!("archived work source finding missing: {health}"));
+    assert_eq!(finding["severity"], "warning");
+    assert_eq!(finding["subject"]["id"], "work-refresh-operating-manual");
+    assert_eq!(finding["related"]["id"], "document-operating-manual");
+    assert_eq!(finding["related"]["title"], "Company operating manual");
+    assert_eq!(finding["related"]["lifecycle_status"], "archived");
+
+    // Archive the maintaining agent: Organization provenance keeps the member
+    // and the maintained-document history navigable.
+    maintainer["actor"]["status"] = json!("archived");
+    maintainer["actor"]["updated_at"] = json!("2026-07-21T10:00:00+08:00");
+    post_ok(&serve, "/v1/company-os/actors", admin(maintainer));
+
+    let (status, organization) = serve.get_json("/v1/company-os/organization-provenance");
+    assert_eq!(status, 200, "{organization}");
+    let member = organization["result"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["actor_id"] == "agent-docs")
+        .unwrap_or_else(|| panic!("archived member must stay listed: {organization}"));
+    assert_eq!(member["resolution"], "archived");
+    assert_eq!(member["member_status"], "archived");
+    assert_eq!(member["maintained_documents"][0]["resolution"], "archived");
+    assert_eq!(
+        member["maintained_documents"][0]["title"],
+        "Company operating manual"
+    );
+    assert_eq!(organization["result"]["summary"]["members_archived"], 1);
+    assert_eq!(
+        organization["result"]["summary"]["maintained_documents_archived"],
+        1
+    );
+
+    let (status, provenance) = serve.get_json("/v1/company-os/work-provenance");
+    assert_eq!(status, 200, "{provenance}");
+    assert_eq!(
+        provenance["result"]["work_items"][0]["assignees"][0]["resolution"],
+        "archived"
+    );
+    assert_eq!(
+        provenance["result"]["summary"]["archived_actor_references"],
+        1
+    );
+
+    // A legacy row whose source Document no longer exists (only possible via
+    // import, since appends validate references) resolves as missing and is
+    // reported as a critical finding. The row is appended directly here only
+    // to simulate that legacy state; production ledgers stay append-only.
+    let store_root = home.projects_dir().join(&project_id);
+    let work_ledger = store_root.join("company_os_work_items.jsonl");
+    assert!(
+        work_ledger.is_file(),
+        "work ledger should exist at {work_ledger:?}"
+    );
+    let mut legacy_item = work_item.clone();
+    legacy_item["id"] = json!("work-legacy-missing-source");
+    legacy_item["title"] = json!("Legacy work with missing source");
+    legacy_item["source_document_ref"] = json!("document-pruned-away");
+    use std::io::Write as _;
+    let mut ledger = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&work_ledger)
+        .unwrap();
+    writeln!(ledger, "{}", serde_json::to_string(&legacy_item).unwrap()).unwrap();
+    drop(ledger);
+
+    let (status, provenance) = serve.get_json("/v1/company-os/work-provenance");
+    assert_eq!(status, 200, "{provenance}");
+    let legacy = provenance["result"]["work_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["work_item_id"] == "work-legacy-missing-source")
+        .unwrap_or_else(|| panic!("legacy work item must project: {provenance}"));
+    assert_eq!(legacy["source"]["resolution"], "missing");
+    assert_eq!(legacy["source"]["document_id"], "document-pruned-away");
+    assert_eq!(provenance["result"]["summary"]["active_source_missing"], 1);
+
+    let (status, health) = serve.get_json("/v1/company-os/docs-health");
+    assert_eq!(status, 200, "{health}");
+    let finding = health["result"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["kind"] == "work_item_source_document_missing")
+        .unwrap_or_else(|| panic!("missing work source finding missing: {health}"));
+    assert_eq!(finding["severity"], "critical");
+    assert_eq!(finding["subject"]["id"], "work-legacy-missing-source");
+    assert_eq!(health["result"]["counts"]["critical"], 1);
+}

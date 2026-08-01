@@ -7957,10 +7957,23 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
     let documents = json_array(snapshot, "documents");
     let typed_records = json_array(snapshot, "typed_records");
     let relations = json_array(snapshot, "relations");
+    let work_items = json_array(snapshot, "work_items");
     let document_ids = documents
         .iter()
         .filter_map(|entry| json_str(entry, "id"))
         .collect::<BTreeSet<_>>();
+    let document_lifecycle = documents
+        .iter()
+        .filter_map(|entry| {
+            Some((
+                json_str(entry, "id")?,
+                (
+                    json_str(entry, "title").unwrap_or_default(),
+                    json_str(entry, "lifecycle_status").unwrap_or_else(|| "active".to_string()),
+                ),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut findings = Vec::new();
     for record in typed_records {
         let Some(record_id) = json_str(record, "id") else {
@@ -7986,14 +7999,72 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
                     "recommended_action": "Restore the source Document or migrate this record through a governed Docs action."
                 }));
             }
-            Some(document_id) if !json_has_relation_between(relations, &document_id, &record_id) => {
+            Some(document_id) => {
+                if let Some((title, lifecycle)) = document_lifecycle.get(&document_id) {
+                    if lifecycle == "archived" {
+                        findings.push(serde_json::json!({
+                            "id": format!("archived-source-document:{record_id}"),
+                            "kind": "typed_record_source_document_archived",
+                            "severity": "warning",
+                            "subject": {"kind": "typed_record", "id": record_id},
+                            "related": {
+                                "kind": "document", "id": document_id,
+                                "title": title,
+                                "lifecycle_status": "archived",
+                            },
+                            "recommended_action": "The source Document is explicit archived history; keep it read-only or route a successor source through a governed Docs action."
+                        }));
+                    }
+                }
+                if !json_has_relation_between(relations, &document_id, &record_id) {
+                    findings.push(serde_json::json!({
+                        "id": format!("missing-doc-record-relation:{record_id}"),
+                        "kind": "missing_document_record_relation",
+                        "severity": "warning",
+                        "subject": {"kind": "typed_record", "id": record_id},
+                        "related": {"kind": "document", "id": document_id},
+                        "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
+                    }));
+                }
+            }
+        }
+    }
+    // Work source provenance: a visible active WorkItem must resolve to an
+    // active Document or explicit archived-source history with title and
+    // lifecycle; a missing source is a critical integrity break.
+    for item in work_items {
+        let Some(work_id) = json_str(item, "id") else {
+            continue;
+        };
+        let status = json_str(item, "status").unwrap_or_default();
+        if status == "archived" {
+            continue;
+        }
+        let work_is_active = !matches!(status.as_str(), "completed" | "cancelled" | "draft");
+        let Some(document_id) = json_str(item, "source_document_ref") else {
+            continue;
+        };
+        match document_lifecycle.get(&document_id) {
+            None => findings.push(serde_json::json!({
+                "id": format!("missing-source-document-work:{work_id}"),
+                "kind": "work_item_source_document_missing",
+                "severity": "critical",
+                "subject": {"kind": "work_item", "id": work_id},
+                "related": {"kind": "document", "id": document_id},
+                "recommended_action": "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action."
+            })),
+            Some((title, lifecycle)) if lifecycle == "archived" && work_is_active => {
                 findings.push(serde_json::json!({
-                    "id": format!("missing-doc-record-relation:{record_id}"),
-                    "kind": "missing_document_record_relation",
+                    "id": format!("archived-source-document-work:{work_id}"),
+                    "kind": "work_item_source_document_archived",
                     "severity": "warning",
-                    "subject": {"kind": "typed_record", "id": record_id},
-                    "related": {"kind": "document", "id": document_id},
-                    "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
+                    "subject": {"kind": "work_item", "id": work_id},
+                    "related": {
+                        "kind": "document", "id": document_id,
+                        "title": title,
+                        "lifecycle_status": "archived",
+                    },
+                    "recommended_action": "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action."
                 }));
             }
             Some(_) => {}

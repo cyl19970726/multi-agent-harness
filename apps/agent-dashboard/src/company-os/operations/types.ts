@@ -24,6 +24,8 @@ export interface ActorSummary {
   toolRefs?: string[];
   skillRefs?: string[];
   maintainedDocumentRefs?: string[];
+  /** Maintained Documents resolved to title plus lifecycle; archived stays navigable history. */
+  maintainedDocuments?: RelatedLink[];
   acceptedWorkTypeRefs?: string[];
   permissionPolicyRefs?: string[];
   escalationPolicyRef?: string;
@@ -34,6 +36,8 @@ export interface RelatedLink {
   id: string;
   label: string;
   detail?: string;
+  /** Explicit lifecycle of the resolved record; archived stays navigable history. */
+  lifecycle?: "archived" | "missing";
 }
 
 export interface OrganizationUnitView extends RelatedLink {

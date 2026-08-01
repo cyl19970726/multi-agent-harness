@@ -348,20 +348,25 @@ function buildDocumentHealthData({
   fixtureId,
   actors,
   documents,
+  sourceDocuments,
   blocks,
   typedRecords,
   relations,
   modules,
+  workItems,
   structureLinks,
   pageDefinitions,
 }: {
   fixtureId?: string;
   actors: JsonRecord[];
   documents: JsonRecord[];
+  /** Unfiltered Documents including archived rows, used only for source resolution. */
+  sourceDocuments: JsonRecord[];
   blocks: JsonRecord[];
   typedRecords: JsonRecord[];
   relations: JsonRecord[];
   modules: JsonRecord[];
+  workItems: JsonRecord[];
   structureLinks: CompanyOsLink[];
   pageDefinitions: JsonRecord[];
 }): CompanyOsDocumentHealthData {
@@ -521,7 +526,7 @@ function buildDocumentHealthData({
       });
       return;
     }
-    const sourceDocument = record(documents, sourceDocumentId);
+    const sourceDocument = record(sourceDocuments, sourceDocumentId);
     if (!sourceDocument) {
       findings.push({
         id: `missing-source-document:${recordId}`,
@@ -536,6 +541,19 @@ function buildDocumentHealthData({
       });
       return;
     }
+    if (isArchived(sourceDocument)) {
+      const archivedLink = documentLink(sourceDocument);
+      findings.push({
+        id: `archived-source-document:${recordId}`,
+        kind: "typed_record_source_document_archived",
+        severity: "warning",
+        title: "TypedRecord source Document is archived history",
+        detail: `${text(entry.display_name, recordId)} points to ${text(sourceDocument.title, sourceDocumentId)}, which is archived. The source stays readable for provenance but is no longer active company memory.`,
+        subject: typedRecordLink(entry),
+        related: archivedLink ? { ...archivedLink, meta: "archived" } : undefined,
+        recommendedAction: "The source Document is explicit archived history; keep it read-only or route a successor source through a governed Docs action.",
+      });
+    }
     if (!hasRelationBetween(relations, sourceDocumentId, recordId)) {
       findings.push({
         id: `missing-doc-record-relation:${recordId}`,
@@ -549,6 +567,49 @@ function buildDocumentHealthData({
         directActionLabel: "Link relation",
         correctiveWorkContext: correctiveContext(sourceDocument, [recordId], [entry]),
         relationRepairContext: relationRepairContext(sourceDocument, entry),
+      });
+    }
+  });
+
+  // Work source provenance: every visible active WorkItem must resolve to an
+  // active Document or explicit archived-source history with title and
+  // lifecycle. Finding kinds and severities mirror the Store API and CLI.
+  workItems.forEach((entry) => {
+    const workId = text(entry.id);
+    if (!workId) return;
+    const workStatus = text(entry.status, "submitted").toLowerCase();
+    if (workStatus === "archived") return;
+    const workIsActive = !["completed", "cancelled", "draft"].includes(workStatus);
+    const sourceDocumentId = text(entry.source_document_ref, text(entry.source_document_id));
+    if (!sourceDocumentId) return;
+    const sourceDocument = record(sourceDocuments, sourceDocumentId);
+    if (!sourceDocument) {
+      findings.push({
+        id: `missing-source-document-work:${workId}`,
+        kind: "work_item_source_document_missing",
+        severity: "critical",
+        title: "WorkItem source Document is missing",
+        detail: `${text(entry.title, workId)} points to ${sourceDocumentId}, but that Document is not present. Active Work provenance cannot degrade to a bare id.`,
+        subject: workItemLink(entry),
+        related: { id: sourceDocumentId, label: sourceDocumentId, kind: "document" },
+        recommendedAction: "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action.",
+        correctiveWorkLabel: "Create corrective WorkItem",
+      });
+      return;
+    }
+    if (workIsActive && isArchived(sourceDocument)) {
+      findings.push({
+        id: `archived-source-document-work:${workId}`,
+        kind: "work_item_source_document_archived",
+        severity: "warning",
+        title: "WorkItem source Document is archived history",
+        detail: `${text(entry.title, workId)} is sourced from ${text(sourceDocument.title, sourceDocumentId)} (archived). The source stays readable and navigable for provenance but is no longer active company memory.`,
+        subject: workItemLink(entry),
+        related: (() => {
+          const archivedWorkSourceLink = documentLink(sourceDocument);
+          return archivedWorkSourceLink ? { ...archivedWorkSourceLink, meta: "archived" } : undefined;
+        })(),
+        recommendedAction: "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action.",
       });
     }
   });
@@ -676,7 +737,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
     ?? firstReferenced(workItems, distinct([...focusRefs, ...moduleRefs]))
     ?? workItems[0];
-  const workSourceDocument = record(documents, work?.source_document_ref);
+  const workSourceDocument = record(allDocuments, work?.source_document_ref);
   const application = typedRecords.find((entry) => ["trademarkapplication", "trademark_application"].includes(text(entry.record_type).toLowerCase()))
     ?? typedRecords.find((entry) => text(entry.source_document_ref) === text(workSourceDocument?.id ?? workspaceDocument?.id))
     ?? firstReferenced(typedRecords, distinct([...workspaceRefs, ...focusRefs, ...moduleRefs]))
@@ -695,7 +756,12 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? firstReferenced(proposals, distinct([...workspaceRefs, ...moduleRefs]))
     ?? proposals[0];
 
-  const sourceLink = documentLink(workSourceDocument ?? workspaceDocument);
+  const sourceLinkBase = documentLink(workSourceDocument ?? workspaceDocument);
+  // An archived Work source stays visible and navigable as explicit archived
+  // history instead of silently falling back to another Document.
+  const sourceLink = sourceLinkBase && workSourceDocument && isArchived(workSourceDocument)
+    ? { ...sourceLinkBase, meta: "Archived history" }
+    : sourceLinkBase;
   const focusLink = documentLink(focusDocument);
   const applicationLink = application
     ? { id: text(application.id), label: text(field(application, "display_id"), text(application.display_name, text(application.title, "Untitled record"))), kind: "record" as const }
@@ -958,10 +1024,12 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     fixtureId,
     actors,
     documents,
+    sourceDocuments: allDocuments,
     blocks,
     typedRecords,
     relations,
     modules,
+    workItems,
     structureLinks,
     pageDefinitions,
   });

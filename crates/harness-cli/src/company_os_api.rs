@@ -11,9 +11,9 @@ use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
-    MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, PendingInteractionStatus,
-    Relation, RiskTier, TeamMessageKind, TypedRecord, ValidateCompanyOs, View, WorkItem,
-    WorkItemStatus, WorkQuery,
+    LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
+    PendingInteractionStatus, Relation, RiskTier, TeamMessageKind, TypedRecord, ValidateCompanyOs,
+    View, WorkItem, WorkItemStatus, WorkQuery,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -128,6 +128,21 @@ pub fn handle_get(
                         .map_err(|error| ApiError::internal(error.to_string()))
                 }),
         ));
+    }
+    // Read-only archived-source provenance and Docs health projections. They
+    // resolve the latest ledger rows only; they never write or migrate rows.
+    if path == "/v1/company-os/work-provenance" {
+        return Some(finish(
+            work_source_provenance(store).map_err(ApiError::from),
+        ));
+    }
+    if path == "/v1/company-os/organization-provenance" {
+        return Some(finish(
+            organization_source_provenance(store).map_err(ApiError::from),
+        ));
+    }
+    if path == "/v1/company-os/docs-health" {
+        return Some(finish(docs_health_report(store).map_err(ApiError::from)));
     }
     let suffix = path.strip_prefix("/v1/company-os/")?;
     let mut parts = suffix.split('/');
@@ -735,6 +750,434 @@ fn display_money(amount: &str, currency: &str) -> String {
         "USD" => format!("{}{}", "$", amount),
         _ => format!("{} {}", amount, currency),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Archived-source provenance and Docs health projections (read-only).
+//
+// Every visible Work source must resolve to an active Document or to explicit
+// archived-source history that keeps the document id, title, and lifecycle.
+// These projections only read the latest ledger rows; they never write,
+// repair, or migrate anything.
+// ---------------------------------------------------------------------------
+
+/// Keep in sync with `harness_store::company_os::work_item_is_active`.
+fn work_status_is_active(status: WorkItemStatus) -> bool {
+    !matches!(
+        status,
+        WorkItemStatus::Completed
+            | WorkItemStatus::Cancelled
+            | WorkItemStatus::Archived
+            | WorkItemStatus::Draft
+    )
+}
+
+fn lifecycle_name(status: LifecycleStatus) -> &'static str {
+    match status {
+        LifecycleStatus::Draft => "draft",
+        LifecycleStatus::Active => "active",
+        LifecycleStatus::Paused => "paused",
+        LifecycleStatus::Completed => "completed",
+        LifecycleStatus::Archived => "archived",
+    }
+}
+
+fn member_status_name(status: MemberStatus) -> &'static str {
+    match status {
+        MemberStatus::Active => "active",
+        MemberStatus::Invited => "invited",
+        MemberStatus::Paused => "paused",
+        MemberStatus::Ended => "ended",
+        MemberStatus::Archived => "archived",
+    }
+}
+
+struct ActorIndexEntry {
+    actor_type: &'static str,
+    display_name: String,
+    status: MemberStatus,
+}
+
+fn actor_index(store: &HarnessStore) -> Result<BTreeMap<String, ActorIndexEntry>, StoreError> {
+    Ok(store
+        .latest_actors()?
+        .into_iter()
+        .map(|actor| match actor {
+            CompanyActor::Human(member) => (
+                member.id.clone(),
+                ActorIndexEntry {
+                    actor_type: "human",
+                    display_name: member.display_name,
+                    status: member.status,
+                },
+            ),
+            CompanyActor::Agent(member) => (
+                member.id.clone(),
+                ActorIndexEntry {
+                    actor_type: "agent",
+                    display_name: member.display_name,
+                    status: member.status,
+                },
+            ),
+            CompanyActor::External(member) => (
+                member.id.clone(),
+                ActorIndexEntry {
+                    actor_type: "external",
+                    display_name: member.display_name_or_organization,
+                    status: member.status,
+                },
+            ),
+            CompanyActor::Service(member) => (
+                member.id.clone(),
+                ActorIndexEntry {
+                    actor_type: "service",
+                    display_name: member.display_name,
+                    status: member.status,
+                },
+            ),
+        })
+        .collect())
+}
+
+fn document_index(store: &HarnessStore) -> Result<BTreeMap<String, Document>, StoreError> {
+    Ok(store
+        .latest_documents()?
+        .into_iter()
+        .map(|document| (document.id.clone(), document))
+        .collect())
+}
+
+/// Resolve one document reference against the latest rows. An archived
+/// document keeps its title and lifecycle as explicit archived-source history;
+/// a missing document (only possible for legacy or imported rows, since
+/// append validation requires the reference) resolves as `missing`.
+fn document_ref_resolution(documents: &BTreeMap<String, Document>, document_id: &str) -> Value {
+    match documents.get(document_id) {
+        Some(document) => json!({
+            "document_id": document_id,
+            "resolution": lifecycle_name(document.lifecycle_status),
+            "title": document.title,
+            "lifecycle_status": lifecycle_name(document.lifecycle_status),
+            "space_id": document.space_id,
+            "updated_at": document.updated_at,
+        }),
+        None => json!({
+            "document_id": document_id,
+            "resolution": "missing",
+        }),
+    }
+}
+
+fn actor_ref_resolution(actors: &BTreeMap<String, ActorIndexEntry>, reference: &ActorRef) -> Value {
+    match actors.get(&reference.actor_id) {
+        Some(actor) => json!({
+            "actor_type": actor.actor_type,
+            "actor_id": reference.actor_id,
+            "resolution": member_status_name(actor.status),
+            "display_name": actor.display_name,
+            "member_status": member_status_name(actor.status),
+        }),
+        None => json!({
+            "actor_type": reference.actor_type,
+            "actor_id": reference.actor_id,
+            "resolution": "missing",
+        }),
+    }
+}
+
+/// Read-only provenance for every WorkItem: the source/result Documents and
+/// the responsible Organization actors, resolved to active records or explicit
+/// archived history. Active Work with an archived or missing source is counted
+/// so governance can route a correction instead of degrading to a bare id.
+pub fn work_source_provenance(store: &HarnessStore) -> Result<Value, StoreError> {
+    let documents = document_index(store)?;
+    let actors = actor_index(store)?;
+    let work_items = store.latest_work_items()?;
+    let mut active = 0_u64;
+    let mut active_source_archived = 0_u64;
+    let mut active_source_missing = 0_u64;
+    let mut archived_actor_references = 0_u64;
+    let mut missing_actor_references = 0_u64;
+    let items = work_items
+        .iter()
+        .map(|item| {
+            let is_active = work_status_is_active(item.status);
+            active += u64::from(is_active);
+            let source = document_ref_resolution(&documents, &item.source_document_ref);
+            if is_active {
+                active_source_archived +=
+                    u64::from(source["resolution"].as_str() == Some("archived"));
+                active_source_missing +=
+                    u64::from(source["resolution"].as_str() == Some("missing"));
+            }
+            let responsible = std::iter::once(&item.accountable_owner).chain(item.assignees.iter());
+            let mut responsible_resolutions = Vec::new();
+            for reference in responsible {
+                let resolution = actor_ref_resolution(&actors, reference);
+                match resolution["resolution"].as_str() {
+                    Some("archived" | "ended") => archived_actor_references += 1,
+                    Some("missing") => missing_actor_references += 1,
+                    _ => {}
+                }
+                responsible_resolutions.push(resolution);
+            }
+            let accountable_owner = responsible_resolutions.remove(0);
+            json!({
+                "work_item_id": item.id,
+                "work_item_status": item.status,
+                "is_active": is_active,
+                "source": source,
+                "result": item
+                    .result_document_ref
+                    .as_deref()
+                    .map(|document_id| document_ref_resolution(&documents, document_id)),
+                "accountable_owner": accountable_owner,
+                "assignees": responsible_resolutions,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "projection_kind": "work_source_provenance",
+        "read_only": true,
+        "work_items": items,
+        "summary": {
+            "total": work_items.len(),
+            "active": active,
+            "active_source_active": active - active_source_archived - active_source_missing,
+            "active_source_archived": active_source_archived,
+            "active_source_missing": active_source_missing,
+            "archived_actor_references": archived_actor_references,
+            "missing_actor_references": missing_actor_references,
+        },
+    }))
+}
+
+/// Read-only Organization provenance: every member resolves with its durable
+/// member status (archived members stay navigable instead of vanishing), and
+/// every Standing Agent maintained-document reference resolves to an active
+/// Document or explicit archived-source history.
+pub fn organization_source_provenance(store: &HarnessStore) -> Result<Value, StoreError> {
+    let documents = document_index(store)?;
+    let actors = store.latest_actors()?;
+    let mut archived_members = 0_u64;
+    let mut maintained_archived = 0_u64;
+    let mut maintained_missing = 0_u64;
+    let members = actors
+        .into_iter()
+        .map(|actor| {
+            let (id, actor_type, display_name, status, maintained_refs) = match actor {
+                CompanyActor::Human(member) => (
+                    member.id,
+                    "human",
+                    member.display_name,
+                    member.status,
+                    Vec::new(),
+                ),
+                CompanyActor::Agent(member) => (
+                    member.id,
+                    "agent",
+                    member.display_name,
+                    member.status,
+                    member.maintained_document_refs,
+                ),
+                CompanyActor::External(member) => (
+                    member.id,
+                    "external",
+                    member.display_name_or_organization,
+                    member.status,
+                    Vec::new(),
+                ),
+                CompanyActor::Service(member) => (
+                    member.id,
+                    "service",
+                    member.display_name,
+                    member.status,
+                    Vec::new(),
+                ),
+            };
+            archived_members += u64::from(status == MemberStatus::Archived);
+            let maintained_documents = maintained_refs
+                .iter()
+                .map(|document_id| {
+                    let resolution = document_ref_resolution(&documents, document_id);
+                    maintained_archived +=
+                        u64::from(resolution["resolution"].as_str() == Some("archived"));
+                    maintained_missing +=
+                        u64::from(resolution["resolution"].as_str() == Some("missing"));
+                    resolution
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "actor_id": id,
+                "actor_type": actor_type,
+                "display_name": display_name,
+                "member_status": member_status_name(status),
+                "resolution": member_status_name(status),
+                "maintained_documents": maintained_documents,
+            })
+        })
+        .collect::<Vec<_>>();
+    let org_units = store
+        .latest_org_units()?
+        .into_iter()
+        .map(|unit| {
+            json!({
+                "org_unit_id": unit.id,
+                "name": unit.name,
+                "status": unit.status,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "projection_kind": "organization_source_provenance",
+        "read_only": true,
+        "members": members,
+        "org_units": org_units,
+        "summary": {
+            "members_total": members.len(),
+            "members_archived": archived_members,
+            "maintained_documents_archived": maintained_archived,
+            "maintained_documents_missing": maintained_missing,
+        },
+    }))
+}
+
+fn relation_is_active(relation: &Relation) -> bool {
+    relation.lifecycle_status.as_deref() != Some("archived")
+}
+
+fn has_active_relation_between(relations: &[Relation], left: &str, right: &str) -> bool {
+    relations.iter().any(|relation| {
+        relation_is_active(relation)
+            && ((relation.from_ref.id == left && relation.to_ref.id == right)
+                || (relation.from_ref.id == right && relation.to_ref.id == left))
+    })
+}
+
+/// Deterministic Docs health report. It extends the TypedRecord source checks
+/// used by `harness company docs health` with Work source provenance findings
+/// so an archived or missing source Document is reported with title and
+/// lifecycle instead of silently degrading. Finding kinds and severities are
+/// kept identical across the CLI, this API, and the Dashboard adapter.
+pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
+    let documents = store.latest_documents()?;
+    let blocks = store.latest_blocks()?;
+    let typed_records = store.latest_typed_records()?;
+    let relations = store.latest_relations()?;
+    let business_modules = store.latest_business_modules()?;
+    let work_items = store.latest_work_items()?;
+    let document_by_id = documents
+        .iter()
+        .map(|document| (document.id.as_str(), document))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut findings = Vec::new();
+    for record in &typed_records {
+        match record.source_document_ref.as_deref() {
+            None => findings.push(json!({
+                "id": format!("missing-source:{}", record.id),
+                "kind": "typed_record_missing_source",
+                "severity": "warning",
+                "subject": {"kind": "typed_record", "id": record.id},
+                "recommended_action": "Link the TypedRecord to its originating Document or document the source-less policy."
+            })),
+            Some(document_id) => match document_by_id.get(document_id) {
+                None => findings.push(json!({
+                    "id": format!("missing-source-document:{}", record.id),
+                    "kind": "typed_record_source_document_missing",
+                    "severity": "critical",
+                    "subject": {"kind": "typed_record", "id": record.id},
+                    "related": {"kind": "document", "id": document_id},
+                    "recommended_action": "Restore the source Document or migrate this record through a governed Docs action."
+                })),
+                Some(document) => {
+                    if document.lifecycle_status == LifecycleStatus::Archived {
+                        findings.push(json!({
+                            "id": format!("archived-source-document:{}", record.id),
+                            "kind": "typed_record_source_document_archived",
+                            "severity": "warning",
+                            "subject": {"kind": "typed_record", "id": record.id},
+                            "related": {
+                                "kind": "document", "id": document.id,
+                                "title": document.title,
+                                "lifecycle_status": "archived",
+                            },
+                            "recommended_action": "The source Document is explicit archived history; keep it read-only or route a successor source through a governed Docs action."
+                        }));
+                    }
+                    if !has_active_relation_between(&relations, &document.id, &record.id) {
+                        findings.push(json!({
+                            "id": format!("missing-doc-record-relation:{}", record.id),
+                            "kind": "missing_document_record_relation",
+                            "severity": "warning",
+                            "subject": {"kind": "typed_record", "id": record.id},
+                            "related": {"kind": "document", "id": document.id},
+                            "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
+                        }));
+                    }
+                }
+            },
+        }
+    }
+    for item in &work_items {
+        if item.status == WorkItemStatus::Archived {
+            continue;
+        }
+        match document_by_id.get(item.source_document_ref.as_str()) {
+            None => findings.push(json!({
+                "id": format!("missing-source-document-work:{}", item.id),
+                "kind": "work_item_source_document_missing",
+                "severity": "critical",
+                "subject": {"kind": "work_item", "id": item.id},
+                "related": {"kind": "document", "id": item.source_document_ref},
+                "recommended_action": "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action."
+            })),
+            Some(document)
+                if document.lifecycle_status == LifecycleStatus::Archived
+                    && work_status_is_active(item.status) =>
+            {
+                findings.push(json!({
+                    "id": format!("archived-source-document-work:{}", item.id),
+                    "kind": "work_item_source_document_archived",
+                    "severity": "warning",
+                    "subject": {"kind": "work_item", "id": item.id},
+                    "related": {
+                        "kind": "document", "id": document.id,
+                        "title": document.title,
+                        "lifecycle_status": "archived",
+                    },
+                    "recommended_action": "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action."
+                }));
+            }
+            Some(_) => {}
+        }
+    }
+    findings.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    let critical = findings
+        .iter()
+        .filter(|finding| finding["severity"].as_str() == Some("critical"))
+        .count();
+    let warning = findings
+        .iter()
+        .filter(|finding| finding["severity"].as_str() == Some("warning"))
+        .count();
+    Ok(json!({
+        "projection_kind": "docs_health_report",
+        "read_only": true,
+        "status": if findings.is_empty() { "pass" } else { "issues" },
+        "counts": {
+            "documents": documents.len(),
+            "blocks": blocks.len(),
+            "typed_records": typed_records.len(),
+            "relations": relations.len(),
+            "business_modules": business_modules.len(),
+            "work_items": work_items.len(),
+            "findings": findings.len(),
+            "critical": critical,
+            "warning": warning,
+        },
+        "findings": findings,
+    }))
 }
 
 #[cfg(test)]

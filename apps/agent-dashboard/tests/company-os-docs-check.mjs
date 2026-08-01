@@ -144,6 +144,33 @@ async function main() {
     "an explicitly selected archived source remains readable and linked to active Work while Store-live authoring is disabled",
   );
   check(document.includes('data-docs-archived-history="true"') && document.includes("Archived history.") && types.includes("lifecycleStatus?: string"), "Document Focus labels the read-only archived history route instead of degrading Work provenance to a raw id");
+  const archivedHealthPages = adaptCompanyOsDocsProjection(archivedSourceProjection, {});
+  check(
+    archivedHealthPages.health.findings.some((finding) => finding.kind === "work_item_source_document_archived"
+      && finding.severity === "warning"
+      && finding.subject?.id === "workitem-trademark-filing-brand-a"
+      && finding.related?.id === archivedSource.id
+      && finding.related?.label === archivedSource.title
+      && finding.related?.meta === "archived")
+      && archivedHealthPages.health.findings.some((finding) => finding.kind === "typed_record_source_document_archived" && finding.severity === "warning")
+      && !archivedHealthPages.health.findings.some((finding) => (finding.kind === "work_item_source_document_missing" || finding.kind === "typed_record_source_document_missing") && finding.related?.id === archivedSource.id),
+    "Docs health reports archived Work and record sources as explicit archived history with title and lifecycle, never as missing",
+  );
+  check(
+    archivedHealthPages.home.changes.some((link) => link.id === archivedSource.id && link.meta === "Archived history"),
+    "Home keeps the archived Work source navigable as archived history instead of falling back to another Document",
+  );
+  const missingSourceProjection = structuredClone(fixture);
+  missingSourceProjection.work_items[0].source_document_ref = "document-pruned-away";
+  const missingSourcePages = adaptCompanyOsDocsProjection(missingSourceProjection, {});
+  check(
+    missingSourcePages.health.findings.some((finding) => finding.kind === "work_item_source_document_missing"
+      && finding.severity === "critical"
+      && finding.subject?.id === "workitem-trademark-filing-brand-a"
+      && finding.related?.id === "document-pruned-away"),
+    "a missing Work source is a critical Docs health finding instead of a silently degraded id",
+  );
+  check(adapter.includes("work_item_source_document_archived") && adapter.includes("work_item_source_document_missing") && adapter.includes("typed_record_source_document_archived") && adapter.includes("sourceDocuments"), "Docs health adapter computes Work and record archived-source findings from the unfiltered Document projection");
   check(pages.document.sourceLinks?.[0]?.label === "Trademark application CN-2026-018" && pages.document.resultLinks?.[0]?.label === "Trademark filing for Brand A", "fixture adapter preserves source and WorkItem provenance");
   check(pages.home.decisionActor?.name === "Brand Owner" && pages.home.financeSummary[0]?.value === "¥3,000" && pages.home.financeSummary[0]?.financialRecordType === "commitment", "home preserves the human decision and pending-commitment distinction");
   check(pages.home.decisionRequired?.href === "?surface=approvals&approval=approval-trademark-filing-fee-cn-2026-018", "projection adapter supplies the Home review CTA with the selected approval route");
