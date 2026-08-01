@@ -68,8 +68,15 @@ export interface SelectionState {
   workflowRunId?: string;
 }
 
+/**
+ * The Work operating board (its overview tab) is the default Company OS
+ * operating surface for the wanchengwanling and agentos Company Stores
+ * (work-wcw-agentos-work-overview-ui). Home stays reachable through the
+ * navigation rail and an explicit `?surface=home` deep link; every entity
+ * deep link below still implies its own surface.
+ */
 export const defaultSelection: SelectionState = {
-  surface: "home",
+  surface: "work",
 };
 
 const surfaceIds: SurfaceId[] = [
@@ -87,27 +94,6 @@ const surfaceIds: SurfaceId[] = [
   "workflows",
   "docs",
   "debug",
-];
-
-const selectionParamKeys = [
-  "surface",
-  "document",
-  "workItem",
-  "person",
-  "proposal",
-  "approval",
-  "module",
-  "page",
-  "health",
-  "agent",
-  "member",
-  "memberRun",
-  "agentTab",
-  "team",
-  "mission",
-  "wave",
-  "doc",
-  "workflowRun",
 ];
 
 /**
@@ -235,35 +221,63 @@ export function selectionFromLocation(base: SelectionState): SelectionState {
  * Reflect a user selection into browser history without reloading so entity
  * deep links are shareable and Back/Forward returns through the workbench
  * journey. The selected agent is written as `?agent=<id>`; query-form routing
- * keeps the static `base: "./"` Vite build working from any path.
+ * keeps the static `base: "./"` Vite build working from any path. The default
+ * surface is omitted from the URL so a bare link round-trips to the same
+ * default, while an explicit non-default surface (including `?surface=home`)
+ * stays addressable. One exception: a selected WorkItem always keeps
+ * `surface=work` explicit, because capture runs, standing-agent interaction
+ * links, and Back/Forward entries rely on the canonical
+ * `?surface=work&workItem=<id>` form rather than re-deriving the surface from
+ * the default. Company Store, Execution Space, Project Binding, and API
+ * params are owned by App-level sync and are never deleted here.
  */
 export function syncSelectionToLocation(selection: SelectionState): void {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
-  for (const key of selectionParamKeys) params.delete(key);
-  if (selection.surface && selection.surface !== "home") {
-    params.set("surface", selection.surface);
-  }
-  if (selection.documentId) params.set("document", selection.documentId);
-  if (selection.workItemId) params.set("workItem", selection.workItemId);
-  if (selection.standingAgentId) params.set("agent", selection.standingAgentId);
-  if (selection.personId) params.set("person", selection.personId);
-  if (selection.proposalId) params.set("proposal", selection.proposalId);
-  if (selection.approvalId) params.set("approval", selection.approvalId);
-  if (selection.moduleId) params.set("module", selection.moduleId);
-  if (selection.customPageId) params.set("page", selection.customPageId);
-  if (selection.docsHealth) params.set("health", selection.docsHealth);
-  if (selection.memberId && selection.surface !== "organization") params.set("agent", selection.memberId);
+  // Mutate in place instead of delete-all-then-set: URLSearchParams.set keeps
+  // an existing key's position, so an already-canonical location serializes
+  // byte-identically and no spurious history entry is pushed. That is what
+  // makes browser Back return from a WorkItem focus to the previous entry in
+  // one step.
+  const setOrDelete = (key: string, value: string | undefined): void => {
+    if (value) params.set(key, value);
+    else params.delete(key);
+  };
+  setOrDelete(
+    "surface",
+    selection.surface && (selection.surface !== defaultSelection.surface || selection.workItemId)
+      ? selection.surface
+      : undefined,
+  );
+  setOrDelete("document", selection.documentId);
+  setOrDelete("workItem", selection.workItemId);
+  // `agent` is contextual: a durable Standing Agent on Organization, otherwise
+  // the selected AgentMember (never on the organization surface).
+  setOrDelete(
+    "agent",
+    selection.standingAgentId
+      ?? (selection.memberId && selection.surface !== "organization" ? selection.memberId : undefined),
+  );
+  params.delete("member"); // legacy alias, never written
+  setOrDelete("person", selection.personId);
+  setOrDelete("proposal", selection.proposalId);
+  setOrDelete("approval", selection.approvalId);
+  setOrDelete("module", selection.moduleId);
+  setOrDelete("page", selection.customPageId);
+  setOrDelete("health", selection.docsHealth);
   // Only persist a non-default agent tab, and only when an agent is open.
-  if (selection.memberId && selection.agentTab && selection.agentTab !== "conversation") {
-    params.set("agentTab", selection.agentTab);
-  }
-  if (selection.memberRunId) params.set("memberRun", selection.memberRunId);
-  if (selection.teamId) params.set("team", selection.teamId);
-  if (selection.missionId) params.set("mission", selection.missionId);
-  if (selection.waveId) params.set("wave", selection.waveId);
-  if (selection.docPath) params.set("doc", selection.docPath);
-  if (selection.workflowRunId) params.set("workflowRun", selection.workflowRunId);
+  setOrDelete(
+    "agentTab",
+    selection.memberId && selection.agentTab && selection.agentTab !== "conversation"
+      ? selection.agentTab
+      : undefined,
+  );
+  setOrDelete("memberRun", selection.memberRunId);
+  setOrDelete("team", selection.teamId);
+  setOrDelete("mission", selection.missionId);
+  setOrDelete("wave", selection.waveId);
+  setOrDelete("doc", selection.docPath);
+  setOrDelete("workflowRun", selection.workflowRunId);
 
   const query = params.toString();
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
