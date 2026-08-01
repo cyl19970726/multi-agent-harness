@@ -330,8 +330,20 @@ function WcwLinkCard({ link }: { link: CompanyOsLink }) {
   );
 }
 
+function flattenTreeItems(items: CompanyOsWorkspaceTreeItem[] = []): CompanyOsWorkspaceTreeItem[] {
+  return items.flatMap((item) => [item, ...flattenTreeItems(item.children)]);
+}
+
 function WcwDocumentDirectory({ tree }: { tree?: CompanyOsDocumentPageData["documentTree"] }) {
-  const wcwRoot = tree?.find((item) => /wanchengwanling|万城万灵/i.test(`${item.label} ${item.ref}`)) ?? tree?.[0];
+  // The projection tree is a real parent_document_id hierarchy, so the Wanchengwanling
+  // pages can sit under a document root rather than directly under the space node.
+  // Anchor on whichever matching node actually holds the child pages.
+  const wcwRoot = flattenTreeItems(tree)
+    .filter((item) => /wanchengwanling|万城万灵/i.test(`${item.label} ${item.ref ?? ""}`))
+    .reduce<CompanyOsWorkspaceTreeItem | undefined>(
+      (best, item) => ((item.children?.length ?? 0) > (best?.children?.length ?? 0) ? item : best),
+      undefined,
+    ) ?? tree?.[0];
   const children = wcwRoot?.children ?? tree ?? [];
   if (!children.length) return null;
   return (

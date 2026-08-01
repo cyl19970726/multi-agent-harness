@@ -11,7 +11,9 @@ import type {
   CompanyOsStructuredViewData,
   CompanyOsTemplateOption,
   CompanyOsTemplateRecordPolicy,
+  CompanyOsWorkspaceArchive,
   CompanyOsWorkspaceData,
+  CompanyOsWorkspaceTreeItem,
 } from "./types";
 
 type JsonRecord = Record<string, unknown>;
@@ -689,6 +691,91 @@ function buildDocumentHealthData({
 }
 
 /**
+ * The single lifecycle predicate the default document tree applies.  It is stated
+ * as an exclusion, not an `active` allow-list: governed Documents legitimately stay
+ * `draft` because no draft -> active transition exists in the Docs command surface,
+ * so an active-only tree would render the operating hierarchy empty.
+ */
+const DEFAULT_TREE_FILTER = 'lifecycle_status != "archived"';
+
+function documentTitleOrder(left: JsonRecord, right: JsonRecord): number {
+  return text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" });
+}
+
+/**
+ * Builds a real document hierarchy from Document.parent_document_id.  Space is only
+ * the root grouping: a Document nests under its parent wherever that parent lives,
+ * including across spaces.  A Document whose parent is absent from `entries` — because
+ * it is missing, or because the caller's lifecycle filter removed it — anchors its own
+ * root instead of disappearing, and a parent cycle anchors rather than recursing.
+ */
+function buildDocumentSpaceTree(
+  entries: JsonRecord[],
+  options: { selectedDocumentId?: string; meta?: string; idPrefix?: string } = {},
+): CompanyOsWorkspaceTreeItem[] {
+  const prefix = options.idPrefix ?? "";
+  const byId = new Map<string, JsonRecord>();
+  entries.forEach((entry) => {
+    const id = text(entry.id);
+    if (id) byId.set(id, entry);
+  });
+
+  const isRoot = (entry: JsonRecord): boolean => {
+    let cursor = text(entry.parent_document_id);
+    if (!cursor) return true;
+    const seen = new Set([text(entry.id)]);
+    while (cursor) {
+      if (seen.has(cursor)) return true;
+      const parent = byId.get(cursor);
+      if (!parent) return true;
+      seen.add(cursor);
+      cursor = text(parent.parent_document_id);
+    }
+    return false;
+  };
+
+  const roots = entries.filter(isRoot);
+  const rootIds = new Set(roots.map((entry) => text(entry.id)));
+  const childrenByParent = new Map<string, JsonRecord[]>();
+  entries.forEach((entry) => {
+    if (rootIds.has(text(entry.id))) return;
+    const parentId = text(entry.parent_document_id);
+    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), entry]);
+  });
+
+  const node = (entry: JsonRecord): CompanyOsWorkspaceTreeItem => {
+    const documentId = text(entry.id);
+    const children = [...(childrenByParent.get(documentId) ?? [])].sort(documentTitleOrder).map(node);
+    return {
+      id: `${prefix}${documentId}`,
+      ref: documentId,
+      label: text(entry.title, "Untitled document"),
+      href: docsDocumentHref(documentId),
+      selected: Boolean(documentId) && options.selectedDocumentId === documentId,
+      ...(options.meta ? { meta: options.meta } : {}),
+      ...(children.length ? { children } : {}),
+    };
+  };
+
+  const rootsBySpace = new Map<string, JsonRecord[]>();
+  roots.forEach((entry) => {
+    const space = text(entry.space, text(entry.space_id, "Unassigned"));
+    rootsBySpace.set(space, [...(rootsBySpace.get(space) ?? []), entry]);
+  });
+  return [...rootsBySpace]
+    .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
+    .map(([space, spaceRoots]) => {
+      const sorted = [...spaceRoots].sort(documentTitleOrder);
+      return {
+        id: `${prefix}space:${space}`,
+        label: space,
+        href: docsDocumentHref(text(sorted[0]?.id)),
+        children: sorted.map(node),
+      };
+    });
+}
+
+/**
  * Converts an arbitrary Company OS read projection into Docs presentation data.
  * It performs no store access, persistence, status inference, or fallback data
  * fabrication. Empty projections deliberately remain empty.
@@ -863,24 +950,10 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const space = text(entry.space, text(entry.space_id, "Unassigned"));
     docsBySpace.set(space, [...(docsBySpace.get(space) ?? []), entry]);
   });
-  const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })).map(([space, entries]) => {
-    const sortedEntries = [...entries].sort((left, right) => text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" }));
-    return {
-      id: `space:${space}`,
-      label: space,
-      href: docsDocumentHref(text(sortedEntries[0]?.id)),
-      children: sortedEntries.map((entry) => {
-      const documentId = text(entry.id);
-      return {
-        id: documentId,
-        ref: documentId,
-        label: text(entry.title, "Untitled document"),
-        href: docsDocumentHref(documentId),
-        selected: selected.documentId === documentId,
-      };
-    }),
-    };
-  });
+  // The default tree is the real parent_document_id hierarchy under DEFAULT_TREE_FILTER;
+  // space contributes root grouping only, so a child never re-appears as a sibling of
+  // its own parent just because they share a space_id.
+  const workspaceTree: CompanyOsWorkspaceData["tree"] = buildDocumentSpaceTree(documents, { selectedDocumentId: selected.documentId });
   for (const candidate of modules) {
     const moduleId = text(candidate.id);
     const rootDocument = record(documents, candidate.root_document_ref ?? candidate.root_document_id);
@@ -890,6 +963,22 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     if (!moduleId || !parent) continue;
     parent.children?.push({ id: moduleId, ref: moduleId, label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
   }
+
+  // The archive is the exact complement of the default tree filter: every Document the
+  // `documents` predicate removed, plus every BusinessModule the `modules` predicate
+  // removed. It is derived from the same two source lists so the two views cannot drift.
+  const archivedDocuments = allDocuments.filter((entry) => isArchived(entry));
+  const navigableModuleIds = new Set(modules.map((entry) => text(entry.id)).filter(Boolean));
+  const archivedModules = allModules.filter((entry) => !navigableModuleIds.has(text(entry.id)));
+  const workspaceArchive: CompanyOsWorkspaceArchive | undefined = allDocuments.length || allModules.length
+    ? {
+      defaultFilter: DEFAULT_TREE_FILTER,
+      tree: buildDocumentSpaceTree(archivedDocuments, { selectedDocumentId: selected.documentId, meta: "Archived", idPrefix: "archive:" }),
+      documentIds: archivedDocuments.map((entry) => text(entry.id)).filter(Boolean),
+      modules: linkEntries(archivedModules.map(moduleLink)),
+      countLabel: `${archivedDocuments.length} archived page${archivedDocuments.length === 1 ? "" : "s"}`,
+    }
+    : undefined;
 
   const documentProperties = [
     owner && { label: "Owner", value: `${owner.label} · ${owner.actorType}`, ref: owner.id, actorType: owner.actorType },
@@ -1201,6 +1290,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       description: documents.length ? "Documents, typed records, and connected operating context." : "No company documents are supplied by this projection.",
       rootSelected: true,
       tree: workspaceTree,
+      archive: workspaceArchive,
       spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, href: docsDocumentHref(text(entries[0]?.id)), countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
       recentlyUpdated: linkEntries(documents.map(documentLink)),
       templates: templateLinks,

@@ -287,11 +287,30 @@ export interface CompanyOsWorkspaceTreeItem {
   children?: CompanyOsWorkspaceTreeItem[];
 }
 
+/**
+ * The explicit complement of the default document tree.  The default tree applies
+ * exactly one lifecycle predicate; everything that predicate removes is reachable
+ * here instead of being silently dropped from company memory.
+ */
+export interface CompanyOsWorkspaceArchive {
+  /** The exact predicate the default tree applies, stated once so the complement is checkable. */
+  defaultFilter: string;
+  /** Archived Documents as a real parent_document_id hierarchy, grouped by space at the root. */
+  tree: CompanyOsWorkspaceTreeItem[];
+  /** Every Document id removed by the default tree filter, in projection order. */
+  documentIds: string[];
+  /** BusinessModules the default tree drops because their root Document is archived. */
+  modules: CompanyOsLink[];
+  countLabel: string;
+}
+
 export interface CompanyOsWorkspaceData {
   title?: string;
   description?: string;
   rootSelected?: boolean;
   tree: CompanyOsWorkspaceTreeItem[];
+  /** Explicit archive route; absent when the projection supplies no Documents at all. */
+  archive?: CompanyOsWorkspaceArchive;
   spaces: CompanyOsWorkspaceSpace[];
   recentlyUpdated?: CompanyOsLink[];
   templates?: CompanyOsTemplateOption[];

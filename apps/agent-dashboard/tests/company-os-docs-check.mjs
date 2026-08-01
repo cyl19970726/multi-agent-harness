@@ -11,6 +11,15 @@ const repositoryRoot = join(dashboardRoot, "..", "..");
 let passed = 0;
 let failed = 0;
 
+/** The document tree is a real hierarchy, so ref collection must walk every depth. */
+function flattenTree(items = []) {
+  return items.flatMap((item) => [item, ...flattenTree(item.children)]);
+}
+
+function sortedIds(values) {
+  return [...values].filter(Boolean).sort();
+}
+
 function check(condition, message) {
   if (condition) {
     console.log(`  PASS  ${message}`);
@@ -322,7 +331,7 @@ async function main() {
     ],
   });
   const archivedVisibleRefs = [
-    ...archivedPages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+    ...flattenTree(archivedPages.workspace.tree).map((item) => item.ref),
     ...(archivedPages.workspace.recentlyUpdated ?? []).map((link) => link.id),
     ...(archivedPages.health.structureLinks ?? []).map((link) => link.id),
     ...archivedPages.moduleView.sourceLinks.map((link) => link.id),
@@ -331,11 +340,92 @@ async function main() {
     archivedPages.health.counts.documents === 1
       && archivedPages.workspace.spaces?.every((space) => space.name !== "company")
       && !archivedVisibleRefs.some((id) => /archived-company/.test(id))
-      && archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-active")
-      && !archivedPages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.id === "module-archived-root"),
+      && flattenTree(archivedPages.workspace.tree).some((item) => item.id === "module-active")
+      && !flattenTree(archivedPages.workspace.tree).some((item) => item.id === "module-archived-root"),
     "Docs workspace hides archived Documents and modules whose root Document is archived from active navigation",
   );
   check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
+
+  // U1/U2: the default tree is the real parent_document_id hierarchy under a single
+  // "not archived" predicate, and the Archive view is that predicate's exact complement.
+  const agentosChildIds = [
+    "document-agentos-01-dogfood",
+    "document-agentos-02-external-gateway",
+    "document-agentos-03-org-work-doc-loop",
+    "document-agentos-04-github-connector",
+    "document-agentos-10-software-product-sources",
+  ];
+  const hierarchyDocuments = [
+    { id: "document-agentos-root", space_id: "agentos", parent_document_id: null, title: "AgentOS / Star Harness", kind: "page", lifecycle_status: "draft", block_ids: [] },
+    ...agentosChildIds.map((id, index) => ({ id, space_id: "agentos", parent_document_id: "document-agentos-root", title: `${String(index).padStart(2, "0")} AgentOS child page`, kind: "page", lifecycle_status: "draft", block_ids: [] })),
+    // Archived leaks the single predicate must remove: a duplicate child, a legacy
+    // company-space root with its own child, and a cross-space child of an active page.
+    { id: "document-agentos-01-dogfood-intake", space_id: "agentos", parent_document_id: "document-agentos-root", title: "01 Dogfood Intake", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-agentos-home", space_id: "company", parent_document_id: null, title: "AgentOS Development", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-agentos-home-child", space_id: "company", parent_document_id: "document-agentos-home", title: "Legacy development note", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-wcw-11-agentos-dogfood", space_id: "company", parent_document_id: "document-wcw-00-project-home", title: "11 AgentOS Dogfood", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    { id: "document-wcw-root", space_id: "wanchengwanling", parent_document_id: null, title: "Wanchengwanling", kind: "page", lifecycle_status: "active", block_ids: [] },
+    { id: "document-wcw-00-project-home", space_id: "wanchengwanling", parent_document_id: "document-wcw-root", title: "00 Project Home", kind: "page", lifecycle_status: "active", block_ids: [] },
+  ];
+  const hierarchyPages = adaptCompanyOsDocsProjection({
+    documents: hierarchyDocuments,
+    business_modules: [
+      { id: "module-agentos-project-home", name: "AgentOS project home", root_document_ref: "document-agentos-root", status: "active", default_view_refs: [] },
+      { id: "module-agentos-development", name: "AgentOS development", root_document_ref: "document-agentos-home", status: "active", default_view_refs: [] },
+    ],
+  });
+  const hierarchyNodes = flattenTree(hierarchyPages.workspace.tree);
+  const agentosRootNode = hierarchyNodes.find((item) => item.ref === "document-agentos-root");
+  const archivedDocumentIds = hierarchyDocuments.filter((entry) => entry.lifecycle_status === "archived").map((entry) => entry.id);
+  check(
+    agentosRootNode !== undefined
+      && JSON.stringify(sortedIds((agentosRootNode.children ?? []).map((child) => child.ref))) === JSON.stringify(sortedIds(agentosChildIds))
+      && agentosChildIds.every((id) => hierarchyDocuments.find((entry) => entry.id === id).lifecycle_status === "draft"),
+    "document-agentos-root nests exactly its five non-archived child pages even though every one of them is still draft",
+  );
+  check(
+    hierarchyPages.workspace.tree.find((space) => space.label === "agentos")?.children?.filter((child) => child.href?.startsWith("?surface=docs&document=")).length === 1
+      && flattenTree(hierarchyPages.workspace.tree.filter((space) => space.label === "wanchengwanling")).some((item) => item.ref === "document-wcw-00-project-home" && item.id !== "space:wanchengwanling")
+      && hierarchyPages.workspace.tree.find((space) => space.label === "wanchengwanling")?.children?.every((child) => child.ref !== "document-wcw-00-project-home"),
+    "space grouping only frames roots: a child Document nests under its parent instead of reappearing as a space-level sibling",
+  );
+  check(
+    hierarchyNodes.some((item) => item.ref) && !hierarchyNodes.some((item) => archivedDocumentIds.includes(item.ref))
+      && !hierarchyNodes.some((item) => item.ref === "module-agentos-development")
+      && hierarchyNodes.some((item) => item.ref === "module-agentos-project-home"),
+    "the default document tree excludes every archived Document and every module whose root Document is archived",
+  );
+  const archiveRefs = flattenTree(hierarchyPages.workspace.archive?.tree).map((item) => item.ref).filter(Boolean);
+  check(
+    JSON.stringify(sortedIds(archiveRefs)) === JSON.stringify(sortedIds(archivedDocumentIds))
+      && JSON.stringify(sortedIds(hierarchyPages.workspace.archive?.documentIds ?? [])) === JSON.stringify(sortedIds(archivedDocumentIds))
+      && hierarchyPages.workspace.archive?.modules.some((module) => module.id === "module-agentos-development")
+      && !hierarchyPages.workspace.archive?.modules.some((module) => module.id === "module-agentos-project-home"),
+    "the Archive view lists exactly the archived Documents and the modules the default tree withheld, and nothing else",
+  );
+  check(
+    hierarchyPages.workspace.archive?.defaultFilter === 'lifecycle_status != "archived"'
+      && !/\bactive\b/.test(hierarchyPages.workspace.archive?.defaultFilter ?? "")
+      && flattenTree(hierarchyPages.workspace.archive?.tree).filter((item) => item.ref).every((item) => item.meta === "Archived")
+      && flattenTree(hierarchyPages.workspace.archive?.tree).some((item) => item.ref === "document-wcw-11-agentos-dogfood"),
+    "the Archive view states the default tree predicate as an exclusion and re-anchors an archived child whose parent stayed in the default tree",
+  );
+  check(
+    workspace.includes('data-docs-archive-view="explicit"') && workspace.includes("data-docs-archive-toggle") && workspace.includes("data-docs-archive-filter") && workspace.includes("exact complement") && types.includes("CompanyOsWorkspaceArchive"),
+    "Docs Workspace exposes the archive behind one explicit disclosure that names the default tree predicate",
+  );
+  check(
+    adapter.includes("buildDocumentSpaceTree") && adapter.includes("parent_document_id") && !adapter.includes('lifecycle_status) === "active"'),
+    "projection adapter derives the tree from Document.parent_document_id without an active-only lifecycle filter",
+  );
+  const deepLinkedArchivedPages = adaptCompanyOsDocsProjection({ documents: hierarchyDocuments }, { documentId: "document-agentos-home" });
+  check(
+    deepLinkedArchivedPages.document.id === "document-agentos-home"
+      && deepLinkedArchivedPages.document.lifecycleStatus === "archived"
+      && deepLinkedArchivedPages.document.authoring === undefined
+      && !flattenTree(deepLinkedArchivedPages.workspace.tree).some((item) => item.ref === "document-agentos-home"),
+    "an archived deep link still resolves read-only with its archived lifecycle while staying out of the default tree",
+  );
 
   const pageRefs = {
     home: new Set([
@@ -348,14 +438,14 @@ async function main() {
       ...pages.home.financeSummary.flatMap((item) => item.id ? [item.id] : []),
     ]),
     "docs-workspace": new Set([
-      ...pages.workspace.tree.flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+      ...flattenTree(pages.workspace.tree).map((item) => item.ref),
       ...(pages.workspace.recentlyUpdated ?? []).map((link) => link.id),
       ...(pages.workspace.suggestions ?? []).map((link) => link.id),
       pages.workspace.proposal?.id,
     ].filter(Boolean)),
     "document-focus": new Set([
       pages.document.id,
-      ...(pages.document.documentTree ?? []).flatMap((item) => [item.ref, ...(item.children ?? []).map((child) => child.ref)]),
+      ...flattenTree(pages.document.documentTree).map((item) => item.ref),
       ...(pages.document.properties ?? []).flatMap((property) => property.ref ? [property.ref] : []),
       ...(pages.document.sourceLinks ?? []).map((link) => link.id),
       ...(pages.document.resultLinks ?? []).map((link) => link.id),
