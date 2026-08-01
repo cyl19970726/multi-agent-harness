@@ -140,9 +140,14 @@ harness member preflight --provider claude --canary --timeout-s 120 --json
 harness member preflight --json --fail-on-unavailable
 ```
 
-Each row reports `capacity`, `capacity_freshness`, `start_decision`, and
-`compatibility` as **siblings**. `--fail-on-unavailable` exits non-zero when any
-provider returns a fresh known-unavailable state; it never fails on `unknown`.
+With `--json` each row reports `capacity`, `capacity_freshness`,
+`start_decision`, and `compatibility` as **siblings**; without it the same
+fields print as one line per provider, still in separate columns. Freshness is
+read from the clock AFTER the probe, so a probe that takes seconds never
+reports its own answer as stale.
+
+`--fail-on-unavailable` exits non-zero when any provider returns a fresh
+known-unavailable state; it never fails on `unknown`.
 
 `harness member providers` remains the adapter-compatibility inventory and is
 unchanged.
