@@ -265,6 +265,13 @@ credential exists, never that a request would succeed. The report always
 includes the non-secret proxy/base-URL runtime context so a `403` is diagnosed
 as missing proxy rather than mistaken for an account limit.
 
+That precedence also governs the start guard. A recorded structured `401`/`403`
+is merged into the live probe, not substituted for it: while the Harness
+process has no `HTTP(S)_PROXY`, capacity stays `unknown`, the missing-proxy
+diagnosis is preserved, and the member is **not** gated — the recorded
+rejection is kept in `detail` as evidence. Once a proxy is configured the same
+failure does implicate the credential and blocks.
+
 Claude rate limits are never surfaced: the Agent SDK terms do not permit a
 third-party product to offer claude.ai login or rate limits without prior
 approval, so the snapshot's `windows` stays empty by contract. See

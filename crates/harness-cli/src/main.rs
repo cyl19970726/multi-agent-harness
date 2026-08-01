@@ -10454,6 +10454,18 @@ fn claude_auth_metadata() -> (ProviderAccountRef, String) {
 /// logged-in while the request returned 403, because the Harness process had no
 /// HTTP(S)_PROXY and this machine's direct egress to the API is blocked. The
 /// same request succeeded through the proxy.
+/// The single wording for a proxy-shaped Claude failure.
+///
+/// Shared by the live canary and by the recorded-failure merge so the two
+/// paths cannot drift into contradicting each other about the same 403.
+fn claude_missing_proxy_diagnosis() -> String {
+    "a real Claude request failed while the Harness process has no HTTP(S)_PROXY set. \
+     Live Wave 2 evidence: local auth metadata reported logged-in and the identical \
+     request succeeded once the proxy was exported, so treat this as missing proxy/runtime \
+     context rather than an account limit until the request is retried through the proxy."
+        .to_string()
+}
+
 fn claude_canary_diagnosis(
     failure: &str,
     facts: &[ProviderRuntimeContextFact],
@@ -10479,11 +10491,7 @@ fn claude_canary_diagnosis(
             // the account is unauthorized. Reporting it as `unauthorized`
             // would gate a healthy account behind a missing env var.
             ProviderCapacityState::Unknown,
-            "a real Claude request failed while the Harness process has no HTTP(S)_PROXY set. \
-             Live Wave 2 evidence: local auth metadata reported logged-in and the identical \
-             request succeeded once the proxy was exported, so treat this as missing proxy/runtime \
-             context rather than an account limit until the request is retried through the proxy."
-                .to_string(),
+            claude_missing_proxy_diagnosis(),
         );
     }
     if auth_shaped {
@@ -10677,6 +10685,11 @@ fn claude_capacity_probe(
 /// `session/{new,resume,load,set_config_option,prompt,cancel,update,
 /// request_permission}`. None of them reports quota, so the only honest answer
 /// is `unknown` — never a synthesised percentage.
+///
+/// A terminal failure does not help either: ACP has no HTTP-status error
+/// channel, and a real Kimi failure is journalled as `action_type=error`, not
+/// as a structured `provider_error`. There is no source to promote, so this
+/// stays `unknown` in every case.
 fn kimi_capacity_probe(execution_mode: &str) -> ProviderCapacitySnapshot {
     let (observed_at, observed_unix_ms) = capacity_now();
     let mut snapshot = ProviderCapacitySnapshot::unknown(
@@ -10686,8 +10699,9 @@ fn kimi_capacity_probe(execution_mode: &str) -> ProviderCapacitySnapshot {
         observed_unix_ms,
         ProviderCapacityEvidence::NotExposed,
         "the reviewed Kimi ACP surface exposes no account, quota, or rate-limit method, so no \
-         usage number can be reported. Capacity becomes observable only from a real terminal \
-         provider error.",
+         usage number can be reported. ACP also has no HTTP-status error channel, so a terminal \
+         failure cannot make capacity observable either; Kimi stays unknown until a reviewed \
+         quota or structured-error API exists.",
     );
     snapshot.account = ProviderAccountRef {
         source: "kimi_code_local_login".to_string(),
@@ -10846,6 +10860,64 @@ fn capacity_preflight_enabled() -> bool {
     )
 }
 
+/// Merge a recorded terminal failure INTO the current probe observation.
+///
+/// The probe knows things the recorded row cannot: which proxy variables exist
+/// in this process right now, and whether the account/source could be read.
+/// Replacing the probe wholesale threw that away and turned the exact Wave 2
+/// scenario — no `HTTP(S)_PROXY`, blocked egress, provider answers `403` —
+/// into `unauthorized`, gating a healthy account behind a missing env var.
+/// That is precisely the misdiagnosis this WorkItem exists to prevent, and it
+/// contradicted the canary path, which returns `unknown` for the same failure.
+///
+/// So: for a mode whose failure is known to be proxy-shaped, a missing proxy
+/// takes precedence over a recorded credential rejection. The recorded failure
+/// is preserved in `detail` — it is real evidence, just not a verdict.
+fn reconcile_recorded_capacity(
+    probe: ProviderCapacitySnapshot,
+    recorded: ProviderCapacitySnapshot,
+) -> ProviderCapacitySnapshot {
+    let proxy_shaped_mode = probe.execution_mode == "claude_agent_sdk";
+    let missing_proxy = !claude_has_proxy_configured(&probe.runtime_context);
+    let credential_shaped = recorded.state == ProviderCapacityState::Unauthorized;
+
+    if proxy_shaped_mode && missing_proxy && credential_shaped {
+        let recorded_detail = recorded
+            .detail
+            .clone()
+            .unwrap_or_else(|| "a recorded terminal failure rejected the credential".to_string());
+        return ProviderCapacitySnapshot {
+            // Keep the PROBE's state: unknown, so no start is gated.
+            state: ProviderCapacityState::Unknown,
+            confidence: ProviderCapacityConfidence::Unknown,
+            diagnosis: Some(claude_missing_proxy_diagnosis()),
+            detail: Some(format!(
+                "{recorded_detail}, but the Harness process has no HTTP(S)_PROXY, so the recorded \
+                 rejection is not attributed to the account until the request is retried through \
+                 a proxy"
+            )),
+            ..probe
+        };
+    }
+
+    // Otherwise the recorded state stands, but it inherits the probe's live
+    // runtime facts and account boundary instead of discarding them.
+    ProviderCapacitySnapshot {
+        account: if recorded.account.source == "unknown" {
+            probe.account
+        } else {
+            recorded.account
+        },
+        runtime_context: if recorded.runtime_context.is_empty() {
+            probe.runtime_context
+        } else {
+            recorded.runtime_context
+        },
+        diagnosis: recorded.diagnosis.or(probe.diagnosis),
+        ..recorded
+    }
+}
+
 /// Derive a capacity snapshot from the STRUCTURED terminal failures this
 /// member already recorded.
 ///
@@ -10958,7 +11030,8 @@ fn provider_capacity_start_gate(
     let ttl_ms = capacity_ttl_ms();
     let now_unix_ms = current_unix_ms_u64();
     // A live provider answer wins. Recorded terminal errors are consulted only
-    // when the probe itself could not observe a state.
+    // when the probe itself could not observe a state, and they are MERGED into
+    // the probe rather than replacing it.
     if snapshot.state == ProviderCapacityState::Unknown {
         if let Some(recorded) = capacity_from_recorded_provider_errors(
             ledger,
@@ -10967,7 +11040,7 @@ fn provider_capacity_start_gate(
             now_unix_ms,
             ttl_ms,
         )? {
-            snapshot = recorded;
+            snapshot = reconcile_recorded_capacity(snapshot, recorded);
         }
     }
     let decision =
@@ -37504,6 +37577,105 @@ package:com.tencent.mm
             )
             .is_none(),
             "prose must never reach a capacity classifier"
+        );
+    }
+
+    fn claude_probe_snapshot(proxy: Option<&str>) -> ProviderCapacitySnapshot {
+        ProviderCapacitySnapshot {
+            provider: "claude".into(),
+            execution_mode: "claude_agent_sdk".into(),
+            account: ProviderAccountRef {
+                source: "oauth_credentials_file".into(),
+                identifier: None,
+                plan: None,
+            },
+            state: ProviderCapacityState::Unknown,
+            observed_at: "unix-ms:2000".into(),
+            observed_unix_ms: 2_000,
+            reset_at: None,
+            evidence_source: ProviderCapacityEvidence::AuthMetadata,
+            confidence: ProviderCapacityConfidence::Unknown,
+            windows: Vec::new(),
+            diagnosis: None,
+            runtime_context: vec![ProviderRuntimeContextFact {
+                key: "HTTPS_PROXY".into(),
+                present: proxy.is_some(),
+                note: Some(proxy.unwrap_or("absent").into()),
+            }],
+            detail: Some("auth metadata only".into()),
+        }
+    }
+
+    #[test]
+    fn a_recorded_403_never_discards_the_live_proxy_evidence() {
+        // Two paths used to answer the SAME failure differently: the canary
+        // called a 403 without a proxy `unknown`, while a RECORDED 403 replaced
+        // the probe wholesale and became `unauthorized` — gating a healthy
+        // account behind a missing env var, the exact Wave 2 misdiagnosis.
+        let recorded = capacity_from_provider_error_actions(
+            &[provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: api_error (HTTP 403): ",
+                Some(&claude_403_status()),
+            )],
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("a structured 403 is recorded evidence");
+        assert_eq!(recorded.state, ProviderCapacityState::Unauthorized);
+
+        // No proxy: the canary verdict governs, and the merge must agree.
+        let no_proxy = claude_probe_snapshot(None);
+        let (canary_state, canary_diagnosis) = claude_canary_diagnosis(
+            "API Error: 403 Request not allowed",
+            &no_proxy.runtime_context,
+        );
+        let merged = reconcile_recorded_capacity(no_proxy, recorded.clone());
+
+        assert_eq!(canary_state, ProviderCapacityState::Unknown);
+        assert_eq!(
+            merged.state, canary_state,
+            "the recorded and live paths must not contradict each other on one 403"
+        );
+        assert_eq!(merged.diagnosis.as_deref(), Some(canary_diagnosis.as_str()));
+        assert!(
+            !merged.runtime_context.is_empty(),
+            "the probe's proxy facts must survive the merge"
+        );
+        assert_eq!(
+            merged.account.source, "oauth_credentials_file",
+            "the probe's account boundary must survive the merge"
+        );
+        assert!(
+            merged
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("HTTP(S)_PROXY")),
+            "the recorded rejection stays visible as evidence: {:?}",
+            merged.detail
+        );
+        assert!(
+            !harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
+                .is_blocked(),
+            "a missing proxy must never gate a start"
+        );
+
+        // With a proxy configured, the same recorded 403 DOES implicate the
+        // credential, and still keeps the live runtime facts.
+        let merged = reconcile_recorded_capacity(
+            claude_probe_snapshot(Some("http://127.0.0.1:7897")),
+            recorded,
+        );
+        assert_eq!(merged.state, ProviderCapacityState::Unauthorized);
+        assert_eq!(merged.account.source, "oauth_credentials_file");
+        assert!(!merged.runtime_context.is_empty());
+        assert!(
+            harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
+                .is_blocked()
         );
     }
 

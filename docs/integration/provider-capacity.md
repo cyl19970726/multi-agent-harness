@@ -69,7 +69,7 @@ provider-neutral and execution-mode-specific:
 | Provider · execution mode | Reviewed capacity source | Default state | Reports usage numbers | Notes |
 | --- | --- | --- | --- | --- |
 | `codex` · `codex_app_server` | `account/read` + `account/rateLimits/read` over the app-server stdio protocol | `available` \| `limited` \| `exhausted` \| `unauthorized` from the provider answer | Yes — every metered bucket in `rateLimitsByLimitId`, keyed by provider `limit_id` | Both RPCs are reads. The preflight completes `initialize` + `initialized` and stops: no `thread/start`, `thread/resume`, or `thread/name/set`, so no rollout and no billable turn. |
-| `claude` · `claude_agent_sdk` | Local auth metadata, observed runtime context, and an opt-in real request | `unknown` without `--canary`; `available` only from a canary that actually succeeded | **No.** Anthropic does not permit third-party products to surface claude.ai rate limits without prior approval (`apps/claude-member-runner/README.md`), so `windows` stays empty by contract. | The canary is a bounded `claude -p` request. It shares credentials and HTTP egress with the Agent SDK mode but is not the SDK runtime, and the snapshot's `detail` says so. |
+| `claude` · `claude_agent_sdk` | Local auth metadata, observed runtime context, and an opt-in real request | `unknown` without `--canary`; `available` only from a canary that actually succeeded. A missing proxy outranks a recorded `unauthorized` (see below). | **No.** Anthropic does not permit third-party products to surface claude.ai rate limits without prior approval (`apps/claude-member-runner/README.md`), so `windows` stays empty by contract. | The canary is a bounded `claude -p` request. It shares credentials and HTTP egress with the Agent SDK mode but is not the SDK runtime, and the snapshot's `detail` says so. |
 | `kimi` · `kimi_acp` | None | `unknown`, `evidence_source: not_exposed` — always | No | The reviewed ACP surface is `initialize` and `session/{new,resume,load,set_config_option,prompt,cancel,update,request_permission}`. None reports quota. ACP also has no HTTP-status error channel, so a 403 is indistinguishable from any other JSON-RPC error and MUST NOT be inferred from its text. Kimi capacity has no observable source today. |
 | any other provider | None | `unknown`, `evidence_source: not_exposed` | No | An unregistered provider never inherits another provider's answer. |
 
@@ -121,6 +121,31 @@ Which modes can produce one:
 The search walks backwards past rows it cannot classify, so a silent-round row
 sitting on top never buries a real 403 recorded moments earlier. Only failures
 newer than the TTL count.
+
+### Missing Proxy Takes Precedence for `claude_agent_sdk`
+
+A recorded failure is **merged into** the current probe, never substituted for
+it. The probe knows what the recorded row cannot: which proxy variables exist in
+this process right now, and whether the account/source could be read. Those
+facts survive the merge.
+
+For `claude_agent_sdk` specifically, **a missing proxy outranks a recorded
+credential rejection**. When the Harness process has no `HTTP(S)_PROXY` and a
+recorded structured failure says `unauthorized`, capacity stays `unknown`, the
+missing-proxy diagnosis is preserved, and the start is **not** gated. The
+recorded rejection is kept in `detail` — it is real evidence, just not a
+verdict.
+
+This is the Wave 2 scenario exactly: no proxy, blocked direct egress, provider
+answers `403`, and the identical request succeeds once the proxy is exported.
+Calling that account `unauthorized` would gate a healthy account behind a
+missing environment variable — the misdiagnosis this WorkItem exists to
+prevent. It would also contradict the live canary, which returns `unknown` for
+the same failure; both paths share one diagnosis string so they cannot drift.
+
+Once a proxy **is** configured, the same recorded `403` does implicate the
+credential, becomes `unauthorized`, and blocks — while still carrying the
+probe's runtime facts.
 
 ## Start Guard
 
