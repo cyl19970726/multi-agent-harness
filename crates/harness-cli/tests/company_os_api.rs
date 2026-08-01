@@ -1970,6 +1970,7 @@ fn archived_source_provenance_and_docs_health_reporting() {
 
 const ROUTING_DEFINITION: &str = "page-work-routing";
 const ROUTING_UPDATE_POLICY: &str = "page-work-routing:work_item.update";
+const ROUTING_TRANSITION_POLICY: &str = "page-work-routing:work_item.transition";
 
 /// A `work_item.update` dispatch against the routing fixture.
 fn update_action(id: &str, requested_by: Value, record: Value) -> Value {
@@ -1991,16 +1992,71 @@ fn update_action(id: &str, requested_by: Value, record: Value) -> Value {
     })
 }
 
+/// A `work_item.transition` dispatch against the routing fixture, used to
+/// prove what a self-granted seat would actually buy the requesting Actor.
+fn transition_action(id: &str, requested_by: Value, record: Value) -> Value {
+    json!({
+        "id": id,
+        "command_name": "work_item.transition",
+        "subject_ref": {"kind": "work_item", "id": "work-routing-target"},
+        "requested_by": requested_by,
+        "payload": {"definition_id": ROUTING_DEFINITION, "record": record},
+        "required_permission": "company.work.execute",
+        "policy_ref": ROUTING_TRANSITION_POLICY,
+        "risk_tier": "r2",
+        "requires_human_approval": false,
+        "approval_refs": [],
+        "status": "requested",
+        "audit_event_refs": [format!("{id}:policy-authorized")],
+        "requested_at": NOW,
+        "completed_at": null
+    })
+}
+
 fn dispatch_update(serve: &ServeHandle, body: &Value) -> (u16, Value) {
     post_json(serve, "/v1/company-os/actions/dispatch", body)
 }
 
-/// Every responsibility rewrite through `work_item.update` needs explicit
-/// authority, and no path through it may hand the requesting Actor the
-/// ownership that `work_item.transition` checks.
-#[test]
-fn work_item_update_requires_explicit_responsibility_authority() {
-    let home = TempHome::new("company-os-work-update-ownership");
+/// Fail closed if a governed test could ever resolve the live Company Store.
+///
+/// The dogfood incident behind these tests came from assuming a store was
+/// sandboxed when it was not, so isolation is asserted rather than trusted.
+fn assert_isolated_company_store(home: &TempHome) {
+    // Canonicalized: on macOS the temp base resolves through /private, so a
+    // raw prefix comparison would report a false escape.
+    let canonical = |path: &std::path::Path| {
+        path.canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_path_buf()
+    };
+    let harness_home = home.harness_home();
+    let base = canonical(home.base());
+    assert!(
+        harness_home.starts_with(home.base()) || harness_home.starts_with(&base),
+        "effective HARNESS_HOME {harness_home:?} escapes the temp base {base:?}"
+    );
+    if let Some(real_home) = std::env::var_os("HOME") {
+        let live = canonical(&std::path::Path::new(&real_home).join(".harness"));
+        assert!(
+            !canonical(harness_home).starts_with(&live),
+            "effective HARNESS_HOME {harness_home:?} resolves inside the live store {live:?}"
+        );
+    }
+    assert!(
+        !harness_home
+            .join("companies")
+            .join("agent-company")
+            .exists(),
+        "test store {harness_home:?} already carries the live agent-company ledger"
+    );
+}
+
+/// One isolated Company with a routing module and a WorkItem whose executor
+/// and closer seats are held by different Actors, so the executor/closer split
+/// can be exercised. Returns the WorkItem record as posted.
+fn work_routing_fixture(tag: &str) -> (TempHome, ServeHandle, Value) {
+    let home = TempHome::new(tag);
+    assert_isolated_company_store(&home);
     init_project(&home);
     let serve = ServeHandle::spawn_with_env(
         &home,
@@ -2120,14 +2176,14 @@ fn work_item_update_requires_explicit_responsibility_authority() {
                 "permission_policy_ref": "company.records.write"
             }],
             "approved_ui_components": ["WorkItemCard"],
-            "action_command_refs": ["work_item.update"],
+            "action_command_refs": ["work_item.update", "work_item.transition"],
             "standard_view_fallback_ref": "view-work-routing-standard",
             "owner": actor("human", "human-brand-owner"),
             "package_ref": "package-work-routing",
             "package_version": "1.0.0",
             "fixture_ref": "company-os-work-routing-v1",
             "visual_contract_ref": "visual-contract-v1",
-            "policy_refs": [ROUTING_UPDATE_POLICY],
+            "policy_refs": [ROUTING_UPDATE_POLICY, ROUTING_TRANSITION_POLICY],
             "created_at": NOW,
             "updated_at": NOW
         })),
@@ -2174,6 +2230,15 @@ fn work_item_update_requires_explicit_responsibility_authority() {
         "/v1/company-os/work-items",
         admin(work_item.clone()),
     );
+    (home, serve, work_item)
+}
+
+/// Every responsibility rewrite through `work_item.update` needs explicit
+/// authority, and no path through it may hand the requesting Actor the
+/// ownership that `work_item.transition` checks.
+#[test]
+fn work_item_update_requires_explicit_responsibility_authority() {
+    let (_home, serve, work_item) = work_routing_fixture("company-os-work-update-ownership");
 
     // An unrelated Actor may still edit non-responsibility business context.
     // The gate must close authority, not ordinary authorship.
@@ -2457,4 +2522,173 @@ fn router_routed_after_reassign(work_item: &Value) -> Value {
     record["approver"] = actor("human", "human-brand-owner");
     record["contributors"] = json!([]);
     record
+}
+
+/// Regression for the executor/closer split. An Actor that already holds one
+/// transition role may not use `work_item.update` to take the other, so no
+/// single Standing Agent can both execute and sign off the same work.
+#[test]
+fn work_item_update_cannot_cross_the_executor_closer_split() {
+    let (_home, serve, work_item) = work_routing_fixture("company-os-work-update-role-split");
+    let assignee = actor("agent", "agent-work-assignee");
+
+    // The assignee is a legitimate executor: it may move the work to in_review.
+    let mut in_review = work_item.clone();
+    in_review["status"] = json!("in_review");
+    in_review["result_document_ref"] = json!("document-work-routing");
+    in_review["artifact_refs"] = json!(["artifact://work-routing/result-v1"]);
+    in_review["outcome_summary"] = json!("Routed work is ready for accountable review.");
+    let (status, body) = dispatch_update(
+        &serve,
+        &transition_action("action-split-submit", assignee.clone(), in_review.clone()),
+    );
+    assert_eq!(
+        status, 200,
+        "the assignee must still be able to execute: {body}"
+    );
+
+    // It is not a closer, so it cannot sign its own work off.
+    let mut completed = in_review.clone();
+    completed["status"] = json!("completed");
+    completed["completed_at"] = json!(NOW);
+    let (status, body) = dispatch_update(
+        &serve,
+        &transition_action(
+            "action-split-close-before",
+            assignee.clone(),
+            completed.clone(),
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("does not own")));
+
+    // The escalation this test exists for: buying the closer seat through
+    // work_item.update. It must be refused even though the assignee already
+    // controls the WorkItem as an executor.
+    let mut self_reviewer = in_review.clone();
+    self_reviewer["reviewer"] = assignee.clone();
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-split-self-reviewer",
+            assignee.clone(),
+            self_reviewer,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    let detail = body["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("closer") && detail.contains("reviewer"),
+        "denial must name the role class and the seat: {body}"
+    );
+
+    // The closer seat was never granted, so the close still fails.
+    let (status, body) = dispatch_update(
+        &serve,
+        &transition_action("action-split-close-after", assignee, completed),
+    );
+    assert_eq!(status, 403, "{body}");
+
+    // The mirror case: the reviewer is a closer and may not take the
+    // executor seat.
+    let mut self_assignee = in_review;
+    self_assignee["assignees"] = json!([actor("agent", "agent-work-reviewer")]);
+    let (status, body) = dispatch_update(
+        &serve,
+        &update_action(
+            "action-split-self-assignee",
+            actor("agent", "agent-work-reviewer"),
+            self_assignee,
+        ),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("executor")),
+        "{body}"
+    );
+}
+
+/// Denial evidence must be unforgeable. An Actor may not pre-bind another
+/// command's terminal audit id and thereby suppress that command's denial
+/// record.
+#[test]
+fn work_item_update_denial_survives_a_pre_bound_audit_id() {
+    let (_home, serve, work_item) = work_routing_fixture("company-os-work-update-denial-evidence");
+    let outsider = actor("agent", "agent-outsider");
+
+    // Squatting on another command's :rejected id is refused up front, so the
+    // cover command never lands and never reserves the victim id.
+    let mut retitled = work_item.clone();
+    retitled["title"] = json!("Cover traffic");
+    let mut cover = update_action("action-cover", outsider.clone(), retitled);
+    cover["audit_event_refs"] = json!(["action-evil:rejected"]);
+    let (status, body) = dispatch_update(&serve, &cover);
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("namespace belongs to")),
+        "{body}"
+    );
+
+    // The denial therefore still records its own evidence.
+    let mut stolen = work_item;
+    stolen["accountable_owner"] = outsider.clone();
+    let (status, body) = dispatch_update(&serve, &update_action("action-evil", outsider, stolen));
+    assert_eq!(status, 403, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("grant itself")));
+
+    let (status, audits) = serve.get_json("/v1/company-os/audit-events");
+    assert_eq!(status, 200, "{audits}");
+    let denial = audits["result"]["items"]
+        .as_array()
+        .expect("audit items")
+        .iter()
+        .find(|row| row["id"] == "action-evil:rejected")
+        .expect("denial AuditEvent was suppressed");
+    assert_eq!(denial["event_kind"], "failed", "{denial}");
+    assert_eq!(denial["action_command_id"], "action-evil", "{denial}");
+    assert_eq!(denial["detail"]["denial_kind"], "authority_laundering");
+}
+
+/// Source accountability is not editable business context: `work_item.update`
+/// must not become the forgery path for who raised the work.
+#[test]
+fn work_item_update_cannot_forge_request_provenance() {
+    let (_home, serve, work_item) = work_routing_fixture("company-os-work-update-provenance");
+    let outsider = actor("agent", "agent-outsider");
+
+    for field in ["requested_by", "submitted_by"] {
+        let mut forged = work_item.clone();
+        forged[field] = outsider.clone();
+        let (status, body) = dispatch_update(
+            &serve,
+            &update_action(&format!("action-forge-{field}"), outsider.clone(), forged),
+        );
+        assert_eq!(status, 409, "{field} must be protected provenance: {body}");
+        assert!(
+            body["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("request provenance")),
+            "{body}"
+        );
+    }
+
+    // The stored record kept its original provenance.
+    let (status, items) = serve.get_json("/v1/company-os/work-items");
+    assert_eq!(status, 200, "{items}");
+    let stored = items["result"]["items"]
+        .as_array()
+        .expect("work items")
+        .iter()
+        .find(|row| row["id"] == "work-routing-target")
+        .expect("fixture WorkItem");
+    assert_eq!(stored["requested_by"]["actor_id"], "human-brand-owner");
+    assert_eq!(stored["submitted_by"]["actor_id"], "human-brand-owner");
 }
