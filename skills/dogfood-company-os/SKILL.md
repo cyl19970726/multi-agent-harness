@@ -250,23 +250,57 @@ Stop when:
 Dogfood is iterative; one `Docs -> Work -> Docs` example is not proof of the
 Company operating model.
 
-## Treat Upgrade And Crash Recovery As Company Work
+## Dogfood Execution Roster And Research Budget
 
-After a Harness, adapter, protocol, permission, model-control, Plugin, or Skill
-change:
+Dogfood TeamRuns use a deliberate provider roster, not whatever provider is
+installed:
+
+- Kimi (`kimi_acp`) is the primary execution member. Request the reviewed K3
+  model alias with `max` thinking effort, and verify the MemberRun
+  requested-vs-effective `provider_controls` receipt before trusting the lane;
+  a recorded alias alone is never proof of the model actually used.
+- Claude (`claude_agent_sdk`) may join only while its installed SDK version is
+  reviewed: `harness member providers --fail-on-review` must be green. An
+  unreviewed SDK is `review_required` and stays out of dogfood lanes.
+- Codex providers are not dogfood execution members. Historical Codex runs are
+  read-only evidence, and bounded `codex_exec` paths stay inside Dynamic
+  Workflow; do not create new Codex Team lanes or use them as fallbacks.
+
+Every member runs under a strict research budget. One evidence pass — the
+Assignment, owned paths, and directly linked records — is enough to start.
+After that pass the member must either produce its deliverables or report a
+blocked verdict with the exact missing fact and a recommendation. The Host
+steers or interrupts a member that keeps exploring past the checkpoint;
+unbounded repository archaeology is a lane defect, not diligence.
+
+## Rolling Reconciliation After Master Merges
+
+A necessary master merge — a Harness, adapter, protocol, permission,
+model-control, Plugin, or Skill change that dogfood must run on — triggers
+rolling Supervisor reconciliation of every live dogfood runtime:
 
 1. classify whether only UI/Docs projection changed or a runtime contract
-   changed;
+   changed; projection-only merges need no restart;
 2. drain or interrupt active turns before replacing an incompatible runtime;
-3. install/sync canonical artifacts before starting the next generation;
-4. preserve Standing Agent, WorkItem, MemberRun, Assignment correlation, and
-   provider-native Session when the reviewed contract allows resume;
-5. create a new native Session when compatibility cannot be proven, retaining
-   the old Session as history; and
-6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill roots,
-   and the single writable-Workspace driver before resuming.
+3. install/sync canonical artifacts from the new master before starting the
+   next generation;
+4. rebase each member worktree onto the new master, or recreate a clean
+   same-repository worktree when rebase is unsafe; never let two runtime
+   generations write the same Workspace;
+5. resume the same MemberRun and provider-native Session under a higher
+   Supervisor generation when the reviewed contract allows it; when
+   compatibility cannot be proven, record the reason and start a new native
+   Session, retaining the old Session as history;
+6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
+   roots, and the single writable-Workspace driver before resuming; and
+7. prove the new generation with an acceptance probe: a fresh correlated
+   message reaches the existing MemberRun, the same native Session answers,
+   and the Host can ACK the resulting handoff.
 
-Never let two runtime generations drive the same writable Workspace.
+Rolling means lane by lane: reconcile one member, probe it, then move to the
+next. The reconciliation itself is Company Work — link the merge commit, the
+Supervisor generations, and each resume-or-new-session decision to the
+governing WorkItem.
 
 ## Truthful Store Projections And UI Acceptance
 
@@ -305,5 +339,9 @@ Report:
 - CLI checks and Store-live UI evidence;
 - accepted results and explicitly deferred WorkItems;
 - projection freshness and any canonical-vs-derived mismatch;
-- runtime/Plugin/Skill generation used; and
+- the execution roster used (provider, mode, model/effort receipt) and any
+  research-budget breaches the Host had to steer;
+- runtime/Plugin/Skill generation used, plus each rolling-reconciliation
+  decision after a master merge (merge commit, Supervisor generation,
+  worktree action, resume or new native Session); and
 - the next highest-value dogfood cycle.

@@ -189,7 +189,41 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
         continue
       fi
+      if [ -n "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}" ]; then
+        # Immediate non-retryable rejection with NO preceding session/update:
+        # the provider never accepted the prompt, so Harness must not publish
+        # a provider receipt for it and must leave the delivery replayable.
+        : > "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}"
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 429: rate limited before the turn started"}}\n' "$id"
+        continue
+      fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ -n "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}" ]; then
+        # One non-retryable provider failure after partial content streamed:
+        # the terminal session/prompt response is a JSON-RPC error. Harness
+        # must record a provider_error round, not a partial Handoff.
+        : > "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}"
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: usage limit reached"}}\n' "$id"
+        continue
+      fi
+      if [ -n "${FAKE_KIMI_PEER_ACK_CONFIG:-}" ] && [ -s "${FAKE_KIMI_PEER_ACK_CONFIG}" ] && [ "$prompt_count" = "2" ]; then
+        # Two-peer convergence: the named member answers its follow-up round
+        # with acknowledgement-only peer mail (informational, no explicit
+        # response intent). The config file holds "<from member run>\n<to member run>".
+        ack_from=$(sed -n '1p' "${FAKE_KIMI_PEER_ACK_CONFIG}")
+        ack_to=$(sed -n '2p' "${FAKE_KIMI_PEER_ACK_CONFIG}")
+        if [ "${HARNESS_MEMBER_RUN_ID:-}" = "$ack_from" ]; then
+          sleep 0.1
+          "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run send \
+            --id "$HARNESS_TEAM_RUN_ID" \
+            --from "$HARNESS_MEMBER_RUN_ID" \
+            --to "$ack_to" \
+            --kind message \
+            --body "ACK: noted, no reply needed" \
+            --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+            > "${FAKE_KIMI_PEER_ACK_MARKER:?}" 2>&1
+        fi
+      fi
       if [ -n "${FAKE_KIMI_CRASH_ONCE_MARKER:-}" ] && [ ! -e "$FAKE_KIMI_CRASH_ONCE_MARKER" ]; then
         : > "$FAKE_KIMI_CRASH_ONCE_MARKER"
         exit 7
@@ -222,7 +256,16 @@ while IFS= read -r line; do
           printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ordinary narration with no trailing newline"}}}}\n' "$session_id"
         fi
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member finished round\\n"}}}}\n' "$session_id" "$result"
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+        # FAKE_KIMI_STOP_REASON exercises non-`end_turn` terminal reasons
+        # (max_tokens/refusal/max_turn_requests). FAKE_KIMI_NULL_ERROR_KEY
+        # reproduces servers that serialize every field, so a SUCCESSFUL
+        # response still carries `"error": null`.
+        stop_reason="${FAKE_KIMI_STOP_REASON:-end_turn}"
+        if [ "${FAKE_KIMI_NULL_ERROR_KEY:-0}" = "1" ]; then
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"%s"},"error":null}\n' "$id" "$stop_reason"
+        else
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"%s"}}\n' "$id" "$stop_reason"
+        fi
       fi
       ;;
     *'"id":700'*'"optionId":"q0_opt_0"'*)
@@ -280,13 +323,33 @@ if [ "$1" = "app-server" ]; then
   thread_id="thread_fake_codex_app_server"
   turn_id="turn_fake_codex_app_server"
   turn_seq=0
+  # Capacity fixtures. Assign the defaults here rather than inline in the
+  # printf: `${VAR:-{"a":1}}` terminates at the FIRST `}` of the default, which
+  # silently corrupts a JSON literal.
+  account_json="${FAKE_CODEX_ACCOUNT_JSON}"
+  if [ -z "$account_json" ]; then
+    account_json='{"account":{"type":"chatgpt","email":"fake@example.com","planType":"pro"},"requiresOpenaiAuth":true}'
+  fi
+  rate_limits_json="${FAKE_CODEX_RATE_LIMITS_JSON}"
+  if [ -z "$rate_limits_json" ]; then
+    rate_limits_json='{"rateLimits":{"limitId":"codex","primary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1786161121},"secondary":null,"rateLimitReachedType":null,"spendControlReached":false}}'
+  fi
   while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
     case "$line" in
       *'"method":"initialize"'*)
         printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
         ;;
+      *'"method":"account/read"'*)
+        printf '{"id":%s,"result":%s}\n' "$id" "$account_json"
+        ;;
+      *'"method":"account/rateLimits/read"'*)
+        printf '{"id":%s,"result":%s}\n' "$id" "$rate_limits_json"
+        ;;
       *'"method":"thread/start"'*)
+        if [ -n "${FAKE_CODEX_THREAD_MARKER:-}" ]; then
+          printf 'thread/start %s\n' "$line" >> "$FAKE_CODEX_THREAD_MARKER"
+        fi
         reasoning_effort=$(printf '%s' "$line" | sed -n 's/.*"model_reasoning_effort":"\([^"]*\)".*/\1/p')
         service_tier=$(printf '%s' "$line" | sed -n 's/.*"serviceTier":"\([^"]*\)".*/\1/p')
         reasoning_json=null
@@ -296,6 +359,9 @@ if [ "$1" = "app-server" ]; then
         printf '{"id":%s,"result":{"model":"gpt-5.6-sol","reasoningEffort":%s,"serviceTier":%s,"thread":{"id":"%s"}}}\n' "$id" "$reasoning_json" "$service_json" "$thread_id"
         ;;
       *'"method":"thread/resume"'*)
+        if [ -n "${FAKE_CODEX_THREAD_MARKER:-}" ]; then
+          printf 'thread/resume %s\n' "$line" >> "$FAKE_CODEX_THREAD_MARKER"
+        fi
         if [ -n "${FAKE_CODEX_RESUME_MARKER:-}" ]; then
           printf '%s\n' "$line" >> "$FAKE_CODEX_RESUME_MARKER"
         fi

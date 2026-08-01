@@ -250,6 +250,37 @@ The Dashboard exposes the same provider URI only for a bound
 id; `local_...` is a deterministic Desktop presentation id, not another
 Harness-owned transcript or lifecycle.
 
+## Account capacity and runtime context
+
+A reviewed adapter version does not mean the account can execute. Wave 2 proved
+the gap: local auth metadata reported logged-in while the SDK returned
+`403 Request not allowed`, because the Harness process had no `HTTP(S)_PROXY`
+and this host's direct egress is blocked; the identical request succeeded
+through the proxy (`apps/claude-member-runner/FINDINGS.md` §F).
+
+```bash
+harness member preflight --provider claude --json            # metadata only
+harness member preflight --provider claude --canary --json   # a real request
+```
+
+Without `--canary` the state stays `unknown` with
+`evidence_source: auth_metadata`: a credential file or env key proves a
+credential exists, never that a request would succeed. The report always
+includes the non-secret proxy/base-URL runtime context so a `403` is diagnosed
+as missing proxy rather than mistaken for an account limit.
+
+That precedence also governs the start guard. A recorded structured `401`/`403`
+is merged into the live probe, not substituted for it: while the Harness
+process has no `HTTP(S)_PROXY`, capacity stays `unknown`, the missing-proxy
+diagnosis is preserved, and the member is **not** gated — the recorded
+rejection is kept in `detail` as evidence. Once a proxy is configured the same
+failure does implicate the credential and blocks.
+
+Claude rate limits are never surfaced: the Agent SDK terms do not permit a
+third-party product to offer claude.ai login or rate limits without prior
+approval, so the snapshot's `windows` stays empty by contract. See
+[provider-capacity.md](provider-capacity.md).
+
 ## Capability and version governance
 
 The adapter remains version-specific. Deterministic runner tests cover mailbox

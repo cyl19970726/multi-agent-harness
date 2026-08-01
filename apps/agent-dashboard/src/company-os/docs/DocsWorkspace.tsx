@@ -1,4 +1,4 @@
-import { ArrowUpRight, Bot, ChevronDown, ChevronRight, CircleAlert, FilePlus2, FolderKanban, Info, Search, Sparkles } from "lucide-react";
+import { Archive, ArrowUpRight, Bot, ChevronDown, ChevronRight, CircleAlert, FilePlus2, FolderKanban, Info, Search, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { ArtField, EditorialTitle, ObjectEmblem } from "../visuals";
 
 import { RelationChips } from "./RelationChips";
-import type { CompanyOsWorkspaceData, CompanyOsWorkspaceTreeItem } from "./types";
+import type { CompanyOsWorkspaceArchive, CompanyOsWorkspaceData, CompanyOsWorkspaceTreeItem } from "./types";
 import { preserveCompanyOsWorkbenchContext } from "./url";
 
 function TreeItem({ item, depth = 0 }: { item: CompanyOsWorkspaceTreeItem; depth?: number }) {
@@ -19,6 +19,60 @@ function TreeItem({ item, depth = 0 }: { item: CompanyOsWorkspaceTreeItem; depth
     {item.href ? <a href={preserveCompanyOsWorkbenchContext(item.href)} data-company-os-ref={item.ref} data-docs-tree-link="true" className={className}>{hasChildren ? <ChevronDown className="size-3 shrink-0" /> : <span className="w-3" />}{body}</a> : <div data-company-os-ref={item.ref} className={className}>{hasChildren ? <ChevronDown className="size-3 shrink-0" /> : <span className="w-3" />}{body}</div>}
     {hasChildren && <ul>{item.children?.map((child) => <TreeItem key={child.id} item={child} depth={depth + 1} />)}</ul>}
   </li>;
+}
+
+/**
+ * Explicit archive route.  Archived material is not deleted and not silently hidden:
+ * it stays reachable behind one disclosure that names the exact predicate the default
+ * tree applies, so the two views are visibly complementary.
+ */
+function ArchiveDisclosure({ archive }: { archive: CompanyOsWorkspaceArchive }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="mt-4 border-t border-border pt-3" aria-label="Archived documents" data-docs-archive-view="explicit" data-docs-archive-filter={archive.defaultFilter}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        data-docs-archive-toggle="true"
+        data-docs-archive-count={archive.documentIds.length}
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {open ? <ChevronDown className="size-3 shrink-0" aria-hidden /> : <ChevronRight className="size-3 shrink-0" aria-hidden />}
+        <Archive className="size-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 flex-1 font-medium text-foreground">Archive</span>
+        <Badge tone="muted">{archive.documentIds.length}</Badge>
+      </button>
+      {open && (
+        <div data-docs-archive-panel="true">
+          <p className="px-2 pt-2 text-[11px] leading-4 text-muted-foreground">
+            The tree above lists every Document where <code>{archive.defaultFilter}</code>. This archive is that filter&rsquo;s exact complement — {archive.countLabel}. It is not a lifecycle judgement: draft Documents stay in the tree above.
+          </p>
+          {archive.tree.length ? (
+            <ul className="mt-1 space-y-0.5">{archive.tree.map((item) => <TreeItem key={item.id} item={item} />)}</ul>
+          ) : (
+            <p className="px-2 py-2 text-[11px] leading-4 text-muted-foreground" data-docs-archive-empty="true">No Document in this projection is archived.</p>
+          )}
+          {archive.modules.length > 0 && (
+            <div className="mt-3 px-2" data-docs-archive-modules="true">
+              <p className="text-[11px] font-medium text-foreground">Modules withheld from navigation</p>
+              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">Every BusinessModule appears either in the tree above or here, never in neither. A module&rsquo;s own status does not put it back in the tree; the stated reason does &mdash; an archived root Document is not the same withholding as a missing one.</p>
+              <ul className="mt-1.5 space-y-1">
+                {archive.modules.map((module) => (
+                  <li key={module.id}>
+                    <a href={preserveCompanyOsWorkbenchContext(module.href)} data-company-os-ref={module.id} data-docs-archive-module-link="true" data-docs-archive-module-reason={module.meta} className="block rounded-md px-1.5 py-1 text-[11px] leading-4 text-foreground hover:bg-accent">
+                      <span className="block">{module.label}</span>
+                      {module.meta && <span className="block text-muted-foreground">{module.meta}</span>}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 /** Docs home: a company knowledge workspace, not a filesystem browser. */
@@ -50,8 +104,13 @@ export function DocsWorkspace({
     <main data-company-os-page="docs-workspace" data-company-os-fixture={workspace.fixtureId} data-company-os-ready="true" className="company-workbench h-full overflow-auto bg-background">
       <ArtField />
       <div className="relative mx-auto grid min-h-full max-w-[1480px] lg:grid-cols-[240px_minmax(0,1fr)_280px]">
-        <aside className="hidden border-b border-border bg-card/55 p-4 backdrop-blur-sm lg:block lg:border-b-0 lg:border-r" aria-label="Document tree"><div className={cn("mb-4 flex items-center justify-between rounded-xl border border-transparent px-2 py-2", workspace.rootSelected && "border-primary/20 bg-primary/[0.07] text-primary")}><div className="flex items-center gap-2"><ObjectEmblem kind="docs" className="size-8 rounded-lg" /><p className="text-sm font-semibold">Operating areas</p></div><Button size="icon" variant="ghost" aria-label="Create a document"><FilePlus2 /></Button></div><ul className="space-y-0.5">{workspace.tree.map((item) => <TreeItem key={item.id} item={item} />)}</ul></aside>
+        <aside className="hidden border-b border-border bg-card/55 p-4 backdrop-blur-sm lg:block lg:border-b-0 lg:border-r" aria-label="Document tree"><div className={cn("mb-4 flex items-center justify-between rounded-xl border border-transparent px-2 py-2", workspace.rootSelected && "border-primary/20 bg-primary/[0.07] text-primary")}><div className="flex items-center gap-2"><ObjectEmblem kind="docs" className="size-8 rounded-lg" /><p className="text-sm font-semibold">Operating areas</p></div><Button size="icon" variant="ghost" aria-label="Create a document"><FilePlus2 /></Button></div><ul className="space-y-0.5">{workspace.tree.map((item) => <TreeItem key={item.id} item={item} />)}</ul>{workspace.archive && <ArchiveDisclosure archive={workspace.archive} />}</aside>
         <section className="min-w-0 px-6 py-7 sm:px-9"><header className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-[11px] text-muted-foreground">Workspace&nbsp;&nbsp; / &nbsp;&nbsp;Operating areas</p><EditorialTitle className="mt-7">Operating knowledge</EditorialTitle><p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">{workspace.description ?? "The source of truth for how the company works—connecting operating structure, durable records, decisions, and accountable actors."}</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" disabled={!onCreate} title={!onCreate ? "No governed Document creation transport is connected." : undefined} onClick={() => onCreate?.("page")}><FilePlus2 />New page</Button><Button variant="outline" size="sm" disabled title="No Standing Agent Inbox transport is connected."><Sparkles />Ask an agent</Button></div></header>
+          {workspace.archive && (
+            <div className="mt-6 lg:hidden" data-docs-archive-narrow="true">
+              <ArchiveDisclosure archive={workspace.archive} />
+            </div>
+          )}
           <section className="mt-7 flex max-w-xl items-start gap-3 border-b border-border pb-6"><Info className="mt-0.5 size-5 shrink-0 text-primary" /><div><h2 className="company-editorial-title text-xl">How this company works</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">We organize durable context into clear operating areas. Documents create governed work; results and evidence return here.</p></div></section>
           <section className="mt-6 rounded-xl border border-border bg-card/65 p-3" aria-label="Projection-backed Docs search" data-docs-workspace-search="projection">
             <label className="flex items-center gap-2 text-xs text-muted-foreground">

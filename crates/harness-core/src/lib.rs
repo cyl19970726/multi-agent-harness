@@ -1955,6 +1955,303 @@ impl ProviderExecutionControls {
     }
 }
 
+/// Runtime availability of one provider account for one execution mode.
+///
+/// This is deliberately NOT [`ProviderCompatibilityStatus`]. Compatibility
+/// answers "has this adapter been reviewed against the installed provider
+/// version"; capacity answers "can this account actually execute a turn right
+/// now". Wave 2 proved the two are independent: a `current` Claude adapter
+/// still returned 403 because the Harness process lacked the required proxy,
+/// and a `current` Kimi adapter still returned a quota 403.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapacityState {
+    /// A reviewed provider signal says this account can execute now.
+    Available,
+    /// A reviewed provider signal says usage is high but not blocking.
+    Limited,
+    /// A reviewed provider signal says the account is out of capacity.
+    Exhausted,
+    /// A reviewed provider signal says the credential is missing or rejected.
+    Unauthorized,
+    /// Nothing reviewed was observed. This never means "available" and never
+    /// borrows the adapter's compatibility verdict.
+    #[default]
+    Unknown,
+}
+
+impl ProviderCapacityState {
+    /// `true` only for states a reviewed provider signal proved are blocking.
+    /// `Unknown` is explicitly not blocking: honesty must not become a gate.
+    pub fn is_known_unavailable(self) -> bool {
+        matches!(self, Self::Exhausted | Self::Unauthorized)
+    }
+}
+
+/// Where a [`ProviderCapacitySnapshot`] came from. The reader must be able to
+/// tell a quota API answer apart from "a credential file exists on disk".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapacityEvidence {
+    /// A reviewed provider RPC/endpoint that reports account limits.
+    ProviderQuotaApi,
+    /// Credential/auth metadata — read locally OR from a provider account
+    /// endpoint. It proves a credential's presence or absence, never that a
+    /// request would succeed.
+    AuthMetadata,
+    /// A real, minimal provider request issued through the execution path.
+    ExecutionCanary,
+    /// A terminal provider error already observed by this Harness.
+    ProviderError,
+    /// The reviewed protocol for this execution mode exposes no capacity API.
+    NotExposed,
+    /// A probe was attempted and failed before producing a provider answer.
+    ProbeFailed,
+    #[default]
+    None,
+}
+
+/// How much the snapshot's `state` can be trusted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapacityConfidence {
+    /// Read directly from a provider answer.
+    Observed,
+    /// Derived from an adjacent fact (an error, a credential, an env gap).
+    Inferred,
+    #[default]
+    Unknown,
+}
+
+/// One provider-reported usage window. `used_percent` is only ever populated
+/// from a provider number; adapters must never synthesise one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapacityWindow {
+    pub label: String,
+    #[serde(default)]
+    pub limit_id: Option<String>,
+    #[serde(default)]
+    pub used_percent: Option<i64>,
+    #[serde(default)]
+    pub window_duration_mins: Option<i64>,
+    #[serde(default)]
+    pub resets_at: Option<String>,
+}
+
+/// The account/source boundary a snapshot describes. Two members on one
+/// provider can hold different accounts, so capacity is never global.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountRef {
+    /// Neutral credential source spelling: `chatgpt`, `api_key`,
+    /// `amazon_bedrock`, `oauth_credentials_file`, `unknown`, …
+    pub source: String,
+    /// Non-secret account identifier when the provider returns one.
+    #[serde(default)]
+    pub identifier: Option<String>,
+    #[serde(default)]
+    pub plan: Option<String>,
+}
+
+impl ProviderAccountRef {
+    pub fn unknown() -> Self {
+        Self {
+            source: "unknown".to_string(),
+            identifier: None,
+            plan: None,
+        }
+    }
+}
+
+/// One non-secret fact about the runtime environment the provider would be
+/// launched into. This is what turns "403" into "the Harness process has no
+/// HTTPS_PROXY" instead of a guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRuntimeContextFact {
+    pub key: String,
+    pub present: bool,
+    /// Non-secret description only (for example `set`, `absent`, a host name).
+    /// Adapters must never copy a token or credential here.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Execution-mode-specific runtime availability of one provider account.
+///
+/// Every field is provider-neutral. `state` never inherits from
+/// [`ProviderCompatibilityStatus`], and an absent snapshot is never treated as
+/// available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapacitySnapshot {
+    pub provider: String,
+    pub execution_mode: String,
+    pub account: ProviderAccountRef,
+    pub state: ProviderCapacityState,
+    /// RFC-ish harness timestamp string of the observation.
+    pub observed_at: String,
+    /// Unix milliseconds of the observation. Staleness is computed from this
+    /// so a snapshot read back from the store cannot silently look fresh.
+    pub observed_unix_ms: u64,
+    /// When the provider says the blocking window reopens.
+    #[serde(default)]
+    pub reset_at: Option<String>,
+    pub evidence_source: ProviderCapacityEvidence,
+    pub confidence: ProviderCapacityConfidence,
+    #[serde(default)]
+    pub windows: Vec<ProviderCapacityWindow>,
+    /// Actionable explanation when the observed failure is a runtime/context
+    /// gap rather than an account limit.
+    #[serde(default)]
+    pub diagnosis: Option<String>,
+    #[serde(default)]
+    pub runtime_context: Vec<ProviderRuntimeContextFact>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl ProviderCapacitySnapshot {
+    /// An honest "nothing was observed" snapshot. Used whenever a probe cannot
+    /// reach a reviewed provider answer.
+    pub fn unknown(
+        provider: impl Into<String>,
+        execution_mode: impl Into<String>,
+        observed_at: impl Into<String>,
+        observed_unix_ms: u64,
+        evidence_source: ProviderCapacityEvidence,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            execution_mode: execution_mode.into(),
+            account: ProviderAccountRef::unknown(),
+            state: ProviderCapacityState::Unknown,
+            observed_at: observed_at.into(),
+            observed_unix_ms,
+            reset_at: None,
+            evidence_source,
+            confidence: ProviderCapacityConfidence::Unknown,
+            windows: Vec::new(),
+            diagnosis: None,
+            runtime_context: Vec::new(),
+            detail: Some(detail.into()),
+        }
+    }
+
+    pub fn freshness(&self, now_unix_ms: u64, ttl_ms: u64) -> ProviderCapacityFreshness {
+        if self.observed_unix_ms == 0 || now_unix_ms < self.observed_unix_ms {
+            // A missing or future-dated observation is not evidence of
+            // freshness. Treat it as unknown rather than trusting it.
+            return ProviderCapacityFreshness::Unknown;
+        }
+        if now_unix_ms.saturating_sub(self.observed_unix_ms) <= ttl_ms {
+            ProviderCapacityFreshness::Fresh
+        } else {
+            ProviderCapacityFreshness::Stale
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapacityFreshness {
+    Fresh,
+    Stale,
+    Unknown,
+}
+
+/// Default staleness bound for a start-time capacity decision: five minutes.
+pub const PROVIDER_CAPACITY_DEFAULT_TTL_MS: u64 = 5 * 60 * 1000;
+
+/// Parse a `unix-ms:<millis>` harness timestamp.
+///
+/// Timestamps must be compared as numbers. String ordering happens to agree
+/// only while every stamp has the same digit count, which is a bug waiting for
+/// a boundary rather than a comparison.
+pub fn parse_harness_unix_ms(raw: &str) -> Option<u64> {
+    raw.strip_prefix("unix-ms:")?.trim().parse::<u64>().ok()
+}
+
+/// Whether a MemberRun may claim and consume its Assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "decision")]
+pub enum ProviderCapacityStartDecision {
+    Proceed {
+        reason: String,
+    },
+    /// The Assignment must stay queued and unclaimed.
+    Block {
+        state: ProviderCapacityState,
+        reason: String,
+    },
+}
+
+impl ProviderCapacityStartDecision {
+    pub fn is_blocked(&self) -> bool {
+        matches!(self, Self::Block { .. })
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Proceed { reason } | Self::Block { reason, .. } => reason,
+        }
+    }
+}
+
+/// Decide whether a member may start, from a capacity snapshot alone.
+///
+/// The rule is deliberately narrow so honesty never becomes a gate:
+/// block ONLY on a snapshot that is both FRESH and KNOWN unavailable. No
+/// snapshot, an unknown state, or a stale observation all proceed — and none
+/// of them is recorded as "available".
+pub fn provider_capacity_start_decision(
+    snapshot: Option<&ProviderCapacitySnapshot>,
+    now_unix_ms: u64,
+    ttl_ms: u64,
+) -> ProviderCapacityStartDecision {
+    let Some(snapshot) = snapshot else {
+        return ProviderCapacityStartDecision::Proceed {
+            reason: "no capacity snapshot was observed; start is not gated by an unknown"
+                .to_string(),
+        };
+    };
+    if !snapshot.state.is_known_unavailable() {
+        return ProviderCapacityStartDecision::Proceed {
+            reason: format!(
+                "capacity state {:?} is not a known-unavailable provider answer",
+                snapshot.state
+            )
+            .to_lowercase(),
+        };
+    }
+    match snapshot.freshness(now_unix_ms, ttl_ms) {
+        ProviderCapacityFreshness::Fresh => ProviderCapacityStartDecision::Block {
+            state: snapshot.state,
+            reason: format!(
+                "provider {} ({}) reported {} for account source {}{}",
+                snapshot.provider,
+                snapshot.execution_mode,
+                match snapshot.state {
+                    ProviderCapacityState::Exhausted => "exhausted capacity",
+                    ProviderCapacityState::Unauthorized => "an unauthorized credential",
+                    _ => "a blocking state",
+                },
+                snapshot.account.source,
+                snapshot
+                    .reset_at
+                    .as_ref()
+                    .map(|reset| format!("; resets at {reset}"))
+                    .unwrap_or_default()
+            ),
+        },
+        ProviderCapacityFreshness::Stale | ProviderCapacityFreshness::Unknown => {
+            ProviderCapacityStartDecision::Proceed {
+                reason: "the known-unavailable snapshot is no longer fresh; re-observe instead of \
+                         gating on stale evidence"
+                    .to_string(),
+            }
+        }
+    }
+}
+
 /// One member's session inside an [`AgentTeamRun`]. `provider` is the neutral
 /// provider spelling (codex|claude|kimi). `native_session` points to the
 /// provider-owned execution record; Harness owns only the surrounding
@@ -1984,6 +2281,11 @@ pub struct MemberRun {
     /// and execution mode have actually wired for the run.
     #[serde(default)]
     pub provider_profile: Option<ProviderIntegrationProfile>,
+    /// Last observed runtime availability of this member's provider account.
+    /// Absent means nothing was observed; it never means available, and it is
+    /// independent of `provider_profile.compatibility_status`.
+    #[serde(default)]
+    pub provider_capacity: Option<ProviderCapacitySnapshot>,
     /// Durable mailbox/participation state, independent of the process state
     /// represented by `status`.
     #[serde(default)]
@@ -2404,6 +2706,24 @@ pub enum TeamDeliveryStatus {
     Expired,
 }
 
+/// Explicit response intent carried by a [`TeamMessage`] (ADR 0046 §4). A
+/// transport delivery and a semantic reply are distinct facts: mail that only
+/// informs or acknowledges must stay durable and correlated without starting
+/// another provider round, so two Agents can converge instead of bouncing
+/// acknowledgement-only mail back and forth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageResponseIntent {
+    /// Durable, correlated mail that does not by itself start a provider
+    /// round. It is batched into the next round some response-required
+    /// message triggers, and it never fences a same-correlation Handoff.
+    Informational,
+    /// The sender asks for a semantic reply: an idle recipient starts a new
+    /// provider round for this message, and a pending delivery fences a
+    /// same-correlation Handoff as stale.
+    ResponseRequired,
+}
+
 /// One recipient's delivery record inside a [`TeamMessage`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMessageDelivery {
@@ -2457,11 +2777,66 @@ pub struct TeamMessage {
     pub correlation_id: String,
     #[serde(default)]
     pub causation_id: Option<String>,
+    /// Explicit response intent. Absent on historical rows; the effective
+    /// intent then derives from `kind` (see
+    /// [`TeamMessage::effective_response_intent`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_intent: Option<TeamMessageResponseIntent>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default)]
     pub deliveries: Vec<TeamMessageDelivery>,
     pub created_at: String,
+}
+
+impl TeamMessage {
+    /// Effective response intent: the explicit field always wins; otherwise
+    /// kind **and sender** decide (ADR 0046 §4).
+    ///
+    /// Assignments, Handoffs, and Control records carry real work or runtime
+    /// semantics and always require a response round regardless of sender.
+    ///
+    /// Ordinary `message` mail is sender-aware, because `message` is the only
+    /// legal carrier for every remaining semantic category after ADR 0039
+    /// retired the typed question/blocker/review kinds:
+    /// - a coordination-plane sender (Host, Operator, Service) is directing the
+    ///   member — questions, revisions, acceptance decisions — so it defaults to
+    ///   `response_required` and wakes an idle member;
+    /// - a peer member sender is confirming or informing another member, so it
+    ///   defaults to `informational` and the team converges without
+    ///   confirmation ping-pong.
+    pub fn effective_response_intent(&self) -> TeamMessageResponseIntent {
+        if let Some(intent) = self.response_intent {
+            return intent;
+        }
+        match self.kind {
+            TeamMessageKind::Assignment | TeamMessageKind::Handoff | TeamMessageKind::Control => {
+                TeamMessageResponseIntent::ResponseRequired
+            }
+            _ if self.sent_by_peer_member() => TeamMessageResponseIntent::Informational,
+            _ => TeamMessageResponseIntent::ResponseRequired,
+        }
+    }
+
+    /// True when this message was authored by another team member rather than
+    /// by the coordination plane (Host, Operator, Service). Historical rows
+    /// carry no typed `sender`, so they fall back to the reserved `"host"`
+    /// `from_member_id` convention.
+    fn sent_by_peer_member(&self) -> bool {
+        match self.sender.as_ref().map(|sender| sender.kind) {
+            Some(TeamActorKind::MemberRun) | Some(TeamActorKind::AgentMember) => true,
+            Some(TeamActorKind::Host)
+            | Some(TeamActorKind::Operator)
+            | Some(TeamActorKind::Service) => false,
+            None => self.from_member_id != "host",
+        }
+    }
+
+    /// True when this message may trigger a new provider round for an idle
+    /// recipient and fences a same-correlation Handoff while still pending.
+    pub fn requires_response(&self) -> bool {
+        self.effective_response_intent() == TeamMessageResponseIntent::ResponseRequired
+    }
 }
 
 /// Status of a single [`MemberAction`].
@@ -2615,6 +2990,140 @@ mod tests {
         // Unknown providers round-trip without losing fidelity.
         assert_eq!(kind.to_string(), "gemini");
         assert_eq!(ProviderKind::from("gemini".to_string()), kind);
+    }
+
+    fn bare_team_message(kind: TeamMessageKind) -> TeamMessage {
+        TeamMessage {
+            id: "tmsg-1".to_string(),
+            team_run_id: "run-1".to_string(),
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".to_string(),
+            recipients: Vec::new(),
+            to_member_ids: Vec::new(),
+            kind,
+            body: "body".to_string(),
+            correlation_id: "corr-1".to_string(),
+            causation_id: None,
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: Vec::new(),
+            created_at: "now".to_string(),
+        }
+    }
+
+    fn peer_team_message(kind: TeamMessageKind) -> TeamMessage {
+        let mut message = bare_team_message(kind);
+        message.from_member_id = "member-run-2".to_string();
+        message.sender = Some(TeamActorRef {
+            kind: TeamActorKind::MemberRun,
+            id: "member-run-2".to_string(),
+            display_name: None,
+            authn_source: None,
+        });
+        message
+    }
+
+    #[test]
+    fn team_message_response_intent_defaults_from_kind() {
+        // Work-carrying kinds require a response round from every sender.
+        for kind in [
+            TeamMessageKind::Assignment,
+            TeamMessageKind::Handoff,
+            TeamMessageKind::Control,
+        ] {
+            assert!(bare_team_message(kind).requires_response(), "{kind:?}");
+            assert!(peer_team_message(kind).requires_response(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_message_response_intent_defaults_from_sender() {
+        for kind in [
+            TeamMessageKind::Message,
+            TeamMessageKind::Question,
+            TeamMessageKind::Answer,
+            TeamMessageKind::Progress,
+            TeamMessageKind::Blocker,
+        ] {
+            // `message` is the only legal carrier for Host questions,
+            // revisions, and acceptance decisions: Host mail must stay waking.
+            assert!(
+                bare_team_message(kind).requires_response(),
+                "host {kind:?} must default to response_required"
+            );
+            // Peer-to-peer confirmations converge without a new round.
+            assert!(
+                !peer_team_message(kind).requires_response(),
+                "peer {kind:?} must default to informational"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_message_intent_treats_operator_and_service_as_coordination_plane() {
+        // ADR 0012: the Dashboard is the control plane, so an Operator reply
+        // must wake an idle member exactly like a Host reply. Routed Company OS
+        // inbox mail arrives as a Service sender and must execute, not idle.
+        for actor_kind in [
+            TeamActorKind::Host,
+            TeamActorKind::Operator,
+            TeamActorKind::Service,
+        ] {
+            let mut message = bare_team_message(TeamMessageKind::Message);
+            message.from_member_id = format!("{actor_kind:?}-sender");
+            message.sender = Some(TeamActorRef {
+                kind: actor_kind,
+                id: "sender-1".to_string(),
+                display_name: None,
+                authn_source: None,
+            });
+            assert!(message.requires_response(), "{actor_kind:?}");
+        }
+    }
+
+    #[test]
+    fn historical_rows_without_sender_fall_back_to_from_member_id() {
+        let mut historical = bare_team_message(TeamMessageKind::Message);
+        historical.sender = None;
+        assert!(historical.requires_response(), "from_member_id == host");
+        historical.from_member_id = "member-run-9".to_string();
+        assert!(
+            !historical.requires_response(),
+            "historical peer mail stays informational"
+        );
+    }
+
+    #[test]
+    fn team_message_explicit_response_intent_wins_over_kind_default() {
+        // Override upward: an ack-only peer note that genuinely needs action.
+        let mut ack_only = peer_team_message(TeamMessageKind::Message);
+        assert_eq!(
+            ack_only.effective_response_intent(),
+            TeamMessageResponseIntent::Informational
+        );
+        ack_only.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
+        assert!(ack_only.requires_response());
+        // Override downward: Host mail that is deliberately FYI-only.
+        let mut host_fyi = bare_team_message(TeamMessageKind::Message);
+        assert!(host_fyi.requires_response());
+        host_fyi.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(!host_fyi.requires_response());
+        // Override downward on a work-carrying kind too.
+        let mut control = bare_team_message(TeamMessageKind::Control);
+        control.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(!control.requires_response());
+        // The explicit field round-trips through serde; an absent field keeps
+        // historical rows on their kind+sender-derived default.
+        let json = serde_json::to_string(&ack_only).expect("serialize");
+        assert!(json.contains("\"response_intent\":\"response_required\""));
+        let without = peer_team_message(TeamMessageKind::Message);
+        let json = serde_json::to_string(&without).expect("serialize");
+        assert!(!json.contains("response_intent"));
+        let historical: TeamMessage =
+            serde_json::from_str(&json).expect("deserialize without the field");
+        assert_eq!(historical.response_intent, None);
+        assert!(!historical.requires_response());
     }
 
     #[test]
@@ -3432,6 +3941,270 @@ mod tests {
         let decoded: ProviderExecutionControls =
             serde_json::from_str(&encoded).expect("deserialize controls");
         assert_eq!(decoded, controls);
+    }
+
+    fn capacity_snapshot(
+        state: ProviderCapacityState,
+        observed_unix_ms: u64,
+    ) -> ProviderCapacitySnapshot {
+        ProviderCapacitySnapshot {
+            provider: "kimi".to_string(),
+            execution_mode: "kimi_acp".to_string(),
+            account: ProviderAccountRef {
+                source: "oauth_credentials_file".to_string(),
+                identifier: None,
+                plan: None,
+            },
+            state,
+            observed_at: "unix-ms:1000".to_string(),
+            observed_unix_ms,
+            reset_at: None,
+            evidence_source: ProviderCapacityEvidence::ProviderError,
+            confidence: ProviderCapacityConfidence::Observed,
+            windows: Vec::new(),
+            diagnosis: None,
+            runtime_context: Vec::new(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn capacity_default_state_is_unknown_and_never_available() {
+        assert_eq!(
+            ProviderCapacityState::default(),
+            ProviderCapacityState::Unknown
+        );
+        assert!(!ProviderCapacityState::Unknown.is_known_unavailable());
+        assert!(!ProviderCapacityState::Available.is_known_unavailable());
+        assert!(!ProviderCapacityState::Limited.is_known_unavailable());
+        assert!(ProviderCapacityState::Exhausted.is_known_unavailable());
+        assert!(ProviderCapacityState::Unauthorized.is_known_unavailable());
+    }
+
+    #[test]
+    fn capacity_freshness_uses_the_observation_timestamp() {
+        let snapshot = capacity_snapshot(ProviderCapacityState::Exhausted, 1_000);
+        assert_eq!(
+            snapshot.freshness(1_500, 1_000),
+            ProviderCapacityFreshness::Fresh
+        );
+        assert_eq!(
+            snapshot.freshness(5_000, 1_000),
+            ProviderCapacityFreshness::Stale
+        );
+        // A future-dated or unstamped observation is never treated as fresh.
+        assert_eq!(
+            snapshot.freshness(500, 1_000),
+            ProviderCapacityFreshness::Unknown
+        );
+        assert_eq!(
+            capacity_snapshot(ProviderCapacityState::Exhausted, 0).freshness(5_000, 1_000),
+            ProviderCapacityFreshness::Unknown
+        );
+    }
+
+    #[test]
+    fn fresh_known_unavailable_capacity_blocks_start() {
+        for state in [
+            ProviderCapacityState::Exhausted,
+            ProviderCapacityState::Unauthorized,
+        ] {
+            let snapshot = capacity_snapshot(state, 1_000);
+            let decision = provider_capacity_start_decision(Some(&snapshot), 1_100, 1_000);
+            assert!(decision.is_blocked(), "{state:?} must block a fresh start");
+            assert!(
+                decision.reason().contains("kimi_acp"),
+                "the blocking reason names the execution mode: {}",
+                decision.reason()
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_absent_and_stale_capacity_never_block_and_never_claim_available() {
+        let unknown = capacity_snapshot(ProviderCapacityState::Unknown, 1_000);
+        assert!(!provider_capacity_start_decision(Some(&unknown), 1_100, 1_000).is_blocked());
+        assert_ne!(unknown.state, ProviderCapacityState::Available);
+
+        assert!(!provider_capacity_start_decision(None, 1_100, 1_000).is_blocked());
+
+        let stale = capacity_snapshot(ProviderCapacityState::Exhausted, 1_000);
+        let decision = provider_capacity_start_decision(Some(&stale), 100_000, 1_000);
+        assert!(!decision.is_blocked());
+        assert!(decision.reason().contains("no longer fresh"));
+    }
+
+    #[test]
+    fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
+        // A reviewed-current adapter says nothing about runtime availability:
+        // this is the Wave 2 evidence (`current` adapter, 403 at request time).
+        let profile = ProviderIntegrationProfile {
+            provider: "claude".to_string(),
+            execution_mode: "claude_agent_sdk".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
+            provider_version: Some("2.1.220".to_string()),
+            adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
+            reviewed_provider_versions: vec!["2.1.220".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Current,
+            adapter_reviewed_at: None,
+            compatibility_note: None,
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+        let mut snapshot = capacity_snapshot(ProviderCapacityState::Unauthorized, 1_000);
+        snapshot.provider = "claude".to_string();
+        snapshot.execution_mode = "claude_agent_sdk".to_string();
+        snapshot.diagnosis = Some("no HTTPS_PROXY in the Harness process".to_string());
+        snapshot.runtime_context = vec![ProviderRuntimeContextFact {
+            key: "HTTPS_PROXY".to_string(),
+            present: false,
+            note: Some("absent".to_string()),
+        }];
+
+        assert_eq!(
+            profile.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+        assert!(snapshot.state.is_known_unavailable());
+
+        let encoded = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        let decoded: ProviderCapacitySnapshot =
+            serde_json::from_str(&encoded).expect("deserialize snapshot");
+        assert_eq!(decoded, snapshot);
+        assert!(
+            !encoded.contains("compatibility"),
+            "capacity JSON must not carry adapter compatibility: {encoded}"
+        );
+    }
+
+    #[test]
+    fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() {
+        let row = serde_json::json!({
+            "id": "member-run-1",
+            "team_run_id": "team-run-1",
+            "name": "Integration",
+            "role": "Integration Engineer",
+            "provider": "claude",
+            "status": "idle",
+            "started_at": "unix-ms:1"
+        });
+        let member: MemberRun = serde_json::from_value(row).expect("legacy member run");
+        assert_eq!(member.provider_capacity, None);
+        assert!(!provider_capacity_start_decision(
+            member.provider_capacity.as_ref(),
+            1_000,
+            PROVIDER_CAPACITY_DEFAULT_TTL_MS
+        )
+        .is_blocked());
+    }
+
+    /// The emit/schema contract for MemberRun.
+    ///
+    /// `schemas/member-run.schema.json` keeps `additionalProperties: false`, so
+    /// any field the emitter serialises that the schema does not declare makes
+    /// an emitted MemberRun fail validation against its own schema. This test
+    /// round-trips a MemberRun carrying `provider_capacity` and asserts every
+    /// emitted key — top level and inside the capacity snapshot — is declared.
+    /// It fails on the next undeclared field, not just on `provider_capacity`.
+    #[test]
+    fn emitted_member_run_keys_are_declared_in_member_run_schema() {
+        let schema: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/member-run.schema.json"
+            ))
+            .expect("read member-run schema"),
+        )
+        .expect("parse member-run schema");
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::Value::Bool(false),
+            "this test only means something while the schema is closed"
+        );
+
+        let snapshot = ProviderCapacitySnapshot {
+            provider: "claude".to_string(),
+            execution_mode: "sdk".to_string(),
+            account: ProviderAccountRef {
+                source: "oauth_credentials_file".to_string(),
+                identifier: Some("acct-primary".to_string()),
+                plan: Some("max".to_string()),
+            },
+            state: ProviderCapacityState::Limited,
+            observed_at: "unix-ms:1785591600000".to_string(),
+            observed_unix_ms: 1_785_591_600_000,
+            reset_at: Some("unix-ms:1785595200000".to_string()),
+            evidence_source: ProviderCapacityEvidence::ProviderQuotaApi,
+            confidence: ProviderCapacityConfidence::Observed,
+            windows: vec![ProviderCapacityWindow {
+                label: "five_hour".to_string(),
+                limit_id: Some("limit-5h".to_string()),
+                used_percent: Some(82),
+                window_duration_mins: Some(300),
+                resets_at: Some("unix-ms:1785595200000".to_string()),
+            }],
+            diagnosis: Some("Account usage is high but not blocking.".to_string()),
+            runtime_context: vec![ProviderRuntimeContextFact {
+                key: "HTTPS_PROXY".to_string(),
+                present: true,
+                note: Some("set".to_string()),
+            }],
+            detail: Some("Provider quota API reported 82% of the five-hour window.".to_string()),
+        };
+        let row = serde_json::json!({
+            "id": "member-run-capacity-1",
+            "team_run_id": "team-run-capacity-1",
+            "name": "Platform Development",
+            "role": "Platform Development",
+            "provider": "claude",
+            "status": "idle",
+            "started_at": "unix-ms:1785591600000"
+        });
+        let mut member: MemberRun = serde_json::from_value(row).expect("member run");
+        member.provider_capacity = Some(snapshot.clone());
+
+        let encoded = serde_json::to_value(&member).expect("encode member run");
+        let declared = schema["properties"].as_object().expect("schema properties");
+        let undeclared = encoded
+            .as_object()
+            .expect("encoded member run")
+            .keys()
+            .filter(|key| !declared.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            undeclared.is_empty(),
+            "emitted MemberRun fields are not declared in member-run.schema.json              (additionalProperties is false, so these cannot validate): {undeclared:?}"
+        );
+
+        let declared_capacity = declared["provider_capacity"]["properties"]
+            .as_object()
+            .expect("schema must declare provider_capacity as an object with properties");
+        let undeclared_capacity = encoded["provider_capacity"]
+            .as_object()
+            .expect("provider_capacity must serialise as an object when present")
+            .keys()
+            .filter(|key| !declared_capacity.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            undeclared_capacity.is_empty(),
+            "emitted provider_capacity fields are not declared in member-run.schema.json:              {undeclared_capacity:?}"
+        );
+
+        // Round-trip: the snapshot survives encode/decode unchanged, so the
+        // schema is describing the shape the runtime actually persists.
+        let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
+        assert_eq!(decoded.provider_capacity, Some(snapshot));
     }
 }
 

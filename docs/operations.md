@@ -109,6 +109,38 @@ Agent-managed maintenance removes the per-version confirmation prompt. It does
 not bypass authentication, payment, license, credential or permission policy,
 and it never upgrades several Providers in one review window.
 
+### Rolling Reconciliation After Master Merges
+
+A necessary master merge that changes the Harness binary, adapter, protocol,
+permission, model-control, Plugin, or Skill contract triggers rolling
+Supervisor reconciliation of live dogfood runtimes before new Team work
+starts:
+
+1. projection-only merges need no Agent restart;
+2. drain or interrupt active turns before replacing an incompatible runtime;
+3. install/sync canonical artifacts from the new master first;
+4. rebase member worktrees onto the new master or recreate clean
+   same-repository worktrees; two runtime generations never write one
+   Workspace;
+5. resume the same MemberRun/native session under a higher Supervisor
+   generation when compatible, otherwise record the reason and start a new
+   native session, retaining the old one as history;
+6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
+   roots, and the single writable-Workspace driver; and
+7. probe lane by lane: fresh correlated delivery, same-session answer, Host
+   ACK.
+
+The dogfood execution roster is deliberate: Kimi `kimi_acp` with the reviewed
+K3 model alias at `max` thinking effort is primary (verify the MemberRun
+requested-vs-effective `provider_controls` receipt); Claude `claude_agent_sdk`
+joins only while its installed SDK passes
+`harness member providers --fail-on-review`; Codex providers are not dogfood
+execution members. Each member also runs under a strict research budget: one
+evidence pass over the Assignment, owned paths, and directly linked records,
+then produce deliverables or report a blocked verdict with the exact missing
+fact. The Host steers or interrupts a member that explores past that
+checkpoint.
+
 For Kimi ACP members, `--member name:role:kimi:<model-alias>` is applied with
 ACP `session/set_config_option` before the first prompt. The alias must exist in
 the active Kimi Code configuration; a recorded name alone is never proof of the

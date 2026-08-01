@@ -352,6 +352,25 @@ Dashboard reads `runtime_health` / session records computed by harness-cli:
 Codex has process/socket/protocol/delivery. Kimi has no persistent process and no socket protocol,
 so the meaningful layers are binary endpoint, session, and delivery.
 
+### Account capacity is honestly unknown
+
+The reviewed ACP surface is `initialize` and
+`session/{new,resume,load,set_config_option,prompt,cancel,update,request_permission}`.
+None of them reports account quota, usage, or rate limits, so
+`harness member preflight --provider kimi` returns
+`state: unknown, evidence_source: not_exposed` with an empty `windows` list.
+No percentage may be approximated from local logs.
+
+Kimi capacity has **no** observable source today, including after a failure.
+ACP has no HTTP-status error channel: a quota `403` arrives as free-form
+JSON-RPC error text, indistinguishable at the protocol level from any other
+error or a plain hang, and a real terminal failure is journalled as
+`action_type=error` by `journal_member_failure`, not as a structured
+`provider_error`. Harness therefore never infers Kimi capacity from that text —
+doing so would let arbitrary substrings, including a member's own words, gate a
+start. Kimi stays `unknown` until Moonshot exposes a reviewed quota or
+structured-error API. See [provider-capacity.md](provider-capacity.md).
+
 ## Capabilities and Cost
 
 Kimi capability preset:

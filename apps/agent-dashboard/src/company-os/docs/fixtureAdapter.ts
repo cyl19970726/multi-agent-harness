@@ -11,7 +11,9 @@ import type {
   CompanyOsStructuredViewData,
   CompanyOsTemplateOption,
   CompanyOsTemplateRecordPolicy,
+  CompanyOsWorkspaceArchive,
   CompanyOsWorkspaceData,
+  CompanyOsWorkspaceTreeItem,
 } from "./types";
 
 type JsonRecord = Record<string, unknown>;
@@ -129,6 +131,17 @@ function entityRefs(value: unknown): Array<{ kind: string; id: string }> {
         .map((entry) => ({ kind: text(entry.kind), id: text(entry.id) }))
         .filter((entry) => entry.kind && entry.id)
     : [];
+}
+
+/**
+ * WorkItem.context_refs is written either as `{ kind, id }` entity refs or as bare id
+ * strings depending on the writer, so both shapes have to resolve to the same ids.
+ */
+function contextRefIds(entry: JsonRecord): string[] {
+  return distinct([
+    ...entityRefs(entry.context_refs).map((reference) => reference.id),
+    ...strings(entry.context_refs),
+  ]).filter(Boolean);
 }
 
 function docsDocumentHref(id: string): string | undefined {
@@ -348,20 +361,25 @@ function buildDocumentHealthData({
   fixtureId,
   actors,
   documents,
+  sourceDocuments,
   blocks,
   typedRecords,
   relations,
   modules,
+  workItems,
   structureLinks,
   pageDefinitions,
 }: {
   fixtureId?: string;
   actors: JsonRecord[];
   documents: JsonRecord[];
+  /** Unfiltered Documents including archived rows, used only for source resolution. */
+  sourceDocuments: JsonRecord[];
   blocks: JsonRecord[];
   typedRecords: JsonRecord[];
   relations: JsonRecord[];
   modules: JsonRecord[];
+  workItems: JsonRecord[];
   structureLinks: CompanyOsLink[];
   pageDefinitions: JsonRecord[];
 }): CompanyOsDocumentHealthData {
@@ -521,7 +539,7 @@ function buildDocumentHealthData({
       });
       return;
     }
-    const sourceDocument = record(documents, sourceDocumentId);
+    const sourceDocument = record(sourceDocuments, sourceDocumentId);
     if (!sourceDocument) {
       findings.push({
         id: `missing-source-document:${recordId}`,
@@ -536,6 +554,19 @@ function buildDocumentHealthData({
       });
       return;
     }
+    if (isArchived(sourceDocument)) {
+      const archivedLink = documentLink(sourceDocument);
+      findings.push({
+        id: `archived-source-document:${recordId}`,
+        kind: "typed_record_source_document_archived",
+        severity: "warning",
+        title: "TypedRecord source Document is archived history",
+        detail: `${text(entry.display_name, recordId)} points to ${text(sourceDocument.title, sourceDocumentId)}, which is archived. The source stays readable for provenance but is no longer active company memory.`,
+        subject: typedRecordLink(entry),
+        related: archivedLink ? { ...archivedLink, meta: "archived" } : undefined,
+        recommendedAction: "The source Document is explicit archived history; keep it read-only or route a successor source through a governed Docs action.",
+      });
+    }
     if (!hasRelationBetween(relations, sourceDocumentId, recordId)) {
       findings.push({
         id: `missing-doc-record-relation:${recordId}`,
@@ -549,6 +580,49 @@ function buildDocumentHealthData({
         directActionLabel: "Link relation",
         correctiveWorkContext: correctiveContext(sourceDocument, [recordId], [entry]),
         relationRepairContext: relationRepairContext(sourceDocument, entry),
+      });
+    }
+  });
+
+  // Work source provenance: every visible active WorkItem must resolve to an
+  // active Document or explicit archived-source history with title and
+  // lifecycle. Finding kinds and severities mirror the Store API and CLI.
+  workItems.forEach((entry) => {
+    const workId = text(entry.id);
+    if (!workId) return;
+    const workStatus = text(entry.status, "submitted").toLowerCase();
+    if (workStatus === "archived") return;
+    const workIsActive = !["completed", "cancelled", "draft"].includes(workStatus);
+    const sourceDocumentId = text(entry.source_document_ref, text(entry.source_document_id));
+    if (!sourceDocumentId) return;
+    const sourceDocument = record(sourceDocuments, sourceDocumentId);
+    if (!sourceDocument) {
+      findings.push({
+        id: `missing-source-document-work:${workId}`,
+        kind: "work_item_source_document_missing",
+        severity: "critical",
+        title: "WorkItem source Document is missing",
+        detail: `${text(entry.title, workId)} points to ${sourceDocumentId}, but that Document is not present. Active Work provenance cannot degrade to a bare id.`,
+        subject: workItemLink(entry),
+        related: { id: sourceDocumentId, label: sourceDocumentId, kind: "document" },
+        recommendedAction: "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action.",
+        correctiveWorkLabel: "Create corrective WorkItem",
+      });
+      return;
+    }
+    if (workIsActive && isArchived(sourceDocument)) {
+      findings.push({
+        id: `archived-source-document-work:${workId}`,
+        kind: "work_item_source_document_archived",
+        severity: "warning",
+        title: "WorkItem source Document is archived history",
+        detail: `${text(entry.title, workId)} is sourced from ${text(sourceDocument.title, sourceDocumentId)} (archived). The source stays readable and navigable for provenance but is no longer active company memory.`,
+        subject: workItemLink(entry),
+        related: (() => {
+          const archivedWorkSourceLink = documentLink(sourceDocument);
+          return archivedWorkSourceLink ? { ...archivedWorkSourceLink, meta: "archived" } : undefined;
+        })(),
+        recommendedAction: "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action.",
       });
     }
   });
@@ -628,6 +702,93 @@ function buildDocumentHealthData({
 }
 
 /**
+ * The single lifecycle predicate the default document tree applies.  It is stated
+ * as an exclusion, not an `active` allow-list: governed Documents legitimately stay
+ * `draft` because no draft -> active transition exists in the Docs command surface,
+ * so an active-only tree would render the operating hierarchy empty.
+ */
+const DEFAULT_TREE_FILTER = 'lifecycle_status != "archived"';
+
+function documentTitleOrder(left: JsonRecord, right: JsonRecord): number {
+  return text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" });
+}
+
+/**
+ * Builds a real document hierarchy from Document.parent_document_id.  Space is only
+ * the root grouping: a Document nests under its parent wherever that parent lives,
+ * including across spaces.  A Document whose parent is absent from `entries` — because
+ * it is missing, or because the caller's lifecycle filter removed it — anchors its own
+ * root instead of disappearing, and a parent cycle anchors rather than recursing.
+ */
+function buildDocumentSpaceTree(
+  entries: JsonRecord[],
+  options: { selectedDocumentId?: string; meta?: string; idPrefix?: string } = {},
+): CompanyOsWorkspaceTreeItem[] {
+  const prefix = options.idPrefix ?? "";
+  const byId = new Map<string, JsonRecord>();
+  entries.forEach((entry) => {
+    const id = text(entry.id);
+    if (id) byId.set(id, entry);
+  });
+
+  const isRoot = (entry: JsonRecord): boolean => {
+    let cursor = text(entry.parent_document_id);
+    if (!cursor) return true;
+    const seen = new Set([text(entry.id)]);
+    while (cursor) {
+      if (seen.has(cursor)) return true;
+      const parent = byId.get(cursor);
+      if (!parent) return true;
+      seen.add(cursor);
+      cursor = text(parent.parent_document_id);
+    }
+    return false;
+  };
+
+  const roots = entries.filter(isRoot);
+  const rootIds = new Set(roots.map((entry) => text(entry.id)));
+  const childrenByParent = new Map<string, JsonRecord[]>();
+  entries.forEach((entry) => {
+    if (rootIds.has(text(entry.id))) return;
+    const parentId = text(entry.parent_document_id);
+    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), entry]);
+  });
+
+  const node = (entry: JsonRecord): CompanyOsWorkspaceTreeItem => {
+    const documentId = text(entry.id);
+    const children = [...(childrenByParent.get(documentId) ?? [])].sort(documentTitleOrder).map(node);
+    return {
+      id: `${prefix}${documentId}`,
+      ref: documentId,
+      kind: "document",
+      label: text(entry.title, "Untitled document"),
+      href: docsDocumentHref(documentId),
+      selected: Boolean(documentId) && options.selectedDocumentId === documentId,
+      ...(options.meta ? { meta: options.meta } : {}),
+      ...(children.length ? { children } : {}),
+    };
+  };
+
+  const rootsBySpace = new Map<string, JsonRecord[]>();
+  roots.forEach((entry) => {
+    const space = text(entry.space, text(entry.space_id, "Unassigned"));
+    rootsBySpace.set(space, [...(rootsBySpace.get(space) ?? []), entry]);
+  });
+  return [...rootsBySpace]
+    .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
+    .map(([space, spaceRoots]) => {
+      const sorted = [...spaceRoots].sort(documentTitleOrder);
+      return {
+        id: `${prefix}space:${space}`,
+        kind: "space" as const,
+        label: space,
+        href: docsDocumentHref(text(sorted[0]?.id)),
+        children: sorted.map(node),
+      };
+    });
+}
+
+/**
  * Converts an arbitrary Company OS read projection into Docs presentation data.
  * It performs no store access, persistence, status inference, or fallback data
  * fabrication. Empty projections deliberately remain empty.
@@ -671,12 +832,15 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? firstReferenced(documents, focusRefs)
     ?? workspaceDocument
     ?? documents[0];
+  // An explicit selection that does not resolve is a not-found route, not a
+  // license to substitute another Document under the requested id.
+  const selectionMissed = Boolean(selected.documentId) && !explicitlySelectedDocument;
   const templateDocuments = documents.filter((entry) => text(entry.kind).toLowerCase() === "template");
   const templateLinks = templateDocuments.map((document) => templateOption(document, blocks));
   const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
     ?? firstReferenced(workItems, distinct([...focusRefs, ...moduleRefs]))
     ?? workItems[0];
-  const workSourceDocument = record(documents, work?.source_document_ref);
+  const workSourceDocument = record(allDocuments, work?.source_document_ref);
   const application = typedRecords.find((entry) => ["trademarkapplication", "trademark_application"].includes(text(entry.record_type).toLowerCase()))
     ?? typedRecords.find((entry) => text(entry.source_document_ref) === text(workSourceDocument?.id ?? workspaceDocument?.id))
     ?? firstReferenced(typedRecords, distinct([...workspaceRefs, ...focusRefs, ...moduleRefs]))
@@ -695,7 +859,12 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? firstReferenced(proposals, distinct([...workspaceRefs, ...moduleRefs]))
     ?? proposals[0];
 
-  const sourceLink = documentLink(workSourceDocument ?? workspaceDocument);
+  const sourceLinkBase = documentLink(workSourceDocument ?? workspaceDocument);
+  // An archived Work source stays visible and navigable as explicit archived
+  // history instead of silently falling back to another Document.
+  const sourceLink = sourceLinkBase && workSourceDocument && isArchived(workSourceDocument)
+    ? { ...sourceLinkBase, meta: "Archived history" }
+    : sourceLinkBase;
   const focusLink = documentLink(focusDocument);
   const applicationLink = application
     ? { id: text(application.id), label: text(field(application, "display_id"), text(application.display_name, text(application.title, "Untitled record"))), kind: "record" as const }
@@ -710,6 +879,43 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const selectedModuleLink = moduleLink(module);
   const focusDocumentId = text(focusDocument?.id);
   const focusParentDocument = record(allDocuments, focusDocument?.parent_document_id);
+  // Location, child, and backlink context derive only from real snapshot
+  // relations: Document.parent_document_id for the ancestor chain and scoped
+  // children, and snapshot Relations/reference_refs for backlinks. Missing
+  // relations yield absent lists, never fabricated ones.
+  const focusAncestorDocuments: JsonRecord[] = [];
+  {
+    const seen = new Set<string>([focusDocumentId]);
+    let cursor = focusParentDocument;
+    while (cursor) {
+      const cursorId = text(cursor.id);
+      if (!cursorId || seen.has(cursorId)) break;
+      seen.add(cursorId);
+      focusAncestorDocuments.unshift(cursor);
+      cursor = record(allDocuments, cursor.parent_document_id);
+    }
+  }
+  const focusSpaceLabel = focusDocument ? text(focusDocument.space, text(focusDocument.space_id)) : "";
+  const focusBreadcrumbLabels = focusDocument
+    ? [focusSpaceLabel, ...focusAncestorDocuments.map((entry) => text(entry.title, "Untitled document")), text(focusDocument.title, "Untitled document")].filter(Boolean)
+    : undefined;
+  const focusBreadcrumbLinks: CompanyOsLink[] = focusDocument
+    ? linkEntries([
+        ...focusAncestorDocuments.map(documentLink),
+        { id: focusDocumentId, label: text(focusDocument.title, "Untitled document"), kind: "document" as const },
+      ])
+    : [];
+  const focusChildDocuments = focusDocumentId
+    ? documents.filter((entry) => text(entry.parent_document_id) === focusDocumentId).sort(documentTitleOrder)
+    : [];
+  const focusBacklinkDocuments = focusDocumentId
+    ? allDocuments.filter((entry) => {
+        const entryId = text(entry.id);
+        if (!entryId || entryId === focusDocumentId) return false;
+        const references = entityRefs(entry.reference_refs).some((reference) => reference.kind === "document" && reference.id === focusDocumentId);
+        return references || hasRelationBetween(relations, entryId, focusDocumentId);
+      })
+    : [];
   const focusTypedRecords = focusDocumentId
     ? typedRecords.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
       || hasRelationBetween(relations, focusDocumentId, text(entry.id)))
@@ -729,7 +935,35 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     return [...subjectRefs, subjectId].some((id) => focusWorkItemIds.has(id) || focusFinancialRecordIds.has(id) || focusTypedRecordIds.has(id));
   });
   const focusSourceLinks = linkEntries([focusParentDocument && text(focusParentDocument.id) !== focusDocumentId ? documentLink(focusParentDocument) : undefined]);
+  const focusChildDocumentLinks = linkEntries(focusChildDocuments.map(documentLink));
+  const focusBacklinkLinks = linkEntries(focusBacklinkDocuments.map((entry) => {
+    const link = documentLink(entry);
+    return link && isArchived(entry) ? { ...link, meta: "Archived history" } : link;
+  }));
   const focusResultLinks = linkEntries(focusWorkItems.map(workItemLink));
+  // Related work is the deduplicated union of every canonical WorkItem -> Document
+  // reference, because no document -> work_item Relations exist in the ledger to read.
+  // A WorkItem appears once no matter how many refs point here, and carries the reasons
+  // it appears, so "why is this listed" never has to be guessed from the title.
+  const focusWorkRelations = focusDocumentId
+    ? workItems
+      .map((entry) => {
+        const reasons = [
+          text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId ? "Source document" : "",
+          contextRefIds(entry).includes(focusDocumentId) ? "Context reference" : "",
+          text(entry.result_document_ref, text(entry.result_document_id)) === focusDocumentId ? "Result document" : "",
+          focusTypedRecordIds.has(text(entry.business_record_ref, text(entry.source_record_ref))) ? "Linked record" : "",
+        ].filter(Boolean);
+        return { entry, reasons };
+      })
+      .filter((candidate) => candidate.reasons.length)
+      .filter((candidate, index, values) => values.findIndex((other) => text(other.entry.id) === text(candidate.entry.id)) === index)
+    : [];
+  const focusRelatedWorkLinks = linkEntries(focusWorkRelations.map(({ entry, reasons }) => {
+    const link = workItemLink(entry);
+    const workId = text(entry.id);
+    return link ? { ...link, href: workId ? `?surface=work&workItem=${encodeURIComponent(workId)}` : undefined, meta: reasons.join(" · ") } : undefined;
+  }));
   const focusConnectedRecordLinks = linkEntries([
     ...focusTypedRecords.map(typedRecordLink),
     ...focusApprovals.map((entry) => {
@@ -797,24 +1031,14 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const space = text(entry.space, text(entry.space_id, "Unassigned"));
     docsBySpace.set(space, [...(docsBySpace.get(space) ?? []), entry]);
   });
-  const workspaceTree: CompanyOsWorkspaceData["tree"] = [...docsBySpace].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })).map(([space, entries]) => {
-    const sortedEntries = [...entries].sort((left, right) => text(left.title, text(left.id)).localeCompare(text(right.title, text(right.id)), undefined, { numeric: true, sensitivity: "base" }));
-    return {
-      id: `space:${space}`,
-      label: space,
-      href: docsDocumentHref(text(sortedEntries[0]?.id)),
-      children: sortedEntries.map((entry) => {
-      const documentId = text(entry.id);
-      return {
-        id: documentId,
-        ref: documentId,
-        label: text(entry.title, "Untitled document"),
-        href: docsDocumentHref(documentId),
-        selected: selected.documentId === documentId,
-      };
-    }),
-    };
-  });
+  // The default tree is the real parent_document_id hierarchy under DEFAULT_TREE_FILTER;
+  // space contributes root grouping only, so a child never re-appears as a sibling of
+  // its own parent just because they share a space_id.
+  const workspaceTree: CompanyOsWorkspaceData["tree"] = buildDocumentSpaceTree(documents, { selectedDocumentId: selected.documentId });
+  // Track what the tree actually placed. A module can pass the navigability filter and
+  // still find no home — its space may contain no root Document once the hierarchy is
+  // real — and such a module must surface in the archive rather than silently vanish.
+  const placedModuleIds = new Set<string>();
   for (const candidate of modules) {
     const moduleId = text(candidate.id);
     const rootDocument = record(documents, candidate.root_document_ref ?? candidate.root_document_id);
@@ -822,8 +1046,37 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const moduleSpace = text(rootDocument?.space, text(rootDocument?.space_id, text(workspaceDocument?.space, text(workspaceDocument?.space_id))));
     const parent = workspaceTree.find((entry) => entry.label === moduleSpace) ?? (!rootDocument ? workspaceTree[0] : undefined);
     if (!moduleId || !parent) continue;
-    parent.children?.push({ id: moduleId, ref: moduleId, label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
+    parent.children?.push({ id: moduleId, ref: moduleId, kind: "module", label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
+    placedModuleIds.add(moduleId);
   }
+
+  // The archive is the exact complement of the default tree: every Document the
+  // `documents` predicate removed, plus every BusinessModule the tree did not place.
+  // Conservation is the invariant — a module appears in exactly one of the two views —
+  // so the withheld set is derived from what was placed, never from the filter alone.
+  const archivedDocuments = allDocuments.filter((entry) => isArchived(entry));
+  const withheldModules = allModules.filter((entry) => !placedModuleIds.has(text(entry.id)));
+  const withholdReason = (entry: JsonRecord): string => {
+    if (isArchived(entry)) return "Module is archived";
+    const rootRef = text(entry.root_document_ref, text(entry.root_document_id));
+    if (!rootRef) return "No root Document is declared";
+    const rootDocument = record(allDocuments, rootRef);
+    if (!rootDocument) return "Root Document is missing from this projection";
+    if (isArchived(rootDocument)) return "Root Document is archived";
+    return "No navigable space holds this module";
+  };
+  const workspaceArchive: CompanyOsWorkspaceArchive | undefined = allDocuments.length || allModules.length
+    ? {
+      defaultFilter: DEFAULT_TREE_FILTER,
+      tree: buildDocumentSpaceTree(archivedDocuments, { selectedDocumentId: selected.documentId, meta: "Archived", idPrefix: "archive:" }),
+      documentIds: archivedDocuments.map((entry) => text(entry.id)).filter(Boolean),
+      modules: linkEntries(withheldModules.map((entry) => {
+        const link = moduleLink(entry);
+        return link ? { ...link, meta: withholdReason(entry) } : undefined;
+      })),
+      countLabel: `${archivedDocuments.length} archived page${archivedDocuments.length === 1 ? "" : "s"}`,
+    }
+    : undefined;
 
   const documentProperties = [
     owner && { label: "Owner", value: `${owner.label} · ${owner.actorType}`, ref: owner.id, actorType: owner.actorType },
@@ -834,10 +1087,17 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ...explicitDocumentActors.filter((actor) => actor.id !== owner?.id && actor.id !== strategyPartner?.id).slice(0, 2).map((actor) => ({ label: "Participant", value: `${actor.label} · ${actor.actorType}`, ref: actor.id, actorType: actor.actorType })),
   ].filter(Boolean) as NonNullable<CompanyOsDocumentPageData["properties"]>;
   const storeDocumentBlocks = projectedDocumentBlocks(focusDocument, blocks);
+  // A Document that carries a block_ids array is describing its own Blocks, so an empty
+  // array is a Store assertion that it has none. Synthesizing narrative Blocks there
+  // would invent company memory under a real Document id. A projection that omits
+  // block_ids entirely is not making that assertion, and keeps the prototype narrative.
+  const declaresBlockIds = Array.isArray(focusDocument?.block_ids);
   const documentBlocks: CompanyOsDocumentPageData["blocks"] = storeDocumentBlocks.length
     ? storeDocumentBlocks
-    : focusDocument
-      ? [
+    : focusDocument && declaresBlockIds
+      ? []
+      : focusDocument
+        ? [
         { id: "what", type: "heading", content: "What this plan coordinates" },
         { id: "what-copy", type: "paragraph", content: `This page keeps ${text(focusDocument.title, "the selected document")} connected to its related operating records.` },
         { id: "why", type: "heading", content: "Why this context matters" },
@@ -880,8 +1140,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
           },
         }] : []),
         { id: "linked-work", type: "relations", label: "Linked records", links: linkEntries([workLink, applicationLink, approvalLink, financeLink]) },
-      ]
-      : [{ id: "empty", type: "paragraph", content: "No rich document blocks are supplied." }];
+        ]
+        : [{ id: "empty", type: "paragraph", content: "No rich document blocks are supplied." }];
   const documentActivity = [
     focusDocument?.updated_at && { id: `document:${text(focusDocument.id)}`, label: "Document updated", at: humanTimestamp(focusDocument.updated_at) },
     ...focusWorkItems.map((entry) => entry.updated_at && { id: `work:${text(entry.id)}`, label: "Linked work updated", detail: text(entry.title), at: humanTimestamp(entry.updated_at) }),
@@ -958,10 +1218,12 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     fixtureId,
     actors,
     documents,
+    sourceDocuments: allDocuments,
     blocks,
     typedRecords,
     relations,
     modules,
+    workItems,
     structureLinks,
     pageDefinitions,
   });
@@ -1133,6 +1395,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       description: documents.length ? "Documents, typed records, and connected operating context." : "No company documents are supplied by this projection.",
       rootSelected: true,
       tree: workspaceTree,
+      archive: workspaceArchive,
       spaces: [...docsBySpace].map(([space, entries]) => ({ id: `space:${space}`, name: space, href: docsDocumentHref(text(entries[0]?.id)), countLabel: `${entries.length} page${entries.length === 1 ? "" : "s"}` })),
       recentlyUpdated: linkEntries(documents.map(documentLink)),
       templates: templateLinks,
@@ -1151,11 +1414,27 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       proposal: proposalLink,
       authoringCommands: governanceCommands,
     },
-    document: {
+    document: selectionMissed ? {
+      fixtureId,
+      id: undefined,
+      title: "Document not found",
+      missingDocumentId: selected.documentId,
+      description: `No Document with id "${selected.documentId}" is present in this projection. The route stays explicit instead of substituting another Document under the requested id.`,
+      documentTree: workspaceTree,
+      properties: [],
+      blocks: [],
+      sourceLinks: [],
+      resultLinks: [],
+      connectedRecords: [],
+      activity: [],
+    } : {
       fixtureId,
       id: focusDocument ? text(focusDocument.id) : undefined,
       title: focusDocument ? text(focusDocument.title, "Untitled document") : "No document selected",
-      breadcrumb: focusDocument?.space || focusDocument?.space_id ? [text(focusDocument.space, text(focusDocument.space_id))] : undefined,
+      breadcrumb: focusBreadcrumbLabels,
+      breadcrumbs: focusBreadcrumbLinks.length ? focusBreadcrumbLinks : undefined,
+      childDocuments: focusChildDocumentLinks.length ? focusChildDocumentLinks : undefined,
+      backlinks: focusBacklinkLinks.length ? focusBacklinkLinks : undefined,
       lifecycleStatus: text(focusDocument?.lifecycle_status, text(field(focusDocument, "status"))) || undefined,
       description: focusDocument ? "This document is rendered from the supplied Company OS projection." : "Select a document or provide a document projection to begin.",
       documentTree: workspaceTree,
@@ -1163,6 +1442,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       blocks: documentBlocks,
       sourceLinks: documentSourceLinks,
       resultLinks: documentResultLinks,
+      relatedWork: focusRelatedWorkLinks,
       connectedRecords: documentConnectedRecords,
       activity: documentActivity,
       authoring: documentAuthoring,

@@ -51,6 +51,11 @@
     "body": { "type": "string" },
     "correlation_id": { "type": "string", "minLength": 1 },
     "causation_id": { "type": ["string", "null"], "minLength": 1 },
+    "response_intent": {
+      "type": "string",
+      "description": "Explicit response intent (ADR 0046 §4). Absent on historical rows, where the effective intent derives from kind AND sender: assignment/handoff/control always require a response round; ordinary message mail requires one when the sender is the coordination plane (host/operator/service) and stays informational when a peer member sent it. Informational mail never starts a provider round on its own and does not fence a same-correlation handoff.",
+      "enum": ["informational", "response_required"]
+    },
     "evidence_refs": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }

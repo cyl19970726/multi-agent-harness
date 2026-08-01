@@ -171,6 +171,51 @@ function asRef(id: unknown, label: unknown, detail?: unknown): RelatedLink {
   return { id: text(id), label: text(label, "Unresolved record"), detail: text(detail) || undefined };
 }
 
+function lifecycleOf(entry: JsonRecord | undefined): string {
+  return text(entry?.lifecycle_status, text(entry?.status)).toLowerCase();
+}
+
+/**
+ * Resolve a WorkItem source Document against the unfiltered projection. An
+ * archived source keeps its title as explicit archived history; a missing
+ * source (only possible for legacy or imported rows) says so instead of
+ * degrading to a bare id.
+ */
+function sourceDocumentRef(document: JsonRecord | undefined, fallbackId: unknown): RelatedLink {
+  const id = text(document?.id) || text(fallbackId);
+  if (!document) {
+    return { id, label: id || "Unresolved record", detail: undefined, lifecycle: "missing" };
+  }
+  const space = text(document.space ?? document.space_id);
+  const archived = lifecycleOf(document) === "archived";
+  return {
+    id,
+    label: text(document.title, id || "Unresolved record"),
+    detail: space || undefined,
+    lifecycle: archived ? "archived" : undefined,
+  };
+}
+
+/**
+ * Resolve one Organization maintained-document reference the same way: title
+ * plus lifecycle, never a bare id.
+ */
+function maintainedDocumentRef(document: JsonRecord | undefined, recordRef: string): RelatedLink {
+  if (!document) {
+    return { id: recordRef, label: recordRef, detail: "Maintained document missing", lifecycle: "missing" };
+  }
+  const space = text(document.space ?? document.space_id);
+  if (lifecycleOf(document) === "archived") {
+    return {
+      id: recordRef,
+      label: text(document.title, recordRef),
+      detail: ["Archived history", space].filter(Boolean).join(" · "),
+      lifecycle: "archived",
+    };
+  }
+  return { id: recordRef, label: text(document.title, recordRef), detail: space || "Maintained document" };
+}
+
 function humanizeEvidenceLabel(value: unknown): string {
   const raw = text(value);
   if (!raw) return "Evidence";
@@ -442,6 +487,12 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   };
 
   const documents = records(root.documents);
+  // Organization provenance: maintained-document references resolve to title
+  // plus lifecycle so archived history stays navigable instead of a bare id.
+  for (const summary of Object.values(actorById)) {
+    summary.maintainedDocuments = (summary.maintainedDocumentRefs ?? [])
+      .map((recordRef) => maintainedDocumentRef(find(documents, recordRef), recordRef));
+  }
   const typedRecords = records(root.typed_records);
   const hasWorkAggregate = Object.prototype.hasOwnProperty.call(root, "work");
   const workAggregateRecord = object(root.work);
@@ -551,7 +602,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const proposalRecord = pick(proposalRecords, "governance-proposal-trademark-management");
   const moduleRecord = pick(moduleRecords, "module-trademark-management");
   const metricRecord = pick(metrics, "metric-july-spend");
-  const source = asRef(sourceDocument.id, sourceDocument.title, sourceDocument.space ?? sourceDocument.space_id);
+  const source = sourceDocumentRef(sourceDocument.id ? sourceDocument : undefined, workRecord.source_document_ref);
   const evidenceIds = Array.isArray(workRecord.evidence_refs) ? workRecord.evidence_refs : [];
   const evidence = evidenceIds.map((id) => {
     const record = find(evidenceRecords, text(id));
@@ -593,7 +644,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
       contextRefs: relatedEntityLinks(record.context_refs),
       deliverableRefs: relatedEntityLinks(record.deliverable_refs),
       status: workStatus(record.status),
-      sourceDocument: asRef(recordSource?.id ?? record.source_document_ref, recordSource?.title ?? record.source_document_ref, recordSource?.space ?? recordSource?.space_id),
+      sourceDocument: sourceDocumentRef(recordSource, record.source_document_ref),
       requestedBy: optionalActor(record.requested_by_ref ?? record.requested_by),
       submittedBy: actor(record.submitted_by_ref ?? record.submitted_by),
       accountableOwner: actor(record.accountable_owner_ref ?? record.accountable_owner),

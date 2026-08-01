@@ -94,6 +94,56 @@
    ]
   },
   {
+   "path": "docs/agent-operating-rules.md",
+   "ownerRole": "lead-operations",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "operating detail behind the root AGENTS.md hard invariants",
+    "AGENTS.md slimming relocation map"
+   ],
+   "dependsOn": [
+    "AGENTS.md",
+    "docs/prd.md",
+    "docs/company-os/README.md",
+    "docs/concept-model.md",
+    "docs/operations.md",
+    "docs/multi-project.md",
+    "docs/member-continuation-model.md",
+    "docs/product/agent-team-dogfood-loop.md",
+    "docs/integration/native-session-storage.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0028-retire-goal-phase-task-graph.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0033-agent-team-workspace-contract.md",
+    "docs/decisions/0041-provider-neutral-member-continuation.md",
+    "docs/decisions/0042-company-store-execution-space-project-binding.md",
+    "skills/dogfood-company-os/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-26",
+   "lastVerifiedWith": [
+    "harness governance check",
+    "node scripts/check-native-session-boundary.mjs"
+   ],
+   "reorgTrigger": "Root AGENTS.md invariants change, operating detail is relocated again, or the relocation map no longer matches the root file structure.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0032-provider-native-session-is-execution-truth.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0042-company-store-execution-space-project-binding.md"
+    }
+   ]
+  },
+  {
    "path": "docs/README.md",
    "ownerRole": "knowledge",
    "status": "stable",
@@ -1574,6 +1624,54 @@
     {
      "kind": "runtime_evidence",
      "ref": "https://github.com/cyl19970726/multi-agent-harness/issues/274"
+    }
+   ]
+  },
+  {
+   "path": "docs/integration/provider-capacity.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "provider capacity and authentication preflight contract",
+    "provider capacity truth matrix",
+    "capacity versus adapter compatibility separation",
+    "capacity start guard and provider_unavailable"
+   ],
+   "dependsOn": [
+    "docs/agent-runtime.md",
+    "docs/integration/README.md",
+    "docs/integration/codex.md",
+    "docs/integration/claude.md",
+    "docs/integration/kimi.md",
+    "docs/dashboard/pages/member-run-focus.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-01",
+   "lastVerifiedWith": [
+    "cargo test --workspace",
+    "harness member preflight --json",
+    "harness governance check"
+   ],
+   "reorgTrigger": "A provider exposes or retires a reviewed capacity API, or the capacity start-guard rule changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "implemented",
+   "truthRefs": [
+    {
+     "kind": "schema",
+     "ref": "crates/harness-core/src/lib.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/provider_capacity_preflight.rs"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
     }
    ]
   },
@@ -4016,6 +4114,49 @@
    "truthRefs": []
   },
   {
+   "path": "docs/company-os/agentos-wave6-work-queue.md",
+   "ownerRole": "agentos-work-governance",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentOS Wave 6 WorkItem classification: covered/reconcile, genuine next, duplicate-obsolete, blocked",
+    "prioritized execution queue with owner roles, dependencies, and worktree collision boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/agentos-self-hosting-loop.md",
+    "docs/company-os/work-items-and-approvals.md",
+    "docs/operations.md",
+    "skills/dogfood-company-os/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-22",
+   "lastVerifiedWith": [
+    "harness company work list",
+    "harness company docs health",
+    "harness governance check"
+   ],
+   "reorgTrigger": "AgentOS WorkItems are closed, reclassified, or reprioritized; Wave 6 completes; or the dogfood execution roster or rolling-reconciliation rule changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "store",
+     "ref": "harness company work list (agent-company Company Store)"
+    },
+    {
+     "kind": "runtime_evidence",
+     "ref": "master commit 869a870 and merged PRs #273 #276 #278 #279 #291 #292 #296"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
+    }
+   ]
+  },
+  {
    "path": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
    "ownerRole": "product-architecture",
    "status": "stable",
@@ -4041,8 +4182,21 @@
    ],
    "reorgTrigger": "Supervising Operator, durable Lead, Runtime Supervisor, Standing Agent Inbox, or Company OS self-hosting semantics change.",
    "authorityClass": "canonical_contract",
-   "implementationState": "design_only",
-   "truthRefs": []
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "store",
+     "ref": "crates/harness-store/src/lib.rs"
+    },
+    {
+     "kind": "schema",
+     "ref": "schemas/team-message.schema.json"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/team_run_api.rs"
+    }
+   ]
   },
   {
    "path": "docs/company-os/scoped-authority-broker.md",

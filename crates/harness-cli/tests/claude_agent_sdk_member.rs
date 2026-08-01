@@ -68,18 +68,31 @@ fn init_project(home: &TempHome, name: &str) -> String {
     current_project_id(home)
 }
 
+/// Which turn shape the fake runner reproduces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FakeTurnShape {
+    /// A normal round with a structured member report.
+    Report,
+    /// A provider API failure the runner CAN classify: `isError: true` with a
+    /// terminal reason and HTTP status.
+    ClassifiedApiError,
+    /// A terminal provider failure the runner CANNOT classify: the turn simply
+    /// ends with no agent message at all.
+    SilentTurn,
+}
+
 /// Write a fake runner speaking the NDJSON protocol in
 /// `apps/claude-member-runner/src/protocol.mjs`.
 ///
 /// `follow_up_after_first_turn` makes it send one TeamMessage back into the
 /// ledger *after* reporting turn 1, which is the case the mode exists for.
-/// `api_error` makes every turn end in a provider API failure, shaped like the
-/// real SDK's error result (issue #293): subtype stays "success" while
-/// `isError` carries the truth.
+/// `shape` selects the turn outcome: a normal report, the classified SDK error
+/// result (issue #293 — subtype stays "success" while `isError` carries the
+/// truth), or a silent turn with no agent message at all.
 fn write_fake_runner(
     dir: &Path,
     follow_up_after_first_turn: bool,
-    api_error: bool,
+    shape: FakeTurnShape,
 ) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join("fake-runner.mjs");
@@ -88,7 +101,16 @@ fn write_fake_runner(
     } else {
         "false"
     };
-    let api_error = if api_error { "true" } else { "false" };
+    let api_error = if shape == FakeTurnShape::ClassifiedApiError {
+        "true"
+    } else {
+        "false"
+    };
+    let silent_turn = if shape == FakeTurnShape::SilentTurn {
+        "true"
+    } else {
+        "false"
+    };
     let script = format!(
         r#"
 import {{ spawnSync }} from "node:child_process";
@@ -96,6 +118,7 @@ import {{ createInterface }} from "node:readline";
 
 const FOLLOW_UP = {follow_up};
 const API_ERROR = {api_error};
+const SILENT_TURN = {silent_turn};
 let cfg = null;
 let turns = 0;
 let sentFollowUp = false;
@@ -135,6 +158,19 @@ for await (const line of rl) {{
       }});
       continue;
     }}
+    if (SILENT_TURN) {{
+      // No assistant_message at all: the provider ended the turn without an
+      // agent message and the runner has nothing to classify.
+      emit("turn_complete", {{
+        subtype: "success",
+        isError: false,
+        terminalReason: null,
+        apiErrorStatus: null,
+        triggerMessageId: payload.id,
+        evidenceRefs: [],
+      }});
+      continue;
+    }}
     emit("assistant_message", {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
@@ -158,6 +194,7 @@ for await (const line of rl) {{
         "--from", "host",
         "--to", cfg.memberRunId,
         "--kind", "message",
+        "--response-required",
         "--body", "late follow-up",
         "--correlation-id", payload.correlation_id,
         "--causation-id", payload.id,
@@ -221,7 +258,7 @@ fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
     let home = TempHome::new("agent-sdk-company-store-boundary");
     let project_id = init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), false, false);
+    let runner = write_fake_runner(&home.base().join("runner"), false, FakeTurnShape::Report);
 
     let company = run_harness(
         &home,
@@ -296,7 +333,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let home = TempHome::new("agent-sdk-late-message");
     init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), true, false);
+    let runner = write_fake_runner(&home.base().join("runner"), true, FakeTurnShape::Report);
 
     let run_id = create_run(&home, &root);
     // Grace wide enough that the fake's post-turn send lands inside it.
@@ -415,7 +452,11 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
     let home = TempHome::new("agent-sdk-provider-error");
     init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), false, true);
+    let runner = write_fake_runner(
+        &home.base().join("runner"),
+        false,
+        FakeTurnShape::ClassifiedApiError,
+    );
 
     let run_id = create_run(&home, &root);
     let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
@@ -480,11 +521,106 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
 }
 
 #[test]
+fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
+    // The unclassified half of the same defect: a terminal provider failure the
+    // runner cannot label ends the turn with NO agent message. `## RESULT`
+    // parsing reads empty text as `done`, so without a guard this published an
+    // empty Handoff and a `completed` action no member ever wrote.
+    let home = TempHome::new("agent-sdk-silent-turn");
+    init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let runner = write_fake_runner(
+        &home.base().join("runner"),
+        false,
+        FakeTurnShape::SilentTurn,
+    );
+
+    let run_id = create_run(&home, &root);
+    let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
+    assert!(out.status.success(), "start failed: {out:?}");
+
+    let status = run_harness(
+        &home,
+        &root,
+        &["team-run", "status", "--id", &run_id, "--json"],
+    );
+    assert!(status.status.success(), "status failed: {status:?}");
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status JSON");
+    let member_id = status_json["members"][0]["member_run"]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let detail = run_harness(
+        &home,
+        &root,
+        &["member-run", "show", "--id", &member_id, "--json"],
+    );
+    assert!(detail.status.success(), "show failed: {detail:?}");
+    let detail_json: serde_json::Value =
+        serde_json::from_slice(&detail.stdout).expect("member detail JSON");
+
+    // 1. No semantic completion and no fabricated handoff.
+    let actions = detail_json["actions"].as_array().expect("actions");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action["action_type"] != "completed"),
+        "a silent provider turn must not be recorded as completed: {detail_json}"
+    );
+    let provider_error = actions
+        .iter()
+        .find(|action| action["action_type"] == "provider_error")
+        .unwrap_or_else(|| panic!("no provider_error action: {detail_json}"));
+    assert_eq!(provider_error["status"], "failed");
+    assert!(
+        provider_error["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("empty_final_report"),
+        "the record names the silence honestly: {provider_error}"
+    );
+    let outbox = detail_json["mailbox"]["outbox"].as_array().expect("outbox");
+    assert!(
+        outbox.iter().all(|message| message["kind"] != "handoff"),
+        "silence is not a member handoff: {detail_json}"
+    );
+
+    // 2. Everything needed to resume instead of re-create is still on record.
+    let member_run = &detail_json["member_run"];
+    assert_eq!(member_run["status"], "idle");
+    assert_eq!(member_run["id"], serde_json::json!(member_id));
+    assert_eq!(member_run["team_run_id"], serde_json::json!(run_id));
+    assert_eq!(
+        member_run["native_session"]["native_session_id"],
+        serde_json::json!("fake-native-session-0001"),
+        "the resumable provider session must survive a terminal provider error"
+    );
+    assert_eq!(
+        member_run["native_session"]["supports_resume"],
+        serde_json::json!(true)
+    );
+    assert!(
+        member_run["workspace_snapshot"]["cwd"].is_string(),
+        "the Workspace must remain reconstructable: {member_run}"
+    );
+    // The Assignment and its correlation are still joinable from the member.
+    let assignment = &detail_json["assignment"];
+    assert_eq!(assignment["kind"], serde_json::json!("assignment"));
+    assert!(
+        assignment["correlation_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the Assignment correlation must remain reconstructable: {assignment}"
+    );
+}
+
+#[test]
 fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     let home = TempHome::new("agent-sdk-session-bind");
     init_project(&home, "proj");
     let root = home.base().join("proj");
-    let runner = write_fake_runner(&home.base().join("runner"), false, false);
+    let runner = write_fake_runner(&home.base().join("runner"), false, FakeTurnShape::Report);
 
     let run_id = create_run(&home, &root);
     let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);

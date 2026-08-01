@@ -676,6 +676,7 @@ fn mcp_stdio_agent_team_tools() {
             body: "QUESTION: choose interface A or B".to_string(),
             correlation_id: assignment_correlation.clone(),
             causation_id: Some(assignment_id.clone()),
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "host".to_string(),

@@ -59,6 +59,9 @@ async function main() {
   check(router.includes('<WorkOperatingPage source={resolved.value} />') && workOperatingPage.includes('data-work-operating-system="v1"'), "routes Work to the native multi-view operating workspace");
   check(["overview", "board", "all", "milestones", "timeline", "workload"].every((view) => workOperatingPage.includes(`id: "${view}"`)), "Work workspace exposes six projections over one WorkItem ledger");
   check(workOperatingPage.includes('useState<WorkView>("overview")') && workOperatingPage.includes("model.board.map") && !workOperatingPage.includes('const columns = ["submitted"'), "Work opens on overview and renders only Store aggregate board columns");
+  check(workOperatingPage.includes("data-work-view={activeView}") && workOperatingPage.includes("data-work-provenance={model.provenance}"), "Work exposes the active view and provenance as deterministic selectors on the default operating board");
+  check(workOperatingPage.includes("model.items.length === 0 ? <EmptyWork") && workOperatingPage.includes("No WorkItems in aggregate truth"), "the default Work landing renders an honest empty state before any view-specific content");
+  check(workOperatingPage.includes("<WorkIntegrity findings={model.integrity} />") && workOperatingPage.includes('role="alert"') && workOperatingPage.includes("data-work-integrity-count"), "projection integrity problems surface as an explicit Work error banner");
   check(workOperatingPage.includes('Object.prototype.hasOwnProperty.call(root, "work")') && workOperatingPage.includes("hasAggregate ? objects(projection.work_items)") && workOperatingPage.includes("hasAggregate ? objects(projection.milestones)"), "Work treats an explicit company_os.work aggregate as authoritative even when its lists are empty");
   check(['dimension("board")', "projectBusinessLineDimensions", 'dimension("work_types")', "objects(projection.workload)", "summaryValue"].every((contract) => workOperatingPage.includes(contract)), "Work consumes aggregate board, business-line, type, workload, and summary truth");
   const neutralAcceptanceStatuses = ["submitted", "in_progress", "in_review"];
@@ -105,6 +108,39 @@ async function main() {
   snapshotProjection.financial_records[0].display_amount = "¥4,200";
   const adapted = adapterModule.adaptTrademarkOperationsProjection(snapshotProjection);
   check(adapted.workItem.title === "Snapshot trademark filing" && adapted.commitment.amount === "¥4,200" && adapted.workItem.accountableOwner.name === "Snapshot Brand Owner", "adapter renders snapshot projection facts instead of static fixture values");
+  const archivedSourceOpsProjection = structuredClone(fixture);
+  archivedSourceOpsProjection.documents.find((entry) => entry.id === "document-trademark-application-cn-2026-018").lifecycle_status = "archived";
+  const archivedSourceOps = adapterModule.adaptTrademarkOperationsProjection(archivedSourceOpsProjection);
+  check(
+    archivedSourceOps.workItem.sourceDocument.lifecycle === "archived"
+      && archivedSourceOps.workItem.sourceDocument.id === "document-trademark-application-cn-2026-018"
+      && archivedSourceOps.workItem.sourceDocument.label === "Trademark application CN-2026-018",
+    "operations adapter resolves an archived Work source as explicit archived history with title",
+  );
+  const missingSourceOpsProjection = structuredClone(fixture);
+  missingSourceOpsProjection.work_items[0].source_document_ref = "document-pruned-away";
+  const missingSourceOps = adapterModule.adaptTrademarkOperationsProjection(missingSourceOpsProjection);
+  check(
+    missingSourceOps.workItem.sourceDocument.lifecycle === "missing"
+      && missingSourceOps.workItem.sourceDocument.id === "document-pruned-away"
+      && missingSourceOps.workItem.sourceDocument.label === "document-pruned-away",
+    "operations adapter marks a missing Work source instead of degrading to a bare id",
+  );
+  const maintainedOpsProjection = structuredClone(fixture);
+  maintainedOpsProjection.documents.find((entry) => entry.id === "document-brand-a-content-operating-plan").lifecycle_status = "archived";
+  maintainedOpsProjection.actors.find((actor) => actor.id === "actor-agent-content-strategy").maintained_document_refs = ["document-brand-a-content-operating-plan", "document-pruned-away"];
+  const maintainedOps = adapterModule.adaptTrademarkOperationsProjection(maintainedOpsProjection);
+  const maintainedLinks = maintainedOps.actors["actor-agent-content-strategy"].maintainedDocuments;
+  check(
+    maintainedLinks?.[0]?.label === "Brand A · Content operating plan"
+      && maintainedLinks[0].lifecycle === "archived"
+      && maintainedLinks[0].detail?.includes("Archived history")
+      && maintainedLinks[1]?.lifecycle === "missing"
+      && maintainedLinks[1]?.detail === "Maintained document missing",
+    "Organization maintained documents resolve to title plus lifecycle for archived history and missing records",
+  );
+  check(pages.includes("sourceDetail(") && fixtureAdapter.includes("maintainedDocumentRef") && types.includes('lifecycle?: "archived" | "missing"'), "operations pages render archived-source history markers from the resolved projection");
+  check(workOperatingPage.includes("data-work-source-lifecycle") && workOperatingPage.includes("archived history") && workOperatingPage.includes("documentHref"), "Work ledger links every source to its Document with explicit archived or missing lifecycle");
   const provenanceProjection = structuredClone(fixture);
   provenanceProjection.work_assignment_execution_chains = [{
     assignment_id: "assignment-provenance",

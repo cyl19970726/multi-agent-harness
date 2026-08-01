@@ -82,6 +82,7 @@ permission to upgrade Codex, Claude Code, or Kimi.
 | `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `ProviderExecutionControls` | requested versus effective model, reasoning effort, and service tier with native receipt status | provider capability inference or Organization authority |
+| `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
@@ -191,7 +192,7 @@ The harness owns delivery policy:
 
 | Member state | Message policy |
 | --- | --- |
-| `idle` | deliver next eligible message |
+| `idle` | deliver the next eligible response-required message and start a round; informational mail stays queued and batches into that round |
 | `running` | enqueue normal messages; allow explicit interrupt only by policy |
 | `waiting_for_input` | deliver clarification or decision messages |
 | `waiting_for_approval` | deliver approval decision or keep queued |
@@ -241,9 +242,13 @@ Crash recovery depends on the last durable boundary:
   ask the Member to inspect its native state/workspace and finish or restate
   the result without duplicating the Assignment.
 
-A Member cannot write a Handoff while newer same-correlation input is `queued`
-or `claimed`. This fence preserves the difference between a pre-correction
-result and the result that actually absorbed the Host's latest instruction.
+A Member cannot write a Handoff while newer same-correlation **response-required**
+input is `queued` or `claimed`. This fence preserves the difference between a
+pre-correction result and the result that actually absorbed the Host's latest
+instruction — an ordinary Host `message` is response-required by default, so a
+mid-round correction always fences. Informational mail (peer-to-peer
+acknowledgements) never starts a round, so fencing on it would deadlock the
+Handoff behind mail that is intentionally never driven; it does not fence.
 
 Closed, closing, or retired members cannot be revived by delivery. Explicit
 Reopen is the only transition from `closed` to `active`: it keeps the same

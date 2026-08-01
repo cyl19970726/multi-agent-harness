@@ -22,13 +22,15 @@ use harness_core::{
     MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
     OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
     PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
-    ProviderCapabilities, ProviderCompatibilityStatus, ProviderEventFidelity,
-    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMode, SenderKind, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef,
-    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave,
-    WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
+    ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
+    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
@@ -7958,10 +7960,23 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
     let documents = json_array(snapshot, "documents");
     let typed_records = json_array(snapshot, "typed_records");
     let relations = json_array(snapshot, "relations");
+    let work_items = json_array(snapshot, "work_items");
     let document_ids = documents
         .iter()
         .filter_map(|entry| json_str(entry, "id"))
         .collect::<BTreeSet<_>>();
+    let document_lifecycle = documents
+        .iter()
+        .filter_map(|entry| {
+            Some((
+                json_str(entry, "id")?,
+                (
+                    json_str(entry, "title").unwrap_or_default(),
+                    json_str(entry, "lifecycle_status").unwrap_or_else(|| "active".to_string()),
+                ),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut findings = Vec::new();
     for record in typed_records {
         let Some(record_id) = json_str(record, "id") else {
@@ -7987,14 +8002,72 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
                     "recommended_action": "Restore the source Document or migrate this record through a governed Docs action."
                 }));
             }
-            Some(document_id) if !json_has_relation_between(relations, &document_id, &record_id) => {
+            Some(document_id) => {
+                if let Some((title, lifecycle)) = document_lifecycle.get(&document_id) {
+                    if lifecycle == "archived" {
+                        findings.push(serde_json::json!({
+                            "id": format!("archived-source-document:{record_id}"),
+                            "kind": "typed_record_source_document_archived",
+                            "severity": "warning",
+                            "subject": {"kind": "typed_record", "id": record_id},
+                            "related": {
+                                "kind": "document", "id": document_id,
+                                "title": title,
+                                "lifecycle_status": "archived",
+                            },
+                            "recommended_action": "The source Document is explicit archived history; keep it read-only or route a successor source through a governed Docs action."
+                        }));
+                    }
+                }
+                if !json_has_relation_between(relations, &document_id, &record_id) {
+                    findings.push(serde_json::json!({
+                        "id": format!("missing-doc-record-relation:{record_id}"),
+                        "kind": "missing_document_record_relation",
+                        "severity": "warning",
+                        "subject": {"kind": "typed_record", "id": record_id},
+                        "related": {"kind": "document", "id": document_id},
+                        "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
+                    }));
+                }
+            }
+        }
+    }
+    // Work source provenance: a visible active WorkItem must resolve to an
+    // active Document or explicit archived-source history with title and
+    // lifecycle; a missing source is a critical integrity break.
+    for item in work_items {
+        let Some(work_id) = json_str(item, "id") else {
+            continue;
+        };
+        let status = json_str(item, "status").unwrap_or_default();
+        if status == "archived" {
+            continue;
+        }
+        let work_is_active = !matches!(status.as_str(), "completed" | "cancelled" | "draft");
+        let Some(document_id) = json_str(item, "source_document_ref") else {
+            continue;
+        };
+        match document_lifecycle.get(&document_id) {
+            None => findings.push(serde_json::json!({
+                "id": format!("missing-source-document-work:{work_id}"),
+                "kind": "work_item_source_document_missing",
+                "severity": "critical",
+                "subject": {"kind": "work_item", "id": work_id},
+                "related": {"kind": "document", "id": document_id},
+                "recommended_action": "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action."
+            })),
+            Some((title, lifecycle)) if lifecycle == "archived" && work_is_active => {
                 findings.push(serde_json::json!({
-                    "id": format!("missing-doc-record-relation:{record_id}"),
-                    "kind": "missing_document_record_relation",
+                    "id": format!("archived-source-document-work:{work_id}"),
+                    "kind": "work_item_source_document_archived",
                     "severity": "warning",
-                    "subject": {"kind": "typed_record", "id": record_id},
-                    "related": {"kind": "document", "id": document_id},
-                    "recommended_action": "Run harness company docs relation link or dispatch a governed relation.append Action."
+                    "subject": {"kind": "work_item", "id": work_id},
+                    "related": {
+                        "kind": "document", "id": document_id,
+                        "title": title,
+                        "lifecycle_status": "archived",
+                    },
+                    "recommended_action": "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action."
                 }));
             }
             Some(_) => {}
@@ -8629,8 +8702,11 @@ fn print_governance_report(report: &harness_governance::GovernanceReport, json: 
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member register|list|providers")?;
+    require_subcommand(args, "member register|list|providers|preflight")?;
     match args[0].as_str() {
+        // Runtime availability of each provider ACCOUNT, reported separately
+        // from adapter compatibility. See `member providers` for the latter.
+        "preflight" => member_preflight_command(&args[1..])?,
         "register" => {
             let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
             store.append_member(&member)?;
@@ -10200,6 +10276,1042 @@ fn team_member_provider_version_output(provider: &str) -> Result<String, String>
     )
 }
 
+// ---------------------------------------------------------------------------
+// Provider capacity preflight
+//
+// Capacity answers "can this account execute a turn right now"; it is NEVER
+// derived from `ProviderIntegrationProfile.compatibility_status`, which answers
+// "is this adapter reviewed against the installed provider version". Wave 2
+// proved the two are independent: a reviewed-`current` Claude adapter returned
+// 403 because the Harness process had no proxy, and a reviewed-`current` Kimi
+// adapter returned a quota 403.
+// ---------------------------------------------------------------------------
+
+/// Non-secret environment keys that decide whether a Claude request can leave
+/// this machine at all. Only presence is recorded; values are never copied
+/// except for proxy URLs, which are not credentials.
+const CLAUDE_RUNTIME_CONTEXT_KEYS: &[&str] = &[
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "ANTHROPIC_BASE_URL",
+];
+
+/// Keys that indicate a credential exists, without revealing it.
+const CLAUDE_CREDENTIAL_ENV_KEYS: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
+#[derive(Clone, Copy)]
+struct CapacityProbeOptions {
+    /// Issue a real, minimal provider request. Off by default because a canary
+    /// consumes real quota; auth metadata alone must never be sold as one.
+    canary: bool,
+    timeout: Duration,
+}
+
+impl Default for CapacityProbeOptions {
+    fn default() -> Self {
+        Self {
+            canary: false,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+fn capacity_now() -> (String, u64) {
+    let millis = current_unix_ms_u64();
+    (format!("unix-ms:{millis}"), millis)
+}
+
+/// Resolve the execution mode a capacity snapshot describes.
+///
+/// Capacity claims are mode-specific: `codex_exec` and `codex_app_server` are
+/// different products even though both are spelled "codex". Only the mode this
+/// preflight actually probes may be named, so a caller cannot ask for one mode
+/// and receive another mode's observation under its label.
+fn capacity_execution_mode(provider: &str, requested: Option<&str>) -> CliResult<String> {
+    let probed = team_member_provider_profile(provider).execution_mode;
+    match requested.map(str::trim).filter(|mode| !mode.is_empty()) {
+        Some(mode) if mode == probed => Ok(probed),
+        Some(mode) => Err(CliError::Usage(format!(
+            "capacity is observed for {provider}'s Agent Team mode `{probed}`, not `{mode}`; \
+             a snapshot must never label another mode's observation"
+        ))),
+        None => Ok(probed),
+    }
+}
+
+/// Read one Codex account's capacity through the reviewed app-server account
+/// RPCs. The client is torn down without ever opening a thread.
+fn codex_capacity_probe(
+    execution_mode: &str,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+) -> ProviderCapacitySnapshot {
+    let (observed_at, observed_unix_ms) = capacity_now();
+    match codex_app_server::CodexAppServerClient::connect(cwd, &[])
+        .and_then(|mut client| client.read_account_capacity(options.timeout))
+    {
+        Ok(read) => codex_app_server::codex_capacity_snapshot(
+            execution_mode,
+            &read,
+            &observed_at,
+            observed_unix_ms,
+        ),
+        Err(error) => ProviderCapacitySnapshot::unknown(
+            "codex",
+            execution_mode,
+            observed_at,
+            observed_unix_ms,
+            ProviderCapacityEvidence::ProbeFailed,
+            format!(
+                "codex app-server account read failed before returning a provider answer: {error}"
+            ),
+        ),
+    }
+}
+
+/// Observe the non-secret runtime facts that decide whether a Claude request
+/// can reach the API. This is what turns "403" into an actionable diagnosis.
+/// Reduce a proxy/base URL to the routing facts an operator needs, with any
+/// credential removed.
+///
+/// Corporate proxies are routinely `http://user:secret@host:8080`, and a
+/// gateway base URL can carry a token in its path or query. The durable ledger
+/// and CI logs must never receive either, so keep only scheme, host, and port.
+fn redact_url_to_origin(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, trimmed),
+    };
+    // Cut the authority FIRST (RFC 3986: it ends at the first `/`, `?`, or
+    // `#`), then strip userinfo INSIDE it. Searching the whole string for `@`
+    // would mis-parse `https://host/p?email=a@b.com` as host `b.com`, dropping
+    // the real origin and echoing part of the query.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let redacted_userinfo = authority.contains('@');
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .trim();
+    let origin = match scheme {
+        Some(scheme) if !host.is_empty() => format!("{scheme}://{host}"),
+        _ if !host.is_empty() => host.to_string(),
+        // An unparsable value is reported as present without content rather
+        // than echoed: presence is the fact, the value is not.
+        _ => return "set (value withheld)".to_string(),
+    };
+    if redacted_userinfo {
+        format!("{origin} (credentials redacted)")
+    } else {
+        origin
+    }
+}
+
+fn claude_runtime_context_facts() -> Vec<ProviderRuntimeContextFact> {
+    let mut facts: Vec<ProviderRuntimeContextFact> = CLAUDE_RUNTIME_CONTEXT_KEYS
+        .iter()
+        .map(|key| {
+            let value = std::env::var(key).ok().filter(|raw| !raw.trim().is_empty());
+            ProviderRuntimeContextFact {
+                key: (*key).to_string(),
+                present: value.is_some(),
+                // Routing only. A proxy URL can embed credentials, so it is
+                // reduced to its origin before it reaches the ledger.
+                note: Some(
+                    value
+                        .as_deref()
+                        .map(redact_url_to_origin)
+                        .unwrap_or_else(|| "absent".to_string()),
+                ),
+            }
+        })
+        .collect();
+    for key in CLAUDE_CREDENTIAL_ENV_KEYS {
+        facts.push(ProviderRuntimeContextFact {
+            key: (*key).to_string(),
+            present: std::env::var(key)
+                .ok()
+                .is_some_and(|raw| !raw.trim().is_empty()),
+            // Never record the value: presence is the only non-secret fact.
+            note: Some("value withheld".to_string()),
+        });
+    }
+    facts
+}
+
+fn claude_has_proxy_configured(facts: &[ProviderRuntimeContextFact]) -> bool {
+    facts.iter().any(|fact| {
+        fact.present
+            && matches!(
+                fact.key.as_str(),
+                "HTTPS_PROXY"
+                    | "https_proxy"
+                    | "HTTP_PROXY"
+                    | "http_proxy"
+                    | "ALL_PROXY"
+                    | "all_proxy"
+            )
+    })
+}
+
+/// Local credential metadata for Claude. `credentials.json` is only one of the
+/// stores Claude Code uses (the macOS Keychain is another), so its absence is
+/// NOT evidence of a missing credential and must never become `unauthorized`.
+fn claude_auth_metadata() -> (ProviderAccountRef, String) {
+    for key in CLAUDE_CREDENTIAL_ENV_KEYS {
+        if std::env::var(key)
+            .ok()
+            .is_some_and(|raw| !raw.trim().is_empty())
+        {
+            return (
+                ProviderAccountRef {
+                    source: "api_key_env".to_string(),
+                    identifier: Some((*key).to_string()),
+                    plan: None,
+                },
+                format!("{key} is set in the Harness process environment"),
+            );
+        }
+    }
+    let credentials = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".claude/.credentials.json"));
+    match credentials {
+        Some(path) if path.is_file() => (
+            ProviderAccountRef {
+                source: "oauth_credentials_file".to_string(),
+                identifier: Some(path.display().to_string()),
+                plan: None,
+            },
+            "a local Claude credential file exists".to_string(),
+        ),
+        _ => (
+            ProviderAccountRef::unknown(),
+            "no Claude credential was found in the process environment or the local credential \
+             file; Claude Code may still hold one in an OS keychain, so this is not evidence of a \
+             missing credential"
+                .to_string(),
+        ),
+    }
+}
+
+/// Explain a failed Claude canary using the observed runtime context.
+///
+/// The Wave 2 failure was NOT an account limit: `claude auth status` reported
+/// logged-in while the request returned 403, because the Harness process had no
+/// HTTP(S)_PROXY and this machine's direct egress to the API is blocked. The
+/// same request succeeded through the proxy.
+/// The single wording for a proxy-shaped Claude failure.
+///
+/// Shared by the live canary and by the recorded-failure merge so the two
+/// paths cannot drift into contradicting each other about the same 403.
+fn claude_missing_proxy_diagnosis() -> String {
+    "a real Claude request failed while the Harness process has no HTTP(S)_PROXY set. \
+     Live Wave 2 evidence: local auth metadata reported logged-in and the identical \
+     request succeeded once the proxy was exported, so treat this as missing proxy/runtime \
+     context rather than an account limit until the request is retried through the proxy."
+        .to_string()
+}
+
+fn claude_canary_diagnosis(
+    failure: &str,
+    facts: &[ProviderRuntimeContextFact],
+) -> (ProviderCapacityState, String) {
+    let lowered = failure.to_lowercase();
+    let auth_shaped = ["403", "401", "forbidden", "not allowed", "authenticate"]
+        .iter()
+        .any(|needle| lowered.contains(needle));
+    let network_shaped = [
+        "econnrefused",
+        "enotfound",
+        "etimedout",
+        "connect",
+        "network",
+        "tls",
+        "certificate",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle));
+    if !claude_has_proxy_configured(facts) && (auth_shaped || network_shaped) {
+        return (
+            // A blocked egress path is a runtime-context gap, not proof that
+            // the account is unauthorized. Reporting it as `unauthorized`
+            // would gate a healthy account behind a missing env var.
+            ProviderCapacityState::Unknown,
+            claude_missing_proxy_diagnosis(),
+        );
+    }
+    if auth_shaped {
+        return (
+            ProviderCapacityState::Unauthorized,
+            "a real Claude request was rejected as unauthorized while a proxy is configured, so \
+             the credential itself is the most likely cause"
+                .to_string(),
+        );
+    }
+    if ["429", "rate limit", "quota", "usage limit"]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+    {
+        return (
+            ProviderCapacityState::Exhausted,
+            "a real Claude request was rejected for exceeding a usage limit".to_string(),
+        );
+    }
+    (
+        ProviderCapacityState::Unknown,
+        "a real Claude request failed for a reason this adapter has not reviewed".to_string(),
+    )
+}
+
+/// Run one bounded, real Claude request.
+///
+/// This shares credentials and HTTP egress with the `claude_agent_sdk` Team
+/// mode but is NOT the SDK runtime; the snapshot says so explicitly rather than
+/// implying the Team runtime itself was exercised.
+fn claude_execution_canary(cwd: &Path, timeout: Duration) -> Result<String, String> {
+    let mut command = Command::new("claude");
+    command
+        .arg("-p")
+        .arg("Reply with exactly: HARNESS-CAPACITY-OK")
+        .arg("--output-format")
+        .arg("json")
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_provider_child_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn the Claude canary: {error}"))?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let mut guard = ProviderChildGuard::new(child);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match guard.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => return Err(format!("failed to inspect the Claude canary: {error}")),
+        }
+        if Instant::now() >= deadline {
+            // Dropping the guard kills the whole process group, so a wedged
+            // canary can never outlive the preflight.
+            return Err(format!(
+                "the Claude canary did not answer within {}s",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // Kill the whole isolated group BEFORE joining. `claude` can leave a
+    // grandchild (an MCP stdio server, a helper) holding the inherited stdout
+    // fd; without this the reader never sees EOF and `join()` blocks past the
+    // caller's timeout. This is the same failure the NDJSON worker path
+    // already documents.
+    kill_worker_tree(&mut guard);
+    guard.disarm();
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default().trim().to_string();
+    if !status.success() {
+        let detail = if stderr.is_empty() { &stdout } else { &stderr };
+        return Err(format!(
+            "claude canary exited {}: {}",
+            status,
+            detail.trim()
+        ));
+    }
+    // `claude -p --output-format json` reports API failures in-band: the
+    // process still exits 0 with `is_error: true`. Trusting the exit code here
+    // is exactly the "provider-down round looked completed" defect.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("claude canary returned unparsable JSON: {error}"))?;
+    if parsed.get("is_error").and_then(|value| value.as_bool()) == Some(true) {
+        return Err(parsed
+            .get("result")
+            .and_then(|value| value.as_str())
+            .unwrap_or("claude canary reported is_error without a result")
+            .to_string());
+    }
+    Ok(parsed
+        .get("result")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// Claude capacity. Anthropic does not permit third-party products to surface
+/// claude.ai rate limits without prior approval, so this NEVER reports a quota
+/// percentage. It reports the auth/runtime facts it can observe and, when a
+/// canary is requested, what a real request actually did.
+fn claude_capacity_probe(
+    execution_mode: &str,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+) -> ProviderCapacitySnapshot {
+    let (observed_at, observed_unix_ms) = capacity_now();
+    let runtime_context = claude_runtime_context_facts();
+    let (account, metadata_detail) = claude_auth_metadata();
+    let mut snapshot = ProviderCapacitySnapshot {
+        provider: "claude".to_string(),
+        execution_mode: execution_mode.to_string(),
+        account,
+        // Auth metadata proves a credential exists, never that a request would
+        // succeed. It must stay `unknown`.
+        state: ProviderCapacityState::Unknown,
+        observed_at,
+        observed_unix_ms,
+        reset_at: None,
+        evidence_source: ProviderCapacityEvidence::AuthMetadata,
+        confidence: ProviderCapacityConfidence::Unknown,
+        windows: Vec::new(),
+        diagnosis: None,
+        runtime_context,
+        detail: Some(format!(
+            "{metadata_detail}. Auth metadata cannot prove capacity; run the preflight with \
+             --canary for a real request. Claude rate limits are not surfaced."
+        )),
+    };
+    if !claude_has_proxy_configured(&snapshot.runtime_context) {
+        snapshot.diagnosis = Some(
+            "no HTTP(S)_PROXY is set in the Harness process. On a host whose direct egress to the \
+             Claude API is blocked this alone makes every member turn fail with 403 while local \
+             auth metadata still reports logged-in."
+                .to_string(),
+        );
+    }
+    if !options.canary {
+        return snapshot;
+    }
+    match claude_execution_canary(cwd, options.timeout) {
+        Ok(reply) => {
+            snapshot.state = ProviderCapacityState::Available;
+            snapshot.evidence_source = ProviderCapacityEvidence::ExecutionCanary;
+            snapshot.confidence = ProviderCapacityConfidence::Observed;
+            snapshot.diagnosis = None;
+            snapshot.detail = Some(format!(
+                "a real bounded `claude -p` request succeeded ({}). It shares credentials and HTTP \
+                 egress with claude_agent_sdk but is not the Agent SDK runtime itself. No rate \
+                 limit is reported.",
+                reply.trim().chars().take(40).collect::<String>()
+            ));
+        }
+        Err(failure) => {
+            let (state, diagnosis) = claude_canary_diagnosis(&failure, &snapshot.runtime_context);
+            snapshot.state = state;
+            snapshot.evidence_source = ProviderCapacityEvidence::ExecutionCanary;
+            snapshot.confidence = if state == ProviderCapacityState::Unknown {
+                ProviderCapacityConfidence::Unknown
+            } else {
+                ProviderCapacityConfidence::Inferred
+            };
+            snapshot.diagnosis = Some(diagnosis);
+            snapshot.detail = Some(format!(
+                "a real bounded `claude -p` request failed: {failure}"
+            ));
+        }
+    }
+    snapshot
+}
+
+/// Kimi capacity. The reviewed ACP surface for `kimi_acp` is `initialize`,
+/// `session/{new,resume,load,set_config_option,prompt,cancel,update,
+/// request_permission}`. None of them reports quota, so the only honest answer
+/// is `unknown` — never a synthesised percentage.
+///
+/// A terminal failure does not help either: ACP has no HTTP-status error
+/// channel, and a real Kimi failure is journalled as `action_type=error`, not
+/// as a structured `provider_error`. There is no source to promote, so this
+/// stays `unknown` in every case.
+fn kimi_capacity_probe(execution_mode: &str) -> ProviderCapacitySnapshot {
+    let (observed_at, observed_unix_ms) = capacity_now();
+    let mut snapshot = ProviderCapacitySnapshot::unknown(
+        "kimi",
+        execution_mode,
+        observed_at,
+        observed_unix_ms,
+        ProviderCapacityEvidence::NotExposed,
+        "the reviewed Kimi ACP surface exposes no account, quota, or rate-limit method, so no \
+         usage number can be reported. ACP also has no HTTP-status error channel, so a terminal \
+         failure cannot make capacity observable either; Kimi stays unknown until a reviewed \
+         quota or structured-error API exists.",
+    );
+    snapshot.account = ProviderAccountRef {
+        source: "kimi_code_local_login".to_string(),
+        identifier: None,
+        plan: None,
+    };
+    snapshot
+}
+
+/// Provider-neutral entry point. Unregistered providers are honestly unknown
+/// rather than inheriting another provider's answer.
+fn provider_capacity_probe(
+    provider: &str,
+    execution_mode: &str,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+) -> ProviderCapacitySnapshot {
+    match provider {
+        "codex" => codex_capacity_probe(execution_mode, cwd, options),
+        "claude" => claude_capacity_probe(execution_mode, cwd, options),
+        "kimi" => kimi_capacity_probe(execution_mode),
+        other => {
+            let (observed_at, observed_unix_ms) = capacity_now();
+            ProviderCapacitySnapshot::unknown(
+                other,
+                execution_mode,
+                observed_at,
+                observed_unix_ms,
+                ProviderCapacityEvidence::NotExposed,
+                "no capacity probe is registered for this provider",
+            )
+        }
+    }
+}
+
+/// A provider-STRUCTURED terminal failure: fields the provider transport
+/// itself reported, never prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderTerminalFailure {
+    /// The provider's own terminal reason token (for example `api_error`).
+    reason: String,
+    /// The provider's own HTTP status, when the transport reported one.
+    http_status: Option<i64>,
+}
+
+/// Prefix of the canonical token stored in `MemberAction.provider_status`.
+const PROVIDER_TERMINAL_STATUS_PREFIX: &str = "provider_terminal";
+
+impl ProviderTerminalFailure {
+    /// `provider_terminal:<reason>:<http status or ->`.
+    fn to_provider_status(&self) -> String {
+        let status = self
+            .http_status
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        format!(
+            "{PROVIDER_TERMINAL_STATUS_PREFIX}:{}:{status}",
+            self.reason.trim()
+        )
+    }
+
+    fn parse(provider_status: &str) -> Option<Self> {
+        let rest = provider_status.strip_prefix(PROVIDER_TERMINAL_STATUS_PREFIX)?;
+        // Split from the RIGHT: the status is the last field, so a reason that
+        // itself contains `:` stays intact.
+        let (reason, status) = rest.strip_prefix(':')?.rsplit_once(':')?;
+        Some(Self {
+            reason: reason.to_string(),
+            http_status: status.parse::<i64>().ok(),
+        })
+    }
+}
+
+/// Reasons a provider transport reports for a spent account.
+const PROVIDER_EXHAUSTED_REASONS: &[&str] = &[
+    "rate_limit",
+    "rate_limit_reached",
+    "usage_limit_reached",
+    "quota_exceeded",
+    "credits_depleted",
+];
+
+/// Reasons a provider transport reports for a rejected credential.
+const PROVIDER_UNAUTHORIZED_REASONS: &[&str] = &[
+    "auth_error",
+    "authentication_error",
+    "forbidden",
+    "unauthorized",
+];
+
+/// Classify a provider-STRUCTURED terminal failure into a capacity state.
+///
+/// Only the transport's own fields are read: an exact HTTP status integer and a
+/// closed reason vocabulary. Free text is never scanned, because the recorded
+/// summary also carries the MEMBER's own first line — a member writing "fixed
+/// the 403 handler" must not mark its account unauthorized — and because
+/// substring matching cannot tell `403` from `1403`. An unrecognised failure
+/// stays `None` rather than becoming a gate.
+fn capacity_state_from_provider_terminal(
+    failure: &ProviderTerminalFailure,
+) -> Option<(ProviderCapacityState, String)> {
+    let reason = failure.reason.trim().to_ascii_lowercase();
+    match failure.http_status {
+        Some(429) => {
+            return Some((
+                ProviderCapacityState::Exhausted,
+                "the provider transport reported HTTP 429".to_string(),
+            ))
+        }
+        Some(401) | Some(403) => {
+            return Some((
+                ProviderCapacityState::Unauthorized,
+                format!(
+                    "the provider transport reported HTTP {}",
+                    failure.http_status.unwrap_or_default()
+                ),
+            ))
+        }
+        _ => {}
+    }
+    if PROVIDER_EXHAUSTED_REASONS.contains(&reason.as_str()) {
+        return Some((
+            ProviderCapacityState::Exhausted,
+            format!("the provider transport reported terminal reason {reason}"),
+        ));
+    }
+    if PROVIDER_UNAUTHORIZED_REASONS.contains(&reason.as_str()) {
+        return Some((
+            ProviderCapacityState::Unauthorized,
+            format!("the provider transport reported terminal reason {reason}"),
+        ));
+    }
+    None
+}
+
+/// Staleness bound for a start-time capacity decision, overridable for tests.
+fn capacity_ttl_ms() -> u64 {
+    std::env::var("HARNESS_CAPACITY_TTL_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS)
+}
+
+/// The start guard is on by default. `HARNESS_CAPACITY_PREFLIGHT=off` disables
+/// only the probe; the honest-unknown semantics are unchanged, because a
+/// disabled probe simply produces no snapshot and no snapshot never blocks.
+fn capacity_preflight_enabled() -> bool {
+    !matches!(
+        std::env::var("HARNESS_CAPACITY_PREFLIGHT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "off" | "0" | "false" | "no"
+    )
+}
+
+/// Merge a recorded terminal failure INTO the current probe observation.
+///
+/// The probe knows things the recorded row cannot: which proxy variables exist
+/// in this process right now, and whether the account/source could be read.
+/// Replacing the probe wholesale threw that away and turned the exact Wave 2
+/// scenario — no `HTTP(S)_PROXY`, blocked egress, provider answers `403` —
+/// into `unauthorized`, gating a healthy account behind a missing env var.
+/// That is precisely the misdiagnosis this WorkItem exists to prevent, and it
+/// contradicted the canary path, which returns `unknown` for the same failure.
+///
+/// So: for a mode whose failure is known to be proxy-shaped, a missing proxy
+/// takes precedence over a recorded credential rejection. The recorded failure
+/// is preserved in `detail` — it is real evidence, just not a verdict.
+fn reconcile_recorded_capacity(
+    probe: ProviderCapacitySnapshot,
+    recorded: ProviderCapacitySnapshot,
+) -> ProviderCapacitySnapshot {
+    let proxy_shaped_mode = probe.execution_mode == "claude_agent_sdk";
+    let missing_proxy = !claude_has_proxy_configured(&probe.runtime_context);
+    let credential_shaped = recorded.state == ProviderCapacityState::Unauthorized;
+
+    if proxy_shaped_mode && missing_proxy && credential_shaped {
+        let recorded_detail = recorded
+            .detail
+            .clone()
+            .unwrap_or_else(|| "a recorded terminal failure rejected the credential".to_string());
+        return ProviderCapacitySnapshot {
+            // Keep the PROBE's state: unknown, so no start is gated.
+            state: ProviderCapacityState::Unknown,
+            confidence: ProviderCapacityConfidence::Unknown,
+            diagnosis: Some(claude_missing_proxy_diagnosis()),
+            detail: Some(format!(
+                "{recorded_detail}, but the Harness process has no HTTP(S)_PROXY, so the recorded \
+                 rejection is not attributed to the account until the request is retried through \
+                 a proxy"
+            )),
+            ..probe
+        };
+    }
+
+    // Otherwise the recorded state stands, but it inherits the probe's live
+    // runtime facts and account boundary instead of discarding them.
+    //
+    // The DIAGNOSIS is not inherited when the recorded state is known
+    // unavailable. The probe's diagnosis is about reachability — it is set
+    // whenever no proxy is configured — and a spent quota is not caused by a
+    // missing proxy. Letting a recorded 429 inherit it would block correctly as
+    // `exhausted` while telling the operator to go fix their proxy, sending
+    // them after the wrong cause. The runtime facts still travel in
+    // `runtime_context`, where they are evidence rather than causation.
+    let diagnosis = match recorded.diagnosis {
+        Some(diagnosis) => Some(diagnosis),
+        None if recorded.state.is_known_unavailable() => None,
+        None => probe.diagnosis,
+    };
+    ProviderCapacitySnapshot {
+        account: if recorded.account.source == "unknown" {
+            probe.account
+        } else {
+            recorded.account
+        },
+        runtime_context: if recorded.runtime_context.is_empty() {
+            probe.runtime_context
+        } else {
+            recorded.runtime_context
+        },
+        diagnosis,
+        ..recorded
+    }
+}
+
+/// Derive a capacity snapshot from the STRUCTURED terminal failures this
+/// member already recorded.
+///
+/// Only an execution mode whose transport reports structured terminal metadata
+/// can produce one of these. Today that is `claude_agent_sdk`
+/// (`terminal_reason` + `api_error_status`). Kimi ACP surfaces a 403 as
+/// free-form JSON-RPC error text with no status field, and Codex app-server
+/// errors arrive as adapter strings; neither is classified, so neither
+/// fabricates a capacity verdict. Only failures newer than the TTL count, so a
+/// recovered account is not gated by yesterday's 403.
+fn capacity_from_recorded_provider_errors(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    execution_mode: &str,
+    now_unix_ms: u64,
+    ttl_ms: u64,
+) -> CliResult<Option<ProviderCapacitySnapshot>> {
+    let actions = ledger.store.member_actions()?;
+    Ok(capacity_from_provider_error_actions(
+        &actions,
+        &member.id,
+        &member.provider,
+        execution_mode,
+        now_unix_ms,
+        ttl_ms,
+    ))
+}
+
+/// Pure selection half of [`capacity_from_recorded_provider_errors`]: the
+/// newest CLASSIFIABLE structured failure for this member inside the TTL.
+///
+/// The search walks backwards and keeps going past rows it cannot classify —
+/// silent-round rows carry no structured metadata at all, and one of them
+/// sitting on top must never bury a real 403 recorded moments earlier.
+fn capacity_from_provider_error_actions(
+    actions: &[MemberAction],
+    member_run_id: &str,
+    provider: &str,
+    execution_mode: &str,
+    now_unix_ms: u64,
+    ttl_ms: u64,
+) -> Option<ProviderCapacitySnapshot> {
+    let (action, (state, detail)) = actions
+        .iter()
+        .rev()
+        .filter(|action| {
+            action.member_run_id == member_run_id
+                && action.action_type == "provider_error"
+                && parse_unix_ms_timestamp(&action.started_at)
+                    .is_some_and(|stamp| stamp <= now_unix_ms && now_unix_ms - stamp <= ttl_ms)
+        })
+        .find_map(|action| {
+            // Structured transport metadata ONLY. `summary` also carries the
+            // member's own first line and must never reach a classifier.
+            let failure = ProviderTerminalFailure::parse(action.provider_status.as_deref()?)?;
+            capacity_state_from_provider_terminal(&failure).map(|classified| (action, classified))
+        })?;
+    let observed_unix_ms = parse_unix_ms_timestamp(&action.started_at).unwrap_or(now_unix_ms);
+    Some(ProviderCapacitySnapshot {
+        provider: provider.to_string(),
+        execution_mode: execution_mode.to_string(),
+        account: ProviderAccountRef::unknown(),
+        state,
+        observed_at: action.started_at.clone(),
+        observed_unix_ms,
+        reset_at: None,
+        evidence_source: ProviderCapacityEvidence::ProviderError,
+        confidence: ProviderCapacityConfidence::Observed,
+        windows: Vec::new(),
+        diagnosis: None,
+        runtime_context: Vec::new(),
+        detail: Some(format!("{detail}: {}", action.summary)),
+    })
+}
+
+fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
+    harness_core::parse_harness_unix_ms(raw)
+}
+
+/// Observe this member's provider capacity and decide whether it may start.
+///
+/// Returns `Some(outcome)` when the member must NOT proceed. The caller runs
+/// this BEFORE the adapter claims its Assignment, so a blocked member leaves
+/// its queued Assignment untouched and re-deliverable.
+fn provider_capacity_start_gate(
+    ledger: &TeamRunLedger,
+    member: &mut MemberRun,
+    cwd: &Path,
+) -> CliResult<Option<MemberOutcome>> {
+    if !capacity_preflight_enabled() {
+        return Ok(None);
+    }
+    // A member pinned to a mode this preflight does not probe is simply not
+    // gated: no observation is honest here, and no observation never blocks.
+    let Ok(execution_mode) = capacity_execution_mode(
+        &member.provider,
+        member
+            .provider_profile
+            .as_ref()
+            .map(|profile| profile.execution_mode.as_str()),
+    ) else {
+        return Ok(None);
+    };
+    let mut snapshot = provider_capacity_probe(
+        &member.provider,
+        &execution_mode,
+        cwd,
+        CapacityProbeOptions::default(),
+    );
+    let ttl_ms = capacity_ttl_ms();
+    let now_unix_ms = current_unix_ms_u64();
+    // A live provider answer wins. Recorded terminal errors are consulted only
+    // when the probe itself could not observe a state, and they are MERGED into
+    // the probe rather than replacing it.
+    if snapshot.state == ProviderCapacityState::Unknown {
+        if let Some(recorded) = capacity_from_recorded_provider_errors(
+            ledger,
+            member,
+            &execution_mode,
+            now_unix_ms,
+            ttl_ms,
+        )? {
+            snapshot = reconcile_recorded_capacity(snapshot, recorded);
+        }
+    }
+    let decision =
+        harness_core::provider_capacity_start_decision(Some(&snapshot), now_unix_ms, ttl_ms);
+    member.provider_capacity = Some(snapshot.clone());
+    member.last_event_at = Some(now_string());
+    if !decision.is_blocked() {
+        ledger.save_member_run(member)?;
+        return Ok(None);
+    }
+    // Blocked: record provider_unavailable and stop. Nothing above this point
+    // claimed, delivered, or consumed a TeamMessage.
+    //
+    // Every write below is BEST EFFORT and this function still returns the
+    // blocking outcome. A `?` here would turn a journal failure into `Err`,
+    // and the caller treats `Err` as "carry on" — so a store hiccup would let
+    // the member start on the exhausted account this gate just refused. The
+    // decision is the product fact; the journal is its record, not its gate.
+    member.status = MemberRunStatus::Blocked;
+    let summary = format!(
+        "{} (evidence {:?}, confidence {:?}){}",
+        decision.reason(),
+        snapshot.evidence_source,
+        snapshot.confidence,
+        snapshot
+            .diagnosis
+            .as_ref()
+            .map(|diagnosis| format!("; {diagnosis}"))
+            .unwrap_or_default()
+    );
+    let mut journal_errors = Vec::new();
+    if let Err(error) = ledger.save_member_run(member) {
+        journal_errors.push(error.to_string());
+    }
+    let state_label = serde_json::to_value(snapshot.state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    match ledger.append_action(
+        &member.id,
+        "provider_unavailable",
+        MemberActionStatus::Failed,
+        "provider capacity preflight blocked start",
+        &summary,
+    ) {
+        Ok(action) => {
+            if let Err(error) = ledger.fold_event(
+                TeamRunEventSourceKind::Host,
+                Some(member.id.clone()),
+                "action",
+                &action.id,
+                "created",
+                &format!(
+                    "{} not started: provider_unavailable ({state_label})",
+                    member.name
+                ),
+            ) {
+                journal_errors.push(error.to_string());
+            }
+        }
+        Err(error) => journal_errors.push(error.to_string()),
+    }
+    if let Err(error) = ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "provider_unavailable",
+        &summary,
+    ) {
+        journal_errors.push(error.to_string());
+    }
+    let summary = if journal_errors.is_empty() {
+        summary
+    } else {
+        format!(
+            "{summary}; the block is authoritative but {} journal write(s) failed: {}",
+            journal_errors.len(),
+            journal_errors.join("; ")
+        )
+    };
+    Ok(Some(MemberOutcome::new(
+        member,
+        MemberRunStatus::Blocked,
+        summary,
+    )))
+}
+
+/// One provider row of `harness member preflight`.
+///
+/// `capacity` and `compatibility` are deliberately SIBLINGS, never merged: a
+/// reviewed-current adapter with an exhausted account is a normal, expressible
+/// state and the Dashboard must be able to show both.
+fn provider_preflight_row(
+    provider: &str,
+    requested_mode: Option<&str>,
+    cwd: &Path,
+    options: CapacityProbeOptions,
+    ttl_ms: u64,
+) -> CliResult<serde_json::Value> {
+    let execution_mode = capacity_execution_mode(provider, requested_mode)?;
+    let mut profile = team_member_provider_profile_for_mode(provider, Some(&execution_mode));
+    let detected = team_member_provider_version_output(provider);
+    apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
+    let capacity = provider_capacity_probe(provider, &execution_mode, cwd, options);
+    // Read the clock AFTER the probe: a probe that takes seconds must not make
+    // its own answer look future-dated, which would report it as stale.
+    let now_unix_ms = current_unix_ms_u64();
+    let decision =
+        harness_core::provider_capacity_start_decision(Some(&capacity), now_unix_ms, ttl_ms);
+    Ok(serde_json::json!({
+        "provider": provider,
+        "execution_mode": execution_mode,
+        "capacity": capacity,
+        "capacity_freshness": capacity.freshness(now_unix_ms, ttl_ms),
+        "start_decision": decision,
+        "compatibility": {
+            "status": profile.compatibility_status,
+            "provider_version": profile.provider_version,
+            "reviewed_provider_versions": profile.reviewed_provider_versions,
+            "adapter_contract_version": profile.adapter_contract_version,
+            "version_probe_error": detected.err(),
+        },
+    }))
+}
+
+fn member_preflight_command(args: &[String]) -> CliResult<()> {
+    let providers = {
+        let requested = many(args, "--provider");
+        if requested.is_empty() {
+            provider_registry()
+                .iter()
+                .map(|adapter| adapter.name().to_string())
+                .collect::<Vec<_>>()
+        } else {
+            requested
+        }
+    };
+    let requested_mode = value(args, "--execution-mode");
+    let options = CapacityProbeOptions {
+        canary: has_flag(args, "--canary"),
+        timeout: Duration::from_secs(
+            value(args, "--timeout-s")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(30),
+        ),
+    };
+    let cwd = std::env::current_dir().map_err(|error| {
+        CliError::Usage(format!("failed to resolve current directory: {error}"))
+    })?;
+    let ttl_ms = capacity_ttl_ms();
+    let rows = providers
+        .iter()
+        .map(|provider| {
+            provider_preflight_row(provider, requested_mode.as_deref(), &cwd, options, ttl_ms)
+        })
+        .collect::<CliResult<Vec<_>>>()?;
+    let blocked = rows
+        .iter()
+        .filter(|row| row.pointer("/start_decision/decision") == Some(&serde_json::json!("block")))
+        .count();
+    if has_flag(args, "--json") {
+        print_json(&serde_json::json!({
+            "command": "harness member preflight",
+            "ok": true,
+            "result": {
+                "generated_at": now_string(),
+                "ttl_ms": ttl_ms,
+                "canary": options.canary,
+                "cwd": cwd,
+                "providers": rows,
+            },
+        }))?;
+    } else {
+        // One line per provider. Capacity and compatibility stay in separate
+        // columns here too, so the operator never reads one as the other.
+        for row in &rows {
+            let text = |pointer: &str| {
+                row.pointer(pointer)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            };
+            println!(
+                "{}\t{}\tcapacity={} ({}, {})\tstart={}\tcompatibility={}",
+                text("/provider"),
+                text("/execution_mode"),
+                text("/capacity/state"),
+                text("/capacity/evidence_source"),
+                text("/capacity_freshness"),
+                text("/start_decision/decision"),
+                text("/compatibility/status"),
+            );
+        }
+    }
+    if has_flag(args, "--fail-on-unavailable") && blocked > 0 {
+        return Err(CliError::Usage(format!(
+            "{blocked} provider(s) reported a fresh known-unavailable capacity state; inspect the JSON report"
+        )));
+    }
+    Ok(())
+}
+
 /// Parse one `--member name:role:provider[/mode][:model][@path1,path2][#brief]` spec.
 ///
 /// The brief is split off FIRST and is free text: it may contain `@` and `:`,
@@ -10416,6 +11528,9 @@ fn build_member_run_for_team(
             member.service_tier.clone(),
         ),
         provider_profile: Some(profile),
+        // Capacity is observed at start, never assumed at creation. An absent
+        // snapshot is honestly unknown, not available.
+        provider_capacity: None,
         coordination_status: MemberCoordinationStatus::Active,
         runtime_generation: 1,
         status: MemberRunStatus::Idle,
@@ -10658,6 +11773,7 @@ fn create_team_run(
             body: member_assignment_body(member, member_run, objective),
             correlation_id: generated_id("corr"),
             causation_id: None,
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![queued_team_delivery(&member_run.id)],
             created_at: now_string(),
@@ -10807,6 +11923,7 @@ fn add_team_run_member(
         None,
         None,
         origin_wave_id,
+        None,
     )?;
     Ok((next, member_run, message))
 }
@@ -11101,6 +12218,7 @@ fn send_team_message(
     correlation_id: Option<String>,
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
+    response_intent: Option<TeamMessageResponseIntent>,
 ) -> CliResult<TeamMessage> {
     send_team_message_as(
         store,
@@ -11119,6 +12237,7 @@ fn send_team_message(
         correlation_id,
         causation_id,
         origin_wave_id,
+        response_intent,
     )
 }
 
@@ -11133,6 +12252,7 @@ fn send_team_message_as(
     correlation_id: Option<String>,
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
+    response_intent: Option<TeamMessageResponseIntent>,
 ) -> CliResult<TeamMessage> {
     let message = prepare_team_message_as(
         store,
@@ -11145,6 +12265,7 @@ fn send_team_message_as(
         causation_id,
         origin_wave_id,
         TeamMessageDeliveryMode::Routed,
+        response_intent,
     )?;
     publish_team_message(store, &sender, message)
 }
@@ -11161,6 +12282,7 @@ fn prepare_team_message_as(
     causation_id: Option<String>,
     origin_wave_id: Option<String>,
     delivery_mode: TeamMessageDeliveryMode,
+    response_intent: Option<TeamMessageResponseIntent>,
 ) -> CliResult<TeamMessage> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
@@ -11311,6 +12433,7 @@ fn prepare_team_message_as(
         body: body.to_string(),
         correlation_id,
         causation_id,
+        response_intent,
         evidence_refs: Vec::new(),
         deliveries: to_member_ids
             .iter()
@@ -11502,6 +12625,9 @@ fn route_agent_inbox_messages(
             body: source.content.clone(),
             correlation_id,
             causation_id: None,
+            // Kind-derived intent: routed Assignments require a response
+            // round; routed ordinary mail stays informational.
+            response_intent: None,
             evidence_refs: source
                 .evidence_ids
                 .iter()
@@ -11945,6 +13071,17 @@ fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
         )));
     }
     Ok(kind)
+}
+
+/// Parse an explicit team message response intent from its snake_case wire
+/// name (HTTP API and MCP tool surface; the CLI spells the same two values as
+/// --response-required and --informational).
+fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseIntent> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown team message response intent `{s}` (informational|response_required)"
+        ))
+    })
 }
 
 fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
@@ -12481,6 +13618,25 @@ fn team_run_command(
             let from = required(args, "--from")?;
             let kind = parse_team_message_kind(&required(args, "--kind")?)?;
             let body = required(args, "--body")?;
+            // Explicit response intent (ADR 0046 §4). The default is
+            // sender-aware: coordination-plane `message` mail wakes an idle
+            // member, peer-to-peer `message` mail stays informational. Both
+            // overrides exist so either default can be reversed explicitly,
+            // matching the HTTP/MCP `response_intent` field.
+            let response_intent = match (
+                has_flag(args, "--response-required"),
+                has_flag(args, "--informational"),
+            ) {
+                (true, true) => {
+                    return Err(CliError::Usage(
+                        "--response-required and --informational are mutually exclusive"
+                            .to_string(),
+                    ))
+                }
+                (true, false) => Some(TeamMessageResponseIntent::ResponseRequired),
+                (false, true) => Some(TeamMessageResponseIntent::Informational),
+                (false, false) => None,
+            };
             let message = if let Some(actor_kind) = value(args, "--actor-kind") {
                 send_team_message_as(
                     store,
@@ -12497,6 +13653,7 @@ fn team_run_command(
                     value(args, "--correlation-id"),
                     value(args, "--causation-id"),
                     value(args, "--origin-wave-id"),
+                    response_intent,
                 )?
             } else {
                 // Compatibility path for existing Host/member scripts. New
@@ -12511,6 +13668,7 @@ fn team_run_command(
                     value(args, "--correlation-id"),
                     value(args, "--causation-id"),
                     value(args, "--origin-wave-id"),
+                    response_intent,
                 )?
             };
             if json {
@@ -12534,8 +13692,13 @@ fn team_run_command(
                         .map(|profile| serde_snake_label(&profile.ordinary_message_boundary))
                         .unwrap_or_else(|| "unknown".to_string());
                     if boundary == "next_round_batched" {
+                        let pending = if message.requires_response() {
+                            "provider receipt pending until the next safe provider round"
+                        } else {
+                            "informational mail: batched into the next response-required provider round"
+                        };
                         eprintln!(
-                            "delivery durable only: {} queued for {} ({}); provider receipt pending until the next safe provider round",
+                            "delivery durable only: {} queued for {} ({}); {pending}",
                             message.id, member.name, boundary
                         );
                     }
@@ -13850,6 +15013,28 @@ impl TeamRunLedger {
         title: &str,
         summary: &str,
     ) -> CliResult<MemberAction> {
+        self.append_action_with_provider_status(
+            member_run_id,
+            action_type,
+            status,
+            title,
+            summary,
+            None,
+        )
+    }
+
+    /// `provider_status` carries the transport's OWN terminal metadata in a
+    /// machine-readable token. It is the only field a capacity classifier may
+    /// read: `summary` is prose and also contains the member's own text.
+    fn append_action_with_provider_status(
+        &self,
+        member_run_id: &str,
+        action_type: &str,
+        status: MemberActionStatus,
+        title: &str,
+        summary: &str,
+        provider_status: Option<String>,
+    ) -> CliResult<MemberAction> {
         let _guard = self.write_lock();
         let seq = self
             .store
@@ -13874,7 +15059,7 @@ impl TeamRunLedger {
             provider_call_id: None,
             action_type: action_type.to_string(),
             status,
-            provider_status: None,
+            provider_status,
             semantic_status: None,
             title: title.to_string(),
             summary: summary.to_string(),
@@ -13930,9 +15115,11 @@ impl TeamRunLedger {
             .collect())
     }
 
-    /// Inbound mail that the provider has not accepted yet. `claimed` remains
-    /// uncertain until a provider receipt or explicit reconciliation, so it
-    /// fences semantic Handoff just like `queued`.
+    /// Inbound response-required mail that the provider has not accepted yet.
+    /// `claimed` remains uncertain until a provider receipt or explicit
+    /// reconciliation, so it fences semantic Handoff just like `queued`.
+    /// Informational mail never starts a round on its own, so it does not
+    /// fence either (ADR 0046 §4).
     fn pending_messages_for_correlation(
         &self,
         member_id: &str,
@@ -13944,6 +15131,7 @@ impl TeamRunLedger {
             .filter(|message| {
                 message.from_member_id != member_id
                     && message.correlation_id == correlation_id
+                    && message.requires_response()
                     && message.deliveries.iter().any(|delivery| {
                         delivery.member_id == member_id
                             && matches!(
@@ -13976,6 +15164,26 @@ impl TeamRunLedger {
 
     fn claim_queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
         let queued = self.queued_messages_for(member_id)?;
+        let mut claimed = Vec::with_capacity(queued.len());
+        for message in queued {
+            if let Some(message) = self.claim_message(&message.id, member_id)? {
+                claimed.push(message);
+            }
+        }
+        Ok(claimed)
+    }
+
+    /// Claim queued mail for an idle member only when at least one queued
+    /// message requires a response round (ADR 0046 §4). When a round is
+    /// triggered, every queued message — including informational mail — is
+    /// claimed in order so the whole batch is delivered exactly once with
+    /// that round's provider receipt. Informational-only mail stays queued
+    /// and durable without starting a round, which bounds peer convergence.
+    fn claim_round_triggering_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+        let queued = self.queued_messages_for(member_id)?;
+        if !queued.iter().any(TeamMessage::requires_response) {
+            return Ok(Vec::new());
+        }
         let mut claimed = Vec::with_capacity(queued.len());
         for message in queued {
             if let Some(message) = self.claim_message(&message.id, member_id)? {
@@ -14120,7 +15328,12 @@ fn wait_for_idle_member_wake(
                 route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
             }
         }
-        let claimed = ledger.claim_queued_messages_for(&member_row.id)?;
+        // Response-intent gate (ADR 0046 §4): informational or
+        // acknowledgement-only mail stays durable and queued but never wakes
+        // an idle member into a new provider round. When response-required
+        // mail triggers a round, the whole queued batch is claimed so every
+        // message is delivered exactly once with that round's receipt.
+        let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
         if !claimed.is_empty() {
             member_row.status = MemberRunStatus::Running;
             member_row.finished_at = None;
@@ -14180,6 +15393,12 @@ impl ProviderChildGuard {
         let status = self.child.wait()?;
         self.armed = false;
         Ok(status)
+    }
+
+    /// Mark an already-reaped child so `Drop` does not signal a pid that no
+    /// longer belongs to it.
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -14637,6 +15856,30 @@ fn run_member_orchestration(
                 "member runtime closed".to_string(),
             );
         }
+        // Capacity preflight runs once, before the adapter claims anything.
+        // A blocked member returns here, so its Assignment stays `queued` and
+        // is still deliverable after the provider recovers.
+        if generation == 0 {
+            match provider_capacity_start_gate(ledger, &mut current, &context.cwd) {
+                Ok(Some(outcome)) => return outcome,
+                Ok(None) => {}
+                Err(error) => {
+                    // The guard must never invent a failure of its own: a
+                    // ledger write problem is journalled, not turned into a
+                    // provider verdict.
+                    ledger
+                        .fold_event(
+                            TeamRunEventSourceKind::Host,
+                            Some(current.id.clone()),
+                            "member_run",
+                            &current.id,
+                            "capacity_preflight_error",
+                            &format!("capacity preflight could not be recorded: {error}"),
+                        )
+                        .ok();
+                }
+            }
+        }
         generation += 1;
         let execution_mode = current
             .provider_profile
@@ -14965,6 +16208,7 @@ fn run_codex_member(
                     round,
                     handoffs_before_round: &handoffs_before_round,
                     provider_error: None,
+                    provider_terminal: None,
                 },
             )?;
 
@@ -15533,6 +16777,7 @@ fn run_claude_team_member(
                 .map(|message| message.correlation_id.clone())
                 .unwrap_or_else(|| generated_id("corr")),
             causation_id: assignment.as_ref().map(|message| message.id.clone()),
+            response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
                 member_id: "host".to_string(),
@@ -16069,21 +17314,26 @@ fn run_claude_agent_sdk_team_member(
                     // `isError: true` (issue #293). The runner forwards the
                     // honest fields; without this check the ledger would record
                     // a provider-down round as an ordinary completed round.
-                    let provider_error =
+                    let provider_terminal =
                         if data.get("isError").and_then(|v| v.as_bool()) == Some(true) {
-                            let terminal_reason = data
-                                .get("terminalReason")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown_provider_error");
-                            let status = data
-                                .get("apiErrorStatus")
-                                .and_then(|v| v.as_i64())
-                                .map(|code| format!(" (HTTP {code})"))
-                                .unwrap_or_default();
-                            Some(format!("{terminal_reason}{status}"))
+                            Some(ProviderTerminalFailure {
+                                reason: data
+                                    .get("terminalReason")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown_provider_error")
+                                    .to_string(),
+                                http_status: data.get("apiErrorStatus").and_then(|v| v.as_i64()),
+                            })
                         } else {
                             None
                         };
+                    let provider_error = provider_terminal.as_ref().map(|failure| {
+                        let status = failure
+                            .http_status
+                            .map(|code| format!(" (HTTP {code})"))
+                            .unwrap_or_default();
+                        format!("{}{status}", failure.reason)
+                    });
                     let trigger_message_id = data
                         .get("triggerMessageId")
                         .and_then(|value| value.as_str());
@@ -16107,6 +17357,7 @@ fn run_claude_agent_sdk_team_member(
                         round,
                         handoffs_before_round: &handoffs_before_round,
                         provider_error: provider_error.as_deref(),
+                        provider_terminal: provider_terminal.as_ref(),
                     };
                     let (status, summary) = record_member_round(ledger, &mut member_row, &record)?;
                     final_status = status;
@@ -16171,7 +17422,9 @@ fn run_claude_agent_sdk_team_member(
         // `inflight_messages` prevents duplicate injection during that window;
         // `delivered_message_ids` also protects this live adapter generation
         // from a stale latest-wins read immediately after the receipt append.
-        let queued = ledger.claim_queued_messages_for(&member.id)?;
+        // The response-intent gate (ADR 0046 §4) keeps informational-only mail
+        // queued until response-required mail triggers a round, then batches it.
+        let queued = ledger.claim_round_triggering_messages_for(&member.id)?;
         let mut delivered_any = false;
         for message in queued {
             if inflight_messages.contains_key(&message.id)
@@ -16390,11 +17643,22 @@ struct MemberRoundRecord<'a> {
     /// Set when the provider reported the turn itself as failed (issue #293).
     /// `final_text` then holds provider error text, not a member report.
     provider_error: Option<&'a str>,
+    /// The transport's OWN terminal fields, when this execution mode reports
+    /// them. Prose is never a substitute: this is the only input a capacity
+    /// classifier is allowed to read.
+    provider_terminal: Option<&'a ProviderTerminalFailure>,
 }
 
 enum RoundHandoffRecord {
     Recorded(Box<TeamMessage>),
-    Deferred { pending_count: usize },
+    Deferred {
+        pending_count: usize,
+    },
+    /// The round produced no member report AND the member published no Handoff
+    /// of its own, so there is nothing to hand off. Fabricating one here would
+    /// publish an empty Handoff and a `completed` action no member ever wrote.
+    /// The caller records a provider error instead.
+    EmptyProviderRound,
 }
 
 fn record_round_handoff(
@@ -16445,6 +17709,15 @@ fn record_round_handoff(
         }
         return Ok(RoundHandoffRecord::Recorded(Box::new(explicit)));
     }
+    // Only reached when Harness would MINT the handoff. A member that published
+    // its own Handoff, or a round deferred behind newer mail, already returned
+    // above — so classifying silence here cannot mislabel either of them.
+    if canonical_member_report_text(record.final_text)
+        .trim()
+        .is_empty()
+    {
+        return Ok(RoundHandoffRecord::EmptyProviderRound);
+    }
     let handoff = TeamMessage {
         id: generated_id("tmsg"),
         team_run_id: ledger.run_id.clone(),
@@ -16460,6 +17733,7 @@ fn record_round_handoff(
         body: canonical_member_report_text(record.final_text).to_string(),
         correlation_id,
         causation_id,
+        response_intent: None,
         evidence_refs: record.evidence_refs.to_vec(),
         deliveries: vec![TeamMessageDelivery {
             member_id: "host".to_string(),
@@ -16494,6 +17768,46 @@ fn record_round_handoff(
     Ok(RoundHandoffRecord::Recorded(Box::new(handoff)))
 }
 
+/// Record a round the provider failed: a failed `provider_error` action, no
+/// handoff, and a member that stays `idle` and re-deliverable.
+fn record_provider_error_round(
+    ledger: &TeamRunLedger,
+    member_row: &mut MemberRun,
+    record: &MemberRoundRecord<'_>,
+    provider_error: &str,
+) -> CliResult<(MemberRunStatus, String)> {
+    let detail = format!(
+        "provider turn failed: {provider_error}: {}",
+        record.final_text.lines().next().unwrap_or("")
+    );
+    let action = ledger.append_action_with_provider_status(
+        &member_row.id,
+        "provider_error",
+        MemberActionStatus::Failed,
+        &format!("round {} provider_error", record.round),
+        &detail,
+        record
+            .provider_terminal
+            .map(ProviderTerminalFailure::to_provider_status),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member_row.id.clone()),
+        "action",
+        &action.id,
+        "created",
+        &format!("{} round {}: provider_error", member_row.name, record.round),
+    )?;
+    member_row.status = MemberRunStatus::Idle;
+    member_row.finished_at = None;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(member_row)?;
+    Ok((
+        MemberRunStatus::Idle,
+        format!("provider turn failed: {provider_error}"),
+    ))
+}
+
 /// Ledger writes for one completed member round: handoff to Host, action row,
 /// and member status.
 fn record_member_round(
@@ -16505,38 +17819,25 @@ fn record_member_round(
     // failed the turn. Recording a handoff here would impersonate a member
     // answer, so the ledger gets a failed provider_error action instead.
     if let Some(provider_error) = record.provider_error {
-        let detail = format!(
-            "provider turn failed: {provider_error}: {}",
-            record.final_text.lines().next().unwrap_or("")
-        );
-        let action = ledger.append_action(
-            &member_row.id,
-            "provider_error",
-            MemberActionStatus::Failed,
-            &format!("round {} provider_error", record.round),
-            &detail,
-        )?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member_row.id.clone()),
-            "action",
-            &action.id,
-            "created",
-            &format!("{} round {}: provider_error", member_row.name, record.round),
-        )?;
-        member_row.status = MemberRunStatus::Idle;
-        member_row.finished_at = None;
-        member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(member_row)?;
-        return Ok((
-            MemberRunStatus::Idle,
-            format!("provider turn failed: {provider_error}"),
-        ));
+        return record_provider_error_round(ledger, member_row, record, provider_error);
     }
 
     let handoff = record_round_handoff(ledger, member_row, record)?;
 
     let (action_type, action_status, action_summary) = match handoff {
+        // Silence that would have MINTED a handoff is the same failure as a
+        // classified provider error, wearing a different mask: a terminal error
+        // the adapter could not label still ends the round with no text, and
+        // `parse_round_result("")` reads as `Done`. Deferred rounds and rounds
+        // whose member published its own Handoff never reach here.
+        RoundHandoffRecord::EmptyProviderRound => {
+            return record_provider_error_round(
+                ledger,
+                member_row,
+                record,
+                "empty_final_report (the provider ended the round without an agent message)",
+            );
+        }
         RoundHandoffRecord::Deferred { pending_count } => (
             "continued",
             MemberActionStatus::Progress,
@@ -17121,6 +18422,10 @@ fn run_kimi_member(
                 ));
             }
         } else {
+            // A provider-failed turn (JSON-RPC error or a response with no
+            // stopReason) must record a provider_error round — never an
+            // empty or partial Handoff plus false idle/completion (parity
+            // with the Claude provider-error contract, issue #293).
             let (_, summary) = record_member_round(
                 ledger,
                 &mut member_row,
@@ -17131,7 +18436,10 @@ fn run_kimi_member(
                     evidence_refs: &[],
                     round,
                     handoffs_before_round: &handoffs_before_round,
-                    provider_error: None,
+                    provider_error: outcome.provider_error.as_deref(),
+                    // Kimi ACP reports no structured terminal metadata, so this
+                    // error is journalled but never classified into capacity.
+                    provider_terminal: None,
                 },
             )?;
             ledger.fold_event(
@@ -18380,6 +19688,7 @@ fn contract_prompt(
          - Read all received coordination messages (latest stored state): \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
          - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Message a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
+         - Response intent: mail to Host is response-required by default, so your questions, blockers, and plans always reach Host. Ordinary message mail to a PEER member is informational by default — durable and correlated, but it never wakes that idle peer into a new provider round, so acknowledgement-only peer notes converge instead of ping-ponging. Add --response-required when you need a peer to act and reply (QUESTION, BLOCKER, review request); add --informational when a note to Host is genuinely FYI-only.\n\
          - Submit handoff: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Submit a requested plan/revision: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
          \n\
@@ -20345,6 +21654,7 @@ fn steer_team_member_value(
         causation_id,
         json_string(body, "origin_wave_id"),
         TeamMessageDeliveryMode::InjectDelivered,
+        None,
     )?;
     let message = publish_team_message(store, &sender, message)?;
     Ok(serde_json::json!({"control": result, "message": message}))
@@ -21325,6 +22635,12 @@ fn send_team_message_value(
             "missing JSON field: to_member_ids".to_string(),
         ));
     }
+    // Bare Dashboard writes default to the Operator control plane, which is
+    // response-required under the sender-aware default (ADR 0012: the
+    // Dashboard is a control plane, so an Operator reply must wake an idle
+    // member). An HTTP caller speaking FOR a member must say so explicitly
+    // with `sender_kind`/`sender_id`; `from_member_id` alone is a historical
+    // projection field and does not carry provenance.
     let sender_kind = json_string(body, "sender_kind").unwrap_or_else(|| "operator".to_string());
     let sender_id = json_string(body, "sender_id").unwrap_or_else(|| {
         if sender_kind == "host" || sender_kind == "member_run" {
@@ -21348,6 +22664,11 @@ fn send_team_message_value(
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
         json_string(body, "origin_wave_id"),
+        // Strict: a present-but-not-a-string `response_intent` is a caller
+        // error, never a silent fall-through to the default.
+        optional_json_string(body, "response_intent")?
+            .map(|intent| parse_team_message_response_intent(&intent))
+            .transpose()?,
     )?;
     Ok(serde_json::to_value(message)?)
 }
@@ -30411,6 +31732,8 @@ fn print_help() {
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
   member register|list|providers
+  member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
+                   [--timeout-s <n>] [--fail-on-unavailable] [--json]
   company init --id <company-id> [--name <name>]
   company list | company current | company switch <company-id> | company show [company-id]
   company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
@@ -34541,6 +35864,7 @@ mod tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            provider_capacity: None,
             coordination_status: MemberCoordinationStatus::Active,
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -36273,6 +37597,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             None,
             None,
+            None,
         )
         .expect("peer message");
         let peer_delivery = peer_message
@@ -36296,6 +37621,7 @@ package:com.tencent.mm
             "Module A complete",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
+            None,
             None,
         )
         .expect("handoff");
@@ -36337,6 +37663,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
+            None,
         )
         .expect("follow-up");
 
@@ -36353,6 +37680,7 @@ package:com.tencent.mm
             vec![member.id.clone()],
             TeamMessageKind::Assignment,
             "Own the next independent lane",
+            None,
             None,
             None,
             None,
@@ -36404,6 +37732,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
+            None,
         )
         .expect("older message");
         deliver(&store, &mut older);
@@ -36417,6 +37746,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(older.id.clone()),
             None,
+            None,
         )
         .expect("turn trigger");
         deliver(&store, &mut trigger);
@@ -36427,6 +37757,7 @@ package:com.tencent.mm
             vec![member.id.clone()],
             TeamMessageKind::Assignment,
             "Another delivered Assignment must not own the active turn",
+            None,
             None,
             None,
             None,
@@ -36447,6 +37778,7 @@ package:com.tencent.mm
             Some(other_assignment.correlation_id.clone()),
             Some(other_assignment.id.clone()),
             None,
+            None,
         )
         .expect("other Assignment Handoff");
         let older_cause_handoff = send_team_message(
@@ -36458,6 +37790,7 @@ package:com.tencent.mm
             "Stale same-correlation result",
             Some(assignment.correlation_id.clone()),
             Some(older.id.clone()),
+            None,
             None,
         )
         .expect("older-cause Handoff");
@@ -36484,6 +37817,7 @@ package:com.tencent.mm
                 round: 2,
                 handoffs_before_round: &handoffs_before_round,
                 provider_error: None,
+                provider_terminal: None,
             },
         )
         .expect("record fallback");
@@ -36516,6 +37850,7 @@ package:com.tencent.mm
             Some(correlation.clone()),
             Some(created.assignment_messages[0].id.clone()),
             None,
+            None,
         )
         .expect("member to host");
         assert_eq!(
@@ -36538,6 +37873,7 @@ package:com.tencent.mm
             Some(correlation.clone()),
             None,
             None,
+            None,
         )
         .expect("member to peer");
         assert_eq!(peer_mail.deliveries[0].policy, TeamDeliveryPolicy::Queue);
@@ -36553,6 +37889,7 @@ package:com.tencent.mm
             "Use the stable interface",
             Some(correlation),
             Some(host_mail.id),
+            None,
             None,
         )
         .expect("host to member");
@@ -36584,6 +37921,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
             None,
+            None,
         )
         .expect("Host requests plan");
         let proposal_one = send_team_message(
@@ -36596,6 +37934,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(request.id.clone()),
             None,
+            None,
         )
         .expect("owner proposes");
         let feedback = send_team_message(
@@ -36607,6 +37946,7 @@ package:com.tencent.mm
             "Add rollback and integration checks",
             Some(assignment.correlation_id.clone()),
             Some(proposal_one.id.clone()),
+            None,
             None,
         )
         .expect("Host challenges proposal");
@@ -36621,6 +37961,7 @@ package:com.tencent.mm
             Some(assignment.correlation_id.clone()),
             Some(feedback.id),
             None,
+            None,
         )
         .expect("owner revises");
         send_team_message(
@@ -36632,6 +37973,7 @@ package:com.tencent.mm
             "Plan reviewed. Execute revision 2.",
             Some(assignment.correlation_id.clone()),
             Some(proposal_two.id),
+            None,
             None,
         )
         .expect("Host instructs execution");
@@ -36662,6 +38004,7 @@ package:com.tencent.mm
             "QUESTION: choose interface A or B",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
+            None,
             None,
         )
         .expect("member asks Host");
@@ -36717,6 +38060,609 @@ package:com.tencent.mm
         let codex_exec = team_member_provider_profile_for_mode("codex", Some("codex_exec"));
         assert_eq!(codex_exec.plan_mode, ProviderFeatureMode::Unsupported);
         assert_eq!(codex_exec.goal_mode, ProviderFeatureMode::Unsupported);
+    }
+
+    #[test]
+    fn capacity_execution_mode_only_names_the_mode_it_probes() {
+        for (provider, mode) in [
+            ("codex", "codex_app_server"),
+            ("claude", "claude_agent_sdk"),
+            ("kimi", "kimi_acp"),
+        ] {
+            assert_eq!(capacity_execution_mode(provider, None).unwrap(), mode);
+            assert_eq!(capacity_execution_mode(provider, Some(mode)).unwrap(), mode);
+        }
+        // A capacity claim is never carried across execution modes: asking for
+        // a mode this preflight does not probe is refused rather than answered
+        // with another mode's observation under that label.
+        let error = capacity_execution_mode("codex", Some("codex_exec"))
+            .expect_err("codex_exec is not the probed mode");
+        assert!(error.to_string().contains("codex_app_server"), "{error}");
+        assert!(capacity_execution_mode("codex", Some("totally-bogus")).is_err());
+    }
+
+    #[test]
+    fn runtime_context_reports_proxy_routing_without_its_credentials() {
+        // Corporate proxies routinely embed userinfo, and a gateway base URL
+        // can carry a token in its path or query. Neither may reach the durable
+        // ledger or a CI log.
+        assert_eq!(
+            redact_url_to_origin("http://alice:s3cret@corp-proxy:8080"),
+            "http://corp-proxy:8080 (credentials redacted)"
+        );
+        assert_eq!(
+            redact_url_to_origin("https://gateway.example.com/v1?token=abcd1234"),
+            "https://gateway.example.com"
+        );
+        // A plain proxy is routing information and stays readable.
+        assert_eq!(
+            redact_url_to_origin("http://127.0.0.1:7897"),
+            "http://127.0.0.1:7897"
+        );
+        // A NO_PROXY host list carries no credential and is left intact.
+        assert_eq!(
+            redact_url_to_origin("localhost,127.0.0.1,.local"),
+            "localhost,127.0.0.1,.local"
+        );
+        // An `@` AFTER the authority belongs to the path/query, not to
+        // userinfo. Searching the whole string for it mis-parsed the origin
+        // and echoed part of the query back out.
+        assert_eq!(
+            redact_url_to_origin("https://gw.example.com/v1?user=alice@corp.com"),
+            "https://gw.example.com"
+        );
+        assert_eq!(
+            redact_url_to_origin("https://gw.example.com/tenants/a@b/keys/SECRET"),
+            "https://gw.example.com"
+        );
+        // Userinfo AND a path secret together.
+        assert_eq!(
+            redact_url_to_origin("https://u:p@gw.example.com/v1/KEY123?t=z@1"),
+            "https://gw.example.com (credentials redacted)"
+        );
+        // A base URL whose secret is the whole path keeps only the origin.
+        assert_eq!(
+            redact_url_to_origin("https://gw.example.com/sk-live-abcdef"),
+            "https://gw.example.com"
+        );
+        for (raw, secrets) in [
+            (
+                "https://u:p@gw.example.com/v1/KEY123?t=z@1",
+                ["KEY123", "u:p"].as_slice(),
+            ),
+            (
+                "https://gw.example.com/tenants/a@b/keys/SECRET",
+                ["SECRET"].as_slice(),
+            ),
+            (
+                "https://gw.example.com/sk-live-abcdef",
+                ["sk-live-abcdef"].as_slice(),
+            ),
+        ] {
+            let redacted = redact_url_to_origin(raw);
+            for secret in secrets {
+                assert!(
+                    !redacted.contains(secret),
+                    "redaction leaked {secret} from {raw} as {redacted}"
+                );
+            }
+        }
+        for secret in ["s3cret", "abcd1234"] {
+            for raw in [
+                "http://alice:s3cret@corp-proxy:8080",
+                "https://gateway.example.com/v1?token=abcd1234",
+            ] {
+                assert!(
+                    !redact_url_to_origin(raw).contains(secret),
+                    "redaction leaked {secret} from {raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kimi_capacity_is_unknown_with_no_invented_windows() {
+        let snapshot = kimi_capacity_probe("kimi_acp");
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Unknown);
+        assert_eq!(
+            snapshot.evidence_source,
+            ProviderCapacityEvidence::NotExposed
+        );
+        assert_eq!(snapshot.confidence, ProviderCapacityConfidence::Unknown);
+        assert!(snapshot.windows.is_empty());
+        assert_eq!(snapshot.reset_at, None);
+        let encoded = serde_json::to_string(&snapshot).expect("serialize");
+        assert!(
+            !encoded.contains("used_percent\":0"),
+            "an absent quota API must not become a zero percentage: {encoded}"
+        );
+    }
+
+    #[test]
+    fn a_failed_claude_request_without_a_proxy_is_a_runtime_gap_not_an_account_verdict() {
+        // Live Wave 2 evidence: auth metadata said logged-in, the request
+        // returned 403, and the identical request succeeded through the proxy.
+        let no_proxy = vec![ProviderRuntimeContextFact {
+            key: "HTTPS_PROXY".into(),
+            present: false,
+            note: Some("absent".into()),
+        }];
+        let (state, diagnosis) =
+            claude_canary_diagnosis("API Error: 403 Request not allowed", &no_proxy);
+        assert_eq!(
+            state,
+            ProviderCapacityState::Unknown,
+            "a missing proxy must not gate a possibly healthy account"
+        );
+        assert!(diagnosis.contains("PROXY"), "{diagnosis}");
+
+        // With a proxy configured, the same rejection does implicate the
+        // credential.
+        let with_proxy = vec![ProviderRuntimeContextFact {
+            key: "HTTPS_PROXY".into(),
+            present: true,
+            note: Some("http://127.0.0.1:7897".into()),
+        }];
+        let (state, _) = claude_canary_diagnosis("401 unauthorized", &with_proxy);
+        assert_eq!(state, ProviderCapacityState::Unauthorized);
+
+        let (state, _) = claude_canary_diagnosis("429 rate limit exceeded", &with_proxy);
+        assert_eq!(state, ProviderCapacityState::Exhausted);
+
+        // An unreviewed failure stays unknown instead of guessing.
+        let (state, _) = claude_canary_diagnosis("something unfamiliar", &with_proxy);
+        assert_eq!(state, ProviderCapacityState::Unknown);
+    }
+
+    #[test]
+    fn only_provider_structured_terminal_metadata_classifies_capacity() {
+        let classify = |reason: &str, http_status: Option<i64>| {
+            capacity_state_from_provider_terminal(&ProviderTerminalFailure {
+                reason: reason.into(),
+                http_status,
+            })
+            .map(|(state, _)| state)
+        };
+
+        // Exact transport status integers and a closed reason vocabulary.
+        assert_eq!(
+            classify("api_error", Some(403)),
+            Some(ProviderCapacityState::Unauthorized)
+        );
+        assert_eq!(
+            classify("api_error", Some(429)),
+            Some(ProviderCapacityState::Exhausted)
+        );
+        assert_eq!(
+            classify("usage_limit_reached", None),
+            Some(ProviderCapacityState::Exhausted)
+        );
+        assert_eq!(
+            classify("auth_error", None),
+            Some(ProviderCapacityState::Unauthorized)
+        );
+
+        // A neighbouring status is a different status, not a near-match: the
+        // old substring rule read "1403" and "4030" as 403.
+        for status in [1403, 4030, 500, 404, 200] {
+            assert_eq!(
+                classify("api_error", Some(status)),
+                None,
+                "HTTP {status} is not a capacity verdict"
+            );
+        }
+        assert_eq!(classify("transport_disconnected", None), None);
+        assert_eq!(classify("unknown_provider_error", None), None);
+    }
+
+    #[test]
+    fn member_authored_text_can_never_produce_a_capacity_verdict() {
+        // The recorded summary embeds the MEMBER's own first line, so a member
+        // writing about a 403 must not mark its account unauthorized, and a
+        // member discussing quotas must not mark it exhausted.
+        let hostile = [
+            "provider turn failed: empty_final_report: fixed the 403 handler and the quota math",
+            "provider turn failed: empty_final_report: rate limit docs updated; 401/403 covered",
+            "provider turn failed: empty_final_report: usage limit table now lists 429",
+        ];
+        let actions: Vec<MemberAction> = hostile
+            .iter()
+            .enumerate()
+            .map(|(index, summary)| {
+                provider_error_action(
+                    "member-run-1",
+                    &format!("unix-ms:{}", 1000 + index),
+                    summary,
+                    None,
+                )
+            })
+            .collect();
+
+        assert!(
+            capacity_from_provider_error_actions(
+                &actions,
+                "member-run-1",
+                "claude",
+                "claude_agent_sdk",
+                1_500,
+                1_000,
+            )
+            .is_none(),
+            "prose must never reach a capacity classifier"
+        );
+    }
+
+    fn claude_probe_snapshot(proxy: Option<&str>) -> ProviderCapacitySnapshot {
+        ProviderCapacitySnapshot {
+            provider: "claude".into(),
+            execution_mode: "claude_agent_sdk".into(),
+            account: ProviderAccountRef {
+                source: "oauth_credentials_file".into(),
+                identifier: None,
+                plan: None,
+            },
+            state: ProviderCapacityState::Unknown,
+            observed_at: "unix-ms:2000".into(),
+            observed_unix_ms: 2_000,
+            reset_at: None,
+            evidence_source: ProviderCapacityEvidence::AuthMetadata,
+            confidence: ProviderCapacityConfidence::Unknown,
+            windows: Vec::new(),
+            diagnosis: None,
+            runtime_context: vec![ProviderRuntimeContextFact {
+                key: "HTTPS_PROXY".into(),
+                present: proxy.is_some(),
+                note: Some(proxy.unwrap_or("absent").into()),
+            }],
+            detail: Some("auth metadata only".into()),
+        }
+    }
+
+    #[test]
+    fn a_recorded_403_never_discards_the_live_proxy_evidence() {
+        // Two paths used to answer the SAME failure differently: the canary
+        // called a 403 without a proxy `unknown`, while a RECORDED 403 replaced
+        // the probe wholesale and became `unauthorized` — gating a healthy
+        // account behind a missing env var, the exact Wave 2 misdiagnosis.
+        let recorded = capacity_from_provider_error_actions(
+            &[provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: api_error (HTTP 403): ",
+                Some(&claude_403_status()),
+            )],
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("a structured 403 is recorded evidence");
+        assert_eq!(recorded.state, ProviderCapacityState::Unauthorized);
+
+        // No proxy: the canary verdict governs, and the merge must agree.
+        let no_proxy = claude_probe_snapshot(None);
+        let (canary_state, canary_diagnosis) = claude_canary_diagnosis(
+            "API Error: 403 Request not allowed",
+            &no_proxy.runtime_context,
+        );
+        let merged = reconcile_recorded_capacity(no_proxy, recorded.clone());
+
+        assert_eq!(canary_state, ProviderCapacityState::Unknown);
+        assert_eq!(
+            merged.state, canary_state,
+            "the recorded and live paths must not contradict each other on one 403"
+        );
+        assert_eq!(merged.diagnosis.as_deref(), Some(canary_diagnosis.as_str()));
+        assert!(
+            !merged.runtime_context.is_empty(),
+            "the probe's proxy facts must survive the merge"
+        );
+        assert_eq!(
+            merged.account.source, "oauth_credentials_file",
+            "the probe's account boundary must survive the merge"
+        );
+        assert!(
+            merged
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("HTTP(S)_PROXY")),
+            "the recorded rejection stays visible as evidence: {:?}",
+            merged.detail
+        );
+        assert!(
+            !harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
+                .is_blocked(),
+            "a missing proxy must never gate a start"
+        );
+
+        // With a proxy configured, the same recorded 403 DOES implicate the
+        // credential, and still keeps the live runtime facts.
+        let merged = reconcile_recorded_capacity(
+            claude_probe_snapshot(Some("http://127.0.0.1:7897")),
+            recorded,
+        );
+        assert_eq!(merged.state, ProviderCapacityState::Unauthorized);
+        assert_eq!(merged.account.source, "oauth_credentials_file");
+        assert!(!merged.runtime_context.is_empty());
+        assert!(
+            harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
+                .is_blocked()
+        );
+    }
+
+    #[test]
+    fn a_recorded_429_blocks_without_borrowing_the_proxy_diagnosis() {
+        // A spent quota is not caused by a missing proxy. The probe sets its
+        // missing-proxy diagnosis whenever no proxy is configured, so an
+        // unguarded `recorded.diagnosis.or(probe.diagnosis)` blocked correctly
+        // as `exhausted` while telling the operator to go fix their proxy.
+        let recorded = capacity_from_provider_error_actions(
+            &[provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: api_error (HTTP 429): ",
+                Some(
+                    &ProviderTerminalFailure {
+                        reason: "api_error".into(),
+                        http_status: Some(429),
+                    }
+                    .to_provider_status(),
+                ),
+            )],
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("a structured 429 is recorded evidence");
+        assert_eq!(recorded.state, ProviderCapacityState::Exhausted);
+
+        // No proxy configured: the probe carries a missing-proxy diagnosis.
+        let probe = claude_probe_snapshot(None);
+        let probe_diagnosis = claude_missing_proxy_diagnosis();
+        let probe = ProviderCapacitySnapshot {
+            diagnosis: Some(probe_diagnosis.clone()),
+            ..probe
+        };
+        assert!(!claude_has_proxy_configured(&probe.runtime_context));
+
+        let merged = reconcile_recorded_capacity(probe, recorded);
+
+        // Still blocks, and still as exhausted: a missing proxy does not
+        // excuse a spent quota the way it excuses a credential rejection.
+        assert_eq!(merged.state, ProviderCapacityState::Exhausted);
+        let decision = harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000);
+        assert!(decision.is_blocked());
+        assert!(
+            decision.reason().contains("exhausted"),
+            "{}",
+            decision.reason()
+        );
+
+        // But it must not claim proxy causation.
+        assert_eq!(
+            merged.diagnosis, None,
+            "a spent quota must not borrow the probe's missing-proxy diagnosis"
+        );
+        assert!(
+            !format!("{:?}", merged.diagnosis).contains("PROXY"),
+            "diagnosis leaked proxy causation: {:?}",
+            merged.diagnosis
+        );
+        // The runtime facts still travel as evidence, just not as cause.
+        assert!(
+            merged
+                .runtime_context
+                .iter()
+                .any(|fact| fact.key == "HTTPS_PROXY" && !fact.present),
+            "the probe's runtime facts must still be visible"
+        );
+    }
+
+    #[test]
+    fn kimi_and_codex_failures_never_fabricate_capacity() {
+        // Kimi ACP surfaces a 403 as free-form JSON-RPC error text with no
+        // status field, and Codex app-server errors arrive as adapter strings.
+        // Neither carries structured metadata, so neither may gate a start.
+        let actions = vec![
+            provider_error_action(
+                "member-run-1",
+                "unix-ms:1000",
+                "provider turn failed: kimi acp session/prompt rejected: {\"code\":-32603,\
+                 \"message\":\"403 quota exceeded\"}",
+                None,
+            ),
+            provider_error_action(
+                "member-run-1",
+                "unix-ms:1100",
+                "provider turn failed: codex app-server turn/start failed: 429 too many requests",
+                None,
+            ),
+        ];
+
+        assert!(
+            capacity_from_provider_error_actions(
+                &actions,
+                "member-run-1",
+                "kimi",
+                "kimi_acp",
+                1_500,
+                1_000,
+            )
+            .is_none(),
+            "an execution mode with no structured terminal metadata stays unknown"
+        );
+    }
+
+    fn provider_error_action(
+        member_run_id: &str,
+        started_at: &str,
+        summary: &str,
+        provider_status: Option<&str>,
+    ) -> MemberAction {
+        MemberAction {
+            id: generated_id("mact"),
+            seq: 1,
+            team_run_id: "team-run-1".into(),
+            member_run_id: member_run_id.into(),
+            task_id: None,
+            provider_call_id: None,
+            action_type: "provider_error".into(),
+            status: MemberActionStatus::Failed,
+            provider_status: provider_status.map(str::to_string),
+            semantic_status: None,
+            title: "round 1 provider_error".into(),
+            summary: summary.into(),
+            evidence_refs: Vec::new(),
+            started_at: started_at.into(),
+            completed_at: None,
+        }
+    }
+
+    /// The canonical token a Claude Agent SDK 403 round writes.
+    fn claude_403_status() -> String {
+        ProviderTerminalFailure {
+            reason: "api_error".into(),
+            http_status: Some(403),
+        }
+        .to_provider_status()
+    }
+
+    #[test]
+    fn recorded_provider_errors_expire_with_the_capacity_ttl() {
+        let actions = vec![provider_error_action(
+            "member-run-1",
+            "unix-ms:1000",
+            "provider turn failed: api_error (HTTP 403)",
+            Some(&claude_403_status()),
+        )];
+
+        let fresh = capacity_from_provider_error_actions(
+            &actions,
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("a fresh 403 is observable capacity");
+        assert_eq!(fresh.state, ProviderCapacityState::Unauthorized);
+        assert_eq!(
+            fresh.evidence_source,
+            ProviderCapacityEvidence::ProviderError
+        );
+        assert_eq!(fresh.observed_unix_ms, 1_000);
+
+        // Past the TTL the same row is no longer evidence of "now".
+        assert!(capacity_from_provider_error_actions(
+            &actions,
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            100_000,
+            1_000,
+        )
+        .is_none());
+
+        // Another member's failure is never borrowed.
+        assert!(capacity_from_provider_error_actions(
+            &actions,
+            "member-run-2",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn an_unclassifiable_error_never_hides_a_classifiable_one() {
+        // The empty-report rule manufactures unclassifiable `provider_error`
+        // rows. Selecting the NEWEST row and classifying afterwards would let
+        // one of them bury a real 403 recorded seconds earlier, and the member
+        // would start and burn its Assignment on a rejected credential.
+        // Three unclassifiable rows stacked on top of the real failure: the
+        // search must walk PAST all of them, not stop at the newest.
+        let mut actions = vec![provider_error_action(
+            "member-run-1",
+            "unix-ms:1000",
+            "provider turn failed: api_error (HTTP 403): ",
+            Some(&claude_403_status()),
+        )];
+        for (offset, summary) in [
+            "provider turn failed: empty_final_report (the provider ended the round without an \
+             agent message): ",
+            "provider turn failed: unknown_provider_error: transport disconnected",
+            "provider turn failed: empty_final_report: ",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let structured = (offset == 1).then(|| {
+                ProviderTerminalFailure {
+                    reason: "unknown_provider_error".into(),
+                    http_status: None,
+                }
+                .to_provider_status()
+            });
+            actions.push(provider_error_action(
+                "member-run-1",
+                &format!("unix-ms:{}", 1_100 + offset),
+                summary,
+                structured.as_deref(),
+            ));
+        }
+
+        let snapshot = capacity_from_provider_error_actions(
+            &actions,
+            "member-run-1",
+            "claude",
+            "claude_agent_sdk",
+            1_500,
+            1_000,
+        )
+        .expect("the classifiable 403 must still be found");
+
+        assert_eq!(snapshot.state, ProviderCapacityState::Unauthorized);
+        assert_eq!(snapshot.observed_unix_ms, 1_000);
+    }
+
+    #[test]
+    fn silence_is_only_a_provider_error_when_harness_would_mint_the_handoff() {
+        // `parse_round_result("")` reads as Done, which is why silence needs a
+        // rule at all.
+        assert_eq!(parse_round_result(""), MemberRoundResult::Done);
+        // The rule lives at the one place a handoff would be MINTED, so a
+        // deferred round and a member-published handoff keep their own
+        // meanings; only fabrication is refused.
+        for silence in ["", "   ", "\n\n", "\t\r\n "] {
+            assert!(
+                canonical_member_report_text(silence).trim().is_empty(),
+                "{silence:?} must read as silence"
+            );
+        }
+        assert!(!canonical_member_report_text("## RESULT\ndone\n")
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn capacity_preflight_toggle_and_ttl_read_the_documented_env_contract() {
+        // Defaults are on and five minutes; this test asserts the parse rules,
+        // not the ambient process env.
+        assert_eq!(
+            harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS,
+            5 * 60 * 1000
+        );
+        assert_eq!(
+            parse_unix_ms_timestamp("unix-ms:1785573368310"),
+            Some(1785573368310)
+        );
+        assert_eq!(parse_unix_ms_timestamp("2026-08-01T00:00:00Z"), None);
     }
 
     #[test]
@@ -37481,6 +39427,7 @@ mod sse_tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            provider_capacity: None,
             coordination_status: MemberCoordinationStatus::Active,
             runtime_generation: 1,
             status: MemberRunStatus::Idle,

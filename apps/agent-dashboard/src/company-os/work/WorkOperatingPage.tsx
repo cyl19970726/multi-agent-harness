@@ -61,6 +61,9 @@ interface WorkRow {
   dueAt?: string;
   priority?: string;
   source: string;
+  sourceId?: string;
+  /** Explicit lifecycle of the resolved source Document; archived stays navigable history. */
+  sourceLifecycle?: string;
   execution: string;
   updatedAt: string;
 }
@@ -165,6 +168,21 @@ function workItemHref(id: string): string {
   return preserveCompanyOsWorkbenchContext(href) ?? href;
 }
 
+function documentHref(id: string): string {
+  const href = `?surface=docs&document=${encodeURIComponent(id)}`;
+  return preserveCompanyOsWorkbenchContext(href) ?? href;
+}
+
+/**
+ * Every visible Work source resolves to an active Document title or explicit
+ * archived-source history (title + lifecycle); a missing source says so.
+ */
+function sourceLabel(item: WorkRow): string {
+  if (item.sourceLifecycle === "archived") return `${item.source} · archived history`;
+  if (item.sourceLifecycle === "missing") return `${item.source} · missing source`;
+  return item.source;
+}
+
 function dateLabel(value?: string): string {
   if (!value) return "No due date";
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -207,7 +225,13 @@ function buildModel(source: unknown): WorkModel {
     return actorMap.get(id) ?? { id, name: id, kind: text((value as Json | undefined)?.actor_type, "service"), role: "Unresolved actor reference" };
   };
   const modules = new Map(objects(root.business_modules).map(unbox).map((record) => [text(record.id), text(record.name, text(record.title, text(record.id))) ]));
-  const documents = new Map(objects(root.documents).map(unbox).map((record) => [text(record.id), text(record.title, text(record.id))]));
+  const documents = new Map(objects(root.documents).map(unbox).map((record) => [
+    text(record.id),
+    {
+      title: text(record.title, text(record.id)),
+      lifecycle: text(record.lifecycle_status, text(record.status)).toLowerCase(),
+    },
+  ]));
   const approvals = new Map(objects(root.approvals).map(unbox).map((record) => [text(record.id), text(record.status, "unknown")]));
   const rawItems = hasAggregate ? objects(projection.work_items) : objects(root.work_items);
   const rawMilestones = hasAggregate ? objects(projection.milestones) : objects(root.milestones);
@@ -252,7 +276,17 @@ function buildModel(source: unknown): WorkModel {
       approval: approvalRefs.length === 0 ? "none" : approvals.get(approvalRefs[0]) ?? "linked",
       dueAt: text(record.due_at) || undefined,
       priority: text(record.priority) || undefined,
-      source: documents.get(text(record.source_document_ref)) ?? text(record.source_document_ref, "No source"),
+      source: (() => {
+        const sourceId = text(record.source_document_ref);
+        const resolved = documents.get(sourceId);
+        return resolved?.title ?? (sourceId || "No source");
+      })(),
+      sourceId: text(record.source_document_ref) || undefined,
+      sourceLifecycle: (() => {
+        const sourceId = text(record.source_document_ref);
+        if (!sourceId) return undefined;
+        return documents.get(sourceId)?.lifecycle ?? "missing";
+      })(),
       execution: executionRefs.length > 0 ? text(executionRefs[0].kind, "linked") : text(record.execution_mode, "direct"),
       updatedAt: text(record.updated_at),
     };
@@ -448,7 +482,7 @@ function SectionTitle({ eyebrow, title, detail }: { eyebrow: string; title: stri
 }
 
 function WorkListRow({ item }: { item: WorkRow }) {
-  return <a href={workItemHref(item.id)} aria-label={`Open WorkItem ${item.title}`} className="group grid gap-4 p-5 transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto]" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Status status={item.status} /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{humanize(item.workType)}</span><span className="text-[10px] text-muted-foreground">· {item.businessLine}</span><AcceptanceCriteriaCount item={item} prefix="· " />{item.approvalId && <span data-company-os-ref={item.approvalId} className="text-[10px] text-status-warn">· {item.approval === "requested" ? "Human approval" : humanize(item.approval)}</span>}</div><h3 className="mt-2 truncate font-semibold">{item.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.description || item.objective || `${item.milestone} · ${item.source}`}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.milestone} · {item.source}{item.contextRefs.length > 0 ? ` · ${item.contextRefs.length} context refs` : ""}{item.deliverableRefs.length > 0 ? ` · ${item.deliverableRefs.length} deliverables` : ""}</p></div><div className="flex items-center gap-4"><ActorStack actors={[item.accountable, ...item.assignees, ...item.contributors, item.reviewer]} /><div className="hidden text-right sm:block"><p className="text-xs font-medium">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.approval === "requested" ? "Human approval" : humanize(item.execution)}</p></div><ArrowUpRight className="size-4 text-muted-foreground transition group-hover:text-primary" /></div></a>;
+  return <a href={workItemHref(item.id)} aria-label={`Open WorkItem ${item.title}`} className="group grid gap-4 p-5 transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto]" data-company-os-ref={item.id} data-work-item-status={item.status}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Status status={item.status} /><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{humanize(item.workType)}</span><span className="text-[10px] text-muted-foreground">· {item.businessLine}</span><AcceptanceCriteriaCount item={item} prefix="· " />{item.approvalId && <span data-company-os-ref={item.approvalId} className="text-[10px] text-status-warn">· {item.approval === "requested" ? "Human approval" : humanize(item.approval)}</span>}</div><h3 className="mt-2 truncate font-semibold">{item.title}</h3><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.description || item.objective || `${item.milestone} · ${item.source}`}</p><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.milestone} · {sourceLabel(item)}{item.contextRefs.length > 0 ? ` · ${item.contextRefs.length} context refs` : ""}{item.deliverableRefs.length > 0 ? ` · ${item.deliverableRefs.length} deliverables` : ""}</p></div><div className="flex items-center gap-4"><ActorStack actors={[item.accountable, ...item.assignees, ...item.contributors, item.reviewer]} /><div className="hidden text-right sm:block"><p className="text-xs font-medium">{dateLabel(item.dueAt)}</p><p className="mt-1 text-[10px] text-muted-foreground">{item.approval === "requested" ? "Human approval" : humanize(item.execution)}</p></div><ArrowUpRight className="size-4 text-muted-foreground transition group-hover:text-primary" /></div></a>;
 }
 
 function AcceptanceCriteriaCount({ item, prefix = "", className = "" }: { item: WorkRow; prefix?: string; className?: string }) {
@@ -467,7 +501,7 @@ function WorkCard({ item }: { item: WorkRow }) {
 }
 
 function AllWork({ items }: { items: WorkRow[] }) {
-  return <section className="overflow-hidden rounded-2xl border border-border bg-card/90 shadow-sm"><SectionTitle eyebrow="Canonical ledger" title="All WorkItems" detail={`${items.length} records · sortable projection`} /><div className="overflow-x-auto"><table className="min-w-[1380px] w-full text-left text-xs"><thead className="bg-muted/45 text-[10px] uppercase tracking-wider text-muted-foreground"><tr>{["WorkItem", "Detail", "Type", "Business line", "Milestone", "Status", "Accountable", "Assignees", "Acceptance", "Refs", "Due", "Execution"].map((label) => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead><tbody className="divide-y divide-border">{items.map((item) => <tr key={item.id} className="hover:bg-muted/25" data-company-os-ref={item.id}><td className="max-w-xs px-4 py-4"><a href={workItemHref(item.id)} className="font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{item.title}</a><p className="mt-1 truncate text-[10px] text-muted-foreground">{item.source}</p></td><td className="max-w-sm px-4 py-4 text-muted-foreground"><p className="line-clamp-2">{item.description || item.objective || "No detail supplied"}</p></td><td className="px-4 py-4">{humanize(item.workType)}</td><td className="px-4 py-4">{item.businessLine}</td><td className="px-4 py-4">{item.milestone}</td><td className="px-4 py-4"><Status status={item.status} /></td><td className="px-4 py-4">{item.accountable?.name ?? "Unassigned"}</td><td className="px-4 py-4">{item.assignees.map((actor) => actor.name).join(", ") || "Unassigned"}</td><td className="px-4 py-4">{item.acceptanceCriteria.length > 0 ? <AcceptanceCriteriaCount item={item} /> : "—"}</td><td className="px-4 py-4">{item.contextRefs.length || item.deliverableRefs.length ? `${item.contextRefs.length} context / ${item.deliverableRefs.length} deliverable` : "—"}</td><td className="px-4 py-4">{dateLabel(item.dueAt)}</td><td className="px-4 py-4">{humanize(item.execution)}</td></tr>)}</tbody></table></div></section>;
+  return <section className="overflow-hidden rounded-2xl border border-border bg-card/90 shadow-sm"><SectionTitle eyebrow="Canonical ledger" title="All WorkItems" detail={`${items.length} records · sortable projection`} /><div className="overflow-x-auto"><table className="min-w-[1380px] w-full text-left text-xs"><thead className="bg-muted/45 text-[10px] uppercase tracking-wider text-muted-foreground"><tr>{["WorkItem", "Detail", "Type", "Business line", "Milestone", "Status", "Accountable", "Assignees", "Acceptance", "Refs", "Due", "Execution"].map((label) => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead><tbody className="divide-y divide-border">{items.map((item) => <tr key={item.id} className="hover:bg-muted/25" data-company-os-ref={item.id}><td className="max-w-xs px-4 py-4"><a href={workItemHref(item.id)} className="font-semibold text-foreground hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{item.title}</a><p className="mt-1 truncate text-[10px] text-muted-foreground" data-work-source-lifecycle={item.sourceLifecycle}>{item.sourceId ? <a href={documentHref(item.sourceId)} data-company-os-ref={item.sourceId} className="hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{sourceLabel(item)}</a> : sourceLabel(item)}</p></td><td className="max-w-sm px-4 py-4 text-muted-foreground"><p className="line-clamp-2">{item.description || item.objective || "No detail supplied"}</p></td><td className="px-4 py-4">{humanize(item.workType)}</td><td className="px-4 py-4">{item.businessLine}</td><td className="px-4 py-4">{item.milestone}</td><td className="px-4 py-4"><Status status={item.status} /></td><td className="px-4 py-4">{item.accountable?.name ?? "Unassigned"}</td><td className="px-4 py-4">{item.assignees.map((actor) => actor.name).join(", ") || "Unassigned"}</td><td className="px-4 py-4">{item.acceptanceCriteria.length > 0 ? <AcceptanceCriteriaCount item={item} /> : "—"}</td><td className="px-4 py-4">{item.contextRefs.length || item.deliverableRefs.length ? `${item.contextRefs.length} context / ${item.deliverableRefs.length} deliverable` : "—"}</td><td className="px-4 py-4">{dateLabel(item.dueAt)}</td><td className="px-4 py-4">{humanize(item.execution)}</td></tr>)}</tbody></table></div></section>;
 }
 
 function Milestones({ milestones, items }: { milestones: MilestoneRow[]; items: WorkRow[] }) {
