@@ -216,6 +216,12 @@ export interface CompanyOsDocumentPageData {
   blocks: CompanyOsDocumentBlock[];
   sourceLinks?: CompanyOsLink[];
   resultLinks?: CompanyOsLink[];
+  /**
+   * WorkItems that reference this Document through any canonical ref, deduplicated to
+   * one entry per WorkItem. `meta` states every reason the entry is listed, so a
+   * WorkItem that is both source and context reads as one item with two reasons.
+   */
+  relatedWork?: CompanyOsLink[];
   connectedRecords?: CompanyOsLink[];
   activity?: Array<{ id: string; label: string; detail?: string; at?: string }>;
   authoring?: CompanyOsDocumentAuthoringContext;
