@@ -954,6 +954,10 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   // space contributes root grouping only, so a child never re-appears as a sibling of
   // its own parent just because they share a space_id.
   const workspaceTree: CompanyOsWorkspaceData["tree"] = buildDocumentSpaceTree(documents, { selectedDocumentId: selected.documentId });
+  // Track what the tree actually placed. A module can pass the navigability filter and
+  // still find no home — its space may contain no root Document once the hierarchy is
+  // real — and such a module must surface in the archive rather than silently vanish.
+  const placedModuleIds = new Set<string>();
   for (const candidate of modules) {
     const moduleId = text(candidate.id);
     const rootDocument = record(documents, candidate.root_document_ref ?? candidate.root_document_id);
@@ -962,20 +966,33 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const parent = workspaceTree.find((entry) => entry.label === moduleSpace) ?? (!rootDocument ? workspaceTree[0] : undefined);
     if (!moduleId || !parent) continue;
     parent.children?.push({ id: moduleId, ref: moduleId, label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
+    placedModuleIds.add(moduleId);
   }
 
-  // The archive is the exact complement of the default tree filter: every Document the
-  // `documents` predicate removed, plus every BusinessModule the `modules` predicate
-  // removed. It is derived from the same two source lists so the two views cannot drift.
+  // The archive is the exact complement of the default tree: every Document the
+  // `documents` predicate removed, plus every BusinessModule the tree did not place.
+  // Conservation is the invariant — a module appears in exactly one of the two views —
+  // so the withheld set is derived from what was placed, never from the filter alone.
   const archivedDocuments = allDocuments.filter((entry) => isArchived(entry));
-  const navigableModuleIds = new Set(modules.map((entry) => text(entry.id)).filter(Boolean));
-  const archivedModules = allModules.filter((entry) => !navigableModuleIds.has(text(entry.id)));
+  const withheldModules = allModules.filter((entry) => !placedModuleIds.has(text(entry.id)));
+  const withholdReason = (entry: JsonRecord): string => {
+    if (isArchived(entry)) return "Module is archived";
+    const rootRef = text(entry.root_document_ref, text(entry.root_document_id));
+    if (!rootRef) return "No root Document is declared";
+    const rootDocument = record(allDocuments, rootRef);
+    if (!rootDocument) return "Root Document is missing from this projection";
+    if (isArchived(rootDocument)) return "Root Document is archived";
+    return "No navigable space holds this module";
+  };
   const workspaceArchive: CompanyOsWorkspaceArchive | undefined = allDocuments.length || allModules.length
     ? {
       defaultFilter: DEFAULT_TREE_FILTER,
       tree: buildDocumentSpaceTree(archivedDocuments, { selectedDocumentId: selected.documentId, meta: "Archived", idPrefix: "archive:" }),
       documentIds: archivedDocuments.map((entry) => text(entry.id)).filter(Boolean),
-      modules: linkEntries(archivedModules.map(moduleLink)),
+      modules: linkEntries(withheldModules.map((entry) => {
+        const link = moduleLink(entry);
+        return link ? { ...link, meta: withholdReason(entry) } : undefined;
+      })),
       countLabel: `${archivedDocuments.length} archived page${archivedDocuments.length === 1 ? "" : "s"}`,
     }
     : undefined;

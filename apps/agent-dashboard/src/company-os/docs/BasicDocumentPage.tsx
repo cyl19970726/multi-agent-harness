@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { EditorialTitle, ObjectEmblem } from "../visuals";
 
 import { buildDocsAppendBlockCommands, buildDocsChildDocumentCommand, buildDocsInstantiateTemplateBlockCommands, buildDocsReorderBlocksCommand } from "./documentAction";
+import { selectDocumentDirectoryAnchor } from "./documentTree";
 import { RelationChips } from "./RelationChips";
 import type { CompanyOsDocsActionCommand, CompanyOsDocumentBlock, CompanyOsDocumentPageData, CompanyOsLink, CompanyOsWorkspaceTreeItem } from "./types";
 import { preserveCompanyOsWorkbenchContext } from "./url";
@@ -330,20 +331,12 @@ function WcwLinkCard({ link }: { link: CompanyOsLink }) {
   );
 }
 
-function flattenTreeItems(items: CompanyOsWorkspaceTreeItem[] = []): CompanyOsWorkspaceTreeItem[] {
-  return items.flatMap((item) => [item, ...flattenTreeItems(item.children)]);
-}
-
 function WcwDocumentDirectory({ tree }: { tree?: CompanyOsDocumentPageData["documentTree"] }) {
   // The projection tree is a real parent_document_id hierarchy, so the Wanchengwanling
-  // pages can sit under a document root rather than directly under the space node.
-  // Anchor on whichever matching node actually holds the child pages.
-  const wcwRoot = flattenTreeItems(tree)
-    .filter((item) => /wanchengwanling|万城万灵/i.test(`${item.label} ${item.ref ?? ""}`))
-    .reduce<CompanyOsWorkspaceTreeItem | undefined>(
-      (best, item) => ((item.children?.length ?? 0) > (best?.children?.length ?? 0) ? item : best),
-      undefined,
-    ) ?? tree?.[0];
+  // pages sit under a document root rather than directly under the space node. Anchor
+  // by Document child count: the space node also holds every BusinessModule, so raw
+  // child count would pick the space and expose one page instead of eleven.
+  const wcwRoot = selectDocumentDirectoryAnchor(tree, /wanchengwanling|万城万灵/i);
   const children = wcwRoot?.children ?? tree ?? [];
   if (!children.length) return null;
   return (

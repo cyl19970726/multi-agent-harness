@@ -56,13 +56,13 @@ function ArchiveDisclosure({ archive }: { archive: CompanyOsWorkspaceArchive }) 
           {archive.modules.length > 0 && (
             <div className="mt-3 px-2" data-docs-archive-modules="true">
               <p className="text-[11px] font-medium text-foreground">Modules withheld from navigation</p>
-              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">Their root Document is archived, so the module row&rsquo;s own status does not put it back in the tree.</p>
+              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">Every BusinessModule appears either in the tree above or here, never in neither. A module&rsquo;s own status does not put it back in the tree; the stated reason does &mdash; an archived root Document is not the same withholding as a missing one.</p>
               <ul className="mt-1.5 space-y-1">
                 {archive.modules.map((module) => (
                   <li key={module.id}>
-                    <a href={preserveCompanyOsWorkbenchContext(module.href)} data-company-os-ref={module.id} data-docs-archive-module-link="true" className="block rounded-md px-1.5 py-1 text-[11px] leading-4 text-foreground hover:bg-accent">
-                      {module.label}
-                      {module.meta && <span className="text-muted-foreground"> · {module.meta}</span>}
+                    <a href={preserveCompanyOsWorkbenchContext(module.href)} data-company-os-ref={module.id} data-docs-archive-module-link="true" data-docs-archive-module-reason={module.meta} className="block rounded-md px-1.5 py-1 text-[11px] leading-4 text-foreground hover:bg-accent">
+                      <span className="block">{module.label}</span>
+                      {module.meta && <span className="block text-muted-foreground">{module.meta}</span>}
                     </a>
                   </li>
                 ))}

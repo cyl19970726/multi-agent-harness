@@ -50,6 +50,22 @@ async function loadFixtureAdapter() {
   }
 }
 
+async function loadDocumentTree() {
+  const { default: ts } = await import("typescript");
+  const directory = await mkdtemp(join(tmpdir(), "company-os-docs-tree-"));
+  try {
+    const input = await source("documentTree.ts");
+    const output = ts.transpileModule(input, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const outputPath = join(directory, "documentTree.mjs");
+    await writeFile(outputPath, output, "utf8");
+    return await import(pathToFileURL(outputPath).href);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function loadDocumentAction() {
   const { default: ts } = await import("typescript");
   const directory = await mkdtemp(join(tmpdir(), "company-os-docs-action-"));
@@ -418,6 +434,95 @@ async function main() {
     adapter.includes("buildDocumentSpaceTree") && adapter.includes("parent_document_id") && !adapter.includes('lifecycle_status) === "active"'),
     "projection adapter derives the tree from Document.parent_document_id without an active-only lifecycle filter",
   );
+  // The space node holds root Documents AND every BusinessModule attached to that space,
+  // so a directory anchor chosen by raw child count picks the space and exposes one page
+  // instead of eleven. Rank by Document children only.
+  const { selectDocumentDirectoryAnchor, documentChildCount } = await loadDocumentTree();
+  const wcwNumberedIds = Array.from({ length: 11 }, (_, index) => `document-wcw-${String(index).padStart(2, "0")}`);
+  const wcwProjection = {
+    documents: [
+      { id: "document-wcw-root", space_id: "wanchengwanling", parent_document_id: null, title: "Wanchengwanling / 万城万灵", kind: "page", lifecycle_status: "active", block_ids: [] },
+      ...wcwNumberedIds.map((id, index) => ({ id, space_id: "wanchengwanling", parent_document_id: "document-wcw-root", title: `${String(index).padStart(2, "0")} Wanchengwanling page`, kind: "page", lifecycle_status: "active", block_ids: [] })),
+    ],
+    // Eleven modules on the same space: the space node therefore has twelve raw children
+    // while the real page holder has eleven.
+    business_modules: wcwNumberedIds.map((id, index) => ({ id: `module-wcw-${index}`, name: `Wanchengwanling module ${index}`, root_document_ref: id, status: "active", default_view_refs: [] })),
+  };
+  const wcwPages = adaptCompanyOsDocsProjection(wcwProjection, { documentId: "document-wcw-00" });
+  const wcwSpaceNode = wcwPages.workspace.tree.find((item) => item.label === "wanchengwanling");
+  const wcwAnchor = selectDocumentDirectoryAnchor(wcwPages.document.documentTree, /wanchengwanling|万城万灵/i);
+  check(
+    (wcwSpaceNode?.children?.length ?? 0) > documentChildCount(wcwSpaceNode ?? {})
+      && wcwAnchor?.ref === "document-wcw-root"
+      && (wcwAnchor?.children ?? []).filter((child) => child.href?.includes("document=")).length === 11
+      && JSON.stringify(sortedIds((wcwAnchor?.children ?? []).filter((child) => child.href?.includes("document=")).map((child) => child.ref))) === JSON.stringify(sortedIds(wcwNumberedIds)),
+    "the document directory anchors on the Document holding all eleven numbered pages, not the space node whose children are inflated by BusinessModules",
+  );
+  check(
+    selectDocumentDirectoryAnchor([{ id: "space:x", label: "wanchengwanling", children: [{ id: "m", ref: "m", label: "wanchengwanling module", href: "?surface=docs&module=m" }] }], /wanchengwanling/i)?.id === "space:x"
+      && selectDocumentDirectoryAnchor(undefined, /wanchengwanling/i) === undefined,
+    "the directory anchor degrades safely when a matching node has only BusinessModule children or no tree is supplied",
+  );
+
+  // Conservation: a BusinessModule is in the default tree or the Archive, never neither.
+  const orphanSpaceProjection = {
+    documents: [
+      { id: "document-conserve-root", space_id: "wanchengwanling", parent_document_id: null, title: "Conserve root", kind: "page", lifecycle_status: "active", block_ids: [] },
+      // Lives in space "company" but nests under a wanchengwanling parent, so space
+      // "company" ends up with no root Document and therefore no tree node at all.
+      { id: "document-conserve-cross-space", space_id: "company", parent_document_id: "document-conserve-root", title: "Cross space child", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-conserve-archived", space_id: "wanchengwanling", parent_document_id: null, title: "Conserve archived", kind: "page", lifecycle_status: "archived", block_ids: [] },
+    ],
+    business_modules: [
+      { id: "module-conserve-placed", name: "Placed module", root_document_ref: "document-conserve-root", status: "active", default_view_refs: [] },
+      { id: "module-conserve-no-space", name: "Module without a space node", root_document_ref: "document-conserve-cross-space", status: "active", default_view_refs: [] },
+      { id: "module-conserve-archived-root", name: "Module with archived root", root_document_ref: "document-conserve-archived", status: "active", default_view_refs: [] },
+      { id: "module-conserve-missing-root", name: "Module with missing root", root_document_ref: "document-conserve-pruned-away", status: "active", default_view_refs: [] },
+    ],
+  };
+  const conservePages = adaptCompanyOsDocsProjection(orphanSpaceProjection, {});
+  const placedModuleIds = flattenTree(conservePages.workspace.tree).filter((item) => item.href?.includes("module=")).map((item) => item.ref);
+  const withheldModuleIds = (conservePages.workspace.archive?.modules ?? []).map((module) => module.id);
+  const declaredModuleIds = orphanSpaceProjection.business_modules.map((module) => module.id);
+  check(
+    JSON.stringify(sortedIds([...placedModuleIds, ...withheldModuleIds])) === JSON.stringify(sortedIds(declaredModuleIds))
+      && placedModuleIds.every((id) => !withheldModuleIds.includes(id))
+      && withheldModuleIds.includes("module-conserve-no-space"),
+    "every declared BusinessModule appears exactly once across the default tree and the Archive, including one whose space has no root Document",
+  );
+  const withholdReason = (id) => conservePages.workspace.archive?.modules.find((module) => module.id === id)?.meta;
+  check(
+    withholdReason("module-conserve-archived-root") === "Root Document is archived"
+      && withholdReason("module-conserve-missing-root") === "Root Document is missing from this projection"
+      && withholdReason("module-conserve-no-space") === "No navigable space holds this module"
+      && new Set([withholdReason("module-conserve-archived-root"), withholdReason("module-conserve-missing-root"), withholdReason("module-conserve-no-space")]).size === 3,
+    "the Archive distinguishes archived-root, missing-root, and unplaceable withholding instead of asserting one reason for all",
+  );
+  check(
+    workspace.includes("data-docs-archive-module-reason") && workspace.includes("an archived root Document is not the same withholding as a missing one") && workspace.includes("never in neither"),
+    "Docs Workspace archive copy states the conservation invariant and renders each module's own withholding reason",
+  );
+
+  // Archived-ness must be the discriminator for authoring, not a missing policy context.
+  const authoringActor = { id: "actor-agent-docs-authoring", display_name: "Docs Governance Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] };
+  const authoringDefinitions = [{ id: "definition-authoring-probe", module_id: "module-authoring-probe", action_command_refs: ["document.append", "block.append"], policy_refs: ["definition-authoring-probe:document.append", "definition-authoring-probe:block.append"] }];
+  const authoringDocument = (id, lifecycle) => ({ id, space_id: "company", parent_document_id: null, title: `Authoring probe ${lifecycle}`, kind: "page", lifecycle_status: lifecycle, block_ids: [], template_ref: null, permission_policy_refs: ["company.records.write"], reference_refs: [], created_by: { actor_type: "agent", actor_id: authoringActor.id }, updated_by: { actor_type: "agent", actor_id: authoringActor.id }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" });
+  const authoringProjection = {
+    actors: [authoringActor],
+    documents: [authoringDocument("document-authoring-active", "draft"), authoringDocument("document-authoring-archived", "archived")],
+    business_modules: [{ id: "module-authoring-probe", name: "Authoring probe", root_document_ref: "document-authoring-active", status: "active", default_view_refs: [] }],
+    custom_page_definitions: authoringDefinitions,
+  };
+  const grantedAuthoring = adaptCompanyOsDocsProjection(authoringProjection, { documentId: "document-authoring-active" }).document.authoring;
+  const refusedAuthoring = adaptCompanyOsDocsProjection(authoringProjection, { documentId: "document-authoring-archived" }).document.authoring;
+  check(
+    grantedAuthoring?.documentId === "document-authoring-active"
+      && grantedAuthoring?.documentPolicyRef === "definition-authoring-probe:document.append"
+      && grantedAuthoring?.blockPolicyRef === "definition-authoring-probe:block.append"
+      && refusedAuthoring === undefined,
+    "archived lifecycle alone withdraws Store-live authoring: the identical definition, policy refs, and writable actor grant it to the non-archived Document",
+  );
+
   const deepLinkedArchivedPages = adaptCompanyOsDocsProjection({ documents: hierarchyDocuments }, { documentId: "document-agentos-home" });
   check(
     deepLinkedArchivedPages.document.id === "document-agentos-home"
