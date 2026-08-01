@@ -195,7 +195,19 @@ export type CompanyOsDocumentBlock =
 export interface CompanyOsDocumentPageData {
   id?: string;
   title: string;
+  /** Label chain for the Document's location: space, ancestors, then the Document itself. */
   breadcrumb?: string[];
+  /**
+   * Navigable ancestor Documents derived from Document.parent_document_id, oldest
+   * first; the last item is the current Document and carries no href.
+   */
+  breadcrumbs?: CompanyOsLink[];
+  /** Active child Documents scoped to this Document through parent_document_id. */
+  childDocuments?: CompanyOsLink[];
+  /** Documents that reference this Document through snapshot Relations or reference_refs. */
+  backlinks?: CompanyOsLink[];
+  /** Set when an explicit document selection does not resolve in this projection. */
+  missingDocumentId?: string;
   space?: string;
   lifecycleStatus?: string;
   description?: string;
@@ -280,6 +292,13 @@ export interface CompanyOsWorkspaceTreeItem {
   id: string;
   /** Canonical store ref for a visible durable object; absent for UI-only grouping nodes. */
   ref?: string;
+  /**
+   * Canonical node kind, set by the projection adapter from the store object the
+   * node represents: "document" for a real Document, "module" for a BusinessModule,
+   * "space" for a UI-only grouping node. Consumers must distinguish nodes through
+   * this field (and `ref`), never through href substrings.
+   */
+  kind?: "space" | "document" | "module";
   label: string;
   href?: string;
   selected?: boolean;

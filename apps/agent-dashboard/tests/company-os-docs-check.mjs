@@ -84,9 +84,9 @@ async function loadDocumentAction() {
 
 async function main() {
   const fixture = JSON.parse(await readFile(join(repositoryRoot, "docs", "design", "company-os-v1", "fixtures", "company-os-trademark-v1.json"), "utf8"));
-  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter, types] = await Promise.all([
+  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter, types, tree] = await Promise.all([
     source("index.ts"), source("DocsWorkspace.tsx"), source("BasicDocumentPage.tsx"),
-    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"), source("types.ts"),
+    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"), source("types.ts"), source("documentTree.ts"),
   ]);
 
   check(index.includes("DocsWorkspace") && index.includes("BasicDocumentPage") && index.includes("StructuredDocumentView") && index.includes("CompanyHome") && index.includes("DocumentHealthReview"), "public Docs API exports all five Company OS Docs surfaces");
@@ -303,6 +303,14 @@ async function main() {
   check(pages.document.properties?.some((property) => property.label === "Operating status" && property.value === "On track") && !/T\d{2}:\d{2}:\d{2}/.test(pages.document.updatedLabel ?? ""), "Document Focus preserves on-track fixture truth without reintroducing Project language and formats timestamps for people");
   const emptyPages = adaptCompanyOsDocsProjection({});
   check(emptyPages.workspace.tree.length === 0 && emptyPages.document.id === undefined && emptyPages.home.decisionRequired === undefined && emptyPages.home.financeSummary.length === 0, "empty projections render honest empty Docs data without fixture facts");
+  check(
+    emptyPages.workspace.archive === undefined
+      && emptyPages.document.breadcrumbs === undefined
+      && emptyPages.document.childDocuments === undefined
+      && emptyPages.document.backlinks === undefined
+      && emptyPages.document.missingDocumentId === undefined,
+    "an empty projection supplies no archive, breadcrumbs, child documents, backlinks, or not-found marker",
+  );
   const alternatePages = adaptCompanyOsDocsProjection({
     documents: [{ id: "document-live-1", title: "Live operating brief", space: "Operations" }],
     typed_records: [{ id: "record-live-1", record_type: "Initiative", source_document_ref: "document-live-1" }],
@@ -411,6 +419,13 @@ async function main() {
       && hierarchyNodes.some((item) => item.ref === "module-agentos-project-home"),
     "the default document tree excludes every archived Document and every module whose root Document is archived",
   );
+  check(
+    hierarchyNodes.every((item) => item.kind === "space" || item.kind === "document" || item.kind === "module")
+      && hierarchyPages.workspace.tree.every((item) => item.kind === "space" && item.ref === undefined)
+      && hierarchyNodes.filter((item) => item.ref === "document-agentos-root").every((item) => item.kind === "document")
+      && hierarchyNodes.filter((item) => item.ref === "module-agentos-project-home").every((item) => item.kind === "module"),
+    "the live workspace tree tags grouping spaces, Documents, and BusinessModules with their canonical kinds",
+  );
   const archiveRefs = flattenTree(hierarchyPages.workspace.archive?.tree).map((item) => item.ref).filter(Boolean);
   check(
     JSON.stringify(sortedIds(archiveRefs)) === JSON.stringify(sortedIds(archivedDocumentIds))
@@ -437,7 +452,32 @@ async function main() {
   // The space node holds root Documents AND every BusinessModule attached to that space,
   // so a directory anchor chosen by raw child count picks the space and exposes one page
   // instead of eleven. Rank by Document children only.
-  const { selectDocumentDirectoryAnchor, documentChildCount } = await loadDocumentTree();
+  const { selectDocumentDirectoryAnchor, documentChildCount, isDocumentTreeNode, filterDocumentTree } = await loadDocumentTree();
+  check(
+    tree.includes('item.kind === "document"') && !tree.includes('includes("document=")') && !tree.includes('includes("module=")'),
+    "documentTree distinguishes real Documents from grouping spaces and modules through the canonical node kind, never href substrings",
+  );
+  check(
+    types.includes('kind?: "space" | "document" | "module"')
+      && adapter.includes('kind: "document"') && adapter.includes('kind: "space" as const') && adapter.includes('kind: "module"'),
+    "the projection adapter tags every tree node with the canonical kind of the store object it represents",
+  );
+  check(
+    isDocumentTreeNode({ id: "d", ref: "document-x", label: "X", kind: "document" }) === true
+      && isDocumentTreeNode({ id: "space:x", label: "X", kind: "space" }) === false
+      && isDocumentTreeNode({ id: "m", ref: "module-x", label: "X", kind: "module" }) === false
+      && documentChildCount({ id: "s", label: "s", kind: "space", children: [{ id: "d", ref: "d", label: "d", kind: "document" }, { id: "m", ref: "m", label: "m", kind: "module" }] }) === 1,
+    "Document node detection and child counts accept only canonical Document nodes",
+  );
+  check(
+    JSON.stringify(filterDocumentTree([{ id: "space:x", label: "x", kind: "space", children: [{ id: "d1", ref: "d1", label: "d1", kind: "document" }, { id: "m1", ref: "m1", label: "m1", kind: "module" }] }, { id: "space:empty", label: "empty", kind: "space", children: [{ id: "m2", ref: "m2", label: "m2", kind: "module" }] }]))
+      === JSON.stringify([{ id: "space:x", label: "x", kind: "space", children: [{ id: "d1", ref: "d1", label: "d1", kind: "document" }] }]),
+    "a document tree renders only Document children, dropping module nodes and spaces left without Documents",
+  );
+  check(
+    document.includes("filterDocumentTree") && document.includes("isDocumentTreeNode"),
+    "Document Focus renders documents-only trees and directory cards",
+  );
   const wcwNumberedIds = Array.from({ length: 11 }, (_, index) => `document-wcw-${String(index).padStart(2, "0")}`);
   const wcwProjection = {
     documents: [
@@ -459,7 +499,7 @@ async function main() {
     "the document directory anchors on the Document holding all eleven numbered pages, not the space node whose children are inflated by BusinessModules",
   );
   check(
-    selectDocumentDirectoryAnchor([{ id: "space:x", label: "wanchengwanling", children: [{ id: "m", ref: "m", label: "wanchengwanling module", href: "?surface=docs&module=m" }] }], /wanchengwanling/i)?.id === "space:x"
+    selectDocumentDirectoryAnchor([{ id: "space:x", label: "wanchengwanling", kind: "space", children: [{ id: "m", ref: "m", label: "wanchengwanling module", kind: "module", href: "?surface=docs&module=m" }] }], /wanchengwanling/i)?.id === "space:x"
       && selectDocumentDirectoryAnchor(undefined, /wanchengwanling/i) === undefined,
     "the directory anchor degrades safely when a matching node has only BusinessModule children or no tree is supplied",
   );
@@ -530,6 +570,107 @@ async function main() {
       && deepLinkedArchivedPages.document.authoring === undefined
       && !flattenTree(deepLinkedArchivedPages.workspace.tree).some((item) => item.ref === "document-agentos-home"),
     "an archived deep link still resolves read-only with its archived lifecycle while staying out of the default tree",
+  );
+  check(
+    deepLinkedArchivedPages.workspace.archive?.documentIds.includes("document-agentos-home")
+      && flattenTree(deepLinkedArchivedPages.workspace.archive?.tree).some((item) => item.ref === "document-agentos-home" && item.kind === "document")
+      && deepLinkedArchivedPages.document.breadcrumbs?.some((link) => link.id === "document-agentos-home"),
+    "an archived deep link stays reachable through the explicit Archive view and keeps its own location trail",
+  );
+  check(
+    document.includes("archivedReason") && document.includes("withdrawn for archived Documents") && document.indexOf("archivedReason") < document.indexOf('"This projection does not expose a CustomPageDefinition'),
+    "Document Focus names the archived lifecycle as the true Store-live authoring boundary instead of a false missing-policy reason",
+  );
+  check(
+    workspace.includes('data-docs-archive-narrow="true"') && workspace.includes("lg:hidden"),
+    "the Archive stays reachable below desktop widths where the desktop tree rail is hidden",
+  );
+  check(
+    document.includes("lg:border-l lg:border-t-0") && document.includes("border-t border-border pt-5"),
+    "Document Focus stacks its context rail below the document body on narrow widths",
+  );
+
+  // Navigation context derives from real snapshot relations only: the ancestor
+  // chain from parent_document_id, scoped active children, backlinks from
+  // Relations/reference_refs, related WorkItems, and maintained-by actors.
+  const navigationPages = adaptCompanyOsDocsProjection({
+    actors: [
+      { id: "actor-agent-nav", display_name: "Nav Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] },
+      { id: "actor-human-nav", display_name: "Nav Human", actor_type: "human" },
+    ],
+    documents: [
+      { id: "document-nav-root", space_id: "company", parent_document_id: null, title: "Nav Root", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-nav-parent", space_id: "company", parent_document_id: "document-nav-root", title: "Nav Parent", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-nav-focus", space_id: "company", parent_document_id: "document-nav-parent", title: "Nav Focus", kind: "page", lifecycle_status: "active", block_ids: [], created_by: { actor_type: "agent", actor_id: "actor-agent-nav" }, updated_by: { actor_type: "human", actor_id: "actor-human-nav" } },
+      { id: "document-nav-child", space_id: "company", parent_document_id: "document-nav-focus", title: "Nav Child", kind: "page", lifecycle_status: "active", block_ids: [] },
+      { id: "document-nav-archived-child", space_id: "company", parent_document_id: "document-nav-focus", title: "Nav Archived Child", kind: "page", lifecycle_status: "archived", block_ids: [] },
+      { id: "document-nav-backlink", space_id: "company", parent_document_id: null, title: "Nav Backlink", kind: "page", lifecycle_status: "active", block_ids: [], reference_refs: [{ kind: "document", id: "document-nav-focus" }] },
+    ],
+    work_items: [{ id: "work-nav-focus", title: "Nav focus work", source_document_ref: "document-nav-focus" }],
+    relations: [{ id: "relation-nav-backlink", relation_type: "references", source_ref: "document-nav-backlink", target_ref: "document-nav-focus" }],
+  }, { documentId: "document-nav-focus" });
+  check(
+    navigationPages.document.breadcrumb?.join(" / ") === "company / Nav Root / Nav Parent / Nav Focus"
+      && navigationPages.document.breadcrumbs?.map((link) => link.id).join(",") === "document-nav-root,document-nav-parent,document-nav-focus"
+      && navigationPages.document.breadcrumbs?.[0]?.href === "?surface=docs&document=document-nav-root"
+      && navigationPages.document.breadcrumbs?.[2]?.href === undefined,
+    "breadcrumbs derive the full ancestor chain from parent_document_id and stay navigable up to the current Document",
+  );
+  check(
+    JSON.stringify(navigationPages.document.childDocuments?.map((link) => link.id)) === JSON.stringify(["document-nav-child"]),
+    "scoped child documents list exactly the active parent_document_id children of the selected Document",
+  );
+  check(
+    navigationPages.document.backlinks?.length === 1 && navigationPages.document.backlinks?.[0]?.id === "document-nav-backlink",
+    "backlinks derive from snapshot Relations and reference_refs, deduplicated to each referencing Document",
+  );
+  check(
+    navigationPages.document.resultLinks?.some((link) => link.id === "work-nav-focus")
+      && navigationPages.document.properties?.some((property) => property.label === "Last maintained by" && property.ref === "actor-human-nav")
+      && navigationPages.document.properties?.some((property) => property.label === "Created by" && property.ref === "actor-agent-nav"),
+    "related WorkItems and maintained-by actors derive from real snapshot relations and actor refs",
+  );
+  check(
+    document.includes('data-docs-breadcrumbs="true"') && document.includes("DocumentBreadcrumbs")
+      && document.includes('label="Child pages"') && document.includes('label="Backlinks"'),
+    "Document Focus renders navigable breadcrumbs, scoped child pages, and backlinks",
+  );
+  check(
+    types.includes("breadcrumbs?: CompanyOsLink[]") && types.includes("childDocuments?: CompanyOsLink[]") && types.includes("backlinks?: CompanyOsLink[]") && types.includes("missingDocumentId?: string"),
+    "the document page contract carries breadcrumbs, child documents, backlinks, and the not-found marker",
+  );
+
+  // A missing explicit selection is an honest not-found route, not a substitution.
+  const missingPages = adaptCompanyOsDocsProjection({
+    documents: [{ id: "document-nav-root", space_id: "company", parent_document_id: null, title: "Nav Root", kind: "page", lifecycle_status: "active", block_ids: [] }],
+  }, { documentId: "document-pruned-away" });
+  check(
+    missingPages.document.id === undefined
+      && missingPages.document.missingDocumentId === "document-pruned-away"
+      && missingPages.document.title === "Document not found"
+      && missingPages.document.authoring === undefined
+      && missingPages.document.blocks.length === 0
+      && adapter.includes("selectionMissed"),
+    "a missing explicit document selection renders an explicit not-found state instead of substituting another Document",
+  );
+  check(
+    document.includes('data-docs-document-not-found="true"') && document.includes("nothing else is substituted under the requested id"),
+    "Document Focus renders the not-found state without fabricating document content",
+  );
+
+  // A long document renders every native Block in Document.block_ids order and
+  // raises the existing oversized-document health signal.
+  const longBlockIds = Array.from({ length: 60 }, (_, index) => `block-long-${String(index).padStart(2, "0")}`);
+  const longPages = adaptCompanyOsDocsProjection({
+    documents: [{ id: "document-long", space_id: "company", parent_document_id: null, title: "Long document", kind: "page", lifecycle_status: "active", block_ids: longBlockIds }],
+    blocks: longBlockIds.map((id, index) => ({ id, document_id: "document-long", kind: "rich_text", position: 59 - index, content: { text: `Paragraph ${index}` } })),
+  }, { documentId: "document-long" });
+  check(
+    longPages.document.blocks.length === 60
+      && longPages.document.blocks[0]?.id === "block-long-00"
+      && longPages.document.blocks[59]?.id === "block-long-59"
+      && longPages.health.findings.some((finding) => finding.kind === "oversized_document" && finding.subject?.id === "document-long"),
+    "a long document renders every native Block in Document.block_ids order and flags the oversized-document health signal",
   );
 
   const pageRefs = {

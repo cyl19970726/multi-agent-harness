@@ -6,16 +6,33 @@ export function flattenDocumentTree(items: CompanyOsWorkspaceTreeItem[] = []): C
 }
 
 /**
- * Tree nodes carry either a Document route or a BusinessModule route.  Space nodes
- * hold both kinds, so raw child count is not a usable signal for "which node holds
- * the pages".
+ * A real Document node carries the canonical node kind the projection adapter
+ * derived from the store Document ref. Grouping spaces are UI-only (no `ref`),
+ * and BusinessModule nodes point at a different store object — neither is a
+ * Document, and neither is detected through href substrings.
  */
 export function isDocumentTreeNode(item: CompanyOsWorkspaceTreeItem): boolean {
-  return Boolean(item.href?.includes("document="));
+  return item.kind === "document";
 }
 
+/** Counts only real Document children; BusinessModule children never inflate a Document count. */
 export function documentChildCount(item: CompanyOsWorkspaceTreeItem): number {
   return (item.children ?? []).filter(isDocumentTreeNode).length;
+}
+
+/**
+ * Documents-only projection of a workspace tree: real Documents and the grouping
+ * spaces that frame them stay, BusinessModule nodes drop out, and a space left
+ * with no visible Document descendant is dropped rather than rendered empty.
+ */
+export function filterDocumentTree(items: CompanyOsWorkspaceTreeItem[] = []): CompanyOsWorkspaceTreeItem[] {
+  return items.flatMap((item) => {
+    if (item.kind === "module") return [];
+    const children = filterDocumentTree(item.children);
+    if (item.kind === "space" && !children.length) return [];
+    const { children: _dropped, ...rest } = item;
+    return [children.length ? { ...rest, children } : rest];
+  });
 }
 
 /**

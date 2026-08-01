@@ -749,6 +749,7 @@ function buildDocumentSpaceTree(
     return {
       id: `${prefix}${documentId}`,
       ref: documentId,
+      kind: "document",
       label: text(entry.title, "Untitled document"),
       href: docsDocumentHref(documentId),
       selected: Boolean(documentId) && options.selectedDocumentId === documentId,
@@ -768,6 +769,7 @@ function buildDocumentSpaceTree(
       const sorted = [...spaceRoots].sort(documentTitleOrder);
       return {
         id: `${prefix}space:${space}`,
+        kind: "space" as const,
         label: space,
         href: docsDocumentHref(text(sorted[0]?.id)),
         children: sorted.map(node),
@@ -819,6 +821,9 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? firstReferenced(documents, focusRefs)
     ?? workspaceDocument
     ?? documents[0];
+  // An explicit selection that does not resolve is a not-found route, not a
+  // license to substitute another Document under the requested id.
+  const selectionMissed = Boolean(selected.documentId) && !explicitlySelectedDocument;
   const templateDocuments = documents.filter((entry) => text(entry.kind).toLowerCase() === "template");
   const templateLinks = templateDocuments.map((document) => templateOption(document, blocks));
   const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
@@ -863,6 +868,43 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const selectedModuleLink = moduleLink(module);
   const focusDocumentId = text(focusDocument?.id);
   const focusParentDocument = record(allDocuments, focusDocument?.parent_document_id);
+  // Location, child, and backlink context derive only from real snapshot
+  // relations: Document.parent_document_id for the ancestor chain and scoped
+  // children, and snapshot Relations/reference_refs for backlinks. Missing
+  // relations yield absent lists, never fabricated ones.
+  const focusAncestorDocuments: JsonRecord[] = [];
+  {
+    const seen = new Set<string>([focusDocumentId]);
+    let cursor = focusParentDocument;
+    while (cursor) {
+      const cursorId = text(cursor.id);
+      if (!cursorId || seen.has(cursorId)) break;
+      seen.add(cursorId);
+      focusAncestorDocuments.unshift(cursor);
+      cursor = record(allDocuments, cursor.parent_document_id);
+    }
+  }
+  const focusSpaceLabel = focusDocument ? text(focusDocument.space, text(focusDocument.space_id)) : "";
+  const focusBreadcrumbLabels = focusDocument
+    ? [focusSpaceLabel, ...focusAncestorDocuments.map((entry) => text(entry.title, "Untitled document")), text(focusDocument.title, "Untitled document")].filter(Boolean)
+    : undefined;
+  const focusBreadcrumbLinks: CompanyOsLink[] = focusDocument
+    ? linkEntries([
+        ...focusAncestorDocuments.map(documentLink),
+        { id: focusDocumentId, label: text(focusDocument.title, "Untitled document"), kind: "document" as const },
+      ])
+    : [];
+  const focusChildDocuments = focusDocumentId
+    ? documents.filter((entry) => text(entry.parent_document_id) === focusDocumentId).sort(documentTitleOrder)
+    : [];
+  const focusBacklinkDocuments = focusDocumentId
+    ? allDocuments.filter((entry) => {
+        const entryId = text(entry.id);
+        if (!entryId || entryId === focusDocumentId) return false;
+        const references = entityRefs(entry.reference_refs).some((reference) => reference.kind === "document" && reference.id === focusDocumentId);
+        return references || hasRelationBetween(relations, entryId, focusDocumentId);
+      })
+    : [];
   const focusTypedRecords = focusDocumentId
     ? typedRecords.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
       || hasRelationBetween(relations, focusDocumentId, text(entry.id)))
@@ -882,6 +924,11 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     return [...subjectRefs, subjectId].some((id) => focusWorkItemIds.has(id) || focusFinancialRecordIds.has(id) || focusTypedRecordIds.has(id));
   });
   const focusSourceLinks = linkEntries([focusParentDocument && text(focusParentDocument.id) !== focusDocumentId ? documentLink(focusParentDocument) : undefined]);
+  const focusChildDocumentLinks = linkEntries(focusChildDocuments.map(documentLink));
+  const focusBacklinkLinks = linkEntries(focusBacklinkDocuments.map((entry) => {
+    const link = documentLink(entry);
+    return link && isArchived(entry) ? { ...link, meta: "Archived history" } : link;
+  }));
   const focusResultLinks = linkEntries(focusWorkItems.map(workItemLink));
   const focusConnectedRecordLinks = linkEntries([
     ...focusTypedRecords.map(typedRecordLink),
@@ -965,7 +1012,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     const moduleSpace = text(rootDocument?.space, text(rootDocument?.space_id, text(workspaceDocument?.space, text(workspaceDocument?.space_id))));
     const parent = workspaceTree.find((entry) => entry.label === moduleSpace) ?? (!rootDocument ? workspaceTree[0] : undefined);
     if (!moduleId || !parent) continue;
-    parent.children?.push({ id: moduleId, ref: moduleId, label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
+    parent.children?.push({ id: moduleId, ref: moduleId, kind: "module", label: text(candidate.name, "Unnamed module"), href: docsModuleHref(moduleId), selected: selected.moduleId === moduleId, meta: humanize(candidate.status) || undefined });
     placedModuleIds.add(moduleId);
   }
 
@@ -1326,11 +1373,27 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       proposal: proposalLink,
       authoringCommands: governanceCommands,
     },
-    document: {
+    document: selectionMissed ? {
+      fixtureId,
+      id: undefined,
+      title: "Document not found",
+      missingDocumentId: selected.documentId,
+      description: `No Document with id "${selected.documentId}" is present in this projection. The route stays explicit instead of substituting another Document under the requested id.`,
+      documentTree: workspaceTree,
+      properties: [],
+      blocks: [],
+      sourceLinks: [],
+      resultLinks: [],
+      connectedRecords: [],
+      activity: [],
+    } : {
       fixtureId,
       id: focusDocument ? text(focusDocument.id) : undefined,
       title: focusDocument ? text(focusDocument.title, "Untitled document") : "No document selected",
-      breadcrumb: focusDocument?.space || focusDocument?.space_id ? [text(focusDocument.space, text(focusDocument.space_id))] : undefined,
+      breadcrumb: focusBreadcrumbLabels,
+      breadcrumbs: focusBreadcrumbLinks.length ? focusBreadcrumbLinks : undefined,
+      childDocuments: focusChildDocumentLinks.length ? focusChildDocumentLinks : undefined,
+      backlinks: focusBacklinkLinks.length ? focusBacklinkLinks : undefined,
       lifecycleStatus: text(focusDocument?.lifecycle_status, text(field(focusDocument, "status"))) || undefined,
       description: focusDocument ? "This document is rendered from the supplied Company OS projection." : "Select a document or provide a document projection to begin.",
       documentTree: workspaceTree,
