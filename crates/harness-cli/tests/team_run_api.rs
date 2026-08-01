@@ -4295,3 +4295,323 @@ fn sse_streams_team_run_events() {
         "expected a team_run created frame for {run_id}; got: {frames:?}"
     );
 }
+
+#[test]
+fn external_interactive_member_joins_and_exchanges_mail() {
+    let home = TempHome::new("team-run-external-interactive");
+    let project_id = init_project(&home, "alpha");
+
+    // A declared external interactive member is rejected for providers with no
+    // registered Agent Team mode.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "bad provider",
+            "--member",
+            "bad:reviewer:unknown/external_interactive",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "unknown provider must be rejected: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("execution mode external_interactive is not registered for provider unknown"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Create a run whose only member is the user's own external interactive
+    // session; Harness spawns nothing for it.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Review the external lane",
+            "--member",
+            "ext-reviewer:reviewer:kimi/external_interactive",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    let members = status["members"].as_array().expect("members");
+    assert_eq!(members.len(), 1, "members: {members:?}");
+    let ext = &members[0]["member_run"];
+    let ext_id = ext["id"].as_str().expect("external member id").to_string();
+    assert_eq!(ext["status"].as_str(), Some("idle"));
+    assert_eq!(
+        ext["provider_profile"]["execution_mode"].as_str(),
+        Some("external_interactive")
+    );
+    assert_eq!(
+        ext["provider_profile"]["execution_driver"].as_str(),
+        Some("user_driven")
+    );
+    assert!(
+        ext["native_session"].is_null(),
+        "external members have no native session record: {ext}"
+    );
+    assert!(
+        ext["workspace_snapshot"].is_null(),
+        "external members get no Harness workspace snapshot: {ext}"
+    );
+
+    // add-member accepts the same mode on an active run and records the
+    // correlated Assignment.
+    let added = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "add-member",
+            "--id",
+            &run_id,
+            "--member",
+            "ext-helper:helper:codex/external_interactive",
+            "--assignment",
+            "Pair on the review",
+        ],
+    );
+    let helper_id = added["member_run"]["id"]
+        .as_str()
+        .expect("helper member id")
+        .to_string();
+    assert_eq!(
+        added["member_run"]["provider_profile"]["execution_mode"].as_str(),
+        Some("external_interactive")
+    );
+    assert_eq!(
+        added["assignment"]["kind"].as_str(),
+        Some("assignment"),
+        "assignment message: {added}"
+    );
+
+    // The Supervisor starts the run without spawning an adapter for external
+    // members: no adapter error, no Failed status, and start returns promptly
+    // because there is nothing to drive.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &["--project", &project_id, "team-run", "start", "--id", &run_id],
+    );
+    assert!(
+        out.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        !stdout.contains("adapter not implemented"),
+        "start output: {stdout}"
+    );
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    assert_eq!(status["team_run"]["status"].as_str(), Some("running"));
+    for entry in status["members"].as_array().expect("members") {
+        let member_status = entry["member_run"]["status"].as_str().expect("member status");
+        assert!(
+            !matches!(member_status, "failed" | "disconnected"),
+            "external member must not be marked {member_status}: {entry}"
+        );
+    }
+
+    // Host → external member: the delivery stays queued until the session
+    // polls its inbox itself.
+    let assignment = team_run_json(
+        &home,
+        &project_id,
+        &["inbox", "--id", &run_id, "--member-run-id", &ext_id, "--json"],
+    );
+    let assignment = assignment
+        .as_array()
+        .expect("external inbox")
+        .iter()
+        .find(|message| message["kind"].as_str() == Some("assignment"))
+        .expect("assignment in external inbox")
+        .clone();
+    let correlation = assignment["correlation_id"]
+        .as_str()
+        .expect("assignment correlation")
+        .to_string();
+    let assignment_id = assignment["id"].as_str().expect("assignment id").to_string();
+
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &ext_id,
+            "--kind",
+            "message",
+            "--body",
+            "Please review crates/harness-core",
+            "--correlation-id",
+            &correlation,
+            "--causation-id",
+            &assignment_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "host send failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let host_message_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // The external session polls: both the Assignment and the follow-up are
+    // actionable; it acks what it consumed.
+    let inbox = team_run_json(
+        &home,
+        &project_id,
+        &["inbox", "--id", &run_id, "--member-run-id", &ext_id, "--json"],
+    );
+    let inbox_ids: Vec<&str> = inbox
+        .as_array()
+        .expect("inbox")
+        .iter()
+        .filter_map(|message| message["id"].as_str())
+        .collect();
+    assert!(
+        inbox_ids.contains(&assignment_id.as_str()) && inbox_ids.contains(&host_message_id.as_str()),
+        "external inbox ids: {inbox_ids:?}"
+    );
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "ack",
+            "--id",
+            &run_id,
+            "--member-id",
+            &ext_id,
+            "--message-id",
+            &format!("{assignment_id},{host_message_id}"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "external ack failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let inbox = team_run_json(
+        &home,
+        &project_id,
+        &["inbox", "--id", &run_id, "--member-run-id", &ext_id, "--json"],
+    );
+    assert_eq!(
+        inbox.as_array().map(Vec::len),
+        Some(0),
+        "acked mail leaves the actionable inbox: {inbox}"
+    );
+
+    // External member → Host reply keeps the Assignment correlation and names
+    // its direct cause.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            &ext_id,
+            "--to",
+            "host",
+            "--kind",
+            "message",
+            "--body",
+            "Review done: no defects found",
+            "--correlation-id",
+            &correlation,
+            "--causation-id",
+            &host_message_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "external reply failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reply_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let host_inbox = team_run_json(
+        &home,
+        &project_id,
+        &["inbox", "--id", &run_id, "--member-run-id", "host", "--json"],
+    );
+    let reply = host_inbox
+        .as_array()
+        .expect("host inbox")
+        .iter()
+        .find(|message| message["id"].as_str() == Some(reply_id.as_str()))
+        .expect("reply in host inbox");
+    assert_eq!(reply["from_member_id"].as_str(), Some(ext_id.as_str()));
+    assert_eq!(reply["correlation_id"].as_str(), Some(correlation.as_str()));
+    assert_eq!(
+        reply["causation_id"].as_str(),
+        Some(host_message_id.as_str())
+    );
+
+    // Closing an external member only records the terminal status; there is
+    // no provider runtime or native session to clean up.
+    let closed = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "close-member",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            &helper_id,
+            "--reason",
+            "review pair no longer needed",
+        ],
+    );
+    assert_eq!(closed["status"].as_str(), Some("stopped"), "close: {closed}");
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let helper = store
+        .member_runs()
+        .expect("member rows")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == helper_id)
+        .expect("helper member row");
+    assert_eq!(helper.status, harness_core::MemberRunStatus::Stopped);
+    assert!(
+        store
+            .latest_team_member_close_request(&helper_id)
+            .expect("close request")
+            .is_some_and(|close| close.status == harness_core::TeamMemberCloseStatus::Applied),
+        "close request must be applied without a supervisor"
+    );
+}

@@ -31,6 +31,7 @@ use harness_core::{
     WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
@@ -9677,8 +9678,11 @@ fn append_team_run_event(
 }
 
 /// One member spec for team-run creation, parsed from either the CLI
-/// `--member name:role:provider[:model][@path1,path2]` spelling or the HTTP
-/// JSON body.
+/// `--member name:role:provider[/mode][:model][@path1,path2]` spelling or the
+/// HTTP JSON body. `/mode` selects the execution mode; the driven Agent Team
+/// modes are `codex_app_server`, `kimi_acp`, and `claude_agent_sdk`, and
+/// `external_interactive` declares the user's own already-open interactive
+/// session that Harness never spawns or drives (it polls its own inbox).
 struct TeamMemberSpec {
     agent_member_id: Option<String>,
     name: String,
@@ -9755,10 +9759,23 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
                 .to_string(),
         ));
     }
+    if member.execution_mode.as_deref() == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
+        // An external interactive member is the user's own already-open
+        // provider session; there is no provider-native session to resume.
+        if member.resume_native_session_id.is_some() {
+            return Err(CliError::Usage(
+                "external_interactive members have no provider-native session to resume"
+                    .to_string(),
+            ));
+        }
+    }
     if let Some(mode) = member.execution_mode.as_deref() {
         let allowed = matches!(
             (member.provider.as_str(), mode),
-            ("codex", "codex_app_server") | ("kimi", "kimi_acp") | ("claude", "claude_agent_sdk")
+            ("codex", "codex_app_server")
+                | ("kimi", "kimi_acp")
+                | ("claude", "claude_agent_sdk")
+                | ("codex" | "kimi" | "claude", EXECUTION_MODE_EXTERNAL_INTERACTIVE)
         );
         if !allowed {
             return Err(CliError::Usage(format!(
@@ -9792,6 +9809,40 @@ fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
 ) -> ProviderIntegrationProfile {
+    // An external interactive member is the user's own already-open
+    // interactive provider session, explicitly declared as non-driven. Harness
+    // never spawns, drives, cancels, or resumes it; the session polls its
+    // inbox and replies over the trusted loopback CLI/MCP. There is no adapter
+    // contract and no provider-native session record, so no Harness-side
+    // capability claim is made.
+    if requested_mode == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string(),
+            execution_driver: MemberExecutionDriver::UserDriven,
+            provider_version: None,
+            adapter_contract_version: None,
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: None,
+            compatibility_note: Some(
+                "User-driven external interactive session; Harness owns only its \
+                 coordination mail and makes no provider capability claim."
+                    .to_string(),
+            ),
+            interaction_mode: ProviderInteractionMode::Unsupported,
+            ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
+            plan_mode: ProviderFeatureMode::Unsupported,
+            goal_mode: ProviderFeatureMode::Unsupported,
+            tool_event_fidelity: ProviderEventFidelity::None,
+            artifact_event_fidelity: ProviderEventFidelity::None,
+            supports_cancel: false,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
     // Agent Team Claude members are persistent Agent SDK sessions. `claude -p`
     // remains available to bounded Dynamic Workflow adapters and historical
     // records, but is not a second Team Member mode.
@@ -10147,12 +10198,17 @@ fn team_member_provider_version_output(provider: &str) -> Result<String, String>
     )
 }
 
-/// Parse one `--member name:role:provider[:model][@path1,path2][#brief]` spec.
+/// Parse one `--member name:role:provider[/mode][:model][@path1,path2][#brief]` spec.
 ///
 /// The brief is split off FIRST and is free text: it may contain `@` and `:`,
 /// which the identity grammar would otherwise consume. Without it the only way
 /// to brief a member is the run-level objective, which is then delivered
 /// verbatim to every member of a multi-lane run.
+///
+/// `/mode` names the execution mode (`app-server`, `acp`, `agent-sdk`
+/// shortcuts or the literal mode id). `external_interactive` declares a
+/// user-driven external session: Harness spawns no provider process for it
+/// and the member polls its own inbox via `team-run inbox`/`send`/`ack`.
 fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
     let (raw, inline_assignment) = match raw.split_once('#') {
         Some((head, brief)) if !brief.trim().is_empty() => (head, Some(brief.trim().to_string())),
@@ -10173,7 +10229,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
     let parts: Vec<&str> = identity.split(':').collect();
     if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
         return Err(CliError::Usage(format!(
-            "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2][#brief])"
+            "invalid --member `{raw}` (expected name:role:provider[/mode][:model][@path1,path2][#brief])"
         )));
     }
     let (provider, execution_mode) = match parts[2].split_once('/') {
@@ -14251,6 +14307,25 @@ pub(crate) fn drive_prepared_team_run(
             for mut member in pending_members.drain(..) {
                 seen_member_ids.insert(member.id.clone());
                 let member_ledger = Arc::clone(&ledger);
+                // A declared external interactive member is driven by the user
+                // in their own already-open provider session: no adapter
+                // thread, no workspace snapshot, no Failed/Disconnected
+                // derivation. Its deliveries stay queued until the session
+                // polls its inbox and acks.
+                if member.is_external_interactive() {
+                    member_ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        Some(member.id.clone()),
+                        "member_run",
+                        &member.id,
+                        "updated",
+                        &format!(
+                            "external interactive member {} is user-driven; supervisor does not spawn an adapter",
+                            member.name
+                        ),
+                    )?;
+                    continue;
+                }
                 let member_objective = objective.clone();
                 let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
                 member.workspace_snapshot = Some(snapshot_member_workspace(
@@ -14340,7 +14415,9 @@ pub(crate) fn drive_prepared_team_run(
             latest_member_runs_in_append_order(&ledger.store)?
                 .into_iter()
                 .filter(|member| {
-                    member.team_run_id == run_id && !seen_member_ids.contains(&member.id)
+                    member.team_run_id == run_id
+                        && !member.is_external_interactive()
+                        && !seen_member_ids.contains(&member.id)
                 })
                 .collect()
         };
@@ -14413,6 +14490,16 @@ fn run_member_orchestration(
     member: MemberRun,
     context: MemberRuntimeContext,
 ) -> MemberOutcome {
+    // Belt and braces: the supervisor drain already skips declared external
+    // interactive members; if one ever reaches this loop it must leave with
+    // its current status, never an adapter error or a Failed row.
+    if member.is_external_interactive() {
+        return MemberOutcome::new(
+            &member,
+            member.status,
+            "external interactive member is user-driven; Harness does not drive it".to_string(),
+        );
+    }
     let mut generation = 0u64;
     loop {
         let mut current = ledger
@@ -17146,12 +17233,40 @@ pub(crate) fn acknowledge_team_message(
     let was_acknowledged = message.deliveries.iter().any(|delivery| {
         delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Acknowledged
     });
-    let message = store_conflict_as_usage(store.acknowledge_team_message_delivery(
-        &message.team_run_id,
-        message_id,
-        member_id,
-        &now_string(),
-    ))?;
+    // A declared external interactive member has no Supervisor to claim the
+    // delivery and record provider receipt, so its mail never leaves `queued`
+    // on its own: the trusted loopback inbox read IS its delivery channel and
+    // its ack may proceed straight from `queued`. Driven members keep the
+    // delivered-first invariant enforced by the store.
+    let queued_external_delivery = message
+        .deliveries
+        .iter()
+        .any(|delivery| {
+            delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+        })
+        && latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.id == member_id && member.team_run_id == message.team_run_id)
+            .is_some_and(|member| member.is_external_interactive());
+    let message = if queued_external_delivery {
+        let mut updated = message.clone();
+        let delivery = updated
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_id)
+            .expect("queued external delivery checked above");
+        delivery.status = TeamDeliveryStatus::Acknowledged;
+        delivery.updated_at = now_string();
+        store_conflict_as_usage(store.append_team_message(&updated))?;
+        updated
+    } else {
+        store_conflict_as_usage(store.acknowledge_team_message_delivery(
+            &message.team_run_id,
+            message_id,
+            member_id,
+            &now_string(),
+        ))?
+    };
     if !was_acknowledged {
         append_team_run_event(
             store,
@@ -20134,7 +20249,9 @@ fn close_team_member_value(
             lease.status == harness_core::TeamSupervisorLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()
         });
-    if live_lease.is_some() {
+    // An external interactive member has no supervisor-owned runtime to
+    // dispatch control to; closing it only records the terminal status.
+    if live_lease.is_some() && !member.is_external_interactive() {
         return dispatch_live_member_control(
             store,
             LiveMemberControlRequest::Close {

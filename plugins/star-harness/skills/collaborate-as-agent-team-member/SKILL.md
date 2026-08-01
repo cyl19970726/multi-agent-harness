@@ -223,3 +223,77 @@ Remain available. The lane ends only when the Host sends an ordinary message
 accepting the Handoff, deactivates the member, or ends the run. Address review
 findings in the same MemberRun, Assignment correlation, Workspace, and native
 session unless the Host explicitly changes the contract.
+
+## Joining As An External Interactive Session
+
+Your already-open interactive CLI session (Kimi Code, Codex, or Claude Code)
+can join an existing AgentTeamRun as a declared `external_interactive` member.
+Harness never spawns or drives you: no provider process, no adapter thread, no
+native-session record. Your deliveries stay `queued` until you poll your Inbox
+yourself, and evidence claims about your work cannot resolve to a
+provider-native session — so report your own files, commands, and test results
+in correlated messages and Handoffs.
+
+The Host (or you, from the trusted loopback CLI) adds the member with the
+`provider/mode` spec spelling:
+
+```bash
+"$HARNESS_BIN" team-run add-member --id <team-run-id> \
+  --member "<name>:<role>:kimi/external_interactive" \
+  --assignment "<your brief>"
+```
+
+Use `codex/external_interactive` or `claude/external_interactive` for those
+providers. The response carries your `member_run.id` and the Assignment
+message with its `correlation_id`. `team-run start` skips you: the Supervisor
+spawns no adapter and never marks you Failed for being undriven.
+
+Poll your Inbox and acknowledge what you consumed:
+
+```bash
+"$HARNESS_BIN" team-run inbox --id <team-run-id> \
+  --member-run-id <member-run-id> --json
+
+"$HARNESS_BIN" team-run ack --id <team-run-id> \
+  --member-id <member-run-id> --message-id <message-id>[,<message-id>...]
+```
+
+With the star-harness plugin installed you do not have to rely on polling:
+export the binding before the session (or before the run starts) and the
+lifecycle hook pushes your queued mail into the session as native context on
+`UserPromptSubmit`, and force-continues an idle turn on `Stop`
+(`decision=block` for Codex/Claude, exit 2 for Kimi) until you intake it:
+
+```bash
+export HARNESS_TEAM_RUN_ID=<team-run-id>
+export HARNESS_MEMBER_RUN_ID=<member-run-id>
+```
+
+This push channel exists only for declared `external_interactive` members; a
+driven member's hook binding (`HARNESS_AGENT_MEMBER_ID`) stays telemetry-only
+because the Supervisor owns its Inbox.
+
+For a blocking wait instead of polling, watch the run's event log — every new
+TeamMessage folds an event:
+
+```bash
+"$HARNESS_BIN" team-run wait --id <team-run-id> --timeout-secs 600
+```
+
+Reply with the Assignment correlation stable and `causation-id` set to the
+exact message you are answering (the Assignment id for the first result, the
+follow-up's id afterwards). Never reuse a peer's Assignment correlation:
+
+```bash
+"$HARNESS_BIN" team-run send --id <team-run-id> \
+  --from <member-run-id> --to host --kind message \
+  --body "<decision-shaped answer, progress, or BLOCKER: ...>" \
+  --correlation-id <correlation-id> \
+  --causation-id <message-id>
+```
+
+Over MCP the same loop uses `team_run_inbox`, `team_message_acknowledge`, and
+`team_run_send_message` with `sender_kind=member_run`. Unbound MCP authorship
+is rejected for driven members; it is accepted only for declared
+`external_interactive` members and recorded with
+`authn_source=mcp:external_interactive`.

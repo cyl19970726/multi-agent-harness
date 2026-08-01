@@ -30,6 +30,8 @@ writeFileSync(
 set -euo pipefail
 if [[ "\${1:-} \${2:-}" == "team-run host-inbox" ]]; then
   printf '%s\\n' '[{"team_run_id":"run-1","team_run_status":"running","mission_id":"mission-1","messages":[{"id":"msg-1","from_member_id":"member-1","kind":"handoff","correlation_id":"corr-1","body":"RESULT: done\\nChecks passed"}]}]'
+elif [[ "\${1:-} \${2:-}" == "team-run inbox" ]]; then
+  printf '%s\\n' '[{"id":"mmsg-1","from_member_id":"member-run-greeter","kind":"message","correlation_id":"corr-9","body":"hello external member","deliveries":[{"member_id":"member-run-ext","status":"queued"}]}]'
 elif [[ "\${1:-} \${2:-}" == "hook record" ]]; then
   printf '%s\\n' "$*" >> "\${HOOK_LOG:?}"
   exit 0
@@ -200,6 +202,83 @@ try {
   );
   if (kimiContinued.status !== 0 || kimiContinued.stdout.trim()) {
     throw new Error("A continued Kimi Stop must allow exit without output");
+  }
+
+  const memberEnv = {
+    HARNESS_HOST_SURFACE: "codex-app",
+    HARNESS_TEAM_RUN_ID: "run-1",
+    HARNESS_MEMBER_RUN_ID: "member-run-ext",
+  };
+
+  const extStarted = run("SessionStart", memberEnv);
+  if (
+    !extStarted.includes(
+      "External member binding: team_run=run-1 member_run=member-run-ext",
+    ) ||
+    !extStarted.includes("Member mail: TeamRun=run-1 pending_member_messages=1") ||
+    !extStarted.includes("from=member-run-greeter kind=message message=mmsg-1")
+  ) {
+    throw new Error(
+      `External member SessionStart must inject bound member mail: ${extStarted}`,
+    );
+  }
+
+  const extPrompt = run("UserPromptSubmit", memberEnv);
+  if (extPrompt.includes("External member binding:")) {
+    throw new Error("UserPromptSubmit should not repeat member binding orientation");
+  }
+  if (!extPrompt.includes("Member mail: TeamRun=run-1")) {
+    throw new Error("UserPromptSubmit must surface actionable member mail");
+  }
+
+  const extStopped = JSON.parse(
+    run("Stop", memberEnv, { turn_id: "turn-9", stop_hook_active: false }),
+  );
+  if (
+    extStopped.decision !== "block" ||
+    !extStopped.reason.includes("Member Inbox") ||
+    !extStopped.reason.includes("mmsg-1") ||
+    !extStopped.reason.includes("--member-id member-run-ext")
+  ) {
+    throw new Error(
+      "Codex Stop must continue the same native task with bounded member mail",
+    );
+  }
+
+  const extContinued = JSON.parse(
+    run("Stop", memberEnv, { turn_id: "turn-10", stop_hook_active: true }),
+  );
+  if (Object.keys(extContinued).length !== 0) {
+    throw new Error("A continued member Stop hook must not create a loop");
+  }
+
+  const extKimiStopped = runRaw(
+    "Stop",
+    {
+      KIMI_PLUGIN_ROOT: temp,
+      HARNESS_TEAM_RUN_ID: "run-1",
+      HARNESS_MEMBER_RUN_ID: "member-run-ext",
+    },
+    { stop_hook_active: false },
+  );
+  if (
+    extKimiStopped.status !== 2 ||
+    !extKimiStopped.stderr.includes("mmsg-1")
+  ) {
+    throw new Error(
+      `Kimi member Stop must block through exit 2 with a reason; status=${extKimiStopped.status} stderr=${extKimiStopped.stderr}`,
+    );
+  }
+
+  const drivenPrecedence = run("SessionStart", {
+    HARNESS_AGENT_MEMBER_ID: "member-driven",
+    HARNESS_TEAM_RUN_ID: "run-1",
+    HARNESS_MEMBER_RUN_ID: "member-run-ext",
+  });
+  if (drivenPrecedence.trim()) {
+    throw new Error(
+      "A driven Member (HARNESS_AGENT_MEMBER_ID) must stay telemetry-only even when member inbox env leaks in",
+    );
   }
 
   console.log("Star Harness Codex, Claude, and Kimi Host Inbox hooks are valid");

@@ -1982,6 +1982,18 @@ pub struct MemberRun {
     pub finished_at: Option<String>,
 }
 
+impl MemberRun {
+    /// Whether this is a declared non-driven external interactive member (see
+    /// [`EXECUTION_MODE_EXTERNAL_INTERACTIVE`]). The Supervisor must not spawn
+    /// a provider adapter for it; its deliveries stay queued until the
+    /// external session polls and acks.
+    pub fn is_external_interactive(&self) -> bool {
+        self.provider_profile
+            .as_ref()
+            .is_some_and(|profile| profile.execution_mode == EXECUTION_MODE_EXTERNAL_INTERACTIVE)
+    }
+}
+
 impl Validate for AgentTeamRun {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "AgentTeamRun.id")?;
@@ -2067,6 +2079,14 @@ impl Validate for MemberRun {
     }
 }
 
+/// Execution mode of a declared non-driven member: the user's own
+/// already-open interactive provider CLI session (Kimi Code, Codex, or Claude
+/// Code), which Harness never spawns or drives. The session polls its Harness
+/// inbox and replies through the trusted loopback CLI/MCP; there is no
+/// provider-native session record, so evidence claims about this member's
+/// work cannot resolve to provider-native execution truth.
+pub const EXECUTION_MODE_EXTERNAL_INTERACTIVE: &str = "external_interactive";
+
 /// How one provider member is executed by Harness. Capability claims are
 /// mode-specific: `codex_exec` and `kimi_acp` are different products even when
 /// their user-facing provider names are simply Codex and Kimi.
@@ -2131,6 +2151,10 @@ pub enum MemberExecutionDriver {
     #[default]
     HostDriven,
     ProviderDriven,
+    /// Declared external interactive members only: the human drives their own
+    /// already-open provider session out-of-band. Harness never starts a
+    /// provider cycle for this member and no native continuation loop exists.
+    UserDriven,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -43,7 +43,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
 | How does a member receive work? | A correlated Assignment and member Inbox are projected into provider turns by `MessageDelivery`. |
-| Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`) or one reviewed native continuation controller (`provider_driven`). |
+| Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`), one reviewed native continuation controller (`provider_driven`), or the user's own out-of-band session (`user_driven`, declared `external_interactive` members only). |
 | Who decides the work is accepted? | The Host, using the Assignment completion policy and evidence; provider completion is only an execution signal. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |

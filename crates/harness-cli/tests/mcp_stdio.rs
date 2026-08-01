@@ -1051,3 +1051,159 @@ fn mcp_stdio_agent_team_tools() {
         "error payload: {result}"
     );
 }
+
+/// Declared `external_interactive` members are the one exception to the
+/// unbound-MCP impersonation invariant: their user-driven session may author
+/// its own MemberRun mail, recorded with explicit provenance. Driven members
+/// stay rejected from the same unbound connection.
+#[test]
+fn mcp_stdio_external_interactive_member_authorship() {
+    let home = TempHome::new("mcp-stdio-external");
+    let project_id = init_project(&home, "mcp-proj");
+    let project_root =
+        std::fs::canonicalize(home.base().join("mcp-proj")).expect("canonical project root");
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let response = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-stdio-test", "version": "0"},
+        }),
+    );
+    assert!(response["result"]["capabilities"]["tools"].is_object());
+    mcp.notify("notifications/initialized");
+
+    // One driven member plus one declared external interactive member.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "External authorship gate",
+                "execution_root": project_root,
+                "members": [
+                    {"name": "lead", "role": "coordinator", "provider": "kimi"},
+                    {"name": "ext-reviewer", "role": "reviewer", "provider": "kimi", "execution_mode": "external_interactive"}
+                ]
+            }
+        }),
+    );
+    let payload = call_payload(&response);
+    let team_run_id = payload["team_run_id"]
+        .as_str()
+        .expect("team_run_id")
+        .to_string();
+    let member_ids: Vec<String> = payload["member_run_ids"]
+        .as_array()
+        .expect("member_run_ids")
+        .iter()
+        .map(|id| id.as_str().expect("member id").to_string())
+        .collect();
+    assert_eq!(member_ids.len(), 2, "member ids: {payload}");
+    let assignment = &payload["assignment_messages"][1];
+    let assignment_id = assignment["id"].as_str().expect("assignment id").to_string();
+    let assignment_correlation = assignment["correlation_id"]
+        .as_str()
+        .expect("assignment correlation")
+        .to_string();
+
+    // The external session's own authorship is accepted with explicit
+    // provenance and keeps the Assignment lineage.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": member_ids[1],
+                "sender_kind": "member_run",
+                "to_member_ids": ["host"],
+                "kind": "message",
+                "body": "External review: no defects found",
+                "correlation_id": assignment_correlation.clone(),
+                "causation_id": assignment_id.clone()
+            }
+        }),
+    );
+    let sent = call_payload(&response);
+    let reply_id = sent["message_id"].as_str().expect("message_id").to_string();
+    assert_eq!(
+        sent["correlation_id"].as_str(),
+        Some(assignment_correlation.as_str())
+    );
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let reply = store
+        .team_messages()
+        .expect("team messages")
+        .into_iter()
+        .rev()
+        .find(|message| message.id == reply_id)
+        .expect("external reply row");
+    assert_eq!(
+        reply.sender.as_ref().and_then(|sender| sender.authn_source.as_deref()),
+        Some("mcp:external_interactive"),
+        "external authorship provenance: {reply:?}"
+    );
+
+    // A driven member's authorship from the same unbound connection stays
+    // rejected.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": member_ids[0],
+                "sender_kind": "member_run",
+                "to_member_ids": [member_ids[1]],
+                "kind": "message",
+                "body": "attempted driven-member impersonation",
+                "correlation_id": assignment_correlation.clone()
+            }
+        }),
+    );
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("impersonation error")
+        .contains("unbound MCP connections may not author"));
+
+    // Inbox read and ack for the external member work over MCP as well: its
+    // deliveries never leave queued on their own, and the ack proceeds
+    // straight from queued.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": team_run_id, "member_run_id": member_ids[1]}
+        }),
+    );
+    let inbox = call_payload(&response);
+    assert_eq!(
+        inbox["messages"].as_array().map(Vec::len),
+        Some(1),
+        "external inbox: {inbox}"
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_message_acknowledge",
+            "arguments": {"message_id": assignment_id, "member_id": member_ids[1]}
+        }),
+    );
+    call_payload(&response);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_inbox",
+            "arguments": {"team_run_id": team_run_id, "member_run_id": member_ids[1]}
+        }),
+    );
+    let inbox = call_payload(&response);
+    assert_eq!(
+        inbox["messages"].as_array().map(Vec::len),
+        Some(0),
+        "acked mail leaves the actionable inbox: {inbox}"
+    );
+}

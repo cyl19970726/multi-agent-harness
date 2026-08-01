@@ -847,21 +847,46 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         }
     });
     let sender_kind = parse_team_actor_kind(&sender_kind).map_err(|error| error.to_string())?;
+    let sender_id =
+        optional_str(arguments, "sender_id")?.unwrap_or_else(|| from_member_id.to_string());
+    let mut authn_source = "mcp".to_string();
     if matches!(
         sender_kind,
         TeamActorKind::MemberRun | TeamActorKind::AgentMember
     ) {
-        return Err(
-            "unbound MCP connections may not author MemberRun or AgentMember messages; \
-             member-originated messages must come from that member's bound provider runtime"
-                .to_string(),
-        );
+        // The unbound-client impersonation invariant holds for driven
+        // members: their mail must originate from the bound provider runtime.
+        // The declared exception is a non-driven external_interactive member,
+        // whose user-driven session has no bound runtime and whose mail is
+        // accepted from this trusted loopback client with explicit provenance.
+        let external_member = latest_member_runs_in_append_order(store)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|member| member.team_run_id == team_run_id)
+            .find(|member| match sender_kind {
+                TeamActorKind::MemberRun => member.id == sender_id,
+                TeamActorKind::AgentMember => {
+                    member.agent_member_id.as_deref() == Some(sender_id.as_str())
+                }
+                _ => false,
+            });
+        match external_member {
+            Some(member) if member.is_external_interactive() => {
+                authn_source = "mcp:external_interactive".to_string();
+            }
+            _ => {
+                return Err(
+                    "unbound MCP connections may not author MemberRun or AgentMember messages; \
+                     member-originated messages must come from that member's bound provider runtime \
+                     (declared external_interactive members excepted)"
+                        .to_string(),
+                );
+            }
+        }
     }
     if sender_kind == TeamActorKind::Host && from_member_id != "host" {
         return Err("sender_kind=host requires from_member_id=host".to_string());
     }
-    let sender_id =
-        optional_str(arguments, "sender_id")?.unwrap_or_else(|| from_member_id.to_string());
     let message = send_team_message_as(
         store,
         team_run_id,
@@ -869,7 +894,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             kind: sender_kind,
             id: sender_id,
             display_name: optional_str(arguments, "sender_name")?,
-            authn_source: Some("mcp".to_string()),
+            authn_source: Some(authn_source),
         },
         to_member_ids,
         kind,
@@ -1123,7 +1148,7 @@ fn tool_definitions() -> Value {
                                 "name": {"type": "string", "minLength": 1, "description": "Member display name, unique within the run."},
                                 "role": {"type": "string", "minLength": 1, "description": "e.g. coordinator / implementer / reviewer."},
                                 "provider": {"type": "string", "minLength": 1, "description": "Registered executable provider id: codex, kimi, or claude. Unknown providers fail honestly."},
-                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; codex_exec and claude_cli are workflow-only."},
+                                "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk", "external_interactive"], "description": "Optional provider-specific Agent Team mode. Codex only accepts codex_app_server and Claude only accepts claude_agent_sdk; codex_exec and claude_cli are workflow-only. external_interactive declares the user's own already-open interactive session: Harness spawns no provider process and the member polls its own inbox."},
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "effort": {"type": "string", "minLength": 1, "description": "Optional provider-neutral reasoning-effort request. The adapter must record the provider-confirmed effective value or an unsupported/review_required status."},
                                 "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
@@ -1154,7 +1179,7 @@ fn tool_definitions() -> Value {
                             "name": {"type": "string", "minLength": 1},
                             "role": {"type": "string", "minLength": 1},
                             "provider": {"type": "string", "minLength": 1},
-                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk"]},
+                            "execution_mode": {"type": "string", "enum": ["codex_app_server", "kimi_acp", "claude_agent_sdk", "external_interactive"]},
                             "model": {"type": "string", "minLength": 1},
                             "effort": {"type": "string", "minLength": 1},
                             "service_tier": {"type": "string", "minLength": 1},
@@ -1197,7 +1222,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_start",
-            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Kimi ACP (kimi_acp), and Claude Agent SDK streaming (claude_agent_sdk). Bounded codex_exec and claude_cli are workflow-only and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
+            "description": "Reserve and start a planning AgentTeamRun asynchronously, returning its running projection and exact Workspace-scoped UI URL immediately. Agent Team modes are Codex app-server (codex_app_server), Kimi ACP (kimi_acp), and Claude Agent SDK streaming (claude_agent_sdk); declared external_interactive members are user-driven and skipped by the supervisor. Bounded codex_exec and claude_cli are workflow-only and never Team fallbacks. Provider cwd is the member worktree or selected Workspace project_root, never store_root. Provider transcripts and thinking remain in provider-native sessions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1283,7 +1308,7 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "from_member_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
-                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author MemberRun or AgentMember messages; those originate from the bound provider runtime."},
+                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "member_run", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author MemberRun or AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
                     "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to from_member_id."},
                     "sender_name": {"type": "string"},
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
