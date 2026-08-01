@@ -110,10 +110,18 @@ must report the actual worktree, branch, commit, checks, and conflicts.
 New Agent Team members use only their persistent bidirectional mode:
 `codex_app_server`, `kimi_acp`, or `claude_agent_sdk`. Bounded
 `codex_exec`/`claude_cli` paths belong to Dynamic Workflow and historical
-reads; they are not Team fallbacks. The Host explicitly creates, messages,
-inspects, interrupts, closes, and resumes members. Interrupt stops one current
-turn; Close ends the member runtime; Wave or TeamRun completion never implies
-Close. Physical live control handles remain process-local to the Harness
+reads; they are not Team fallbacks. The one declared exception is
+`external_interactive`: a user's own already-open interactive provider CLI
+session may join a run as a non-driven member that Harness never spawns or
+drives — it polls its inbox and replies over the trusted loopback CLI/MCP,
+and it has no provider-native session record (evidence claims about its work
+cannot resolve to one). The Host explicitly creates, messages,
+inspects, interrupts, closes, reopens, and retires members. Interrupt stops one
+current turn. Close releases the managed runtime and freezes the mailbox while
+retaining the same MemberRun and provider-native session; Reopen increments its
+runtime generation and resumes that exact session. Deactivate/Retire is the
+permanent coordination end. Wave or TeamRun completion never implies Close.
+Physical live control handles remain process-local to the Harness
 service that started them. A durable Team Supervisor lease is the cross-process
 control authority and contains a loopback service locator. Dashboard, CLI, and
 MCP clients route controls to that owner; the owner revalidates supervisor id,

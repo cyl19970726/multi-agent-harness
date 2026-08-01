@@ -17,20 +17,21 @@ use harness_core::{
     AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus,
     AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionSpace,
     HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
-    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
-    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderCapabilities,
-    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
+    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
+    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
+    ProviderCapabilities, ProviderCompatibilityStatus, ProviderEventFidelity,
+    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMode, SenderKind, TeamActorKind, TeamActorRef,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave,
+    WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
@@ -9677,8 +9678,11 @@ fn append_team_run_event(
 }
 
 /// One member spec for team-run creation, parsed from either the CLI
-/// `--member name:role:provider[:model][@path1,path2]` spelling or the HTTP
-/// JSON body.
+/// `--member name:role:provider[/mode][:model][@path1,path2]` spelling or the
+/// HTTP JSON body. `/mode` selects the execution mode; the driven Agent Team
+/// modes are `codex_app_server`, `kimi_acp`, and `claude_agent_sdk`, and
+/// `external_interactive` declares the user's own already-open interactive
+/// session that Harness never spawns or drives (it polls its own inbox).
 struct TeamMemberSpec {
     agent_member_id: Option<String>,
     name: String,
@@ -9755,6 +9759,21 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
                 .to_string(),
         ));
     }
+    if member.execution_mode.as_deref() == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
+        // An external interactive member is the user's own already-open
+        // provider session; there is no provider-native session to resume and
+        // no Harness adapter whose registry should constrain the provider
+        // label. Known providers may use the plugin hook while any other
+        // non-empty label remains usable through the same trusted-local
+        // inbox/send/ack contract.
+        if member.resume_native_session_id.is_some() {
+            return Err(CliError::Usage(
+                "external_interactive members have no provider-native session to resume"
+                    .to_string(),
+            ));
+        }
+        return Ok(());
+    }
     if let Some(mode) = member.execution_mode.as_deref() {
         let allowed = matches!(
             (member.provider.as_str(), mode),
@@ -9792,6 +9811,40 @@ fn team_member_provider_profile_for_mode(
     provider: &str,
     requested_mode: Option<&str>,
 ) -> ProviderIntegrationProfile {
+    // An external interactive member is the user's own already-open
+    // interactive provider session, explicitly declared as non-driven. Harness
+    // never spawns, drives, cancels, or resumes it; the session polls its
+    // inbox and replies over the trusted loopback CLI/MCP. There is no adapter
+    // contract and no provider-native session record, so no Harness-side
+    // capability claim is made.
+    if requested_mode == Some(EXECUTION_MODE_EXTERNAL_INTERACTIVE) {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string(),
+            execution_driver: MemberExecutionDriver::UserDriven,
+            provider_version: None,
+            adapter_contract_version: None,
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: None,
+            compatibility_note: Some(
+                "User-driven external interactive session; Harness owns only its \
+                 coordination mail and makes no provider capability claim."
+                    .to_string(),
+            ),
+            interaction_mode: ProviderInteractionMode::Unsupported,
+            ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
+            plan_mode: ProviderFeatureMode::Unsupported,
+            goal_mode: ProviderFeatureMode::Unsupported,
+            tool_event_fidelity: ProviderEventFidelity::None,
+            artifact_event_fidelity: ProviderEventFidelity::None,
+            supports_cancel: false,
+            supports_resume: false,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
     // Agent Team Claude members are persistent Agent SDK sessions. `claude -p`
     // remains available to bounded Dynamic Workflow adapters and historical
     // records, but is not a second Team Member mode.
@@ -10147,12 +10200,17 @@ fn team_member_provider_version_output(provider: &str) -> Result<String, String>
     )
 }
 
-/// Parse one `--member name:role:provider[:model][@path1,path2][#brief]` spec.
+/// Parse one `--member name:role:provider[/mode][:model][@path1,path2][#brief]` spec.
 ///
 /// The brief is split off FIRST and is free text: it may contain `@` and `:`,
 /// which the identity grammar would otherwise consume. Without it the only way
 /// to brief a member is the run-level objective, which is then delivered
 /// verbatim to every member of a multi-lane run.
+///
+/// `/mode` names the execution mode (`app-server`, `acp`, `agent-sdk`
+/// shortcuts or the literal mode id). `external_interactive` declares a
+/// user-driven external session: Harness spawns no provider process for it
+/// and the member polls its own inbox via `team-run inbox`/`send`/`ack`.
 fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
     let (raw, inline_assignment) = match raw.split_once('#') {
         Some((head, brief)) if !brief.trim().is_empty() => (head, Some(brief.trim().to_string())),
@@ -10173,7 +10231,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
     let parts: Vec<&str> = identity.split(':').collect();
     if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
         return Err(CliError::Usage(format!(
-            "invalid --member `{raw}` (expected name:role:provider[:model][@path1,path2][#brief])"
+            "invalid --member `{raw}` (expected name:role:provider[/mode][:model][@path1,path2][#brief])"
         )));
     }
     let (provider, execution_mode) = match parts[2].split_once('/') {
@@ -10358,6 +10416,8 @@ fn build_member_run_for_team(
             member.service_tier.clone(),
         ),
         provider_profile: Some(profile),
+        coordination_status: MemberCoordinationStatus::Active,
+        runtime_generation: 1,
         status: MemberRunStatus::Idle,
         native_session,
         worktree_ref: member
@@ -10826,7 +10886,7 @@ fn deactivate_team_run_member(
         .into_iter()
         .find(|member| member.id == member_run_id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-    if member.status == MemberRunStatus::Stopped {
+    if member.coordination_is_retired() {
         return Ok(member);
     }
     if matches!(
@@ -10838,16 +10898,16 @@ fn deactivate_team_run_member(
             serde_snake_label(&member.status)
         )));
     }
-    if matches!(
-        member.status,
-        MemberRunStatus::Completed | MemberRunStatus::Failed
-    ) {
+    if !member.is_external_interactive()
+        && member.coordination_is_active()
+        && member.native_session.is_some()
+    {
         return Err(CliError::Usage(format!(
-            "member run {member_run_id} is already terminal ({})",
-            serde_snake_label(&member.status)
+            "member run {member_run_id} still has a managed runtime/session binding; close it first so the adapter process is released, then deactivate it"
         )));
     }
     let now = now_string();
+    member.coordination_status = MemberCoordinationStatus::Retired;
     member.status = MemberRunStatus::Stopped;
     member.last_event_at = Some(now.clone());
     member.finished_at = Some(now);
@@ -11003,6 +11063,23 @@ fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
     }
 }
 
+fn ensure_member_coordination_open(member: &MemberRun) -> CliResult<()> {
+    if !member.coordination_is_active()
+        || matches!(
+            member.status,
+            MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+        )
+    {
+        return Err(CliError::Usage(format!(
+            "member {} coordination is {} and runtime status is {}; explicitly Reopen a closed member or create a replacement for a retired/terminal member",
+            member.id,
+            serde_snake_label(&member.coordination_status),
+            serde_snake_label(&member.status)
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum TeamMessageDeliveryMode {
     Routed,
@@ -11113,12 +11190,16 @@ fn prepare_team_message_as(
             "host".to_string()
         }
         TeamActorKind::MemberRun => {
-            if !run.member_run_ids.iter().any(|id| id == &sender.id) {
-                return Err(CliError::Usage(format!(
-                    "message sender {} does not belong to team run {team_run_id}",
-                    sender.id
-                )));
-            }
+            let member = member_runs
+                .iter()
+                .find(|member| member.id == sender.id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "message sender {} does not belong to team run {team_run_id}",
+                        sender.id
+                    ))
+                })?;
+            ensure_member_coordination_open(member)?;
             sender.id.clone()
         }
         TeamActorKind::AgentMember => {
@@ -11127,7 +11208,10 @@ fn prepare_team_message_as(
                 .filter(|member| member.agent_member_id.as_deref() == Some(sender.id.as_str()))
                 .collect::<Vec<_>>();
             match linked.as_slice() {
-                [member] => member.id.clone(),
+                [member] => {
+                    ensure_member_coordination_open(member)?;
+                    member.id.clone()
+                }
                 [] => {
                     return Err(CliError::Usage(format!(
                         "Agent identity {} has no MemberRun in team run {team_run_id}",
@@ -11161,6 +11245,17 @@ fn prepare_team_message_as(
             return Err(CliError::Usage(format!(
                 "duplicate message recipient: {recipient}"
             )));
+        }
+        if recipient != "host" {
+            let member = member_runs
+                .iter()
+                .find(|member| member.id == recipient.as_str())
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "message recipient {recipient} has no MemberRun projection in team run {team_run_id}"
+                    ))
+                })?;
+            ensure_member_coordination_open(member)?;
         }
     }
     if let Some(origin_wave_id) = origin_wave_id.as_deref() {
@@ -11302,6 +11397,7 @@ fn active_member_runs_for_agent(
     Ok(latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.agent_member_id.as_deref() == Some(agent_member_id))
+        .filter(|member| member.coordination_is_active())
         .filter(|member| {
             !matches!(
                 member.status,
@@ -11459,15 +11555,23 @@ pub(crate) fn team_run_inbox(
     include_all: bool,
 ) -> CliResult<Vec<TeamMessage>> {
     let run = latest_team_run(store, team_run_id)?;
-    if member_run_id != "host"
-        && !run
+    if member_run_id != "host" {
+        if !run
             .member_run_ids
             .iter()
             .any(|member_id| member_id == member_run_id)
-    {
-        return Err(CliError::Usage(format!(
-            "inbox recipient {member_run_id} does not belong to team run {team_run_id}"
-        )));
+        {
+            return Err(CliError::Usage(format!(
+                "inbox recipient {member_run_id} does not belong to team run {team_run_id}"
+            )));
+        }
+        let member = latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id)
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+        if !include_all && !member.coordination_is_active() {
+            return Ok(Vec::new());
+        }
     }
     Ok(latest_team_messages_in_append_order(store)?
         .into_iter()
@@ -11775,6 +11879,7 @@ fn recover_interrupted_team_run(
             continue;
         }
         let mut stopped = member.clone();
+        stopped.coordination_status = MemberCoordinationStatus::Closed;
         stopped.status = MemberRunStatus::Stopped;
         stopped.last_event_at = Some(now_string());
         stopped.finished_at = Some(now_string());
@@ -11878,7 +11983,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -12476,6 +12581,15 @@ fn team_run_command(
                 "requested_by": value(args, "--requested-by").unwrap_or_else(|| "host".to_string()),
             }),
         )?)?,
+        "reopen-member" => print_json(&reopen_team_member_value(
+            store,
+            &required(args, "--id")?,
+            &required(args, "--member-run-id")?,
+            &serde_json::json!({
+                "reason": value(args, "--reason").unwrap_or_else(|| "Host reopened member".to_string()),
+                "reopened_by": value(args, "--reopened-by").unwrap_or_else(|| "host".to_string()),
+            }),
+        )?)?,
         "start" => {
             // Foreground orchestration: this process is the WRITER driving
             // member sessions; `harness serve` stays the read/broadcast side.
@@ -12825,18 +12939,22 @@ fn member_run_detail_json(
             .collect::<Vec<_>>(),
         None => Vec::new(),
     };
-    let actionable_inbox = inbox
-        .iter()
-        .filter(|message| {
-            message.deliveries.iter().any(|delivery| {
-                delivery.member_id == member_run_id
-                    && matches!(
-                        delivery.status,
-                        TeamDeliveryStatus::Queued | TeamDeliveryStatus::Delivered
-                    )
+    let actionable_inbox = if member.coordination_is_active() {
+        inbox
+            .iter()
+            .filter(|message| {
+                message.deliveries.iter().any(|delivery| {
+                    delivery.member_id == member_run_id
+                        && matches!(
+                            delivery.status,
+                            TeamDeliveryStatus::Queued | TeamDeliveryStatus::Delivered
+                        )
+                })
             })
-        })
-        .count();
+            .count()
+    } else {
+        0
+    };
 
     Ok(serde_json::json!({
         "member_run": member,
@@ -13352,6 +13470,28 @@ fn latch_member_close(
     }))
 }
 
+fn mark_member_coordination_closed(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+) -> CliResult<MemberRun> {
+    let mut member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.coordination_is_retired() {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is retired and cannot be closed or reopened"
+        )));
+    }
+    if !member.coordination_is_closed() {
+        member.coordination_status = MemberCoordinationStatus::Closed;
+        member.last_event_at = Some(now_string());
+        store.append_member_run(&member)?;
+    }
+    Ok(member)
+}
+
 fn dispatch_local_live_member_control(
     store: &HarnessStore,
     supervisor_id: &str,
@@ -13376,6 +13516,7 @@ fn dispatch_local_live_member_control(
         // The durable request is written before process-local dispatch, so an
         // acknowledged Close survives receiver loss and Supervisor restart.
         latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+        mark_member_coordination_closed(store, &team_run_id, &member_run_id)?;
     }
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -13865,6 +14006,7 @@ fn stop_member_for_latched_close(
             member_row.id, close.team_run_id, ledger.run_id
         )));
     }
+    member_row.coordination_status = MemberCoordinationStatus::Closed;
     member_row.status = MemberRunStatus::Stopped;
     member_row.finished_at = Some(now_string());
     member_row.last_event_at = Some(now_string());
@@ -13919,6 +14061,7 @@ fn wait_for_idle_member_wake(
                         "member runtime closed while idle",
                         &format!("{requested_by}: {reason}"),
                     )?;
+                    member_row.coordination_status = MemberCoordinationStatus::Closed;
                     member_row.status = MemberRunStatus::Stopped;
                     member_row.finished_at = Some(now_string());
                     member_row.last_event_at = Some(now_string());
@@ -14116,7 +14259,13 @@ pub(crate) fn prepare_team_run_start(
     let supervisor_registration = reserve_team_supervisor(store, run_id)?;
     let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
         .into_iter()
-        .filter(|member| member.team_run_id == run_id && member.status != MemberRunStatus::Stopped)
+        .filter(|member| member.team_run_id == run_id && member.coordination_is_active())
+        .filter(|member| {
+            !matches!(
+                member.status,
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+            )
+        })
         .collect();
     let ledger = Arc::new(TeamRunLedger::new(
         store,
@@ -14230,7 +14379,7 @@ pub(crate) fn drive_prepared_team_run(
     let project_selector = project_context
         .as_ref()
         .map(|context| context.project_root.to_string_lossy().into_owned());
-    let mut seen_member_ids = HashSet::new();
+    let mut seen_runtime_generations = HashMap::<String, u64>::new();
     let mut pending_members = members;
     let mut handles = HashMap::new();
     let mut outcomes = Vec::new();
@@ -14249,8 +14398,27 @@ pub(crate) fn drive_prepared_team_run(
         }
         if !lease_lost {
             for mut member in pending_members.drain(..) {
-                seen_member_ids.insert(member.id.clone());
+                seen_runtime_generations.insert(member.id.clone(), member.runtime_generation);
                 let member_ledger = Arc::clone(&ledger);
+                // A declared external interactive member is driven by the user
+                // in their own already-open provider session: no adapter
+                // thread, no workspace snapshot, no Failed/Disconnected
+                // derivation. Its deliveries stay queued until the session
+                // polls its inbox and acks.
+                if member.is_external_interactive() {
+                    member_ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        Some(member.id.clone()),
+                        "member_run",
+                        &member.id,
+                        "updated",
+                        &format!(
+                            "external interactive member {} is user-driven; supervisor does not spawn an adapter",
+                            member.name
+                        ),
+                    )?;
+                    continue;
+                }
                 let member_objective = objective.clone();
                 let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
                 member.workspace_snapshot = Some(snapshot_member_workspace(
@@ -14340,7 +14508,20 @@ pub(crate) fn drive_prepared_team_run(
             latest_member_runs_in_append_order(&ledger.store)?
                 .into_iter()
                 .filter(|member| {
-                    member.team_run_id == run_id && !seen_member_ids.contains(&member.id)
+                    member.team_run_id == run_id
+                        && !member.is_external_interactive()
+                        && member.coordination_is_active()
+                        && !matches!(
+                            member.status,
+                            MemberRunStatus::Completed
+                                | MemberRunStatus::Failed
+                                | MemberRunStatus::Stopped
+                        )
+                        && member.runtime_generation
+                            > seen_runtime_generations
+                                .get(&member.id)
+                                .copied()
+                                .unwrap_or(0)
                 })
                 .collect()
         };
@@ -14413,6 +14594,16 @@ fn run_member_orchestration(
     member: MemberRun,
     context: MemberRuntimeContext,
 ) -> MemberOutcome {
+    // Belt and braces: the supervisor drain already skips declared external
+    // interactive members; if one ever reaches this loop it must leave with
+    // its current status, never an adapter error or a Failed row.
+    if member.is_external_interactive() {
+        return MemberOutcome::new(
+            &member,
+            member.status,
+            "external interactive member is user-driven; Harness does not drive it".to_string(),
+        );
+    }
     let mut generation = 0u64;
     loop {
         let mut current = ledger
@@ -14721,6 +14912,9 @@ fn run_codex_member(
             } else {
                 "Codex reported the active turn as interrupted without a Harness control request; inspect the provider-native session for the source."
             };
+            if turn.close_requested_by_harness {
+                member_row.coordination_status = MemberCoordinationStatus::Closed;
+            }
             member_row.status = if turn.close_requested_by_harness {
                 MemberRunStatus::Stopped
             } else {
@@ -16026,6 +16220,7 @@ fn run_claude_agent_sdk_team_member(
     ledger.require_supervisor_lease()?;
     if round == 0 {
         if closed_by_host {
+            member_row.coordination_status = MemberCoordinationStatus::Closed;
             member_row.status = MemberRunStatus::Stopped;
             member_row.finished_at = Some(now_string());
             member_row.last_event_at = Some(now_string());
@@ -16043,6 +16238,7 @@ fn run_claude_agent_sdk_team_member(
         )));
     }
     if closed_by_host && closed_cleanly {
+        member_row.coordination_status = MemberCoordinationStatus::Closed;
         member_row.status = MemberRunStatus::Stopped;
         member_row.finished_at = Some(now_string());
         member_row.last_event_at = Some(now_string());
@@ -16868,6 +17064,7 @@ fn run_kimi_member(
         let final_text = mapper.text().to_string();
         member_row = mapper.into_member();
         if outcome.stop_reason == "harness_runtime_closed" && close_requested {
+            member_row.coordination_status = MemberCoordinationStatus::Closed;
             member_row.status = MemberRunStatus::Stopped;
             member_row.finished_at = Some(now_string());
             member_row.last_event_at = Some(now_string());
@@ -16885,6 +17082,9 @@ fn run_kimi_member(
                 "Kimi member runtime closed by Host".to_string(),
             ));
         } else if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
+            if close_requested {
+                member_row.coordination_status = MemberCoordinationStatus::Closed;
+            }
             member_row.status = if close_requested {
                 MemberRunStatus::Stopped
             } else {
@@ -17204,12 +17404,40 @@ pub(crate) fn acknowledge_team_message(
     let was_acknowledged = message.deliveries.iter().any(|delivery| {
         delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Acknowledged
     });
-    let message = store_conflict_as_usage(store.acknowledge_team_message_delivery(
-        &message.team_run_id,
-        message_id,
-        member_id,
-        &now_string(),
-    ))?;
+    // A declared external interactive member has no Supervisor to claim the
+    // delivery and record provider receipt, so its mail never leaves `queued`
+    // on its own: the trusted loopback inbox read IS its delivery channel and
+    // its ack may proceed straight from `queued`. Driven members keep the
+    // delivered-first invariant enforced by the store.
+    let delivery_member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_id && member.team_run_id == message.team_run_id);
+    if let Some(member) = delivery_member.as_ref() {
+        ensure_member_coordination_open(member)?;
+    }
+    let queued_external_delivery = message.deliveries.iter().any(|delivery| {
+        delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+    }) && delivery_member
+        .is_some_and(|member| member.is_external_interactive());
+    let message = if queued_external_delivery {
+        let mut updated = message.clone();
+        let delivery = updated
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_id)
+            .expect("queued external delivery checked above");
+        delivery.status = TeamDeliveryStatus::Acknowledged;
+        delivery.updated_at = now_string();
+        store_conflict_as_usage(store.append_team_message(&updated))?;
+        updated
+    } else {
+        store_conflict_as_usage(store.acknowledge_team_message_delivery(
+            &message.team_run_id,
+            message_id,
+            member_id,
+            &now_string(),
+        ))?
+    };
     if !was_acknowledged {
         append_team_run_event(
             store,
@@ -19472,6 +19700,7 @@ fn handle_http_connection(
                     "member run {member_run_id} does not belong to team run {team_run_id}"
                 )));
             }
+            ensure_member_coordination_open(&member)?;
             if matches!(
                 member.status,
                 MemberRunStatus::Completed
@@ -19524,6 +19753,77 @@ fn handle_http_connection(
             )?,
         }
         return Ok(());
+    }
+
+    // POST /v1/team-runs/{id}/members/{member-id}/reopen — reactivate the same
+    // MemberRun and, when no Supervisor currently owns the run, start one so a
+    // managed adapter process resumes the recorded provider-native session.
+    if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
+        let parts = rest.split('/').collect::<Vec<_>>();
+        if let [team_run_id, "members", member_run_id, "reopen"] = parts.as_slice() {
+            let result = (|| -> CliResult<(serde_json::Value, Option<PreparedTeamRunStart>)> {
+                let reopened =
+                    reopen_team_member_value(store, team_run_id, member_run_id, &body_json)?;
+                let prepared = if reopened_member_requires_supervisor_start(
+                    store,
+                    team_run_id,
+                    member_run_id,
+                )? {
+                    Some(prepare_team_run_start(
+                        store,
+                        team_run_id,
+                        TEAM_RUN_START_DEFAULT_CONCURRENCY,
+                    )?)
+                } else {
+                    None
+                };
+                Ok((reopened, prepared))
+            })();
+            match result {
+                Ok((reopened, prepared)) => {
+                    if let Some(prepared) = prepared {
+                        let context = projects.context_for(
+                            project_param.as_deref(),
+                            Some(&project_id),
+                            store,
+                        );
+                        let execution_space = projects.space_context_for(&project_id);
+                        let activity_manager = sse_manager.clone();
+                        let activity_project = project_id.clone();
+                        let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
+                            broadcast_live_member_activity(
+                                &activity_manager,
+                                &activity_project,
+                                activity,
+                            );
+                        });
+                        std::thread::spawn(move || {
+                            if let Err(error) = drive_prepared_team_run(
+                                prepared,
+                                execution_space,
+                                Some(context),
+                                TEAM_RUN_START_DEFAULT_CONCURRENCY,
+                                Duration::from_secs(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS),
+                                Some(live_sink),
+                            ) {
+                                eprintln!("team member HTTP reopen failed: {error}");
+                            }
+                        });
+                    }
+                    write_http_json(
+                        &mut stream,
+                        "202 Accepted",
+                        &serde_json::json!({"ok": true, "result": reopened}),
+                    )?;
+                }
+                Err(error) => write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok": false, "error": error.to_string()}),
+                )?,
+            }
+            return Ok(());
+        }
     }
 
     // POST /v1/team-runs/{id}/start — reserve the planning attempt under the
@@ -19886,6 +20186,9 @@ fn handle_http_action(
         if let [team_run_id, "members", member_run_id, "close"] = parts.as_slice() {
             return close_team_member_value(store, team_run_id, member_run_id, body);
         }
+        if let [team_run_id, "members", member_run_id, "reopen"] = parts.as_slice() {
+            return reopen_team_member_value(store, team_run_id, member_run_id, body);
+        }
         if let [team_run_id, "members", member_run_id, "rename"] = parts.as_slice() {
             return Ok(serde_json::to_value(rename_team_run_member(
                 store,
@@ -20153,8 +20456,8 @@ fn close_team_member_value(
 ) -> CliResult<serde_json::Value> {
     let requested_by =
         optional_json_string(body, "requested_by")?.unwrap_or_else(|| "host".to_string());
-    let reason = optional_json_string(body, "reason")?
-        .unwrap_or_else(|| "Host closed member runtime".to_string());
+    let reason =
+        optional_json_string(body, "reason")?.unwrap_or_else(|| "Host closed member".to_string());
     let run = latest_team_run(store, team_run_id)?;
     if !run.member_run_ids.iter().any(|id| id == member_run_id) {
         return Err(CliError::Usage(format!(
@@ -20166,6 +20469,29 @@ fn close_team_member_value(
         .into_iter()
         .find(|member| member.id == member_run_id)
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    let external_interactive = member.is_external_interactive();
+    if member.coordination_is_retired() {
+        return Ok(serde_json::json!({
+            "member_run_id": member.id,
+            "status": serde_snake_label(&member.status),
+            "coordination_status": "retired",
+            "runtime": if external_interactive { "external_unmanaged" } else { "not_live" },
+            "runtime_effect": "already_terminal",
+            "coordination_effect": "already_retired",
+            "idempotent": true,
+        }));
+    }
+    if member.coordination_is_closed() {
+        return Ok(serde_json::json!({
+            "member_run_id": member.id,
+            "status": serde_snake_label(&member.status),
+            "coordination_status": "closed",
+            "runtime": if external_interactive { "external_unmanaged" } else if member.status == MemberRunStatus::Stopped { "not_live" } else { "closing" },
+            "runtime_effect": if member.status == MemberRunStatus::Stopped { "already_terminal" } else { "close_pending" },
+            "coordination_effect": "already_closed",
+            "idempotent": true,
+        }));
+    }
     if matches!(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
@@ -20178,10 +20504,30 @@ fn close_team_member_value(
                 &now_string(),
             ))?;
         }
+        let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
+        let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
+        ledger.append_action(
+            &member.id,
+            "closed",
+            MemberActionStatus::Succeeded,
+            "member coordination closed after terminal runtime",
+            &format!("{requested_by}: {reason}"),
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Host,
+            Some(member.id.clone()),
+            "member_run",
+            &member.id,
+            "closed",
+            &format!("member {} coordination closed", member.name),
+        )?;
         return Ok(serde_json::json!({
             "member_run_id": member.id,
             "status": serde_snake_label(&member.status),
-            "runtime": "not_live",
+            "coordination_status": serde_snake_label(&member.coordination_status),
+            "runtime": if external_interactive { "external_unmanaged" } else { "not_live" },
+            "runtime_effect": if external_interactive { "none" } else { "already_terminal" },
+            "coordination_effect": "already_closed",
             "idempotent": true,
         }));
     }
@@ -20192,7 +20538,9 @@ fn close_team_member_value(
             lease.status == harness_core::TeamSupervisorLeaseStatus::Active
                 && lease.expires_unix_ms > current_unix_ms_u64()
         });
-    if live_lease.is_some() {
+    // An external interactive member has no supervisor-owned runtime to
+    // dispatch control to; closing it only records the terminal status.
+    if live_lease.is_some() && !member.is_external_interactive() {
         return dispatch_live_member_control(
             store,
             LiveMemberControlRequest::Close {
@@ -20205,6 +20553,7 @@ fn close_team_member_value(
     }
 
     let close = latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?;
+    let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
     if matches!(
         member.status,
         MemberRunStatus::Starting | MemberRunStatus::Running
@@ -20216,19 +20565,250 @@ fn close_team_member_value(
             "close_request_id": close.id,
         }));
     }
-    let member = deactivate_team_run_member(store, team_run_id, member_run_id, &reason)?;
+    let mut member = member;
+    member.status = MemberRunStatus::Stopped;
+    member.finished_at = Some(now_string());
+    member.last_event_at = Some(now_string());
+    store.append_member_run(&member)?;
     store_conflict_as_usage(store.complete_team_member_close(
         team_run_id,
         member_run_id,
         &close.id,
         &now_string(),
     ))?;
+    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
+    ledger.append_action(
+        &member.id,
+        "closed",
+        MemberActionStatus::Succeeded,
+        if external_interactive {
+            "external member coordination closed"
+        } else {
+            "member coordination closed before runtime start"
+        },
+        &format!("{requested_by}: {reason}"),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "closed",
+        &format!("member {} coordination closed", member.name),
+    )?;
     Ok(serde_json::json!({
         "member_run_id": member.id,
         "status": "stopped",
-        "runtime": "not_started",
+        "coordination_status": "closed",
+        "runtime": if external_interactive { "external_unmanaged" } else { "not_started" },
+        "runtime_effect": if external_interactive { "none" } else { "not_started" },
+        "coordination_effect": "member_closed",
         "idempotent": false,
     }))
+}
+
+pub(crate) fn reopen_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let reopened_by =
+        optional_json_string(body, "reopened_by")?.unwrap_or_else(|| "host".to_string());
+    let reason =
+        optional_json_string(body, "reason")?.unwrap_or_else(|| "Host reopened member".to_string());
+    if reopened_by.trim().is_empty() || reason.trim().is_empty() {
+        return Err(CliError::Usage(
+            "member reopen requires non-empty reopened_by and reason".to_string(),
+        ));
+    }
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
+        return Err(CliError::Usage(format!(
+            "team run {team_run_id} is {} and cannot reopen members",
+            serde_snake_label(&run.status)
+        )));
+    }
+    let mut member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.coordination_is_retired() {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is retired; create a new MemberRun instead"
+        )));
+    }
+    if member.coordination_is_active() {
+        let external_interactive = member.is_external_interactive();
+        let supervisor_current = store
+            .latest_team_supervisor_lease(team_run_id)?
+            .is_some_and(|lease| {
+                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                    && lease.expires_unix_ms > current_unix_ms_u64()
+            });
+        return Ok(serde_json::json!({
+            "member_run": member,
+            "runtime_activation": if external_interactive {
+                "external_user_driven"
+            } else if supervisor_current {
+                "already_active"
+            } else {
+                "team_run_start_required"
+            },
+            "idempotent": true,
+        }));
+    }
+    if !matches!(
+        member.status,
+        MemberRunStatus::Stopped | MemberRunStatus::Completed | MemberRunStatus::Failed
+    ) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} close is not complete (runtime status {}); wait for a terminal runtime status before reopening",
+            serde_snake_label(&member.status)
+        )));
+    }
+    let external_interactive = member.is_external_interactive();
+    let mut history_continuity = if external_interactive {
+        "external_user_owned"
+    } else {
+        "provider_native_session"
+    };
+    if !external_interactive {
+        let profile = member.provider_profile.as_ref().ok_or_else(|| {
+            CliError::Usage(format!(
+                "member run {member_run_id} has no provider profile and cannot prove resume support"
+            ))
+        })?;
+        if !profile.supports_resume {
+            return Err(CliError::Usage(format!(
+                "member run {member_run_id} execution mode {} does not support resume",
+                profile.execution_mode
+            )));
+        }
+        if let Some(native_session) = member.native_session.as_ref() {
+            if !native_session.supports_resume
+                || matches!(
+                    native_session.availability,
+                    harness_core::NativeSessionAvailability::Missing
+                        | harness_core::NativeSessionAvailability::Incompatible
+                )
+            {
+                return Err(CliError::Usage(format!(
+                    "member run {member_run_id} native session {} is not resumable ({})",
+                    native_session.native_session_id,
+                    serde_snake_label(&native_session.availability)
+                )));
+            }
+        } else if member.status == MemberRunStatus::Stopped {
+            history_continuity = "no_native_session_yet";
+        } else {
+            return Err(CliError::Usage(format!(
+                "member run {member_run_id} has no provider-native session; reopen will not silently replace missing execution history"
+            )));
+        }
+    }
+    member.runtime_generation = member.runtime_generation.checked_add(1).ok_or_else(|| {
+        CliError::Usage(format!(
+            "member run {member_run_id} runtime generation overflowed"
+        ))
+    })?;
+    member.coordination_status = MemberCoordinationStatus::Active;
+    member.status = if external_interactive {
+        MemberRunStatus::Idle
+    } else {
+        MemberRunStatus::Queued
+    };
+    member.finished_at = None;
+    member.last_event_at = Some(now_string());
+    store.append_member_run(&member)?;
+
+    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
+    ledger.append_action(
+        &member.id,
+        "reopened",
+        MemberActionStatus::Succeeded,
+        "member coordination reopened",
+        &format!(
+            "{reopened_by}: {reason}; runtime generation {}",
+            member.runtime_generation
+        ),
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "reopened",
+        &format!(
+            "member {} reopened at runtime generation {}",
+            member.name, member.runtime_generation
+        ),
+    )?;
+
+    let supervisor_current = store
+        .latest_team_supervisor_lease(team_run_id)?
+        .is_some_and(|lease| {
+            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        });
+    Ok(serde_json::json!({
+        "member_run": member,
+        "runtime_activation": if external_interactive {
+            "external_user_driven"
+        } else if supervisor_current {
+            "supervisor_rescan"
+        } else {
+            "team_run_start_required"
+        },
+        "history_continuity": history_continuity,
+        "idempotent": false,
+    }))
+}
+
+/// Reopen may race the final drain of the Supervisor that just closed the old
+/// runtime generation. Give that owner a bounded chance to observe the higher
+/// generation; if it releases its lease first, the caller must start a new
+/// Supervisor. This prevents a durable `queued` reopen from falling between a
+/// last rescan and lease release.
+pub(crate) fn reopened_member_requires_supervisor_start(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+) -> CliResult<bool> {
+    for _ in 0..40 {
+        let member = latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+        if member.is_external_interactive()
+            || !member.coordination_is_active()
+            || matches!(
+                member.status,
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+            )
+        {
+            return Ok(false);
+        }
+        let supervisor_current = store
+            .latest_team_supervisor_lease(team_run_id)?
+            .is_some_and(|lease| {
+                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                    && lease.expires_unix_ms > current_unix_ms_u64()
+            });
+        if !supervisor_current {
+            return Ok(true);
+        }
+        if member.status != MemberRunStatus::Queued {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Ok(false)
 }
 
 pub(crate) fn resolve_pending_interaction_value(
@@ -29826,7 +30406,7 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|deactivate-member|close-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   member-run show --id <member-run-id> [--json]
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
@@ -33961,6 +34541,8 @@ mod tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            coordination_status: MemberCoordinationStatus::Active,
+            runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: Some(NativeSessionRef {
                 provider: provider.into(),
@@ -36899,6 +37481,8 @@ mod sse_tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            coordination_status: MemberCoordinationStatus::Active,
+            runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
             worktree_ref: None,

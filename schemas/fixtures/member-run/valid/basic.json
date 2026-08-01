@@ -7,6 +7,8 @@
   "role": "worker",
   "provider": "kimi",
   "model": "kimi-k2",
+  "coordination_status": "active",
+  "runtime_generation": 1,
   "status": "running",
   "native_session": {
     "provider": "kimi",

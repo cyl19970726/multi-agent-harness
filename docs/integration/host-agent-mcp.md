@@ -143,8 +143,11 @@ path as an execution root is a routing defect.
 7. For a running `codex_app_server` member, use `team_run_steer_member` to
    inject input into the same turn. Use `team_run_interrupt_member` for Codex
    app-server, Kimi ACP, or Claude Agent SDK when the current turn must stop.
-   Use `team_run_close_member` only when the Host is ending the Member runtime.
-   Other messages use `team_run_send_message` and preserve the native session.
+   Use `team_run_close_member` when the Host is releasing the current Member
+   runtime while preserving its identity/history. Use
+   `team_run_reopen_member` to resume that same MemberRun/native session, and
+   deactivate only for a permanent coordination end. Other messages use
+   `team_run_send_message` and preserve the native session.
 8. Acknowledge delivered handoffs with `team_message_acknowledge`.
 9. Check outcomes and artifacts, update the current Wave with the Host's actual
    judgment, then `wave advance` or record `accepted | revise | blocked`. Active
@@ -175,8 +178,9 @@ delivered Assignments.
 If the transport is dead before claim, mail stays queued. If a crash occurs
 after claim but before provider receipt, the message remains explicitly
 uncertain until `reconcile-delivery`; it is never blindly replayed. Explicit
-Close is latched durably and prevents later start, delivery, or lease rollover
-from reviving that Member.
+Close is latched durably and freezes start/delivery across lease rollover. Only
+explicit Reopen increments the runtime generation and resumes the recorded
+native session; ordinary mail never revives a closed member.
 
 Host-bound mail is scoped by the TeamRun's exact `host_surface +
 host_thread_id`. The Codex Plugin reads only that native task's aggregate

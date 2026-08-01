@@ -32,13 +32,17 @@ The executor selects the transport. Agent Team requires a persistent,
 bidirectional member mode: `codex_app_server`, `kimi_acp`, or
 `claude_agent_sdk`. Dynamic Workflow may use bounded exec/CLI modes such as
 `codex_exec` and `claude_cli`. There is no silent fallback between these
-contracts. The provider-native session store remains the sole durable
-transcript/tool/turn history and resume source; Harness retains a mode-aware
-native session binding, not a second event store. See
+contracts. The declared exception is `external_interactive`: a user's own
+already-open interactive provider session joins as a non-driven member with no
+Harness-spawned transport at all (see the impersonation invariant below). The
+provider-native session store remains the sole durable transcript/tool/turn
+history and resume source; Harness retains a mode-aware native session
+binding, not a second event store. See
 [ADR 0031](decisions/0031-interactive-provider-modes-and-version-drift.md).
 
 For every persistent Team mode, the integration also selects exactly one
-top-level `execution_driver`: `host_driven` or `provider_driven`. A native Goal
+top-level `execution_driver`: `host_driven`, `provider_driven`, or — for
+declared `external_interactive` members only — `user_driven`. A native Goal
 or continuation loop is optional. When it exists, the adapter must separately
 declare whether it can start, inspect, replace, clear, resume, inject mail,
 interrupt a cycle, expose cycle boundaries, and preserve the intended
@@ -50,9 +54,35 @@ Supervisor protocol. Only the latest `TeamSupervisorLease` generation may own
 the provider transport, claim delivery, or execute live controls. The adapter
 must verify transport health before claiming mail, record a provider-native
 receipt, preserve recipient ACK separately, reattach the recorded native
-session after lease rollover, and treat explicit Close as terminal and latched.
+session after lease rollover, and treat explicit Close as a latched reversible
+runtime shutdown. Reopen must use the recorded native session; Retire is the
+permanent coordination transition.
 Typed sender and recipient provenance is part of the envelope; an unbound
 external client cannot impersonate a Member.
+
+The declared exception to that invariant is the `external_interactive`
+execution mode. An `external_interactive` member is a user's own already-open
+interactive provider session that Harness never spawns or drives: the
+Supervisor starts no adapter for it, its non-empty provider label is
+informational rather than adapter registration, deliveries stay queued until
+the session polls its inbox, and Close only records closed Harness coordination
+with no external runtime effect. A closed external binding cannot send or
+receive TeamMessages or acknowledge previously queued mail. Reopen keeps the
+same MemberRun and thaws that mailbox, but Harness still cannot restart or
+prove history continuity for the user-owned external conversation.
+Because such a member is explicitly declared non-driven, its mail is accepted
+from unbound trusted-local CLI/MCP clients
+and recorded with `authn_source = "mcp:external_interactive"` (or the local
+CLI equivalent). Driven members keep the full invariant: their
+member-originated messages must come from the bound provider runtime. An
+external interactive member has no provider-native session record, so its
+execution truth is NOT in Harness and evidence claims about its work cannot
+resolve to a provider-native session.
+
+The bundled Codex, Claude, and Kimi hooks may inject a verified external
+MemberRun's queued mail at native prompt boundaries. Stop remains user-driven
+by default; cooperative same-task continuation is opt-in and never upgrades
+the member to a Harness-controlled runtime.
 
 An `AgentMember` (see [agent-control-plane.md](company-os/execution-foundation.md)) is a
 durable identity. To make that identity *executable on a given platform* you

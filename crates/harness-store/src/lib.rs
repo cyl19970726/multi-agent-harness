@@ -1807,14 +1807,31 @@ impl HarnessStore {
             return Ok(Vec::new());
         }
 
-        let file = File::open(path)?;
+        // A writer holds the store flock, but ordinary projections deliberately
+        // do not: Dashboard/API reads must remain concurrent with one another.
+        // `write_all` still may expose a short prefix before the trailing
+        // newline becomes visible, so take a byte snapshot and retry only that
+        // unmistakably incomplete final-row state. A complete snapshot is
+        // immutable in memory even if another append starts immediately after.
+        // The bounded retry preserves honest corruption reporting for a file
+        // that remains truncated instead of silently dropping its final row.
+        const INCOMPLETE_ROW_RETRY: Duration = Duration::from_secs(1);
+        const INCOMPLETE_ROW_POLL: Duration = Duration::from_millis(5);
+        let deadline = Instant::now() + INCOMPLETE_ROW_RETRY;
+        let snapshot = loop {
+            let bytes = fs::read(&path)?;
+            if bytes.is_empty() || bytes.ends_with(b"\n") || Instant::now() >= deadline {
+                break bytes;
+            }
+            thread::sleep(INCOMPLETE_ROW_POLL);
+        };
+
         let mut values = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        for line in snapshot.split(|byte| *byte == b'\n') {
+            if line.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
-            values.push(serde_json::from_str(&line)?);
+            values.push(serde_json::from_slice(line)?);
         }
         Ok(values)
     }
@@ -2372,6 +2389,44 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn jsonl_read_retries_a_concurrently_incomplete_final_row() {
+        let root = team_test_root("concurrent-partial-row");
+        let store = HarnessStore::new(&root);
+        store.init().expect("initialize store");
+        let path = root.join("concurrent.jsonl");
+        let (partial_ready_tx, partial_ready_rx) = std::sync::mpsc::channel();
+
+        let writer_store = store.clone();
+        let writer = std::thread::spawn(move || {
+            let _lock = writer_store.acquire_write_lock().expect("writer lock");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open concurrent ledger");
+            file.write_all(br#"{"id":"row-1""#)
+                .expect("write partial row");
+            file.flush().expect("flush partial row");
+            partial_ready_tx.send(()).expect("announce partial row");
+            std::thread::sleep(Duration::from_millis(30));
+            file.write_all(b",\"value\":1}\n")
+                .expect("finish concurrent row");
+            file.sync_all().expect("sync concurrent row");
+        });
+
+        partial_ready_rx.recv().expect("wait for partial row");
+        let rows = store
+            .read_jsonl::<serde_json::Value>("concurrent.jsonl")
+            .expect("reader waits for the complete final row");
+        writer.join().expect("writer completes");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "row-1");
+        assert_eq!(rows[0]["value"], 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
     fn seed_lease_run(store: &HarnessStore, id: &str) {
         store
             .append_team_run(&AgentTeamRun {
@@ -2609,6 +2664,8 @@ mod tests {
             model: Some("kimi-k2".into()),
             provider_controls: Default::default(),
             provider_profile: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
             worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
@@ -2642,6 +2699,8 @@ mod tests {
         let sparse = &runs[1];
         assert_eq!(sparse.id, "mr-sparse");
         assert_eq!(sparse.status, MemberRunStatus::Idle);
+        assert!(sparse.coordination_is_active());
+        assert_eq!(sparse.runtime_generation, 1);
         assert!(sparse.slot_id.is_none());
         assert!(sparse.agent_member_id.is_none());
         assert!(sparse.model.is_none());
@@ -3111,6 +3170,8 @@ mod tests {
             model: None,
             provider_controls: Default::default(),
             provider_profile: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
             worktree_ref: None,

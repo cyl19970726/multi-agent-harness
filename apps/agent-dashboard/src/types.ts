@@ -333,6 +333,9 @@ export type MemberRunStatus =
   | "failed"
   | "stopped";
 
+/** Durable mailbox/participation lifecycle, independent of provider work status. */
+export type MemberCoordinationStatus = "active" | "closed" | "retired";
+
 /** Non-secret, immutable-at-start facts about the member's provider workspace. */
 export interface MemberWorkspaceSnapshot {
   /** Actual process cwd used to spawn the provider member. */
@@ -380,6 +383,8 @@ export interface MemberRun {
   model?: string | null;
   provider_controls?: ProviderExecutionControls | null;
   provider_profile?: ProviderIntegrationProfile | null;
+  coordination_status?: MemberCoordinationStatus | string;
+  runtime_generation?: number;
   status?: MemberRunStatus | string;
   native_session?: NativeSessionRef | null;
   /** Optional member-specific Git worktree override of the TeamRun execution root. */

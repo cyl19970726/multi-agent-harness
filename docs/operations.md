@@ -191,6 +191,8 @@ POST /v1/team-runs/{id}/messages/{message-id}/reconcile-delivery
 POST /v1/team-runs/{id}/members/{member-run-id}/steer
 POST /v1/team-runs/{id}/members/{member-run-id}/interrupt
 POST /v1/team-runs/{id}/members/{member-run-id}/close
+POST /v1/team-runs/{id}/members/{member-run-id}/reopen
+POST /v1/team-runs/{id}/members/{member-run-id}/deactivate
 POST /v1/gateway/tick
 POST /v1/agents/{id}/deliver
 POST /v1/agents/{id}/retry-delivery

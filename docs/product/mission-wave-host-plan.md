@@ -107,8 +107,9 @@ The existing assignment correlation and provider session continue.
 - A Mission-scoped TeamRun uses `mission_id` and `agent_team_id`; `wave_id` is
   absent in the primary path.
 - Members can continue, join, be renamed, or be explicitly closed across
-  Waves. Interrupt stops only the current turn; Close ends the member runtime.
-  Both require the selected provider mode's real acknowledgement.
+  Waves. Interrupt stops only the current turn; Close ends one runtime
+  generation, and explicit Reopen resumes the same MemberRun/native session.
+  Controls require the selected provider mode's real acknowledgement.
 - Closing preserves MemberRun coordination and its native-session locator.
   Wave advance and TeamRun completion never close a member implicitly.
 

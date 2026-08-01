@@ -103,4 +103,7 @@ If the current service does not own a live Team's process handles, the
 Workbench still shows durable state and routes real controls through the
 current `TeamSupervisorLease.owner_locator`. A missing or stale Supervisor
 disables Steer/Interrupt/Close with an explicit reason; the UI never changes
-status locally to imply provider work stopped.
+status locally to imply provider work stopped. Member Focus renders runtime
+status separately from `active | closed | retired` coordination. Reopen keeps
+the same MemberRun, increments its runtime generation, and resumes the recorded
+native session; Retire is permanent.
