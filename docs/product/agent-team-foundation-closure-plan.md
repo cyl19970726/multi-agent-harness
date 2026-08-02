@@ -26,7 +26,7 @@ The completed foundation must let an external Human or Agent:
 - inspect, interrupt, resume, or explicitly Close the exact `MemberRun` and
   provider-native session;
 - survive an idle process, Provider transport loss, Harness restart, or client
-  reconnect without losing mail, replaying an accepted Assignment, or creating
+  reconnect without losing mail or Work delivery, replaying accepted input, or creating
   two top-level execution drivers; and
 - reconstruct coordination from Harness while leaving transcript, tools,
   commands, file activity, subagents, and thinking in provider-native storage.
@@ -40,7 +40,7 @@ ownership. It consumes their stable selection and Workspace contracts.
 | --- | --- | --- |
 | Persistent Member modes | Codex `codex_app_server`, Claude `claude_agent_sdk`, and Kimi `kimi_acp` | proportional live canary remains |
 | Native execution truth | Harness stores a locator, not a second transcript | native receipt reconciliation still requires operator judgment after ambiguous crash |
-| Team coordination | correlated Assignment, message, Handoff, Inbox/Outbox, atomic ACK | cross-process claim, Provider receipt, two-service control routing, MCP provenance, and full deterministic regression passed; ambiguous post-crash receipts still require explicit reconciliation |
+| Team coordination | durable messages, Inbox/Outbox, atomic ACK, typed actors and Supervisor delivery | replace Assignment-message ownership with Work/WorkEvent/WorkDelivery, shared assigned/unassigned projections, atomic claim and review |
 | Member lifecycle | idle, disconnected, resume, Interrupt, explicit Close | durable lease, `TeamMemberCloseRequest`, and cross-service loopback routing implemented; Provider handles remain process-local behind the owning Supervisor |
 | Host Inbox | exact native surface + thread binding | Codex/Claude/Kimi safe-boundary hooks implemented; live canary remains |
 | External input | typed actors plus stable Agent Inbox → MemberRun route | remote authentication/policy remains additive gateway work |
@@ -56,19 +56,19 @@ Organization identity work is additive and independently owned. This plan
 provides the runtime and mailbox substrate it can consume; it does not edit the
 Organization UI or create a second Agent identity.
 
-## Active research input
+## Accepted Work direction
 
 The real self-hosting lifecycle exposed a separate scheduling gap: Agent Team
-has durable messages but no TeamRun-scoped shared task list. The evidence,
-Claude Code comparison, bounded `TeamTask` proposal, and multi-level
-Organization implications are recorded in
+has durable messages but no TeamRun-scoped shared Works surface. The evidence
+and Claude Code comparison are recorded in
 [Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
 
-That study is not yet product authority. An ADR must decide the object boundary,
-state transitions, atomic claim rules, migration, and acceptance before this
-implementation plan adds another Wave or any schema/API work. In particular,
-the research does not change the current Assignment-message contract and does
-not authorize a Goal, GoalPhase, Plan Gate, or universal Task Graph.
+[Agent Team Works](agent-team-works.md) and
+[ADR 0050](../decisions/0050-agent-team-work-board-and-message-boundary.md)
+accept `Work` as the base scheduling primitive, remove Assignment-message
+ownership without compatibility, and keep Message as authored conversation.
+Implementation is still pending and does not authorize a Goal, GoalPhase, Plan
+Gate, or universal Task Graph.
 
 ## One model, several clients
 
@@ -167,7 +167,7 @@ queued
   -> claimed by Supervisor generation
   -> accepted by Provider/native request
   -> acknowledged by recipient
-  -> correlated reply / Handoff / Host acceptance
+  -> correlated reply / Work submission / Host acceptance
 ```
 
 If a Supervisor dies after claiming and before recording a Provider receipt,
@@ -342,18 +342,35 @@ Acceptance: a future Host can reconstruct why the work existed, who controlled
 each side effect, what each Provider accepted, what survived recovery, and why
 the Mission closed.
 
+### Wave 7 — Shared Works and Team Workbench
+
+- implement Work, WorkEvent, WorkDelivery, latest projection and atomic claim;
+- delete Assignment-message authoring, reads, fixtures and active dogfood data;
+- add assigned/unassigned/ready/block/review/child Work to CLI, HTTP and MCP;
+- deliver Work id/version through the Supervisor's existing safe-boundary
+  machinery;
+- add Works, Activity and Members views to Agent Team and My Works to Member;
+- update canonical Skills and generated Plugin copies; and
+- run standalone and Mission-scoped mixed-provider dogfood.
+
+Acceptance: Host assignment, Member self-claim, busy queueing, crash/Reopen,
+child delegation, Work-linked conversation and Host review are reconstructable
+without reading Assignment Messages or provider transcripts.
+
 ## Final gate
 
 The foundation is complete only when:
 
-1. every input has a typed sender, recipient, correlation, and delivery intent;
+1. every Work and Message has typed provenance, and every delivery has an exact
+   target, object version, and intent;
 2. every live Provider side effect has one durable Supervisor and delivery
    claim;
 3. busy, idle, waiting, disconnected, supervisor-down, stopped, and resumed
    behavior is deterministic and tested;
 4. observation and control are visibly different;
 5. Provider differences are explicit and version-reviewed;
-6. receipt, transport ACK, reply, Handoff, and acceptance are not collapsed;
+6. Work state, receipt, transport ACK, Message reply, submission, and acceptance
+   are not collapsed;
 7. CLI, API, Dashboard, Plugin, Harness records, and native Sessions agree; and
 8. Organization adds governance without inventing another runtime or process
    manager.

@@ -1,12 +1,12 @@
 # Mission / Wave Canvas Page Spec
 
 ```text
-status: implemented
+status: implemented baseline; Works projection redesign pending ADR 0050
 owner_role: product-design
 canonical_for: Mission context, linked Agent Teams, ordered Host-plan Waves,
                Wave revision history, advance decisions, and closeout
 route_or_surface: Missions -> Mission -> selected Wave
-architecture: ADR 0034 + ADR 0037 + ADR 0044 linked-Team runtime status
+architecture: ADR 0034 + ADR 0037 + ADR 0044 + ADR 0050
 ```
 
 ## User Problem
@@ -16,7 +16,7 @@ The Host and Human need one readable surface for:
 - what the Mission means and how success is judged;
 - which independent Agent Teams are available to the Mission;
 - what the Host currently believes and plans;
-- which assignments are complete, active, blocked, or intentionally carried
+- which Works are complete, active, blocked, or intentionally carried
   forward; and
 - why the Host advanced or closed the Mission.
 
@@ -37,10 +37,11 @@ Required projections:
 - ordered `Wave`: title, objective, Markdown context, revision, updated actor,
   advance outcome, artifacts, and history;
 - linked teams: stable identity, composition, latest Mission-scoped runs,
-  current Supervisor/reconnect health, member/assignment status, and open-Team
+  current Supervisor/reconnect health, member/Work status, and open-Team
   action;
-- messages: assignment correlation and optional `origin_wave_id` for
-  explanation/carry-over;
+- Works: compact Mission-linked Team summaries for active, blocked, review and
+  carry-over state; detailed scheduling remains in Team Workbench;
+- messages: authored conversation linked to Work when relevant;
 - pending interactions and evidence that require Host or Human judgment.
 
 Legacy direct-Wave-executor rows remain readable with a visible compatibility
@@ -63,7 +64,7 @@ context rail.
 |                      | Wave 2 · selected                     |                  |
 |                      | full Markdown Host plan              |                  |
 |                      | responsibility table                 |                  |
-|                      | assignments / carry-over / evidence  |                  |
+|                      | Works summary / carry-over / evidence|                  |
 |                      +--------------------------------------+                  |
 |                      | Wave 3 · planned (compact)           |                  |
 +----------------------+--------------------------------------+------------------+
@@ -83,7 +84,7 @@ ordinary Markdown:
 | Reviewer | Reviewer | Continue interaction validation | Review report |
 ```
 
-This table is explanatory. Assignment messages remain ownership truth.
+This table is explanatory. Work records remain ownership and state truth.
 
 ## Context Rail
 
@@ -111,7 +112,7 @@ Cards are quiet structural containers, not a wall of elevated analytics tiles.
   for a small adjustment that stays inside the same judgment boundary.
 - Advance the selected Wave with an explicit Host outcome even while unrelated
   members remain active.
-- Create Wave N+1 and keep the same TeamRun, MemberRun, assignments, and native
+- Create Wave N+1 and keep the same TeamRun, MemberRun, Works, and native
   sessions where the Host chooses carry-over.
 - Close the Mission with an explicit outcome. Never archive/delete teams as a
   side effect.
@@ -136,7 +137,8 @@ responsibility, risk, or decision boundary changes materially.
 - No Waves: show Mission context and one clear “Create first Wave” action.
 - No linked team: explain that Host work may remain direct and offer
   link/create; do not imply a team is mandatory.
-- Active carry-over: show origin Wave and current assignment state without
+- Active carry-over: show current Work state and the Wave judgment that cited
+  it, without
   moving runtime ownership into the selected Wave.
 - Missing native session: retain Harness coordination and label native detail
   unavailable; never invent transcript content.

@@ -152,7 +152,7 @@ never complete the current revision.
 The Host may debate assumptions in prose. Harness does not reduce a plan to
 workflow steps or claim that plan item completion proves semantic success.
 
-## UX Contract
+## Historical UX Contract (superseded)
 
 Team War Room has a first-class Plan Review surface, separate from Lead Inbox
 and provider `PendingInteraction`:
@@ -163,8 +163,8 @@ and provider `PendingInteraction`:
 - Host challenge and approval controls;
 - delivery, correlation, and causation remain inspectable.
 
-Member Focus shows the current Assignment Goal followed by Execution Plan,
-revision history, latest Host challenge, approval, and provider capability.
+The discarded Member Focus design showed an Assignment Goal followed by
+Execution Plan, revision history, latest Host challenge, approval, and provider capability.
 Provider-native plan progress may appear live but is not replayable evidence.
 
 ## Consequences

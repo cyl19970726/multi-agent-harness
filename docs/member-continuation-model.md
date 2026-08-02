@@ -4,6 +4,7 @@
 status: canonical architecture contract
 owner_role: provider-integration
 canonical_for: provider-neutral Member execution ownership, continuation, completion, and Workspace lease semantics
+work_contract: ADR 0050 accepted; Work/WorkDelivery implementation pending
 ```
 
 This document is the smallest required context for adding a new Agent Team
@@ -21,7 +22,7 @@ Mission
   -> ordered Host-plan Wave
   -> independent AgentTeam / AgentTeamRun
   -> MemberRun
-       -> correlated Assignment
+       -> active Work + WorkDelivery
        -> Harness Mailbox
        -> Workspace
        -> provider-native session

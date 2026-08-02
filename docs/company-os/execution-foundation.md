@@ -54,15 +54,15 @@ Execution Space with `company_id = null`.
 An `AgentTeamRun` is a standalone or Mission-scoped use of an independent
 AgentTeam. It may remain active across multiple Waves. A `MemberRun` is one
 participant instance inside that run; its provider-native session may continue
-while the Host advances the plan. Assignment-message correlation proves lane
-ownership:
+while the Host advances the plan. The accepted Agent Team Works contract proves
+lane ownership; implementation is pending ADR 0050:
 
 ```text
-TeamMessage(kind=assignment)
-  -> correlation_id
-  -> Harness handoff / blocker / review / PendingInteraction
+Work assignment/claim -> WorkEvent -> WorkDelivery
+  -> MemberRun + provider-native session
+  -> Work block / submission / review / acceptance
+  -> linked TeamMessage / PendingInteraction when needed
   -> explicit outcome and artifact/check references
-  -> provider-native session reference for member execution detail
 ```
 
 Neither object is an OrgUnit, a standing organization member, or a business

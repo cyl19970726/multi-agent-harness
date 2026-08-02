@@ -1,5 +1,9 @@
 # Claude Integration
 
+```text
+status: implementation reference; Work/WorkDelivery target pending ADR 0050
+```
+
 This document defines the Claude-specific implementation of Star Harness Agent
 Team members. Provider-neutral runtime contracts live in
 [agent-runtime.md](../agent-runtime.md); native session ownership lives in
@@ -127,17 +131,16 @@ receiver or later lease generation from resurrecting the Member.
 
 ## Messages and interactions
 
-Ordinary collaboration uses `TeamMessage`:
-
-- Host → Member assignment or follow-up;
-- Member → Host question, blocker, progress, review request, or handoff;
-- Member → Member peer coordination.
+Responsibility uses Work assignment/claim, WorkEvent and WorkDelivery. Ordinary
+conversation uses `TeamMessage` for Host/Member follow-up and peer coordination.
+Blocking, submission, request changes and acceptance are Work operations; a
+linked Message may explain them.
 
 Claude uses the same provider-neutral
 `collaborate-as-agent-team-member` contract as Codex app-server and Kimi ACP.
 The first SDK turn receives a self-contained collaboration envelope with the
-TeamRun, MemberRun, Assignment correlation, roster, Inbox, peer-message, and
-Host-handoff commands, so correctness does not depend on a provider-specific
+TeamRun, MemberRun, active Work/version, roster, Inbox, peer-message, and Work
+submission commands, so correctness does not depend on a provider-specific
 Claude Skill fork. When the Star Harness Skill is also installed, it must match
 that canonical contract rather than redefine mailbox semantics.
 

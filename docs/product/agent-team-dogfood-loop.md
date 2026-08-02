@@ -58,7 +58,7 @@ Before starting members, the Host writes one Mission and the current Wave with:
 - stop conditions, protected actions and rollback points.
 
 The Agent Team is linked to the Mission, not embedded in a Wave. Members keep
-their MemberRun, Assignment correlation, workspace and provider-native session
+their MemberRun, Work ownership, workspace and provider-native session
 when unfinished work carries into the next Wave.
 
 The trusted-development dogfood profile gives all three Provider members full
@@ -245,7 +245,7 @@ Standing Agent / AgentMember identity
 ```
 
 Verify that the Organization page shows durable role, reporting, permissions
-and responsibility, while the Member page shows current Assignment, runtime,
+and responsibility, while the Member page shows current Work, runtime,
 mailbox, controls and native evidence. A Standing Agent may execute repeatedly
 through new MemberRuns; closing one runtime must not delete the Organization
 identity.

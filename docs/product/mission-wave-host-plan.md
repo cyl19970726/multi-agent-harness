@@ -1,9 +1,9 @@
 # Mission, Host Plan Waves, And Agent Teams
 
 ```text
-status: canonical
+status: canonical; Work implementation pending
 owner_role: product
-architecture: ADR 0034 + ADR 0037
+architecture: ADR 0034 + ADR 0037 + ADR 0050
 ```
 
 ## Product Promise
@@ -15,9 +15,10 @@ turning that memory into a rigid scheduler.
 - **Wave** records the Host's current plan, judgment, and important changes.
 - **Agent Team** is an independent reusable group led by the Host that created
   and coordinates it.
-- **Assignment messages** say who is doing what.
+- **Works** say what exists, who owns it, and its current execution state.
+- **Messages** let Host and Members discuss Works without becoming task state.
 - **Provider-native sessions** prove what each member actually executed.
-- **Agent Members** own end-to-end assignments and may use native subagents
+- **Agent Members** own end-to-end Works and may use native subagents
   without giving away responsibility.
 
 ## Example
@@ -61,14 +62,14 @@ When the build lane completes but review is still running, the Host creates:
 # Wave 2 — Integrate and keep review running
 
 The baseline is reproducible. Merge the build evidence now. Keep
-InteractionReviewer on the same MemberRun and native session; its assignment
+InteractionReviewer on the same MemberRun and native session; its Work
 continues from Wave 1.
 
 Add RepairFixer only if the live interaction check finds a defect.
 ```
 
 No runtime is moved into Wave 2. The Wave only records the changed Host plan.
-The existing assignment correlation and provider session continue.
+The existing Work, Member identity, and provider session continue.
 
 ## Required Behaviors
 
@@ -87,8 +88,8 @@ The existing assignment correlation and provider session continue.
   inside the same judgment boundary. Advance and create the next Wave when the
   plan, member composition, responsibility, risk, or decision boundary changes
   materially.
-- Does not require all assignments or TeamRuns to finish before advance.
-- May cite assignments, members, artifacts, checks, or team runs in prose.
+- Does not require all Works or TeamRuns to finish before advance.
+- May cite Works, members, artifacts, checks, or team runs in prose.
 - Optional legacy executor fields remain read-only-compatible, not required on
   the new authoring path.
 
@@ -99,7 +100,7 @@ The existing assignment correlation and provider session continue.
 - The Host Agent that creates and coordinates a team is its **Team Lead**.
   `owner_agent_id` is the compatibility wire field for that identity; `host`
   means the current Host Agent.
-- The Team Lead owns formation, assignments, member interaction, composition
+- The Team Lead owns formation, Works, member interaction, composition
   changes, integration, and acceptance. It is not an ordinary MemberRun and is
   not counted in the member roster unless it explicitly joins as an executing
   member.
@@ -113,20 +114,26 @@ The existing assignment correlation and provider session continue.
 - Closing preserves MemberRun coordination and its native-session locator.
   Wave advance and TeamRun completion never close a member implicitly.
 
-### Messaging
+### Works and messaging
 
-- Assignment ownership uses a correlation id.
+- Work ownership uses the Agent Team Works store and its append-only
+  WorkEvents. It is not inferred from a Message or correlation id.
+- Host assignment and Member self-claim create WorkDelivery records that use
+  the Supervisor's durable delivery substrate without becoming authored
+  TeamMessages.
+- Ready unassigned Works may be atomically claimed by eligible Members. Host
+  assignment remains available for constrained or high-risk work.
 - Team messages carry typed Host, Member, stable Agent, Operator, or Service
   sender and recipients; display names never define authorship.
-- Question, answer, progress, blocker, handoff, review, and control messages
-  preserve the correlation.
+- Messages may link a Work and preserve conversational correlation, but never
+  change owner, status, readiness, submission, or acceptance by themselves.
 - Members may send direct peer messages inside the same TeamRun. Routine peer
   collaboration is visible to the Lead but does not require Lead approval.
 - Member-to-Host messages are delivered when the control plane receives them.
   Host-to-member and peer messages queue for the recipient's next available
   round.
-- A handoff does not automatically dispatch dependent work. The Host reads it
-  and explicitly sends the next Assignment or review.
+- Accepting a prerequisite Work may make another Work ready. The Host may
+  assign it, or an eligible Member may atomically claim it.
 - `origin_wave_id` is optional navigation metadata.
 - Host and members can query inbox/status projections without reading provider
   transcripts.
@@ -136,10 +143,10 @@ The existing assignment correlation and provider session continue.
 
 ### Member autonomy
 
-- Member Goal is derived from the active Assignment, completion standard,
+- Member Goal is derived from the active Work, completion standard,
   owned paths, progress/blocker state, and latest Steer. There is no `Goal`
   object.
-- A member owns its lane until the Lead sends an accepting `review_result`.
+- A member owns its Work through correction until the Team Host accepts it.
 - Provider-native subagents are internal implementation detail. They inherit
   the member's permissions and evidence obligations and do not become
   `MemberRun`s.
@@ -162,17 +169,18 @@ Keep the approved Mission Canvas layout. Make targeted semantic changes:
 - Selected Wave renders its full Markdown context and revision history.
 - A compact responsibility table is rendered from Markdown when present.
 - Member rows link to Member Focus.
-- Carry-over badges use assignment origin and current state; they do not imply
+- Carry-over badges use Work origin and current state; they do not imply
   the Wave owns the member.
 - “Advance Wave” is a Host plan decision and remains available while members
   run, with a confirmation summarizing the carry-over.
 - “Update plan” edits the selected Wave Markdown and appends a revision.
-- Lead Inbox groups member questions, blockers, and review requests. Answers
-  reuse correlation and causation and acknowledge the source message.
+- Lead Inbox groups member questions and coordination. Works separately expose
+  blockers, submissions, and reviews, with linked discussion where present.
 - Team/Member controls expose the current Supervisor/reconnect state and typed
   author → recipient route; a stale owner disables live control without hiding
   durable mail.
-- Member Focus shows the derived Current Assignment, completion standard,
+- Member Focus shows Current Work, queued Works, eligible unassigned Works,
+  completion standard,
   owned paths, latest Steer, peer/Host thread, and native subagent activity.
 - Legacy direct-executor attempts remain visible in historical Missions with a
   clear compatibility label.
@@ -191,7 +199,7 @@ The Host gives two durable collaborators independent end-to-end lanes:
 Each member plans its own lane and may delegate bounded design, coding, or test
 work to native subagents. The Host answers correlated questions, integrates a
 completed lane without waiting for the other, and advances the Wave while the
-unfinished member keeps its original MemberRun, Assignment correlation,
+unfinished member keeps its original MemberRun, Work ownership,
 Workspace, and provider session. A separate Reviewer Member is used when
 high-risk acceptance must be independent.
 

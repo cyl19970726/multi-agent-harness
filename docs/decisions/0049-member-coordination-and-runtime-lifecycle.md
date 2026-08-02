@@ -18,7 +18,7 @@ A persistent Agent Team member has two different lifecycles:
 The previous model collapsed both into `MemberRun.status=stopped`. Close could
 release a managed adapter, but there was no explicit same-MemberRun reopen.
 Operators therefore had to create a replacement MemberRun or start a new run,
-which obscured whether the same Assignment, mailbox, and provider history were
+which obscured whether the same Work, mailbox, and provider history were
 continuing. External interactive members made the ambiguity sharper because
 Harness never owns their process or native conversation.
 
@@ -44,7 +44,7 @@ Close is reversible runtime shutdown, not deletion or retirement.
 - Harness durably latches Close and changes coordination to `closed` before
   releasing a process-local control handle.
 - A managed Codex, Claude, or Kimi adapter terminates its Harness-owned process.
-- The MemberRun, Assignment correlations, mailbox rows, NativeSessionRef, and
+- The MemberRun, Work ownership, mailbox rows, NativeSessionRef, and
   provider-native transcript remain.
 - Mail queued before Close is frozen. Closed members cannot send, receive,
   claim, or acknowledge mail; ordinary delivery never reopens them.

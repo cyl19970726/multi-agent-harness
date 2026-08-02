@@ -14,6 +14,7 @@ Mission -> ordered Host-plan Wave
 Mission <-> AgentTeam -> Mission-scoped TeamRun -> MemberRun
   -> TeamSupervisorLease generation
   -> TeamMemberCloseRequest pending/applied
+  -> Work -> WorkEvent -> WorkDelivery -> provider receipt -> recipient ACK
   -> typed TeamMessage -> claim -> provider receipt -> recipient ACK
   -> explicit coordination/artifacts/outcome + provider-native session refs
   -> explicit Host advance -> next Wave or Mission closeout
@@ -33,8 +34,8 @@ provider-native sessions without duplicating those sessions.
 | What is the durable intent? | Native `Mission`. |
 | What is the ordered plan record? | Native `Wave` rows ordered by `index`; there is no required work graph. |
 | Which execution happened? | Mission-linked TeamRuns, WorkflowRuns, Host outcomes, and their native records. |
-| How is Agent Team work assigned? | `TeamMessage(kind=assignment)` plus its `correlation_id`. |
-| Who is accountable inside a team attempt? | `MemberRun` role/identity plus assignment and handoff lineage. |
+| How is Agent Team work assigned? | Work assignment or atomic claim, recorded by WorkEvent and delivered through WorkDelivery; implementation is pending ADR 0050. |
+| Who is accountable inside a team attempt? | Work owner plus its active MemberRun, version and state history. |
 | Who currently owns live Team control? | Latest active `TeamSupervisorLease` generation and its loopback owner locator. |
 | Does an explicit Close survive restart? | Latest `TeamMemberCloseRequest`; `pending` is applied before Provider resume. |
 | Who actually sent and receives a message? | Typed `TeamActorRef` sender/recipients; Member authorship requires a bound Member context. |
@@ -56,7 +57,8 @@ provider-native sessions without duplicating those sessions.
 | Wave order and Host judgment | latest native `Wave` rows and revision history | Dashboard Wave timeline |
 | Mission-team relation | `Mission.agent_team_ids` plus stable `AgentTeam` | linked-team controls |
 | Agent Team runs | `AgentTeamRun` rows linked by Mission/team ids | run cards |
-| Agent Team assignment | assignment `TeamMessage` plus correlation lineage | member current action, lane UI |
+| Agent Team responsibility | `Work` latest projection plus `WorkEvent` history | Works Kanban, Member current Work |
+| Work delivery | latest `WorkDelivery` row plus provider receipt and ACK | Inbox delivery indicator |
 | Agent Team identity | `MemberRun` inside one TeamRun | provider thread id, prompt file |
 | Team control ownership | latest active `TeamSupervisorLease` generation | process-local handle, pid, socket |
 | Member Close intent | latest `TeamMemberCloseRequest` | provider-specific shutdown acknowledgement |

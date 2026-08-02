@@ -7,6 +7,11 @@ canonical_for: Agent Team Supervisor ownership, typed coordination actors,
   delivery claims, multi-client control, and Provider lifecycle truth
 ```
 
+ADR 0050 adds WorkDelivery beside authored TeamMessage delivery and removes
+Assignment Message as ownership truth. The Supervisor lease, typed actors,
+claim/receipt, multi-client control, and crash-reconciliation rules here apply
+to both delivery classes.
+
 ## Context
 
 Agent Team members now use persistent Codex app-server, Claude Agent SDK, and
@@ -70,7 +75,7 @@ release never deletes provider-native history.
 
 ### Claim before Provider side effect
 
-Each TeamMessage delivery progresses independently:
+Each TeamMessage or WorkDelivery progresses independently:
 
 ```text
 queued
@@ -91,18 +96,19 @@ returns its real request/turn/session receipt. A crash between claim and receipt
 leaves an uncertain claim. Recovery must reconcile it against Provider-native
 state or require an explicit operator choice. It does not silently requeue.
 
-If a receipt is durable but the correlated Handoff is absent, the next
-generation resumes the same native session and sends a recovery instruction:
-inspect provider-native state and the workspace, then complete or restate the
-Assignment. It does not append a second delivery attempt for the accepted
-Assignment. Mail still `queued` is delivered normally after reconnect.
+If a receipt is durable but the correlated Work submission or Message reply is
+absent, the next generation resumes the same native session and sends a
+recovery instruction: inspect provider-native state, Workspace and latest Work
+version, then continue or restate the result. It does not append a second
+delivery attempt for the accepted Work version. Delivery still `queued` is
+handled normally after reconnect.
 
-A Handoff is rejected while newer same-correlation input addressed to that
-Member is `queued` or `claimed`. The provider must first accept the correction
-and produce a Handoff causally linked to the latest input.
+A Work submission is rejected while a newer WorkDelivery for that Work is
+`queued` or `claimed`. The provider must first accept the latest version.
+Message replies preserve their own correlation and reply lineage.
 
-Acknowledgement proves recipient intake only. Correlated reply, Handoff,
-review, Host acceptance, and Mission closeout remain separate facts.
+Acknowledgement proves recipient intake only. Correlated reply, Work submission,
+review action, Host acceptance, and Mission closeout remain separate facts.
 
 ### Typed actors and recipients
 
@@ -221,8 +227,8 @@ to another Provider's value.
 
 ### Native execution truth remains Provider-owned
 
-Supervisor leases, TeamMessage claims, control acknowledgements, Handoffs, and
-evidence references are Harness truth. Provider transcripts, tool calls,
+Supervisor leases, TeamMessage/WorkDelivery claims, control acknowledgements,
+WorkEvents, and evidence references are Harness truth. Provider transcripts, tool calls,
 commands, file activity, subagent activity, turn history, and thinking remain
 in Provider-native storage.
 

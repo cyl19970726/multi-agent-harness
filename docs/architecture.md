@@ -62,8 +62,10 @@ product concept a future operator should start from.
 ## Active Coordination Contract
 
 Mission/Wave is the only active plan vocabulary. Native ledgers, schemas,
-authoring, Mission-Team linkage, assignment correlation, Wave history/advance,
-and Mission closeout are implemented. The superseded stack is removed from active reads,
+authoring, Mission-Team linkage, Wave history/advance, and Mission closeout are
+implemented. ADR 0050 accepts Agent Team Works as the replacement for
+Assignment-message ownership; its schemas and runtime are implementation
+pending. The superseded stack is removed from active reads,
 commands, and UI under [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md).
 Optional evaluation remains governance layered on an outcome, not a second
 closeout model.
@@ -73,34 +75,32 @@ closeout model.
 ### `agent_team`
 
 Use Agent Team when the Mission needs living collaborators with persistent
-session state, explicit assignment, handoff, review, and role ownership across
+session state, explicit Work ownership, review, and role ownership across
 one or more Waves.
 
-Each `MemberRun` owns one end-to-end Assignment and may use provider-native
+Each `MemberRun` may own one active end-to-end Work and use provider-native
 subagents for bounded internal work. The subagents return to that member and do
-not gain a Harness mailbox, Workspace identity, Assignment ownership, or
+not gain a Harness mailbox, Workspace identity, Work ownership, or
 independent acceptance. Use another Member when those durable properties are
 needed.
 
-The canonical execution proof is message-driven:
+The accepted execution proof is Work-driven:
 
 ```text
-TeamMessage(kind=assignment)
-  -> correlation_id
-  -> Harness blocker / handoff / review / PendingInteraction
+Work assignment/claim -> WorkEvent -> WorkDelivery
+  -> MemberRun + Workspace + NativeSessionRef
+  -> Work block / submission / review / acceptance
+  -> linked TeamMessage / PendingInteraction where conversation or pause exists
   -> explicit outcomes and artifact/check refs
-  -> NativeSessionRef for member execution detail
 ```
 
-Assignment-message correlation replaces legacy dependency graph semantics as the primary
-explanation of who owns what. Automatic handoff preserves the
-assignment correlation; manual CLI, HTTP, and MCP sends can reuse it directly
-or inherit it from a validated same-run causation message.
+Work owner and state explain who owns what. Messages may link Work for
+discussion but do not assign, submit, or accept it.
 
 Ordinary Host/member/peer collaboration stays in `TeamMessage`.
 Provider-pausing questions and approvals use `PendingInteraction`. The Host
-observes handoffs and explicitly sends dependent work; there is no conditional
-delivery graph.
+observes Work state, while minimal blockers make dependent Work ready; there is
+no general conditional-delivery graph.
 
 One latest-wins `TeamSupervisorLease` generation owns each active TeamRun's
 provider transports, delivery claims, and real Steer/Interrupt/Close controls.

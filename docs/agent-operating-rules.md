@@ -26,8 +26,10 @@ and MCP are the shared execution foundation. `Mission` is durable intent and
 may link multiple reusable teams. `Wave` is a lightweight, versioned Markdown
 record of the Host's current plan and judgment; it is not an executor container
 or synchronization barrier. An AgentTeamRun may span multiple Waves while its
-MemberRuns and native sessions continue. Assignment-message correlation owns
-member work. Dynamic Workflow owns its workflow steps; Host execution may use
+MemberRuns and native sessions continue. ADR 0050 accepts Work as member
+responsibility and removes Assignment-message ownership; its runtime migration
+is pending, so use current commands only where their implemented schema proves
+them. Dynamic Workflow owns its workflow steps; Host execution may use
 provider-native subagents as an implementation detail, with optional hooks for
 honest observation. The target contract allows thinking only as sanitized
 transient live state: it must not be persisted, replayed, treated as evidence,
@@ -84,9 +86,11 @@ ledgers or code are deleted.
 
 For Agent Team execution, Harness owns the coordination records: `AgentTeam`,
 Mission relation, `AgentTeamRun`, `MemberRun` plus its native-session binding,
-`TeamMessage`, `PendingInteraction`, explicit outcome and artifact/check
-references, and control acknowledgements. Assignment ownership is proven by
-`TeamMessage(kind=assignment)` plus `correlation_id`. The provider's native
+`Work`, `WorkEvent`, `WorkDelivery`, `TeamMessage`, `PendingInteraction`,
+explicit outcome and artifact/check references, and control acknowledgements.
+Work owner and state prove responsibility; TeamMessage is authored conversation.
+These Work objects remain implementation-pending until ADR 0050's migration
+gate passes. The provider's native
 session store is the sole execution truth for that member's transcript, tool
 calls, commands, file events, and provider turn lifecycle; do not mirror those
 streams into Harness ledgers

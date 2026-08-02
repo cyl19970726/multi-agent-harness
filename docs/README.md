@@ -11,7 +11,7 @@ lifecycle and archive rules are defined in
 | --- | --- |
 | Understand the AI Company OS | [Company OS product system map](company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](company-os/README.md) |
-| Change Mission/Wave or Agent Team orchestration | [Host-plan product contract](product/mission-wave-host-plan.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Member continuation model](member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), [ADR 0039](decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md), [ADR 0041](decisions/0041-provider-neutral-member-continuation.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), and [Architecture map](architecture-map.md) |
+| Change Mission/Wave or Agent Team orchestration | [Host-plan contract](product/mission-wave-host-plan.md), [Agent Team Works](product/agent-team-works.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Member continuation](member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](architecture-map.md) |
 | Evaluate unresolved product or architecture evidence | [Research index](research/README.md); promote accepted findings into canonical contracts and ADRs before implementation |
 | Implement or operate the repository | [Getting started](getting-started.md), [Operations](operations.md), [Schemas](schemas.md) |
 | Change repository agent operating rules | Root [AGENTS.md](../AGENTS.md) and [Agent operating rules detail](agent-operating-rules.md) |
@@ -25,7 +25,7 @@ lifecycle and archive rules are defined in
 | --- | --- |
 | Product | [PRD](prd.md), [Company OS](company-os/README.md), [Design basis](design-basis.md) |
 | Architecture | [Architecture map](architecture-map.md), [Concept model](concept-model.md), [Data model](data-model.md), [ADRs](decisions/README.md) |
-| Execution | [Dashboard](dashboard.md), [Workflow runtime](workflow-runtime.md), [Agent runtime](agent-runtime.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Integration](integration/README.md) |
+| Execution | [Dashboard](dashboard.md), [Workflow runtime](workflow-runtime.md), [Agent runtime](agent-runtime.md), [Agent Team Works](product/agent-team-works.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Integration](integration/README.md) |
 | Design evidence | [`design/`](design/) workstreams; use each workstream README/manifest, not the directory as product authority |
 | Operations | [Getting started](getting-started.md), [Operations](operations.md), [Multi-project](multi-project.md), [Governance engine](governance-engine.md) |
 | Research | [Research index](research/README.md); active input to decisions, never product authority or default context |

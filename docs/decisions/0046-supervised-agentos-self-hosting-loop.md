@@ -133,13 +133,13 @@ the same unclosed MemberRun and native session. A delivery, adapter, permission,
 model/effort, or Plugin contract change requires a controlled drain or
 interrupt and an explicit replacement runtime generation.
 
-StandingAgent identity, Work ownership, Assignment correlation, and company
+StandingAgent identity, Work ownership, Team conversation, and company
 history remain stable across that transition. The provider-native session is
 resumed only when the reviewed mode/version declares it compatible. Two runtime
 generations may never concurrently drive the same writable Workspace. A
 replacement generation is not accepted merely because it acquired a lease: it
 must reconcile the same durable Agent/Member identity, outstanding mail,
-current Assignment, effective permissions and provider controls, and native
+current Work, effective permissions and provider controls, and native
 session binding before it resumes delivery.
 
 ## Consequences

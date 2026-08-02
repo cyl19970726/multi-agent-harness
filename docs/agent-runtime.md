@@ -1,5 +1,9 @@
 # Provider Runtime Contract
 
+```text
+status: implementation reference; Work/WorkDelivery target pending ADR 0050
+```
+
 This implementation reference defines the provider-neutral runtime substrate
 shared by Host execution, Agent Team members, Dynamic Workflow steps and future
 Standing Agent operation. Provider-specific files under `docs/integration/`
@@ -27,7 +31,7 @@ Final acceptance for this mechanism:
 ```text
 select Mission-linked execution, Host-plan context, or direct WorkItem action
   -> start or resume AgentRuntime
-  -> deliver bounded request / executor-native assignment
+  -> deliver bounded Work or executor-native request
   -> bind provider-native session
   -> project native activity on demand
   -> promote explicit outcome, artifacts, checks and optional attribution
@@ -42,9 +46,9 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
-| How does a member receive work? | A correlated Assignment and member Inbox are projected into provider turns by `MessageDelivery`. |
+| How does a member receive work? | `WorkDelivery` projects the latest assigned Work id/version into a provider turn; the Member also reads My Works and the ready pool. |
 | Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`), one reviewed native continuation controller (`provider_driven`), or the user's own out-of-band session (`user_driven`, declared `external_interactive` members only). |
-| Who decides the work is accepted? | The Host, using the Assignment completion policy and evidence; provider completion is only an execution signal. |
+| Who decides the work is accepted? | The Team Host, using Work completion criteria and evidence; provider completion is only an execution signal. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
 | How are providers swapped? | Providers implement the same interfaces and cannot own harness state. |
@@ -65,7 +69,7 @@ contract does.
 | incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
 
 At no point may both generations drive the same writable Workspace. Durable
-WorkItem, Assignment correlation, Standing Agent identity, and accepted
+Work/WorkItem ownership, Message correlation, Standing Agent identity, and accepted
 evidence survive the transition. Provider upgrades still require explicit
 Human confirmation under ADR 0031; an ordinary Harness build update is not
 permission to upgrade Codex, Claude Code, or Kimi.
@@ -75,15 +79,16 @@ permission to upgrade Codex, Claude Code, or Kimi.
 | Object | Owns | Refuses |
 | --- | --- | --- |
 | `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
-| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | WorkItem, assignment, or acceptance ownership |
-| `MessageDelivery` | delivery request to provider correlation and terminal delivery state | assignment ownership outside the selected executor |
+| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | Work/WorkItem or acceptance ownership |
+| `WorkDelivery` | reliable delivery of one WorkEvent and Work id/version to a Member runtime | Work ownership or authored conversation |
+| `MessageDelivery` | delivery request for authored conversation and terminal delivery state | Work ownership or status |
 | `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
 | `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
 | `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `ProviderExecutionControls` | requested versus effective model, reasoning effort, and service tier with native receipt status | provider capability inference or Organization authority |
 | `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |
-| `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Assignment ownership, or Host acceptance |
+| `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Work ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
@@ -92,21 +97,21 @@ permission to upgrade Codex, Claude Code, or Kimi.
 ## Agent Team Collaboration Boundary
 
 An Agent Team member is an accountable, multi-turn actor with a stable
-`MemberRun`, Workspace, mailbox address, Assignment correlation, and
+`MemberRun`, Workspace, mailbox address, active Works, and
 provider-native session. Its provider-native subagents are child execution
 threads, not additional Harness members. The parent member retains permission,
 evidence, and acceptance responsibility.
 
-Harness owns ordinary coordination through `TeamMessage`. The preferred new
-write model is deliberately small: `assignment`, ordinary `message`, and
-`handoff`; `control` is reserved for real steer/interrupt/resume protocols.
-Question, answer, progress, blocker, plan, review, and peer coordination are
-ordinary message intents, not lifecycle objects. Historical specialized kinds
-remain readable but are read-only on new public writes. Members may send
+Harness owns Work responsibility through `Work`, `WorkEvent`, and
+`WorkDelivery`; it owns authored coordination through `TeamMessage`.
+Assignment, claim, start, block, submission, review, and acceptance are Work
+operations, not Message kinds. There is no Assignment-message compatibility
+path. Question, answer, discussion, and peer coordination remain ordinary
+message intents. Members may send
 ordinary messages to the Host or direct peer
 messages to active members in the same TeamRun. Member-to-Host messages
 are delivered when appended because the control plane already received them.
-Messages addressed to a member remain queued until the current Supervisor
+Messages and WorkDeliveries addressed to a member remain queued until the current Supervisor
 claims them and the adapter returns a provider-native acceptance receipt for
 the selected MemberRun and native session. The adapter must poll or
 subscribe independently of provider turn completion; busy modes that cannot
@@ -117,10 +122,9 @@ only as the Host, an Operator, or a Service; it cannot select `member_run` or
 `agent_member` by id. Member-originated messages come from that Member's bound
 Provider runtime.
 
-The member Inbox is a latest-row projection over messages addressed to that
-MemberRun. Its default view contains actionable queued/delivered coordination;
-the historical view contains the complete same-run coordination lineage. It
-does not read or copy provider-native chat.
+The member Inbox projects unread authored messages and WorkDeliveries addressed
+to that MemberRun. My Works and the ready pool come from Work projections, not
+mail. The Inbox does not read or copy provider-native chat.
 
 Delivery does not imply that a semantic reply is required. An ordinary
 coordination message should declare response intent explicitly when the sender
@@ -211,44 +215,42 @@ supervisors. An idle Member retains its native session, mailbox and Host control
 handle without occupying a provider-turn permit.
 
 Provider context is ephemeral. Harness state is durable. Each delivery should
-include only the bounded context needed for that turn: objective, acceptance
-criteria, relevant executor-native assignments/messages, artifact refs, skill
-refs, owned paths, workspace refs, permission profile and necessary Company OS
-links.
+include only the bounded context needed for that turn: active Work id/version,
+context and completion criteria, assigned/ready summaries, relevant messages,
+artifact refs, skill refs, owned paths, workspace refs, permission profile and
+necessary Company OS links.
 
 Delivery queues must be built from the latest projection of mutable objects.
-For an append-only store, this means selecting the latest row per `Message.id`
-before checking `delivery_status=queued`. Raw historical rows are audit data,
-not deliverable work.
+For an append-only store, this means selecting the latest row per Message or
+WorkDelivery id before checking `delivery_status=queued`. Raw historical rows
+are audit data, not deliverable input.
 
 Delivery correctness also requires a claim/lease before provider side effects.
 Starting a runtime, creating a provider thread, or sending provider input can
 change external state. A provider implementation must not perform those effects
 until the current Supervisor has verified that the selected provider transport
-is live and atomically claimed the latest queued message. A successful provider
+is live and atomically claimed the latest queued Message or WorkDelivery. A successful provider
 acceptance creates a separate receipt; semantic reply and recipient ACK remain
 separate facts. The claim must be visible to later dispatchers and to the
-Dashboard. If transport health fails before claim, mail stays queued and the
+Dashboard. If transport health fails before claim, the delivery stays queued and the
 Supervisor must reconnect the recorded native session before retrying.
 
 Crash recovery depends on the last durable boundary:
 
-- `queued` means the provider has not accepted the message; reconnect before
+- `queued` means the provider has not accepted the Message or WorkDelivery; reconnect before
   claiming it;
 - `claimed` means provider acceptance is uncertain; reconcile explicitly and
   never blindly replay it;
-- `delivered` without a correlated Handoff means the provider accepted the
-  input but semantic completion is missing. Resume the same native session and
-  ask the Member to inspect its native state/workspace and finish or restate
-  the result without duplicating the Assignment.
+- `delivered` without a Work submission or required reply means the provider
+  accepted the input but semantic completion is missing. Resume the same native
+  session and ask the Member to inspect its native state, latest Work version,
+  and Workspace before continuing.
 
-A Member cannot write a Handoff while newer same-correlation **response-required**
-input is `queued` or `claimed`. This fence preserves the difference between a
-pre-correction result and the result that actually absorbed the Host's latest
-instruction — an ordinary Host `message` is response-required by default, so a
-mid-round correction always fences. Informational mail (peer-to-peer
-acknowledgements) never starts a round, so fencing on it would deadlock the
-Handoff behind mail that is intentionally never driven; it does not fence.
+A Member cannot submit a Work while a newer WorkDelivery for that Work, or a
+newer linked **response-required** Message, is `queued` or `claimed`. This fence
+preserves the difference between a pre-correction result and the result that
+actually absorbed the Host's latest instruction. Informational mail such as
+peer acknowledgements does not fence submission.
 
 Closed, closing, or retired members cannot be revived by delivery. Explicit
 Reopen is the only transition from `closed` to `active`: it keeps the same

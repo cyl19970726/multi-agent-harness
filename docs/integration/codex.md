@@ -1,5 +1,9 @@
 # Codex Integration
 
+```text
+status: implementation reference; Work/WorkDelivery target pending ADR 0050
+```
+
 This document defines the current Codex provider contract for Star Harness.
 Provider-neutral lifecycle and mailbox semantics live in
 [Agent Runtime](../agent-runtime.md); this file only explains how Codex
@@ -36,7 +40,7 @@ reattach the reviewed native thread under the replacement runtime generation.
 One live Codex MemberRun owns one app-server child and one native Codex thread:
 
 ```text
-MemberRun + correlated Assignment
+MemberRun + active Work/version
   -> codex app-server --listen stdio://
   -> initialize
   -> thread/start or explicit thread/resume
@@ -297,7 +301,7 @@ The contract, classification thresholds, start guard, and truth matrix live in
 
 A Codex Team integration claim requires:
 
-1. a real `codex_app_server` MemberRun and correlated Assignment;
+1. a real `codex_app_server` MemberRun and active Work/version;
 2. a resolvable native Codex session;
 3. ordinary mail delivered to the same live Member across multiple turns;
 4. at least one verified lifecycle operation with terminal acknowledgement;

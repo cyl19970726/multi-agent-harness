@@ -1,7 +1,7 @@
 # Kimi ACP Agent Team runtime
 
 ```text
-status: implementation reference
+status: implementation reference; Work/WorkDelivery target pending ADR 0050
 owner_role: provider-integration
 canonical_for: Kimi persistent Agent Team execution, controls, mailbox boundary, and resume
 ```
@@ -79,12 +79,12 @@ receipt in the Member control snapshot.
 ## Runtime sequence
 
 ```text
-MemberRun + correlated Assignment
+MemberRun + active Work/version
   -> Kimi ACP process over stdio
   -> initialize
   -> session/new, or session/resume for a known compatible session
   -> session/load only when an older ACP server does not implement resume
-  -> session/prompt for one eligible mailbox envelope
+  -> session/prompt for one eligible Work/message envelope
   -> explicit Host Close ends the Member runtime
 ```
 

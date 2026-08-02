@@ -15,7 +15,7 @@ proof, or default Agent context.
 
 | Study | Decision it informs | Status |
 | --- | --- | --- |
-| [Agent Team shared task list](agent-team-shared-task-list.md) | Whether Agent Team needs a TeamRun-scoped task board, and the smallest provider-neutral contract | Active; ADR and implementation not yet accepted |
+| [Agent Team shared Works](agent-team-shared-task-list.md) | Evidence and alternatives that informed the Work/Message boundary | Absorbed by ADR 0050; retained until implementation and repeat dogfood |
 
 ## Lifecycle
 

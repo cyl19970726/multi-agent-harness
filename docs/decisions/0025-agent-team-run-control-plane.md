@@ -9,6 +9,9 @@ Superseded in part by ADR
 owned by one Wave on the primary path, and a Mission-scoped run may span Waves.
 This ADR remains historical context and canonical only for retained MemberRun,
 TeamMessage, PendingInteraction, correlation, and control-plane boundaries.
+ADR [0050](0050-agent-team-work-board-and-message-boundary.md) removes the
+Assignment-message ownership model below rather than preserving a compatibility
+reader.
 
 Superseded in part by ADR
 [0044](0044-durable-team-supervision-and-typed-mail.md): typed actor
@@ -117,10 +120,11 @@ Rules:
 - Attempt completion (`reviewing -> completed`) is separate from the Wave gate;
   only a completed attempt can be accepted by that parent Wave.
 
-### Assignment-message correlation
+### Historical Assignment-message correlation
 
-Ownership inside an Agent Team Wave is explained by message correlation, not by
-an exposed legacy dependency graph:
+V0 explained ownership through message correlation. This proof chain is
+superseded by Work/WorkEvent/WorkDelivery and must not be used for new design,
+implementation, fixtures, or active data:
 
 ```text
 TeamMessage(kind=assignment)
@@ -130,7 +134,7 @@ TeamMessage(kind=assignment)
   -> NativeSessionRef for member execution detail
 ```
 
-This is the target proof chain for lane ownership inside the run.
+This was the v0 proof chain for lane ownership inside the run.
 
 Automatic handoff reuses its assignment's `correlation_id` and names the exact
 TeamMessage consumed by that provider round as `causation_id`. Manual CLI,
