@@ -19,17 +19,19 @@ Members could not atomically claim known ready work.
 The failure reconstruction and Claude Code comparison are preserved in
 [Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
 
-The product also needs one simple base that Company WorkItem can extend. Adding
-a separate `TeamTask` beside WorkItem would create two similar models and make
-Organization delegation harder to explain.
+The product also needs one simple execution-board object that Company WorkItem
+can reference. Collapsing their storage or lifecycle would create competing
+owner/status/approval truths, so the relation must remain explicit.
 
 ## Decision
 
 ### Work is the base responsibility object
 
 Agent Team adds a TeamRun-scoped `Work` object and a shared `Works` projection.
-Company WorkItem later extends the same `WorkCore` with company governance and
-relations. Kanban is a view over Work, not another source of truth.
+Company WorkItem remains a separate governed business object and may link one
+or more execution Works through `source_work_item_ref`. A Team Work transition
+does not mutate WorkItem authority, approval, finance, or closure. Kanban is a
+view over Work, not another source of truth.
 
 ### Assignment is a Work operation
 
@@ -45,10 +47,18 @@ Historical dogfood evidence is retained in governed research or verified native
 exports. Active stores are reset or explicitly migrated; product code does not
 maintain two ownership projections.
 
+`WorkEvent` is authoritative append-only transition history. `Work` is a
+rebuildable latest projection. A command atomically compares the expected Work
+version, appends one idempotent event, updates the projection, and enqueues
+deterministically identified WorkDelivery outbox rows. Runtime/member authority
+is derived from its trusted binding; client-provided actor strings are never
+sufficient authorization.
+
 ### Messages are authored conversation
 
 TeamMessage carries authored Markdown conversation with optional `work_id`,
-correlation, and reply lineage. It never changes Work owner or status by itself.
+minimal `response_intent`, correlation, and reply lineage. It never changes
+Work owner or status by itself.
 Assignment, claim, start, block, submit, request changes, accept, release, and
 cancel are Work operations and WorkEvents.
 
@@ -87,9 +97,9 @@ ownership. They do not replace Mission closeout or Wave decision history.
   separate and observable.
 - Dashboard adds Works as a primary Team surface and task state no longer has
   to be inferred from Activity.
-- Organization may compose nested Teams while preserving parent accountability.
-- Company WorkItem can share WorkCore rather than wrap an unrelated executor
-  task type.
+- Organization may select nested Teams as an execution mechanism while keeping
+  StandingAgent, AgentMember, TeamRun, and authority identities distinct.
+- Company WorkItem can link execution Works without inheriting their lifecycle.
 - Existing Assignment-message schemas, CLI writes, projections, warnings,
   fixtures, Skills, Plugin copies, and dogfood stores require a breaking cleanup.
 
@@ -126,6 +136,21 @@ Rejected. Minimal blockers determine readiness; Dynamic Workflow owns complex
 deterministic flow.
 
 ## Implementation Boundary
+
+### Breaking cutover contract
+
+Until all gates below land together, `TeamMessage(kind=assignment)` remains the
+implemented legacy ownership truth and this ADR is target-only. The cutover is
+atomic across root operating instructions, schemas, store projections,
+CLI/API/MCP, Supervisor/providers, Dashboard, Company OS joins, Skills, Plugin,
+fixtures, and active data. The new binary refuses active Execution Spaces that
+contain legacy Agent Team Assignment messages; dogfood uses a fresh space after
+a manifested historical export. No merged release may expose two ownership
+authorities.
+
+At cutover, Mission/Wave remain the only native durable intent and Host
+plan/judgment objects. Work is executor-specific responsibility state, not a
+third planning hierarchy or a universal Task Graph.
 
 The decision becomes operational only after:
 

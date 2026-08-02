@@ -4065,7 +4065,7 @@
     "official Claude Code Agent Teams documentation",
     "npx pnpm@9.15.4 check:docs-governance"
    ],
-   "reorgTrigger": "Work schema, status, claim, delivery, creation authority, child delegation, Team Workbench, Company WorkItem extension, or Mission boundary changes.",
+   "reorgTrigger": "Work schema, status, claim, delivery, creation authority, child delegation, Team Workbench, Company WorkItem relation, or Mission boundary changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "design_only",
    "truthRefs": [
@@ -4076,6 +4076,42 @@
     {
      "kind": "runtime_evidence",
      "ref": "team-run-1785417589241-p28630-0"
+    }
+   ]
+  },
+  {
+   "path": "docs/design/agent-team-works-implementation-plan.md",
+   "ownerRole": "execution-foundation",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Agent Team Works breaking cutover sequence",
+    "Agent Team Works frontend and self-dogfood acceptance matrix"
+   ],
+   "dependsOn": [
+    "docs/product/agent-team-works.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/dashboard/pages/team-run-war-room.md",
+    "docs/dashboard/pages/member-run-focus.md",
+    "docs/dashboard/pages/mission-wave-canvas.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:agent-team-works"
+   ],
+   "reviewAfter": "2026-08-17",
+   "lastVerifiedWith": [
+    "architecture, UX, and implementation migration review 2026-08-03",
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The Works cutover completes, implementation order changes, or the acceptance matrix moves into executable tests.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
     }
    ]
   },
@@ -4107,7 +4143,7 @@
     "native TeamRun forensic snapshot 2026-08-02",
     "npx pnpm@9.15.4 check:docs-governance"
    ],
-   "reorgTrigger": "Work/Message ownership, Assignment compatibility, claim, delivery, child delegation, Company WorkItem extension, or Mission boundary changes.",
+   "reorgTrigger": "Work/Message ownership, Assignment compatibility, claim, delivery, child delegation, Company WorkItem relation, or Mission boundary changes.",
    "authorityClass": "canonical_contract",
    "implementationState": "design_only",
    "truthRefs": [

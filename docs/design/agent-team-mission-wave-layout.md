@@ -48,7 +48,7 @@ It does not require every member to finish. Creating Wave N+1 preserves the
 same TeamRun, MemberRun, Work ownership, and native session unless the
 Host explicitly changes them.
 
-## Team War Room
+## Team Workbench
 
 The Team page uses `Works | Activity | Members`, with Works as the default:
 
@@ -64,6 +64,19 @@ The Team page uses `Works | Activity | Members`, with Works as the default:
 Harness coordination and ephemeral provider-native projections render
 together but remain source-labelled. Provider transcript, tool, command, file,
 turn, and thinking streams are not copied into Harness ledgers.
+
+### Responsive view matrix
+
+| View | Desktop | Tablet | Mobile |
+| --- | --- | --- | --- |
+| Works | Kanban or windowed dense list + non-modal drawer | compact columns/grouped list | grouped status list + bottom sheet; no horizontal Kanban |
+| Activity | mailbox filters + source-aware timeline + composer | timeline + context sheet | one timeline + composer + filter sheet |
+| Members | factual capacity table/grid | compact grid/list | compact capacity list |
+
+Member capacity is factual only: addressability/runtime state, active/queued
+Works, blocked/review Works, eligible-ready count, and separately labelled
+provider-account capacity. No UI invents a utilization percentage without a
+real configured limit.
 
 ## Member Focus
 
@@ -120,8 +133,12 @@ Every design reference must pair:
 3. actual browser capture from a deterministic fixture; and
 4. comparison with classified defects or intentional deviations.
 
-The current visual assets live in
-[`execution-workbench-v3/`](execution-workbench-v3/README.md). Canonical
+The current visual assets in
+[`execution-workbench-v3/`](execution-workbench-v3/README.md) predate Works and
+are legacy composition/style baselines only. They are not ADR 0050 product-truth
+evidence. New Works/Activity/Members expected images, annotations, deterministic
+fixtures, actual captures, and comparisons must be registered independently.
+Canonical
 behavior is owned by the
 [Mission/Wave Canvas](../dashboard/pages/mission-wave-canvas.md) and
 [Agent Team War Room](../dashboard/pages/team-run-war-room.md) page specs.

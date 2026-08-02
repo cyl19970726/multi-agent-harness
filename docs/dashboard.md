@@ -22,8 +22,9 @@ Mission
 ```
 
 The Workbench must not require or introduce a dependency graph for Mission,
-Wave, or Agent Team. Retired coordination pages and unlinked Team Runs are not
-part of active navigation or authoring.
+Wave, or Agent Team. Retired coordination pages are not part of active
+navigation or authoring. Agent Teams navigation lists both standalone and
+Mission-scoped runs; only Mission Canvas excludes unrelated runs.
 
 ## Key Questions
 
@@ -54,7 +55,7 @@ flowchart TD
   Host[Host execution summary]
   Member[Member detail]
   Artifacts[Artifacts and outcomes]
-  Gate[Wave gate]
+  Decision[Host judgment and Wave advance]
   Warnings[Approvals and warnings]
 
   Missions --> Mission
@@ -69,8 +70,8 @@ flowchart TD
   Team --> Artifacts
   Workflow --> Artifacts
   Host --> Artifacts
-  Artifacts --> Gate
-  Gate --> Waves
+  Artifacts --> Decision
+  Decision --> Waves
   Team --> Warnings
   Workflow --> Warnings
 ```

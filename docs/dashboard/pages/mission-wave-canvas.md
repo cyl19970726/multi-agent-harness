@@ -97,7 +97,10 @@ Compose flexible compact modules:
    a one-to-many Mission relation into one global “latest team” summary. This is
    Mission-scoped, not nested under one Wave.
 4. **SelectedWave** — revision, updated actor, judgment excerpt, carry-over,
-   artifacts, and history action.
+   artifacts, and history action. When the Wave is advanced, show its immutable
+   `as recorded at advance` Work citations separately from `current execution
+   now`; each includes version and timestamp so live Works do not appear owned
+   by historical Wave state.
 5. **LegacyExecutor** — only for historical direct-executor data.
 
 Cards are quiet structural containers, not a wall of elevated analytics tiles.
@@ -148,9 +151,12 @@ responsibility, risk, or decision boundary changes materially.
 
 ## Screenshot And UX Acceptance
 
-At desktop acceptance the first viewport must show Mission context, linked
-teams, ordered Waves, one expanded full Markdown Wave, responsibility table,
-and an available Host advance decision. Test:
+At desktop acceptance the first viewport must show the Mission heading/context
+start, linked teams, ordered Waves, one selected Wave heading/context start,
+responsibility table, and an available Host advance decision. Long Markdown is
+not required to fit in one viewport; it must be reachable without clipping.
+Pre-Works baselines do not prove ADR 0050. New expected/actual cases must also
+separate historical Wave snapshots from live Works. Test:
 
 - vertical scrolling to the end of long Mission/Wave context;
 - every Team/Member control navigates and returns correctly;

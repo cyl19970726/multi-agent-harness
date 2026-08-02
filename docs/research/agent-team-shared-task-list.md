@@ -58,8 +58,9 @@ WorkDelivery   = reliable Work notification to a runtime
 Native Session = execution truth
 ```
 
-Company WorkItem will extend the same `WorkCore`; it is not a separate executor
-task model layered above an unrelated `TeamTask`.
+Company WorkItem remains a separate governed business object and links Agent
+Team Works as execution attempts. They share a small semantic vocabulary, not
+storage inheritance or owner/status authority.
 
 ## Evidence
 
@@ -111,6 +112,9 @@ a Mailbox. Tasks use pending, in-progress, and completed states. The Lead may
 assign work, or a Teammate may atomically claim unassigned unblocked work.
 Completing a prerequisite makes dependent work claimable. See
 [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams).
+The source documents Agent Teams as experimental and describes coordination and
+resume limitations. The comparison is a mechanism study, not a production or
+feature-parity claim.
 
 Its communication path is separate:
 
@@ -181,23 +185,23 @@ responsibility; an idle eligible Member can atomically claim ready unassigned
 Work. Completing the last blocker makes an assigned Work deliverable or exposes
 an unassigned Work to the pool. No Agent has to replay chat to discover demand.
 
-## Why WorkItem Extends Work
+## Why WorkItem Links Work
 
 The intermediate proposal also named the Team object `TeamTask` and kept it
 separate from Company WorkItem. That created two nearly identical scheduling
 models.
 
-The accepted layering is:
+The accepted relation is:
 
 ```text
-WorkCore
-  -> Agent Team Work
-  -> Company WorkItem with Milestone, Docs, Approval, Finance, GitHub and Org
+Company WorkItem --source/attempt relation--> Agent Team Work
 ```
 
-The stores and extensions may differ, but title, context, completion criteria,
-owner, status, readiness, result, evidence, and parent/child responsibility use
-one shared contract.
+WorkItem owns business provenance, accountable actor, approvals, finance, and
+governed closure. Agent Team Work owns one TeamRun's member responsibility,
+readiness, execution state, result, and evidence. A Work event never silently
+changes WorkItem authority; a governed Company command aggregates accepted
+execution results back into the WorkItem.
 
 ## Creation And Delegation Conclusion
 

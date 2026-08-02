@@ -27,7 +27,8 @@ transcript or a duplicate Team Kanban.
 
 Required data:
 
-- `Mission`, `Wave`, and Wave exit criteria/gate projection;
+- optional `Mission`, selected/current Wave context, and Host judgment/advance
+  projection;
 - parent `AgentTeamRun` and retry lineage;
 - the selected `MemberRun`;
 - current `TeamSupervisorLease` generation and control/reconnect state;
@@ -74,11 +75,11 @@ state. Harness does not silently fall back to a mirrored history.
 
 ## Layout Contract
 
-The active visual candidate is the desktop/tablet/mobile MemberRun Focus V3
-set in
+The desktop/tablet/mobile MemberRun Focus V3 set in
 [`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
-The older Workbench V2 image remains baseline evidence, not the target visual
-contract.
+It predates Works and is a legacy visual baseline, not ADR 0050 product-truth
+evidence. A new immutable expected/actual set must be registered before Works
+is accepted. The older Workbench V2 image is historical baseline only.
 
 ### Desktop — `1440x1000`
 
@@ -241,10 +242,15 @@ modes do not receive a fabricated Desktop target.
   ordinary coordination when the member is no longer addressable. If the
   provider runtime is still live, Host Close remains available and explicitly
   explains that completion did not end the runtime.
+- **Mutation conflict:** show pending mutation, claim lost, version conflict,
+  delivery uncertainty/failure, and reconciliation-required states with the
+  latest Work version and a non-destructive retry path. Never imply the
+  Member-owned Work changed when the command failed.
 
 ## Screenshot Acceptance
 
-For `member-run-focus--running-needs-you--desktop` in the visual contract:
+The previous `member-run-focus--running-needs-you--desktop` case is a legacy
+baseline. The Works contract adds new desktop/tablet/mobile cases in which:
 
 - baseline, approval-pending expected candidate, implementation capture, and labeled comparison
   all use the registered fixture, route, and `1440x1000` viewport;
@@ -261,9 +267,10 @@ For `member-run-focus--running-needs-you--desktop` in the visual contract:
   `visual-contract.json`, not silently normalized by changing the expected
   image.
 
-The implementation and exact-viewport desktop/tablet/mobile evidence are
-complete. Product-truth and internal visual checks pass; the expected candidate
-must remain immutable while awaiting explicit user approval.
+Pre-Works implementation evidence is complete only for the legacy baseline.
+Works product truth remains pending until the new expected candidate is frozen,
+the implementation is captured at exact viewports, and product/visual/browser
+checks pass without mutating the expected image.
 
 ## Explicit Boundaries
 

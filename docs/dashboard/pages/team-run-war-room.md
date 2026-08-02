@@ -1,4 +1,4 @@
-# Agent Team War Room Page Spec
+# Agent Team Workbench Page Spec
 
 ```text
 status: implemented baseline; Works redesign accepted and pending
@@ -73,8 +73,10 @@ surface, Activity conversation, Members capacity, and flexible context modules.
 +----------------------+--------------------------------------+------------------+
 ```
 
-`Works` is the default view. It offers My Works, Unassigned, Assigned, Blocked,
-Review, and All filters; Open, In progress, Blocked, Review, and Done Kanban
+`Works` is the default view. `Owned by me` appears only for a current actor
+bound to a participating MemberRun; Host/Operator views use `By owner`. It
+offers Unassigned, Assigned, Blocked, Review, and All filters; Open, In
+progress, Blocked, Review, and Done Kanban
 columns; and an optional dense list. Cards expose owner portrait, readiness,
 criteria preview, blockers, child progress, source WorkItem, unread discussion,
 and update time. Kanban is a projection over Work, never separate state.
@@ -83,7 +85,7 @@ Every Host/Member mailbox is computed from TeamMessage recipients and delivery
 records. It is a read-model projection, not a new stored mailbox object. The
 Host mailbox is visible even though Host is not a fabricated MemberRun. Mailbox
 selection filters sent/received conversation; Member portraits and names open
-Member Focus. A blocking details drawer is not a replacement for the full page.
+Member Focus. A non-modal details drawer is not a replacement for the full page.
 Every row renders typed author → recipient identity. A Dashboard Operator and
 the Host Lead remain visually and structurally distinct, and neither can
 impersonate a Member.
@@ -135,6 +137,10 @@ changes, accepted, released, or cancelled Work.
 
 - Create, assign, claim, start, block, submit, request changes, accept, release,
   cancel, or delegate Work through canonical Work actions.
+- Host may assign and accept, but may claim/execute only through an explicit
+  Lead MemberRun. Each mutation renders the actual actor plus delegated Host
+  authority where present, requires the expected Work version, and exposes
+  claim/version/reconciliation conflicts rather than retrying invisibly.
 - Message the whole team or one explicit member. The composer distinguishes a
   new conversation from a reply and may link the selected Work.
 - Make it clear that Host-authored coordination comes from the Team Lead;
@@ -169,9 +175,17 @@ restarts this TeamRun.
   member runtime retains an explicit Host Close action. Resume/new-run choices
   follow the provider/session contract; do not imply a Mission or Wave
   completed.
-- Tablet/mobile: collapse navigation, make the mailbox strip horizontally
-  scrollable and keyboard accessible,
-  preserve one stream and composer, and move context into sheet/bottom sheet.
+- **Works responsive surface:** desktop uses Kanban or a windowed dense list;
+  tablet uses compact columns or grouped list; mobile uses grouped status lists
+  and a Work bottom sheet, never horizontal Kanban. Drag/drop is optional and
+  never the only mutation path.
+- **Activity responsive surface:** preserve one source-aware timeline and its
+  composer; mailbox filters may scroll horizontally when keyboard accessible;
+  context moves into a sheet/bottom sheet.
+- **Members responsive surface:** desktop uses a factual capacity table/grid;
+  tablet/mobile use a compact capacity list. Capacity means addressability,
+  active/queued/blocked-review/eligible-ready counts, plus separately labeled
+  provider-account capacity—never a synthetic percentage.
 - Navigation preserves filters, selected member, scroll, Mission id, selected
   Wave id, TeamRun id, and project id across Team → Member → Team deep links.
 - A canonical MCP Dashboard URL for a Mission-scoped run includes the current
@@ -180,10 +194,16 @@ restarts this TeamRun.
 
 ## Screenshot And UX Acceptance
 
-Desktop acceptance must show the shared compact execution shell, team identity,
-Works Kanban/list, assigned and unassigned ownership with portraits, a
-source-aware Markdown group conversation, composer, Mission/Wave
-orientation, runtime, and artifacts. Verify:
+Pre-Works execution-workbench images are legacy visual baselines, not evidence
+that ADR 0050 is implemented. New acceptance uses distinct expected and actual
+captures for Works, Activity, and Members at desktop `1440x1000`, tablet
+`900x1180`, mobile `390x844`, plus a `320px` overflow check.
+
+Works acceptance shows the shared shell, assigned/unassigned ownership with
+portraits, Kanban/list, Mission/Wave orientation, and the selected Work drawer.
+Activity acceptance shows source-aware rendered Markdown conversation, typed
+sender -> recipient routes, events, delivery state, and composer. Members
+acceptance shows factual capacity and runtime pressure. Across all views verify:
 
 - member controls open the correct Member Focus and return without state loss;
 - Work, mailbox, participant, event/message, and search filters preserve Team context;
@@ -193,6 +213,22 @@ orientation, runtime, and artifacts. Verify:
 - the same TeamRun remains visible after Mission Wave advance;
 - empty, loading, error, unavailable-native-session, and long-stream behavior;
 - actual screenshot against the approved expected reference.
+
+The state matrix covers initial loading, partial-source failure, last-good stale
+data, filtered empty, pending mutation, claim lost, version conflict, delivery
+queued/uncertain/failed, busy member, crash/disconnect, closed, retired, and
+Supervisor-generation change. A 1,000-Work/100-Member fixture proves stable
+sorting, bounded DOM/windowing, visible totals/load-more, and restorable URL
+state for view, filters, sort, selected Work, scroll anchor, Mission/Wave, and
+cursor.
+
+Accessibility requires semantic tabs, keyboard board/list and non-drag action
+paths, focus restoration after drawers/dialogs, Escape handling, live-region
+claim/conflict announcements, non-color status, reduced motion, 44px mobile
+targets, accessible Markdown tables, zero serious/critical automated findings,
+and manual VoiceOver journeys. Every Activity row shows avatar, textual actor
+name/type, sender -> full recipient route, source/status, and absolute time on
+disclosure; multi-recipient `+N` exposes the full accessible list.
 
 ## Explicit Boundaries
 

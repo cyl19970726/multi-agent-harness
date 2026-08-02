@@ -177,3 +177,43 @@ no shared task list
 
 The parent study turns this evidence into a bounded design recommendation:
 [Agent Team Shared Task List](agent-team-shared-task-list.md).
+
+## Reproducibility appendix
+
+Snapshot locator:
+
+```text
+Execution Space: star-harness-dogfood
+Store root: ~/.harness/execution-spaces/star-harness-dogfood
+TeamRun: team-run-1785417589241-p28630-0
+Snapshot date: 2026-08-02 Asia/Shanghai
+```
+
+Snapshot hashes at reconstruction time:
+
+| File | SHA-256 |
+| --- | --- |
+| `team_runs.jsonl` | `4e39dcedb96862e067e1f2b38f2e3372a5f419e23b9439db17df39a47b813cfa` |
+| `member_runs.jsonl` | `62ad800eeb516fe45d5a623ac558ca2cb4165710378f52eb9c0db138a952e4f2` |
+| `team_messages.jsonl` | `66727e04cd75a878d94a73f65ccb4d9c42c73a4b33e18b686329831d5f323023` |
+
+The reconstruction first applies latest-wins by record id, then filters every
+MemberRun and TeamMessage by the TeamRun id above. Provider execution claims
+resolve each selected MemberRun's `native_session` locator; the report does not
+derive tool/turn claims from TeamMessage prose.
+
+The 14/7/40 content counts use case-insensitive body matching on the 94
+latest-wins Assignment messages:
+
+```text
+14: body contains the phrase "existing WorkItem" or its Chinese equivalent
+ 7: body contains an explicit "do not create a duplicate" instruction
+40: body directs the recipient to inspect, read, re-read, query, or reconcile
+    current repository/store/WorkItem state before acting
+```
+
+These categories overlap and are classification evidence, not additive totals.
+To reproduce them, export the filtered Assignment rows, preserve ids/body, run
+the literal phrase queries, then manually review the matching set for meaning.
+Future refreshed evidence must record a new snapshot date and hashes rather
+than silently replacing these counts.
