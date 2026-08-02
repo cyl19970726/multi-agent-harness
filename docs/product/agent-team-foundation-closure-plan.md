@@ -56,6 +56,20 @@ Organization identity work is additive and independently owned. This plan
 provides the runtime and mailbox substrate it can consume; it does not edit the
 Organization UI or create a second Agent identity.
 
+## Active research input
+
+The real self-hosting lifecycle exposed a separate scheduling gap: Agent Team
+has durable messages but no TeamRun-scoped shared task list. The evidence,
+Claude Code comparison, bounded `TeamTask` proposal, and multi-level
+Organization implications are recorded in
+[Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
+
+That study is not yet product authority. An ADR must decide the object boundary,
+state transitions, atomic claim rules, migration, and acceptance before this
+implementation plan adds another Wave or any schema/API work. In particular,
+the research does not change the current Assignment-message contract and does
+not authorize a Goal, GoalPhase, Plan Gate, or universal Task Graph.
+
 ## One model, several clients
 
 ### Identity, runtime, and attachment

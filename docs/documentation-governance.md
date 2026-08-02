@@ -23,6 +23,7 @@ not seven independent sources of product truth.
 | Execution | `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `docs/design/<workstream>/` | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/getting-started.md`, `docs/operations.md`, `docs/schemas.md`, `docs/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
+| Research | `docs/research/` | unresolved evidence, comparisons and bounded proposals attached to an active decision or WorkItem | never default context |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
 Within Company OS, product contracts divide by truth-owning system:

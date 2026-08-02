@@ -3923,6 +3923,99 @@
    ]
   },
   {
+   "path": "docs/research/README.md",
+   "ownerRole": "docs-governance",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "repository navigation and lifecycle entry for unresolved research"
+   ],
+   "dependsOn": [
+    "docs/documentation-governance.md",
+    "docs/research/agent-team-shared-task-list.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-02",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Research lifecycle, active study set, or promotion and retirement rules change.",
+   "authorityClass": "entry",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/documentation-governance.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/research/agent-team-shared-task-list.md",
+   "ownerRole": "execution-foundation",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "research input for a TeamRun-scoped shared task list and multi-level Organization delegation"
+   ],
+   "dependsOn": [
+    "docs/research/agent-team-shared-task-list-evidence.md",
+    "docs/product/agent-team-foundation-closure-plan.md",
+    "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
+    "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-16",
+   "lastVerifiedWith": [
+    "native TeamRun forensic snapshot 2026-08-02",
+    "official Claude Code Agent Teams documentation"
+   ],
+   "reorgTrigger": "The task-list direction is accepted, rejected, superseded, or absorbed into an ADR and implementation contract.",
+   "authorityClass": "research",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "runtime_evidence",
+     "ref": "team-run-1785417589241-p28630-0"
+    }
+   ]
+  },
+  {
+   "path": "docs/research/agent-team-shared-task-list-evidence.md",
+   "ownerRole": "execution-foundation",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "forensic reconstruction of the message-only Agent Team scheduling failure"
+   ],
+   "dependsOn": [
+    "docs/research/agent-team-shared-task-list.md",
+    "docs/product/agent-team-dogfood-loop.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-16",
+   "lastVerifiedWith": [
+    "native TeamRun forensic snapshot 2026-08-02"
+   ],
+   "reorgTrigger": "A repeat dogfood run invalidates the reconstruction or the parent research is absorbed into canonical authority.",
+   "authorityClass": "research",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "runtime_evidence",
+     "ref": "team-run-1785417589241-p28630-0"
+    }
+   ]
+  },
+  {
    "path": "docs/product/agent-team-foundation-closure-plan.md",
    "ownerRole": "execution-foundation",
    "status": "planned",
@@ -3935,7 +4028,8 @@
     "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
     "docs/decisions/0041-provider-neutral-member-continuation.md",
     "docs/member-continuation-model.md",
-    "docs/agent-runtime.md"
+    "docs/agent-runtime.md",
+    "docs/research/agent-team-shared-task-list.md"
    ],
    "machineConsumers": [
     "check-doc-links",
