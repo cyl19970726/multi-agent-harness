@@ -1,6 +1,10 @@
 # Execution Workbench interaction contract
 
-Status: active implementation contract
+Status: historical pre-Works interaction contract; superseded by ADR 0050
+
+> Keep this file only to explain the approved legacy screenshots. Do not use
+> its Assignment/Handoff behavior for implementation. The current interaction
+> contract is `docs/dashboard/pages/team-run-war-room.md`.
 
 The approved screenshots define visual states. This file defines behavior that
 cannot be recovered from a still image. Mission, Agent Team, and Member Focus

@@ -65,13 +65,31 @@ function fixture() {
       { id: "run-2", mission_id: "mission-1", wave_id: "wave-1", member_run_ids: ["member-2"], created_at: "2026-07-19T00:00:01Z" },
     ],
     member_runs: [
-      { id: "member-1", team_run_id: "run-1", name: "Worker", status: "waiting" },
-      { id: "member-2", team_run_id: "run-2", name: "Critic", status: "blocked" },
+      { id: "member-1", team_run_id: "run-1", agent_member_id: "agent-a", name: "Worker", coordination_status: "active", status: "waiting" },
+      { id: "member-2", team_run_id: "run-2", agent_member_id: "agent-b", name: "Critic", coordination_status: "active", status: "blocked" },
     ],
     team_messages: [
       { id: "message-progress", team_run_id: "run-1", from_member_id: "member-1", kind: "progress", correlation_id: "corr-1", created_at: "2026-07-19T00:00:03Z" },
-      { id: "message-assignment", team_run_id: "run-1", from_member_id: "host", to_member_ids: ["member-1"], kind: "assignment", correlation_id: "corr-1", created_at: "2026-07-19T00:00:01Z", deliveries: [{ member_id: "member-1", status: "delivered" }] },
+      { id: "message-briefing", team_run_id: "run-1", from_member_id: "host", to_member_ids: ["member-1"], kind: "message", correlation_id: "corr-1", created_at: "2026-07-19T00:00:01Z", deliveries: [{ member_id: "member-1", status: "delivered" }] },
       { id: "message-review", team_run_id: "run-1", from_member_id: "member-1", kind: "review_request", created_at: "2026-07-19T00:00:04Z" },
+    ],
+    works: [
+      { id: "work-prerequisite", team_run_id: "run-1", title: "Baseline", context_markdown: "", completion_criteria_markdown: "Done", status: "done", owner_member_id: "agent-a", active_member_run_id: "member-old-generation", claim_mode: "host_assign", eligible_member_ids: [], prerequisite_work_ids: [], priority: "normal", artifact_refs: [], check_refs: [], version: 2, created_at: "2026-07-19T00:00:00Z", updated_at: "2026-07-19T00:00:01Z" },
+      { id: "work-1", team_run_id: "run-1", title: "Implement selector", context_markdown: "Own the selector lane", completion_criteria_markdown: "Checks pass", status: "in_progress", owner_member_id: "agent-a", active_member_run_id: "member-1", claim_mode: "host_assign", eligible_member_ids: [], prerequisite_work_ids: [], priority: "normal", artifact_refs: [], check_refs: [], version: 2, created_at: "2026-07-19T00:00:01Z", updated_at: "2026-07-19T00:00:03Z" },
+      { id: "work-blocked", team_run_id: "run-1", title: "Blocked lane", context_markdown: "", completion_criteria_markdown: "Unblocked", status: "blocked", owner_member_id: "agent-a", active_member_run_id: "member-1", claim_mode: "host_assign", eligible_member_ids: [], prerequisite_work_ids: [], priority: "urgent", artifact_refs: [], check_refs: [], version: 3, created_at: "2026-07-19T00:00:01Z", updated_at: "2026-07-19T00:00:04Z" },
+      { id: "work-review", team_run_id: "run-1", title: "Review lane", context_markdown: "", completion_criteria_markdown: "Accepted", status: "review", owner_member_id: "agent-a", active_member_run_id: "member-1", claim_mode: "host_assign", eligible_member_ids: [], prerequisite_work_ids: [], priority: "high", artifact_refs: [], check_refs: [], version: 3, created_at: "2026-07-19T00:00:01Z", updated_at: "2026-07-19T00:00:04Z" },
+      { id: "work-open-owned", team_run_id: "run-1", title: "Queued lane", context_markdown: "", completion_criteria_markdown: "Started", status: "open", owner_member_id: "agent-a", active_member_run_id: "member-1", claim_mode: "host_assign", eligible_member_ids: [], prerequisite_work_ids: [], priority: "normal", artifact_refs: [], check_refs: [], version: 1, created_at: "2026-07-19T00:00:01Z", updated_at: "2026-07-19T00:00:01Z" },
+      { id: "work-ready-for-all", team_run_id: "run-1", title: "Ready pool", context_markdown: "", completion_criteria_markdown: "Claimed", status: "open", owner_member_id: null, active_member_run_id: null, claim_mode: "team_claim", eligible_member_ids: [], prerequisite_work_ids: ["work-prerequisite"], priority: "high", artifact_refs: [], check_refs: [], version: 1, created_at: "2026-07-19T00:00:01Z", updated_at: "2026-07-19T00:00:01Z" },
+      { id: "work-not-ready", team_run_id: "run-1", title: "Waiting pool", context_markdown: "", completion_criteria_markdown: "Claimed", status: "open", owner_member_id: null, active_member_run_id: null, claim_mode: "team_claim", eligible_member_ids: [], prerequisite_work_ids: ["work-1"], priority: "normal", artifact_refs: [], check_refs: [], version: 1, created_at: "2026-07-19T00:00:01Z", updated_at: "2026-07-19T00:00:01Z" },
+    ],
+    work_events: [
+      { id: "work-event-assigned", team_run_id: "run-1", work_id: "work-1", sequence: 1, kind: "assigned", expected_version: 0, resulting_version: 1, performed_by_actor: { kind: "host", id: "host" }, idempotency_key: "assign-1", created_at: "2026-07-19T00:00:00.500Z" },
+      { id: "work-event-started", team_run_id: "run-1", work_id: "work-1", sequence: 4, kind: "started", expected_version: 1, resulting_version: 2, performed_by_actor: { kind: "member_run", id: "member-1" }, idempotency_key: "start-1", created_at: "2026-07-19T00:00:02Z" },
+      { id: "work-event-created-hidden", team_run_id: "run-1", work_id: "work-1", sequence: 0, kind: "created", expected_version: 0, resulting_version: 1, performed_by_actor: { kind: "host", id: "host" }, idempotency_key: "create-1", created_at: "2026-07-19T00:00:00Z" },
+    ],
+    work_deliveries: [
+      { id: "delivery-queued", work_event_id: "work-event-assigned", team_run_id: "run-1", work_id: "work-1", work_version: 1, recipient_member_run_id: "member-1", status: "queued", attempt: 0, updated_at: "2026-07-19T00:00:01Z" },
+      { id: "delivery-failed", work_event_id: "work-event-assigned", team_run_id: "run-1", work_id: "work-1", work_version: 1, recipient_member_run_id: "member-1", status: "failed", attempt: 1, updated_at: "2026-07-19T00:00:05Z" },
     ],
     member_actions: [{ id: "action-1", team_run_id: "run-1", member_run_id: "member-1", seq: 3, title: "Inspect", started_at: "2026-07-19T00:00:02Z" }],
     team_run_events: [{ id: "event-1", team_run_id: "run-1", member_run_id: "member-1", seq: 2, occurred_at: "2026-07-19T00:00:02Z" }],
@@ -107,14 +125,65 @@ async function main() {
     bad("MemberRun context did not preserve its TeamRun relationship or live preview");
   }
 
-  if (member?.assignments.length === 1 && member.assignments[0].relatedMessages.map((message) => message.id).join(",") === "message-assignment,message-progress") {
-    ok("Assignment ownership and correlation lineage remain separate and chronologically stable");
+  if (member?.ownedWorks.length === 5
+      && member.ownedWorks.some((work) => work.id === "work-prerequisite")
+      && !member.activeWorks.some((work) => work.id === "work-prerequisite")) {
+    ok("MemberRun ownership uses stable AgentMember identity across runtime generations");
   } else {
-    bad("Assignment correlation did not produce the expected anchored lineage");
+    bad(`MemberRun stable ownership was ${member?.ownedWorks.map((work) => work.id).join(",")}`);
   }
 
-  if (member?.needsYou.total === 3 && member.needsYou.approvals[0]?.id === "message-review") {
-    ok("Needs-you rolls up review request, waiting member, and unacknowledged delivery");
+  if (member?.currentWork?.id === "work-1" && member.queuedOwnedWorks.map((work) => work.id).join(",") === "work-blocked,work-review,work-open-owned") {
+    ok("Current Work prioritizes in-progress, then blocked/review, then assigned open Work");
+  } else {
+    bad(`Current/queued Work was ${member?.currentWork?.id ?? "none"} / ${member?.queuedOwnedWorks.map((work) => work.id).join(",")}`);
+  }
+
+  if (member?.eligibleReadyWorks.map((work) => work.id).join(",") === "work-ready-for-all") {
+    ok("Empty eligibility means every active member, while unfinished prerequisites stay out of the pool");
+  } else {
+    bad(`Ready claim pool was ${member?.eligibleReadyWorks.map((work) => work.id).join(",")}`);
+  }
+
+  const unassignedWorks = selectors.selectFilteredTeamWorks(
+    snapshot.works,
+    snapshot.member_runs.filter((item) => item.team_run_id === "run-1"),
+    "unassigned",
+    "all",
+  );
+  const memberReviewWorks = selectors.selectFilteredTeamWorks(
+    snapshot.works,
+    snapshot.member_runs.filter((item) => item.team_run_id === "run-1"),
+    "member:member-1",
+    "review",
+  );
+  const owner = selectors.selectWorkOwnerMember(
+    snapshot.works.find((work) => work.id === "work-1"),
+    snapshot.member_runs.filter((item) => item.team_run_id === "run-1"),
+  );
+  if (unassignedWorks.map((work) => work.id).join(",") === "work-ready-for-all,work-not-ready"
+      && memberReviewWorks.map((work) => work.id).join(",") === "work-review"
+      && owner?.id === "member-1") {
+    ok("Works board owner and attention filters preserve durable ownership and lane status");
+  } else {
+    bad(`Works filters were unassigned=${unassignedWorks.map((work) => work.id).join(",")} review=${memberReviewWorks.map((work) => work.id).join(",")} owner=${owner?.id ?? "none"}`);
+  }
+
+  const closedSnapshot = structuredClone(snapshot);
+  closedSnapshot.member_runs.find((item) => item.id === "member-1").coordination_status = "closed";
+  const closedMember = selectors.selectMemberRunContext(closedSnapshot, "member-1");
+  if (closedMember?.eligibleReadyWorks.length === 0) {
+    ok("Closed member generations do not appear eligible for the shared claim pool");
+  } else {
+    bad("Closed member generation still received eligible claim Work");
+  }
+
+  if (member?.needsYou.total === 3
+      && member.needsYou.blockedWorks[0]?.id === "work-blocked"
+      && member.needsYou.reviewWorks[0]?.id === "work-review"
+      && member.needsYou.workDeliveryPressure[0]?.id === "delivery-failed"
+      && member.needsYou.approvals.length === 0) {
+    ok("Needs-you uses Work blocker/review truth plus failed Work delivery, not message wording");
   } else {
     bad(`Needs-you rollup was ${member?.needsYou.total}`);
   }
@@ -124,31 +193,51 @@ async function main() {
     snapshot.team_messages.filter((item) => item.team_run_id === "run-1"),
     [],
     "completed",
+    snapshot.works.filter((item) => item.team_run_id === "run-1"),
+    snapshot.work_deliveries.filter((item) => item.team_run_id === "run-1"),
   );
-  if (completedNeedsYou.total === 0 && completedNeedsYou.unacknowledgedDeliveries.length === 0) {
-    ok("Completed attempts keep historical messages out of the current needs-you queue");
+  if (completedNeedsYou.total === 7
+      && completedNeedsYou.unfinishedWorks.length === 6
+      && completedNeedsYou.blockedWorks[0]?.id === "work-blocked"
+      && completedNeedsYou.reviewWorks[0]?.id === "work-review"
+      && completedNeedsYou.workDeliveryPressure[0]?.id === "delivery-failed"
+      && completedNeedsYou.unacknowledgedDeliveries.length === 0) {
+    ok("Terminal attempts suppress historical message noise but expose contradictory unfinished Work truth");
   } else {
     bad(`Completed attempt still exposed ${completedNeedsYou.total} open signals`);
   }
 
-  const pressureMessage = selectors.selectMemberPressureMessage(
-    [
-      { id: "qa-blocker", kind: "blocker", from_member_id: "member-2", body: "QA is waiting for screenshots", created_at: "2026-07-19T00:00:03Z" },
-      { id: "later-review", kind: "review_request", from_member_id: "member-1", to_member_ids: ["member-2"], body: "Review a different report", created_at: "2026-07-19T00:00:04Z" },
-    ],
-    { id: "member-2", status: "blocked" },
-  );
-  if (pressureMessage?.id === "qa-blocker") {
-    ok("Needs-you explains a blocked member with their own blocker before a later review request");
+  const stoppedSnapshot = structuredClone(snapshot);
+  stoppedSnapshot.member_runs.find((item) => item.id === "member-1").status = "stopped";
+  const stoppedMember = selectors.selectMemberRunContext(stoppedSnapshot, "member-1");
+  if (stoppedMember?.eligibleReadyWorks.length === 0
+      && selectors.canMemberAcceptWork(snapshot.member_runs[0])
+      && !selectors.canMemberAcceptWork(stoppedSnapshot.member_runs[0])) {
+    ok("Only coordination-active, non-stopped/failed/closed member generations can accept Work");
   } else {
-    bad(`Blocked-member pressure resolved to ${pressureMessage?.id ?? "none"}`);
+    bad("Stopped member generation remained eligible for new Work");
   }
 
   const activity = member?.activity ?? [];
-  if (activity.map((item) => item.id).join(",") === "message:message-assignment,event:event-1,action:action-1,message:message-progress,message:message-review") {
-    ok("Stable activity has deterministic chronological tie-breaking and excludes thinking");
+  if (activity.map((item) => item.id).join(",") === "work-event:work-event-assigned,message:message-briefing,event:event-1,action:action-1,work-event:work-event-started,message:message-progress,message:message-review,work-delivery:delivery-failed") {
+    ok("Stable activity includes meaningful Work transitions and delivery failures, while excluding thinking and noisy creation");
   } else {
     bad(`Stable activity was ${activity.map((item) => item.id).join(",")}`);
+  }
+
+  const responsibilityActivity = selectors.selectStableTeamActivity({
+    workEvents: [
+      { id: "released", team_run_id: "run-1", work_id: "work-1", sequence: 1, kind: "released", expected_version: 1, resulting_version: 2, performed_by_actor: { kind: "member_run", id: "member-1" }, idempotency_key: "released", payload: null, created_at: "2026-07-19T00:00:01Z" },
+      { id: "changes", team_run_id: "run-1", work_id: "work-1", sequence: 2, kind: "changes_requested", expected_version: 2, resulting_version: 3, performed_by_actor: { kind: "host", id: "host" }, idempotency_key: "changes", payload: null, created_at: "2026-07-19T00:00:02Z" },
+      { id: "rebound", team_run_id: "run-1", work_id: "work-1", sequence: 3, kind: "rebound", expected_version: 3, resulting_version: 4, performed_by_actor: { kind: "host", id: "host" }, idempotency_key: "rebound", payload: null, created_at: "2026-07-19T00:00:03Z" },
+      { id: "owner-update", team_run_id: "run-1", work_id: "work-1", sequence: 4, kind: "updated", expected_version: 4, resulting_version: 5, performed_by_actor: { kind: "host", id: "host" }, idempotency_key: "owner-update", payload: { patch: { owner_member_id: "agent-b" } }, created_at: "2026-07-19T00:00:04Z" },
+      { id: "title-update", team_run_id: "run-1", work_id: "work-1", sequence: 5, kind: "updated", expected_version: 5, resulting_version: 6, performed_by_actor: { kind: "host", id: "host" }, idempotency_key: "title-update", payload: { patch: { title: "renamed" } }, created_at: "2026-07-19T00:00:05Z" },
+    ],
+  });
+  if (responsibilityActivity.map((item) => item.id).join(",") === "work-event:released,work-event:changes,work-event:rebound,work-event:owner-update") {
+    ok("Activity includes release, requested changes, rebound, and responsibility updates without title-edit noise");
+  } else {
+    bad(`Responsibility activity was ${responsibilityActivity.map((item) => item.id).join(",")}`);
   }
 
   const types = await loadTypes();
@@ -157,10 +246,9 @@ async function main() {
   const informationalAck = intent(peer) === "informational"
     && intent({ ...peer, response_intent: "informational" }) === "informational"
     && intent({ kind: "message", from_member_id: "member-run-2" }) === "informational";
-  const requiredByKind = intent({ kind: "assignment" }) === "response_required"
-    && intent({ kind: "handoff" }) === "response_required"
+  const requiredByKind = intent({ kind: "handoff" }) === "response_required"
     && intent({ kind: "control" }) === "response_required"
-    && intent({ ...peer, kind: "assignment" }) === "response_required";
+    && intent({ ...peer, kind: "handoff" }) === "response_required";
   // Sender-aware default: the coordination plane (Host, Operator via the
   // Dashboard, Service via routed inbox mail) wakes an idle member.
   const requiredBySender = intent({ kind: "message", from_member_id: "host" }) === "response_required"

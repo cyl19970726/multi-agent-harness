@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-delivery.schema.json",
+  "title": "AgentTeamWorkDelivery",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "work_event_id", "team_run_id", "work_id", "work_version", "recipient_member_run_id", "status", "attempt", "updated_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "work_event_id": { "type": "string", "minLength": 1 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "work_id": { "type": "string", "minLength": 1 },
+    "work_version": { "type": "integer", "minimum": 1 },
+    "recipient_member_run_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["queued", "claimed", "provider_received", "failed", "invalidated"] },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "claim_id": { "type": ["string", "null"], "minLength": 1 },
+    "claimed_by_supervisor_id": { "type": ["string", "null"], "minLength": 1 },
+    "claimed_generation": { "type": ["integer", "null"], "minimum": 1 },
+    "provider_receipt_id": { "type": ["string", "null"], "minLength": 1 },
+    "failure_reason": { "type": ["string", "null"], "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

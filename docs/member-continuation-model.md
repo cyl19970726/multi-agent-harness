@@ -4,6 +4,7 @@
 status: canonical architecture contract
 owner_role: provider-integration
 canonical_for: provider-neutral Member execution ownership, continuation, completion, and Workspace lease semantics
+work_contract: ADR 0050; Work/WorkEvent/WorkDelivery are the responsibility path
 ```
 
 This document is the smallest required context for adding a new Agent Team
@@ -21,7 +22,7 @@ Mission
   -> ordered Host-plan Wave
   -> independent AgentTeam / AgentTeamRun
   -> MemberRun
-       -> correlated Assignment
+       -> active Work + WorkDelivery
        -> Harness Mailbox
        -> Workspace
        -> provider-native session
@@ -34,14 +35,14 @@ These layers answer different questions:
 | --- | --- | --- |
 | Mission | Why does the long-running work exist? | Harness |
 | Wave | What is the Host's current plan and judgment? | Harness |
-| Assignment | What result does this Member own? | Harness `TeamMessage` correlation |
+| Work | What result does this Member own and what is its state? | Harness `Work` + `WorkEvent` |
 | MemberRun | Which durable team participant owns the lane? | Harness |
 | Mailbox | What coordination has been sent, delivered and acknowledged? | Harness |
 | Native session | What did the provider actually execute? | Provider |
 | Native continuation | Why does the provider start another execution cycle? | Provider plus selected Adapter contract |
 
-An Assignment is the durable responsibility contract. A provider-native Goal
-or completion condition is a session-local way to continue that Assignment. It
+Work is the durable responsibility contract. A provider-native Goal or
+completion condition is a session-local way to continue that Work. It
 must never become a second product Goal or silently replace Host acceptance.
 
 ## Continuation Has Two Independent Axes
@@ -70,16 +71,16 @@ contract.
 | `member_declared` | The Member reports that its current work is done. |
 | `provider_evaluator` | A provider-native evaluator decides its continuation condition is satisfied. |
 | `deterministic_check` | A named command, check or external condition is satisfied. |
-| `host_reviewed` | The Host explicitly accepts a correlated Handoff. |
+| `host_reviewed` | The Host explicitly accepts a submitted Work version. |
 
 Policies compose. Provider Goal achievement can stop provider continuation,
-but it never substitutes for `host_reviewed` when the Assignment requires Host
+but it never substitutes for `host_reviewed` when the Work requires Host
 acceptance.
 
 ## Execution Lease
 
 The hard concurrency invariant is not “one Member has one Turn.” Native
-providers may perform many turns or cycles inside one Assignment.
+providers may perform many turns or cycles while executing one Work.
 
 The invariant is:
 
@@ -145,7 +146,7 @@ Harness remains the communication authority in both driver modes:
 | Provider continuation active | Inject only through a verified safe provider operation or cycle boundary; otherwise leave mail queued. |
 | Host chooses Steer | Use the selected mode's real current-activity injection and terminal acknowledgement. |
 | Provider asks for authority | Create `PendingInteraction`; do not infer approval from tool completion. |
-| Native continuation satisfies its condition | Record/project the provider fact, then await Handoff/Host acceptance as required. |
+| Native continuation satisfies its condition | Record/project the provider fact, then await explicit Work submission/Host acceptance as required. |
 | Host explicitly closes Member | Latch Close before teardown, release the managed runtime, and freeze delivery without deleting the MemberRun or native-session binding. |
 | Host explicitly reopens Member | Increment `runtime_generation`; a managed adapter resumes the exact recorded native session and frozen mail becomes actionable. |
 | Host deactivates/retires Member | End coordination permanently; delivery and Reopen are rejected. |
@@ -224,21 +225,21 @@ nonconforming and `review_required` until repaired and canaried.
 
 The Host:
 
-1. creates or selects the Member and Assignment;
+1. creates or selects the Member and Work;
 2. selects one execution driver from reviewed capabilities;
 3. gives writable members disjoint worktrees or explicit shared-file
    coordination;
-4. observes Inbox, PendingInteraction, native continuation and Handoffs;
+4. observes Works, WorkDelivery, Inbox, PendingInteraction and native continuation;
 5. uses explicit Steer, Interrupt, driver change and Close operations;
-6. accepts the Assignment separately from provider completion.
+6. accepts submitted Work separately from provider completion.
 
 The Member:
 
-1. owns the Assignment across provider cycles and Host-plan Waves;
+1. owns the Work across provider cycles and Host-plan Waves;
 2. may use native planning, continuation and subagents within its permission
    and Workspace boundary;
-3. communicates questions, blockers, progress and Handoffs through
-   `TeamMessage`;
+3. records block/submission through Work operations and communicates questions,
+   explanation and peer coordination through Work-linked `TeamMessage`;
 4. does not claim that a native Goal or final response equals Host acceptance;
 5. reports when native continuation or permissions prevent safe coordination.
 
@@ -247,7 +248,7 @@ The Member:
 The primary Member view shows the durable contract before provider details:
 
 ```text
-Current Assignment
+Current Work id, version, owner and status
 Execution driver
 Continuation state and condition
 Workspace execution lease
@@ -256,7 +257,7 @@ Pending interactions
 Queued/delivered team mail
 Native session availability
 Current native activity
-Handoff and Host acceptance
+Work submission and Host acceptance
 ```
 
 Turns and provider evaluator details belong in expandable native activity.
@@ -272,7 +273,7 @@ A continuation integration is not accepted until tests prove:
    operation;
 4. permissions remain correct for every provider-created cycle;
 5. inspect, interrupt, clear/stop and resume report real provider state;
-6. provider satisfaction remains distinct from correlated Handoff and Host
+6. provider satisfaction remains distinct from Work submission and Host
    acceptance;
 7. Dashboard and CLI show unknown/review-required states honestly; and
 8. native history stays in the provider store.

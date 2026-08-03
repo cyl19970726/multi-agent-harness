@@ -184,8 +184,8 @@ while IFS= read -r line; do
         continue
       fi
       if [ "$mode" = "plan" ]; then
-        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"plan","entries":[{"content":"Inspect the assignment contract","status":"completed"},{"content":"Implement only after Host approval","status":"pending"},{"content":"Run focused checks","status":"pending"}]}}}\n' "$session_id"
-        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1. Inspect the assignment contract\\n2. Implement only after Host approval\\n3. Run focused checks\\n"}}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"plan","entries":[{"content":"Inspect the Work contract","status":"completed"},{"content":"Implement only after Host review","status":"pending"},{"content":"Run focused checks","status":"pending"}]}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1. Inspect the Work contract\\n2. Implement only after Host review\\n3. Run focused checks\\n"}}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
         continue
       fi
@@ -214,13 +214,18 @@ while IFS= read -r line; do
         ack_to=$(sed -n '2p' "${FAKE_KIMI_PEER_ACK_CONFIG}")
         if [ "${HARNESS_MEMBER_RUN_ID:-}" = "$ack_from" ]; then
           sleep 0.1
+          work_id=$("$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run work list \
+            --team-run-id "$HARNESS_TEAM_RUN_ID" \
+            --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+            | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | sed -n '1p')
           "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run send \
             --id "$HARNESS_TEAM_RUN_ID" \
             --from "$HARNESS_MEMBER_RUN_ID" \
             --to "$ack_to" \
             --kind message \
             --body "ACK: noted, no reply needed" \
-            --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
+            --work-id "$work_id" \
+            --correlation-id "corr-peer-$work_id" \
             > "${FAKE_KIMI_PEER_ACK_MARKER:?}" 2>&1
         fi
       fi
@@ -228,27 +233,35 @@ while IFS= read -r line; do
         : > "$FAKE_KIMI_CRASH_ONCE_MARKER"
         exit 7
       fi
-      if [ "${FAKE_KIMI_HANDOFF_DURING_TURN:-0}" = "1" ]; then
+      if [ "${FAKE_KIMI_MESSAGE_DURING_TURN:-0}" = "1" ]; then
         # Give the Harness reader a deterministic chance to consume the first
-        # ACP frame and publish its provider receipt before this bound member
-        # authors a correlation-checked Handoff from inside the active turn.
+        # ACP frame and publish its WorkDelivery receipt before this bound
+        # member authors a Work-linked conversation message from the turn.
         sleep 0.1
+        work_id=$("$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run work list \
+          --team-run-id "$HARNESS_TEAM_RUN_ID" \
+          --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+          | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | sed -n '1p')
         "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run send \
           --id "$HARNESS_TEAM_RUN_ID" \
           --from "$HARNESS_MEMBER_RUN_ID" \
           --to host \
-          --kind handoff \
-          --body "## RESULT\ncompleted\n## SUMMARY\nexplicit handoff during active ACP turn" \
-          --correlation-id "$HARNESS_ASSIGNMENT_CORRELATION_ID" \
-          --causation-id "$HARNESS_ASSIGNMENT_MESSAGE_ID" \
-          > "${FAKE_KIMI_HANDOFF_MARKER:?}" 2>&1
+          --kind message \
+          --work-id "$work_id" \
+          --body "PROGRESS: explicit Work-linked update during active ACP turn" \
+          > "${FAKE_KIMI_MESSAGE_MARKER:?}" 2>&1
       fi
       if [ "$ask" = "1" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"12:ask-user","title":"AskUserQuestion","kind":"other","status":"in_progress"}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","id":700,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"q0_opt_0","name":"Use native contract","kind":"allow_once"},{"optionId":"q0_skip","name":"Skip","kind":"reject_once"}],"toolCall":{"toolCallId":"12:ask-user","title":"AskUserQuestion","content":[{"type":"content","content":{"type":"text","text":"Which implementation should be used?"}}]}}}\n' "$session_id"
-      elif [ "$ask" = "approval" ]; then
+      elif [ "$ask" = "approval" ] || [ "$ask" = "approval_twice" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"13:bash","title":"Bash","kind":"execute","status":"in_progress"}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","id":701,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"tool_allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"tool_reject_once","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"13:bash","title":"Bash","content":[{"type":"content","content":{"type":"text","text":"Run the requested command?"}}]}}}\n' "$session_id"
+      elif [ "$ask" = "approval_reject_only" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"15:bash","title":"Bash","kind":"execute","status":"in_progress"}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","id":703,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"tool_reject_once","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"15:bash","title":"Bash","content":[{"type":"content","content":{"type":"text","text":"A provider request with no allow option"}}]}}}\n' "$session_id"
+      elif [ "$ask" = "unknown" ]; then
+        printf '{"jsonrpc":"2.0","id":704,"method":"session/request_permission","params":{"sessionId":"%s","options":[],"toolCall":{"toolCallId":"16:unknown","title":"UnknownCapability","content":[]}}}\n' "$session_id"
       else
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"fake_edit","kind":"edit","status":"in_progress"}}}\n' "$session_id"
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}\n' "$session_id"
@@ -275,7 +288,26 @@ while IFS= read -r line; do
       ;;
     *'"id":701'*'"optionId":"tool_allow_once"'*)
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"13:bash","status":"completed"}}}\n' "$session_id"
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member received Policy approval\\n"}}}}\n' "$session_id" "$result"
+      if [ "$ask" = "approval_twice" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call","toolCallId":"14:bash","title":"Bash","kind":"execute","status":"in_progress"}}}\n' "$session_id"
+        printf '{"jsonrpc":"2.0","id":702,"method":"session/request_permission","params":{"sessionId":"%s","options":[{"optionId":"tool_allow_always","name":"Always allow","kind":"allow_always"},{"optionId":"tool_allow_once_second","name":"Allow once","kind":"allow_once"},{"optionId":"tool_reject_once_second","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"14:bash","title":"Bash","content":[{"type":"content","content":{"type":"text","text":"Run another requested command?"}}]}}}\n' "$session_id"
+      else
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member received Policy approval\\n"}}}}\n' "$session_id" "$result"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
+      fi
+      ;;
+    *'"id":702'*'"optionId":"tool_allow_always"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"14:bash","status":"completed"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member received two Policy acknowledgements\\n"}}}}\n' "$session_id" "$result"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
+      ;;
+    *'"id":703'*'"optionId":"tool_reject_once"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"tool_call_update","toolCallId":"15:bash","status":"failed"}}}\n' "$session_id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member observed fail-closed Policy denial\\n"}}}}\n' "$session_id" "$result"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
+      ;;
+    *'"id":704'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"## RESULT\\n%s\\n## SUMMARY\\nfake member observed fail-closed Human resolution\\n"}}}}\n' "$session_id" "$result"
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt_id"
       ;;
     *'"method":"session/cancel"'*)
@@ -307,7 +339,7 @@ exit 0
 
 /// Add a deterministic `codex exec --json` shim to `bin_dir`. The stream
 /// includes a reasoning item and a final report so Agent Team tests can prove
-/// reasoning stays transient while the report becomes the durable handoff.
+/// reasoning stays transient while only the explicit outcome is durable.
 pub fn install_codex_team_shim(bin_dir: &Path) -> PathBuf {
     fs::create_dir_all(bin_dir).expect("mk fake codex team bin dir");
     let shim_path = bin_dir.join("codex");
@@ -384,7 +416,7 @@ if [ "$1" = "app-server" ]; then
         if [ -n "${FAKE_CODEX_PLAN_MARKER:-}" ]; then
           printf 'goal_set %s\n' "$line" >> "$FAKE_CODEX_PLAN_MARKER"
         fi
-        printf '{"id":%s,"result":{"goal":{"objective":"fake assignment","status":"active"}}}\n' "$id"
+        printf '{"id":%s,"result":{"goal":{"objective":"fake work","status":"active"}}}\n' "$id"
         ;;
       *'"method":"turn/start"'*)
         plan_mode=0
@@ -404,7 +436,7 @@ if [ "$1" = "app-server" ]; then
             printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn_fake_codex_app_server_1","status":"completed","items":[{"id":"stale-plan-app-1","type":"plan","text":"STALE PLAN MUST BE IGNORED"}]}}}\n' "$thread_id"
           fi
           printf '{"method":"turn/plan/updated","params":{"threadId":"%s","turnId":"%s","plan":[{"step":"Revision %s: inspect the Assignment contract","status":"completed"},{"step":"Implement only after Host approval","status":"pending"},{"step":"Run focused checks","status":"pending"}]}}\n' "$thread_id" "$turn_id" "$turn_seq"
-          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"plan-app-%s","type":"plan","text":"Revision %s\\n1. Inspect the Assignment contract\\n2. Implement only after Host approval\\n3. Run focused checks"}]}}}\n' "$thread_id" "$turn_id" "$turn_seq" "$turn_seq"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"plan-app-%s","type":"plan","text":"Revision %s\\n1. Inspect the Work contract\\n2. Implement only after Host review\\n3. Run focused checks"}]}}}\n' "$thread_id" "$turn_id" "$turn_seq" "$turn_seq"
           continue
         fi
         printf '{"method":"item/started","params":{"threadId":"%s","turnId":"%s","item":{"id":"command-app-1","type":"commandExecution","command":"cargo check","commandActions":[],"cwd":"/tmp","status":"inProgress"}}}\n' "$thread_id" "$turn_id"

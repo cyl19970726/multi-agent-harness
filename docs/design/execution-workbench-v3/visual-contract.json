@@ -120,20 +120,20 @@
           "revision": "9d17053-dirty",
           "implemented": "../../../.visual-evidence/execution-workbench-v3/host-plan-final/team-war-room--running-needs-you--desktop-1440x1000.png",
           "stage": "mission-scoped-team-truth",
-          "verdict": "pass: the stable Team identity, Mission relation, current Host-plan navigation context, cross-Wave lifecycle, assignments, and member activity are explicit without pretending the Wave owns this runtime"
+          "verdict": "pass: the stable Team identity, Mission relation, current Host-plan navigation context, cross-Wave lifecycle, Works, and member activity are explicit without pretending the Wave owns this runtime"
         }
       ],
       "gates": {
-        "product_truth": { "status": "pass", "note": "Stable AgentTeam, Mission-scoped TeamRun, MemberRuns, assignment correlations with origin Wave, explicit actions, pressure, and transient-thinking policy remain honest." },
+        "product_truth": { "status": "pass", "note": "Stable AgentTeam, Mission-scoped TeamRun, MemberRuns, Work ownership and optional Work-linked conversation, explicit actions, pressure, and transient-thinking policy remain honest." },
         "visual_fidelity": { "status": "pass", "note": "Compact presence, semantic node-first timeline, independent desktop timestamps, key/full activity projection, attached review action, context rail, and responsive composer match approved intent." }
       },
       "review": {
         "status": "pass_with_deviations",
         "intentional_deviations": [
-          "The right rail names the stable Team and Mission relation first. A selected Wave is labeled navigation context because assignments/messages, not Wave ownership, direct the long-lived Team.",
+          "The right rail names the stable Team and Mission relation first. A selected Wave is labeled navigation context because Works and messages, not Wave ownership, direct the long-lived Team.",
           "The obsolete parent-Wave gate module is absent for Mission-scoped runs; legacy directly owned attempts retain their compatibility gate view.",
-          "The default All projection shows attempt creation, assignments, and the latest pressure record; the filter control exposes every remaining durable message, action, and event without deleting or rewriting evidence.",
-          "The selected QA provider/model and assignment come from the fixture rather than generated text.",
+          "The default All projection shows attempt creation, Work ownership, and the latest pressure record; the filter control exposes every remaining durable message, action, and event without deleting or rewriting evidence.",
+          "The selected QA provider/model and current Work come from the fixture rather than generated text.",
           "The mobile header omits the redundant member-count label because Team presence immediately states membership."
         ],
         "defects": [],
@@ -173,7 +173,7 @@
         }
       ],
       "gates": {
-        "product_truth": { "status": "pass", "note": "Native MemberRun selectors, assignment correlation, evidence, review pressure, composer action, and transient-only thinking remain intact." },
+        "product_truth": { "status": "pass", "note": "Native MemberRun selectors, current and queued Works, Work-linked conversation, evidence, review pressure, composer action, and transient-only thinking remain intact." },
         "visual_fidelity": { "status": "pass", "note": "The user approved the exact 1536×1024 warm-editorial implementation on 2026-07-22; actual, comparison, and overlay are durable." }
       },
       "review": {

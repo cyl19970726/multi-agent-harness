@@ -6,6 +6,11 @@ date: 2026-07-30
 owner_role: product-architecture
 ```
 
+ADR 0050 replaces this document's `assignment`/`handoff` message kinds with
+Agent Team Work, WorkDelivery, explicit Work submission, and ordinary
+Work-linked conversation. The Supervisor and sender-aware wakeup rules remain
+active.
+
 ## Context
 
 ADR 0027 made Docs and the mixed Organization the Company OS product core.
@@ -89,7 +94,7 @@ effective intent is derived from kind **and sender**:
 
 | Kind | Sender | Default intent |
 | --- | --- | --- |
-| `assignment`, `handoff`, `control` | any | `response_required` |
+| `control` | any | `response_required` |
 | `message` (and historical intent labels) | coordination plane: Host, Operator, Service | `response_required` |
 | `message` (and historical intent labels) | peer: another MemberRun or Agent Member | `informational` |
 
@@ -101,11 +106,12 @@ by the Host; making all of it waking would restore confirmation ping-pong
 between peers. Splitting on sender preserves both properties, so no Host-side,
 Operator-side, or routed-inbox surface has to be retrained to reach a Member.
 
-Informational mail is still durable and correlated: it stays queued, batches
-into the next response-required round with that round's provider receipt, and —
-because it never starts a round — it does not fence a same-correlation Handoff.
-Response-required mail does fence it, which is what keeps a Host mid-round
-correction from being handed off past.
+Informational mail is still durable and correlated: it stays queued and
+batches into the next response-required round with that round's provider
+receipt. WorkDelivery separately fences the exact Work version a Member may
+execute. A Host correction updates Work when responsibility or criteria
+change, and may add a linked response-required Message when explanation is
+useful.
 
 ### 5. Dogfood is a continuous coequal-system loop
 
@@ -133,13 +139,13 @@ the same unclosed MemberRun and native session. A delivery, adapter, permission,
 model/effort, or Plugin contract change requires a controlled drain or
 interrupt and an explicit replacement runtime generation.
 
-StandingAgent identity, Work ownership, Assignment correlation, and company
+StandingAgent identity, Work ownership, Team conversation, and company
 history remain stable across that transition. The provider-native session is
 resumed only when the reviewed mode/version declares it compatible. Two runtime
 generations may never concurrently drive the same writable Workspace. A
 replacement generation is not accepted merely because it acquired a lease: it
 must reconcile the same durable Agent/Member identity, outstanding mail,
-current Assignment, effective permissions and provider controls, and native
+current Work, effective permissions and provider controls, and native
 session binding before it resumes delivery.
 
 ## Consequences

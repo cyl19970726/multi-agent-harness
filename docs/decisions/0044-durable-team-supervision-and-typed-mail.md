@@ -7,20 +7,26 @@ canonical_for: Agent Team Supervisor ownership, typed coordination actors,
   delivery claims, multi-client control, and Provider lifecycle truth
 ```
 
+ADR 0050 adds WorkDelivery beside authored TeamMessage delivery and removes
+Assignment Message as ownership truth. The Supervisor lease, typed actors,
+claim/receipt, multi-client control, and crash-reconciliation rules here apply
+to both delivery classes.
+
 ## Context
 
 Agent Team members now use persistent Codex app-server, Claude Agent SDK, and
 Kimi ACP sessions. A Member can remain addressable across many Host-plan Waves,
 ordinary provider turns, interruptions, and idle periods.
 
-The first implementation still has two unsafe boundaries:
+The first implementation exposed two unsafe boundaries:
 
 1. the Team Supervisor and live Provider controls exist only in one process;
-2. a Member loop reads a queued TeamMessage before Provider injection and
-   records delivery afterwards, without a durable cross-process claim.
+2. a Member loop could read queued authored mail or a Work notification before
+   Provider injection and record delivery afterwards, without a durable
+   cross-process claim.
 
-Two Harness processes can therefore attach the same TeamRun or observe the same
-queued message. Public message surfaces also accept a string sender id; Team
+Two Harness processes could therefore attach the same TeamRun or observe the
+same queued delivery. Public message surfaces also accepted a string sender id; Team
 membership validation does not prove that the caller is that Member.
 
 Organization and multi-client use make these gaps product-critical. A durable
@@ -70,19 +76,38 @@ release never deletes provider-native history.
 
 ### Claim before Provider side effect
 
-Each TeamMessage delivery progresses independently:
+TeamMessage and WorkDelivery share claim fencing, but keep different terminal
+semantics.
+
+An authored TeamMessage delivery progresses as:
 
 ```text
 queued
   -> claimed(supervisor_id, generation, claim_id, expiry)
-  -> provider accepted(native receipt)
-  -> recipient acknowledged
+  -> delivered(provider-native receipt)
+  -> acknowledged?               # explicit message-intake control fact only
+  -> failed|expired               # when applicable
 ```
+
+A WorkDelivery progresses as:
+
+```text
+queued
+  -> claimed(supervisor_id, generation, claim_id, expiry)
+       -> provider_received(native receipt)
+       -> failed                  # explicit transport/reconciliation outcome
+  -> invalidated                  # stale/unclaimed revision is superseded
+```
+
+WorkDelivery has no `acknowledged` state. Responsibility acknowledgement is a
+Work `claimed` or `started` transition, and Work submission/Host acceptance are
+later semantic transitions. They are never inferred from transport.
 
 Claim is an atomic compare-and-append Store operation. It verifies:
 
 - the current TeamRun Supervisor lease;
-- the exact latest message row;
+- the exact latest TeamMessage or WorkDelivery row and, for WorkDelivery, the
+  current Work version/runtime binding;
 - the recipient and still-queued delivery;
 - no active claim by another generation.
 
@@ -91,18 +116,20 @@ returns its real request/turn/session receipt. A crash between claim and receipt
 leaves an uncertain claim. Recovery must reconcile it against Provider-native
 state or require an explicit operator choice. It does not silently requeue.
 
-If a receipt is durable but the correlated Handoff is absent, the next
-generation resumes the same native session and sends a recovery instruction:
-inspect provider-native state and the workspace, then complete or restate the
-Assignment. It does not append a second delivery attempt for the accepted
-Assignment. Mail still `queued` is delivered normally after reconnect.
+If a receipt is durable but the correlated Work submission or Message reply is
+absent, the next generation resumes the same native session and sends a
+recovery instruction: inspect provider-native state, Workspace and latest Work
+version, then continue or restate the result. It does not append a second
+delivery attempt for the accepted Work version. Delivery still `queued` is
+handled normally after reconnect.
 
-A Handoff is rejected while newer same-correlation input addressed to that
-Member is `queued` or `claimed`. The provider must first accept the correction
-and produce a Handoff causally linked to the latest input.
+A Work submission is rejected while a newer WorkDelivery for that Work is
+`queued` or `claimed`. The provider must first accept the latest version.
+Message replies preserve their own correlation and reply lineage.
 
-Acknowledgement proves recipient intake only. Correlated reply, Handoff,
-review, Host acceptance, and Mission closeout remain separate facts.
+TeamMessage acknowledgement proves recipient intake only. Work start/claim,
+correlated reply, Work submission, review action, Host acceptance, and Mission
+closeout remain separate facts.
 
 ### Typed actors and recipients
 
@@ -221,8 +248,8 @@ to another Provider's value.
 
 ### Native execution truth remains Provider-owned
 
-Supervisor leases, TeamMessage claims, control acknowledgements, Handoffs, and
-evidence references are Harness truth. Provider transcripts, tool calls,
+Supervisor leases, TeamMessage/WorkDelivery claims, control acknowledgements,
+WorkOperations and their WorkEvents, and evidence references are Harness truth. Provider transcripts, tool calls,
 commands, file activity, subagent activity, turn history, and thinking remain
 in Provider-native storage.
 
@@ -312,7 +339,7 @@ The accepted implementation must prove:
 - lease expiry creates one higher generation;
 - two concurrent claims yield one claim;
 - an unfinished claim is not automatically replayed;
-- ACK is idempotent and does not imply semantic acceptance;
+- TeamMessage ACK is idempotent and does not imply semantic acceptance;
 - external actors are not rendered as Host or Member;
 - unbound MCP calls cannot author as `member_run` or `agent_member`;
 - exact Host binding never leaks another task's Inbox;

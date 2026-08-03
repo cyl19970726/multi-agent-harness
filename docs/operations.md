@@ -31,7 +31,7 @@ npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
 It covers native Mission/Wave HTTP and CLI contracts, Agent Team create/start,
-Mission closeout, Host-facing MCP transport, assignment correlations, the
+shared Works/WorkDelivery, Work-linked conversation, Mission closeout, Host-facing MCP transport, the
 Dashboard read model and operator controls, plus deterministic persistent
 Codex app-server, Claude Agent SDK, and Kimi ACP Team Member adapters. It also
 gates durable Supervisor generations, typed actor mail, atomic delivery
@@ -63,8 +63,9 @@ cargo test -p harness-cli --test team_run_api \
 
 There is currently no packaged live-provider command. When a claim depends on
 a real provider, record the exact Mission, selected Host-plan Wave revision,
-Mission-scoped TeamRun, MemberRuns, provider-native session ids, assignment
-correlations (including `origin_wave_id` when useful), handoffs, artifacts, and
+Mission-scoped TeamRun, MemberRuns, provider-native session ids, Work
+ids/versions, WorkDelivery, linked conversation, submissions/Host
+acceptance, artifacts, and
 Host judgment from the live run. Do not present deterministic provider-shim
 tests as live proof.
 
@@ -136,7 +137,7 @@ requested-vs-effective `provider_controls` receipt); Claude `claude_agent_sdk`
 joins only while its installed SDK passes
 `harness member providers --fail-on-review`; Codex providers are not dogfood
 execution members. Each member also runs under a strict research budget: one
-evidence pass over the Assignment, owned paths, and directly linked records,
+evidence pass over the Work, owned paths, and directly linked records,
 then produce deliverables or report a blocked verdict with the exact missing
 fact. The Host steers or interrupts a member that explores past that
 checkpoint.

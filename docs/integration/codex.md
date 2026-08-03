@@ -1,5 +1,9 @@
 # Codex Integration
 
+```text
+status: implementation reference; Work/WorkDelivery target pending ADR 0050
+```
+
 This document defines the current Codex provider contract for Star Harness.
 Provider-neutral lifecycle and mailbox semantics live in
 [Agent Runtime](../agent-runtime.md); this file only explains how Codex
@@ -36,7 +40,7 @@ reattach the reviewed native thread under the replacement runtime generation.
 One live Codex MemberRun owns one app-server child and one native Codex thread:
 
 ```text
-MemberRun + correlated Assignment
+MemberRun + active Work/version
   -> codex app-server --listen stdio://
   -> initialize
   -> thread/start or explicit thread/resume
@@ -73,7 +77,7 @@ Close are different:
   reopen.
 - **Disconnect** records a recoverable lifecycle action and resumes the same
   native thread under the TeamRun supervisor. It does not replay an already
-  delivered Assignment.
+  delivered Work version.
 
 Physical app-server handles remain process-local, but a durable Team Supervisor
 lease is the cross-process authority and publishes the owning service's
@@ -95,7 +99,7 @@ Codex does not poll Harness storage. Harness owns the Member mailbox and the
 app-server adapter accepts eligible envelopes:
 
 ```text
-TeamMessage(to=<member>, delivery=queued)
+WorkDelivery or TeamMessage(to=<member>, delivery=queued)
   -> current Supervisor atomically claims latest eligible row
   -> turn/start on the bound thread
   -> provider turn id records native acceptance
@@ -106,9 +110,9 @@ TeamMessage(to=<member>, delivery=queued)
 Ordinary Host/peer messages queued while a turn is busy wait for the next
 eligible round. They do not interrupt the current turn. `delivered` means the
 adapter recorded a native provider receipt for that envelope; semantic
-understanding requires an explicit reply or Handoff.
+understanding requires an explicit Work transition or conversational reply.
 
-When a turn or Handoff completes, the Member returns to `idle` and the adapter
+When a turn completes, the Member returns to `idle` and the adapter
 keeps polling. Later mail starts one new turn on the same thread. Wave,
 TeamRun, and Mission completion do not stop that loop; only explicit Close does.
 
@@ -140,9 +144,9 @@ connection ownership. Full contract: [ADR 0040](../decisions/0040-native-host-in
 
 ## Collaboration And Planning
 
-The Assignment message plus correlation id is the durable Member Goal.
+The current Work plus its version is the durable Member responsibility.
 Harness has no Codex-specific Plan Mode, Plan Gate, or Goal object. The Host can
-ask for planning through ordinary correlated Markdown:
+ask for planning through ordinary Work-linked Markdown conversation:
 
 ```text
 Host -> Member: PLAN: Return a plan first; do not execute.
@@ -153,14 +157,14 @@ Host -> Member: DECISION: Execute.
 ```
 
 Codex may use native Goal/Plan features internally in the same native thread,
-but their raw updates remain provider-native activity. They do not change
-Harness permission, ownership, or acceptance. See
+but their raw updates remain provider-native activity. They do not change Work
+owner/status, Harness permission, or Host acceptance. See
 [ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
 
 ## Native Continuation
 
 Codex app-server exposes a native Goal continuation path, but Harness must not
-confuse that capability with the Member Assignment or run it beside the
+confuse that capability with the current Work or run it beside the
 ordinary Host-driven loop. The provider-neutral contract is
 [Member Continuation Model](../member-continuation-model.md).
 
@@ -177,7 +181,7 @@ mailbox work with `turn/start`, and does not call `thread/goal/set`. Native Goal
 remains a provider capability, not an active Team scheduler:
 
 - do not combine `thread/goal/set(active)` with Harness `turn/start` for one
-  Assignment;
+  Work;
 - retain native Goal state only as an on-demand provider projection;
 - do not infer Host acceptance from native Goal satisfaction; and
 - keep version/mode compatibility `review_required` when continuation or
@@ -203,10 +207,11 @@ Codex rollout/state storage is the sole execution truth for chat, turns, tool
 calls, commands, file events, native subagents, and resume. Harness stores:
 
 - MemberRun identity and selected `ProviderIntegrationProfile`;
-- Assignment/correlation and ordinary coordination messages;
+- Work/WorkEvent/WorkDelivery and ordinary Work-linked conversation;
 - `NativeSessionRef` locator, version and availability;
 - PendingInteraction and real control acknowledgements;
-- explicit Handoff, outcome, artifact and check references.
+- submitted Work result, explicit Host acceptance and outcome, plus artifact
+  and check references when the Work's completion criteria require them.
 
 The adapter reads native activity on demand into a bounded, sanitized,
 ephemeral projection. Browser code never reads private Codex files directly.
@@ -232,8 +237,8 @@ Skill, Plugin, MCP, and permission boundary.
 
 The current temporary Team policy launches Codex with
 `danger-full-access` and approval policy `never`. This is an explicit product
-policy, not a provider capability claim. `owned_paths`, worktree choice, and
-Assignment prose still define responsibility, but they are not an enforced
+policy, not a provider capability claim. Work context/criteria, `owned_paths`,
+and worktree choice define responsibility, but they are not an enforced
 filesystem sandbox under this policy.
 
 ## Host Operations
@@ -243,7 +248,7 @@ Dashboard application logic:
 
 ```text
 create/add member
-send assignment or ordinary message
+create/assign/claim/review Work; send ordinary Work-linked conversation
 read status, inbox, outbox and member detail
 resolve PendingInteraction
 steer current turn when supported
@@ -297,12 +302,12 @@ The contract, classification thresholds, start guard, and truth matrix live in
 
 A Codex Team integration claim requires:
 
-1. a real `codex_app_server` MemberRun and correlated Assignment;
+1. a real `codex_app_server` MemberRun and active Work/version;
 2. a resolvable native Codex session;
 3. ordinary mail delivered to the same live Member across multiple turns;
 4. at least one verified lifecycle operation with terminal acknowledgement;
 5. honest PendingInteraction routing when a reverse request occurs;
-6. explicit Handoff/outcome and useful evidence references;
+6. explicit Work submission/Host acceptance and useful evidence references;
 7. no copied transcript, tool stream, file stream, subagent transcript, or
    thinking in Harness storage; and
 8. CLI and Dashboard reconstruction of the same coordination facts.

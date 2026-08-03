@@ -4,6 +4,7 @@
 status: active
 date: 2026-07-23
 supersedes: ADR 0025 attempt ownership; ADR 0026 Wave-as-executor hierarchy
+amended_by: ADR 0050 replaces Assignment-message ownership with shared Works
 ```
 
 ## Context
@@ -53,7 +54,7 @@ judgment. Its Markdown `context` should explain the important current facts:
 
 - what changed since the preceding Wave;
 - what the Host intends to do next;
-- assignments or member changes the Host decided to make;
+- important Work or member-composition changes the Host decided to make;
 - open questions, blockers, conflicts, and integration decisions;
 - work that intentionally carries into a later Wave; and
 - the evidence or outcome that justified advancing.
@@ -63,20 +64,21 @@ and creates Wave N+1 when the plan changes materially. Append-only rows retain
 the revision history.
 
 A Wave is not a task graph, barrier, executor container, TeamRun attempt owner,
-or provider-session boundary. The Host may advance while assignments and
+or provider-session boundary. The Host may advance while Works and
 provider sessions remain active.
 
-### Agent Team and assignments outlive Waves
+### Agent Team and Works outlive Waves
 
 `AgentTeam` is the stable reusable definition. A mission-scoped
 `AgentTeamRun(agent_team_id, mission_id, wave_id = null)` may stay active across
 multiple Waves. Its `MemberRun` and provider-native session bindings remain
 stable until the Host explicitly changes or stops them.
 
-Actual work ownership is expressed by
-`TeamMessage(kind=assignment, correlation_id)`. A message may record an
-optional `origin_wave_id` for navigation and explanation, but that field never
-controls delivery, completion, or lifetime.
+Actual responsibility is expressed by TeamRun-scoped `Work`, append-only
+`WorkEvent`, and `WorkDelivery`. A TeamMessage is authored conversation only;
+it may link a same-run `work_id` and record an optional `origin_wave_id` for
+navigation and explanation, but neither message field controls ownership,
+completion, or lifetime. There is no Assignment Message compatibility path.
 
 Questions and answers use the same correlated message channel. The Host can
 message, steer, interrupt, add, rename, or deactivate members according to the
@@ -86,7 +88,7 @@ semantic completion.
 The Host Agent that creates and coordinates the team is its **Team Lead**.
 Harness retains `owner_agent_id` as the compatibility wire field for this
 identity, and reserves `host` to mean the current Host Agent. The Lead owns team
-formation, assignment, member interaction, composition changes, integration,
+formation, Work allocation/acceptance, member interaction, composition changes, integration,
 and acceptance. It is a control-plane actor, not an implicit `MemberRun`; if the
 Lead also performs an execution lane, the Host must explicitly add a member and
 bind that member to its native provider session.
@@ -109,7 +111,7 @@ the legacy **direct Wave executor** mode only.
 
 New Mission-scoped Agent Team work does not populate those attempt fields.
 New product documentation, fixtures, and default CLI examples use Mission-linked
-teams, Host-plan Waves, correlated assignments, and explicit Host advance.
+teams, Host-plan Waves, shared Works, Work-linked conversation, and explicit Host advance.
 Compatibility code must be isolated and must not reintroduce the old hierarchy
 into the main authoring or Dashboard path.
 
@@ -120,9 +122,9 @@ into the main authoring or Dashboard path.
 - Wave history can reconstruct how Host judgment changed without duplicating
   provider transcripts or tool streams.
 - Dashboard shows Mission context, linked teams, the selected Wave memo, and
-  assignment/member status as related projections rather than nested runtime
+  Work/member status as related projections rather than nested runtime
   ownership.
-- A running assignment may be shown as “carried forward from Wave 1” during
+- A running Work may be shown as “carried forward from Wave 1” during
   Wave 2.
 - Team deletion is not a Mission side effect. Detach, archive, and stop are
   separate explicit controls.

@@ -9,7 +9,7 @@ use std::path::Path;
 mod fake_provider;
 mod harness_env;
 
-use harness_env::{current_project_id, run_harness, TempHome};
+use harness_env::{current_project_id, latest_works, run_harness, work_deliveries, TempHome};
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -98,6 +98,17 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
         .collect()
 }
 
+/// Read an append-only ledger when that object class is optional for the
+/// scenario. A Work-only provider round correctly creates no TeamMessage
+/// ledger at all.
+fn optional_store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
+    let path = home.spaces_dir().join(project_id).join(file);
+    if !path.exists() {
+        return Vec::new();
+    }
+    store_rows(home, project_id, file)
+}
+
 fn assert_collaboration_env(
     home: &TempHome,
     provider: &str,
@@ -122,8 +133,7 @@ fn assert_collaboration_env(
         format!("HARNESS_PROJECT={project_root}"),
         format!("HARNESS_TEAM_RUN_ID={run_id}"),
         format!("HARNESS_MEMBER_RUN_ID={member_id}"),
-        "HARNESS_ASSIGNMENT_MESSAGE_ID=".to_string(),
-        "HARNESS_ASSIGNMENT_CORRELATION_ID=".to_string(),
+        "HARNESS_WORK_ID=".to_string(),
     ] {
         assert!(
             text.lines().any(|line| line.starts_with(&expected)),
@@ -150,9 +160,9 @@ fn create_two_member_run(
             "--objective",
             "Ship v0",
             "--member",
-            "lead:coordinator:kimi@docs",
+            "lead:coordinator:kimi@docs#Coordinate the run and report focused checks",
             "--member",
-            "worker-1:implementer:kimi@crates/a",
+            "worker-1:implementer:kimi@crates/a#Implement the scoped change and report focused checks",
         ],
     );
     assert!(
@@ -269,44 +279,32 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
         }
     }
 
-    // Messages: the two assignments are delivered, and each member handed off
-    // to the host with a manual_ack/delivered delivery.
-    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
-    let assignments: Vec<_> = messages
-        .iter()
-        .filter(|m| m["kind"].as_str() == Some("assignment"))
-        .collect();
-    assert_eq!(assignments.len(), 2, "assignments: {messages:?}");
-    for assignment in &assignments {
+    // Work is the durable responsibility and WorkDelivery is the adapter
+    // receipt. A terminal provider report does not fabricate a Handoff.
+    let works = latest_works(&home, &project_id);
+    assert_eq!(works.len(), 2, "initial Works: {works:?}");
+    let deliveries = work_deliveries(&home, &project_id);
+    assert_eq!(deliveries.len(), 2, "Work deliveries: {deliveries:?}");
+    for delivery in &deliveries {
         assert_eq!(
-            assignment["deliveries"][0]["status"].as_str(),
-            Some("delivered"),
-            "assignment delivered: {assignment:?}"
+            delivery["status"].as_str(),
+            Some("provider_received"),
+            "Work delivered: {delivery:?}"
         );
+        assert!(member_ids.contains(
+            &delivery["recipient_member_run_id"]
+                .as_str()
+                .expect("delivery recipient")
+                .to_string()
+        ));
     }
-    let handoffs: Vec<_> = messages
-        .iter()
-        .filter(|m| m["kind"].as_str() == Some("handoff"))
-        .collect();
-    assert_eq!(handoffs.len(), 2, "handoffs: {messages:?}");
-    for handoff in &handoffs {
-        assert!(
-            member_ids.contains(&handoff["from_member_id"].as_str().unwrap().to_string()),
-            "handoff from a member: {handoff:?}"
-        );
-        assert_eq!(
-            handoff["to_member_ids"],
-            serde_json::json!(["host"]),
-            "handoff to host: {handoff:?}"
-        );
-        let delivery = &handoff["deliveries"][0];
-        assert_eq!(delivery["member_id"].as_str(), Some("host"));
-        assert_eq!(delivery["policy"].as_str(), Some("manual_ack"));
-        assert_eq!(delivery["status"].as_str(), Some("delivered"));
-        assert_eq!(delivery["attempt"].as_u64(), Some(1));
-        let body = handoff["body"].as_str().unwrap_or_default();
-        assert!(body.contains("## RESULT"), "handoff carries report: {body}");
-    }
+    let messages = optional_store_rows(&home, &project_id, "team_messages.jsonl");
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["kind"].as_str() != Some("handoff")),
+        "the adapter must not turn provider completion into a Handoff: {messages:?}"
+    );
 
     // Harness keeps only the explicit round outcome. Provider progress, tool
     // activity, command details, and reasoning remain in Kimi's native session.
@@ -319,7 +317,7 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
             .collect();
         assert_eq!(
             of_member,
-            vec!["completed"],
+            vec!["turn_completed"],
             "coordination-only actions: {of_member:?}"
         );
     }
@@ -346,7 +344,7 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
         "all events belong to the run"
     );
 
-    // A handoff is not a TeamRun completion decision.
+    // Provider completion is not a TeamRun or Work acceptance decision.
     let runs = store_rows(&home, &project_id, "team_runs.jsonl");
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["status"].as_str(), Some("running"));
@@ -354,11 +352,11 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
 }
 
 #[test]
-fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
-    let home = TempHome::new("team-run-kimi-live-handoff");
+fn kimi_can_send_work_linked_progress_after_first_acp_acceptance() {
+    let home = TempHome::new("team-run-kimi-live-work-message");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
-    let marker = home.base().join("kimi-live-handoff.txt");
+    let marker = home.base().join("kimi-live-work-message.txt");
     let (run_id, member_ids) = create_two_member_run(&home, &fake_bin, &project_id);
     let member_id = &member_ids[0];
     let path = format!(
@@ -386,8 +384,8 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
         .env_remove("HARNESS_COMPANY")
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", "done")
-        .env("FAKE_KIMI_HANDOFF_DURING_TURN", "1")
-        .env("FAKE_KIMI_HANDOFF_MARKER", &marker)
+        .env("FAKE_KIMI_MESSAGE_DURING_TURN", "1")
+        .env("FAKE_KIMI_MESSAGE_MARKER", &marker)
         .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .env_remove("KIMI_CODE_BIN")
         .output()
@@ -399,53 +397,48 @@ fn kimi_can_handoff_after_first_acp_acceptance_without_adapter_duplicate() {
     );
     assert!(
         std::fs::read_to_string(&marker)
-            .expect("handoff command marker")
+            .expect("message command marker")
             .trim()
             .starts_with("tmsg-"),
-        "member-authored handoff must succeed during the ACP turn"
+        "member-authored Work-linked message must succeed during the ACP turn"
     );
 
-    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
-    let assignment = messages
+    let deliveries = work_deliveries(&home, &project_id);
+    let delivery = deliveries
         .iter()
-        .find(|message| {
-            message["kind"] == "assignment"
-                && message["deliveries"]
-                    .as_array()
-                    .is_some_and(|rows| rows.iter().any(|row| row["member_id"] == *member_id))
-        })
-        .expect("member assignment");
-    let delivery = assignment["deliveries"]
-        .as_array()
-        .and_then(|rows| rows.iter().find(|row| row["member_id"] == *member_id))
-        .expect("assignment delivery");
-    assert_eq!(delivery["status"], "delivered");
+        .find(|delivery| delivery["recipient_member_run_id"] == *member_id)
+        .expect("member WorkDelivery");
+    assert_eq!(delivery["status"], "provider_received");
     assert!(
         delivery["provider_receipt_id"]
             .as_str()
             .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")),
-        "delivery must be backed by the active ACP prompt: {delivery:?}"
+        "WorkDelivery must be backed by the active ACP prompt: {delivery:?}"
     );
 
-    let handoffs = messages
+    let messages = optional_store_rows(&home, &project_id, "team_messages.jsonl");
+    let progress = messages
         .iter()
-        .filter(|message| message["kind"] == "handoff" && message["from_member_id"] == *member_id)
+        .filter(|message| message["kind"] == "message" && message["from_member_id"] == *member_id)
         .collect::<Vec<_>>();
     assert_eq!(
-        handoffs.len(),
+        progress.len(),
         1,
-        "explicit handoff must suppress the adapter fallback: {handoffs:?}"
+        "the member should author one explicit progress message: {progress:?}"
     );
     assert!(
-        handoffs[0]["body"]
+        progress[0]["body"]
             .as_str()
-            .is_some_and(|body| body.contains("explicit handoff during active ACP turn")),
-        "the member-authored handoff is authoritative: {handoffs:?}"
+            .is_some_and(|body| body.contains("explicit Work-linked update")),
+        "the member-authored update is authoritative: {progress:?}"
     );
-    assert_eq!(
-        handoffs[0]["causation_id"], assignment["id"],
-        "explicit Handoff must name the exact consumed Assignment"
+    assert!(
+        progress[0]["work_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "conversation must link to the Work without owning it: {progress:?}"
     );
+    assert!(progress[0]["causation_id"].is_null());
 }
 
 #[test]
@@ -488,16 +481,18 @@ fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     for member_id in member_ids {
-        let handoff = messages
+        let completed = actions
             .iter()
-            .find(|message| message["kind"] == "handoff" && message["from_member_id"] == member_id)
-            .expect("adapter handoff");
-        let body = handoff["body"].as_str().expect("handoff body");
+            .find(|action| {
+                action["member_run_id"] == member_id && action["action_type"] == "turn_completed"
+            })
+            .expect("explicit member outcome");
+        let body = completed["summary"].as_str().expect("outcome summary");
         assert!(
-            body.starts_with("## RESULT\ndone\n## SUMMARY\n"),
-            "the durable handoff must start at the terminal report: {body:?}"
+            body.contains("fake member finished round"),
+            "the durable outcome must use the terminal report: {body:?}"
         );
         assert!(
             !body.contains("ordinary narration"),
@@ -523,7 +518,7 @@ fn kimi_member_explicitly_resumes_provider_native_session() {
             "--objective",
             "Continue provider-owned work",
             "--member",
-            "worker:implementer:kimi/acp:k2.5",
+            "worker:implementer:kimi/acp:k2.5#Continue the provider-owned Work",
             "--resume-member",
             "worker:session_prior_native",
         ],
@@ -581,7 +576,7 @@ fn claude_member_uses_native_session_without_provider_activity_mirror() {
             "--objective",
             "Review native session contract",
             "--member",
-            "reviewer:reviewer:claude/cli",
+            "reviewer:reviewer:claude/cli#Review the native session contract",
             "--resume-member",
             "reviewer:session_prior_claude",
         ],
@@ -670,7 +665,7 @@ fn claude_failure_keeps_native_session_and_provider_error_without_mirroring_stre
             "--objective",
             "Prove failed native session binding",
             "--member",
-            "reviewer:reviewer:claude/cli",
+            "reviewer:reviewer:claude/cli#Prove the failed native session binding",
         ],
     );
     assert!(out.status.success(), "create failed: {out:?}");
@@ -788,9 +783,9 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
             "--objective",
             "Implement with Codex and perform a small Kimi review",
             "--member",
-            "codex-worker:implementer:codex:gpt-5.6",
+            "codex-worker:implementer:codex:gpt-5.6#Implement the scoped change and report checks",
             "--member",
-            "kimi-reviewer:reviewer:kimi:k2.5",
+            "kimi-reviewer:reviewer:kimi:k2.5#Review the scoped change and report findings",
         ],
     );
     assert!(
@@ -898,15 +893,24 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
         kimi["id"].as_str().expect("kimi id"),
     );
 
-    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
-    let handoffs: Vec<_> = messages
+    let messages = optional_store_rows(&home, &project_id, "team_messages.jsonl");
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["kind"].as_str() != Some("handoff")),
+        "provider terminal reports must not become adapter-authored Handoffs: {messages:?}"
+    );
+    let works = latest_works(&home, &project_id);
+    assert_eq!(works.len(), 2, "one initial Work per member: {works:?}");
+    let deliveries = work_deliveries(&home, &project_id);
+    assert_eq!(
+        deliveries.len(),
+        2,
+        "one WorkDelivery per member: {deliveries:?}"
+    );
+    assert!(deliveries
         .iter()
-        .filter(|message| message["kind"].as_str() == Some("handoff"))
-        .collect();
-    assert_eq!(handoffs.len(), 2, "handoffs: {handoffs:?}");
-    assert!(handoffs.iter().any(|message| message["body"]
-        .as_str()
-        .is_some_and(|body| body.contains("executed approved plan"))));
+        .all(|delivery| delivery["status"] == "provider_received"));
 
     // Neither provider's hidden reasoning may appear in any durable ledger.
     let store_root = home.spaces_dir().join(&project_id);
@@ -928,10 +932,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
             action["provider_call_id"].is_null()
                 && action["provider_status"].is_null()
                 && action["semantic_status"].is_null()
-                && matches!(
-                    action["action_type"].as_str(),
-                    Some("completed" | "blocked" | "error")
-                )
+                && action["action_type"].as_str() == Some("turn_completed")
         }),
         "provider activity must remain native while explicit outcomes stay durable: {actions:?}"
     );
@@ -958,7 +959,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
             "--objective",
             "Ask the Lead once",
             "--member",
-            "kimi-worker:implementer:kimi:k2.5",
+            "kimi-worker:implementer:kimi:k2.5#Ask the Lead when the Work needs clarification",
         ],
     );
     assert!(
@@ -1090,7 +1091,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
 }
 
 #[test]
-fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
+fn kimi_full_access_tool_permissions_acknowledge_without_pending_interactions() {
     let home = TempHome::new("team-run-kimi-policy-interaction");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -1106,7 +1107,7 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
             "--objective",
             "Request governed tool permission",
             "--member",
-            "kimi-worker:implementer:kimi:k2.5",
+            "kimi-worker:implementer:kimi:k2.5#Request governed tool permission for this Work",
         ],
     );
     assert!(create.status.success(), "create failed: {create:?}");
@@ -1129,7 +1130,7 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
         .envs(home.envs())
         .env("PATH", path)
         .env("FAKE_KIMI_RESULT", "done")
-        .env("FAKE_KIMI_ASK", "approval")
+        .env("FAKE_KIMI_ASK", "approval_twice")
         .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .env_remove("KIMI_CODE_BIN")
         .env_remove("HARNESS_ROOT")
@@ -1140,47 +1141,195 @@ fn kimi_tool_approval_is_auto_approved_by_policy_and_resumes_same_turn() {
     let output = child.wait_with_output().expect("wait team run");
     assert!(output.status.success(), "start failed: {output:?}");
 
-    let interaction_log = std::fs::read_to_string(
-        home.spaces_dir()
-            .join(&project_id)
-            .join("pending_interactions.jsonl"),
-    )
-    .expect("read interaction log");
-    assert_eq!(
-        interaction_log.lines().count(),
-        2,
-        "request and policy resolution are append-only evidence"
-    );
-    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
-    assert_eq!(interactions.len(), 1, "latest-wins interaction projection");
-    assert_eq!(interactions[0]["kind"].as_str(), Some("tool_approval"));
-    assert_eq!(interactions[0]["route"].as_str(), Some("policy"));
-    assert_eq!(interactions[0]["status"].as_str(), Some("approved"));
-    assert_eq!(interactions[0]["resolved_by"].as_str(), Some("policy"));
-    assert_eq!(
-        interactions[0]["response_option_id"].as_str(),
-        Some("tool_allow_once")
+    let interactions = optional_store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert!(
+        interactions.is_empty(),
+        "trusted full-access permission receipts are not unresolved product interactions: {interactions:?}"
     );
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
-    assert!(actions.iter().any(|action| {
-        action["action_type"].as_str() == Some("interaction_resolved")
-            && action["summary"]
-                .as_str()
-                .is_some_and(|value| value.contains("approved"))
+    let controls = actions
+        .iter()
+        .filter(|action| action["action_type"].as_str() == Some("provider_control"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        controls.len(),
+        2,
+        "each provider permission request gets one bounded acknowledgement: {actions:?}"
+    );
+    assert!(controls.iter().all(|action| {
+        action["status"].as_str() == Some("succeeded")
+            && action["title"].as_str() == Some("Kimi full-access tool permission acknowledged")
+            && action["summary"].as_str().is_some_and(|summary| {
+                summary.contains("safe allow option")
+                    && !summary.contains("Run the requested command")
+                    && !summary.contains("another requested command")
+            })
             && action["provider_call_id"].is_null()
     }));
-    let events = store_rows(&home, &project_id, "team_run_events.jsonl");
-    assert!(events.iter().any(|event| {
-        event["entity_type"].as_str() == Some("pending_interaction")
-            && event["operation"].as_str() == Some("resolved")
-            && event["summary"]
-                .as_str()
-                .is_some_and(|value| value.contains("auto-approved"))
+    assert!(actions.iter().all(|action| {
+        !matches!(
+            action["action_type"].as_str(),
+            Some("waiting_for_approval" | "interaction_resolved")
+        )
     }));
+    let events = store_rows(&home, &project_id, "team_run_events.jsonl");
+    assert!(events
+        .iter()
+        .all(|event| event["entity_type"].as_str() != Some("pending_interaction")));
+}
+
+fn assert_kimi_permission_request_fails_closed(
+    test_name: &str,
+    ask_mode: &str,
+    expected_kind: &str,
+    expected_route: &str,
+    resolved_by: &str,
+    option_id: Option<&str>,
+) {
+    let home = TempHome::new(test_name);
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let create = run_with_fake_kimi(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Exercise a fail-closed Kimi permission request",
+            "--member",
+            "kimi-worker:implementer:kimi:k2.5#Wait for a real authority decision when policy cannot safely allow the request",
+        ],
+    );
+    assert!(create.status.success(), "create failed: {create:?}");
+    let run_id = String::from_utf8_lossy(&create.stdout).trim().to_string();
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harness"))
+        .args([
+            "--project",
+            &project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", "done")
+        .env("FAKE_KIMI_ASK", ask_mode)
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("HARNESS_ROOT")
+        .env_remove("HARNESS_PROJECT")
+        .env_remove("HARNESS_SPACE")
+        .env_remove("HARNESS_COMPANY")
+        .spawn()
+        .expect("spawn team run");
+
+    let interaction_path = home
+        .spaces_dir()
+        .join(&project_id)
+        .join("pending_interactions.jsonl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !interaction_path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        interaction_path.exists(),
+        "unsafe request must remain visibly pending"
+    );
+    let pending = store_rows(&home, &project_id, "pending_interactions.jsonl")
+        .into_iter()
+        .next()
+        .expect("pending interaction");
+    assert_eq!(pending["kind"].as_str(), Some(expected_kind));
+    assert_eq!(pending["route"].as_str(), Some(expected_route));
+    assert_eq!(pending["status"].as_str(), Some("pending"));
+    let interaction_id = pending["id"].as_str().expect("interaction id");
+    let waiting_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let members = store_rows(&home, &project_id, "member_runs.jsonl");
+        if members[0]["status"].as_str() == Some("waiting") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < waiting_deadline,
+            "PendingInteraction must project MemberRun waiting; latest={members:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let mut args = vec![
+        "--project",
+        &project_id,
+        "team-run",
+        "resolve-interaction",
+        "--id",
+        &run_id,
+        "--interaction-id",
+        interaction_id,
+        "--resolved-by",
+        resolved_by,
+    ];
+    if let Some(option_id) = option_id {
+        args.extend(["--option-id", option_id]);
+    } else {
+        args.extend(["--response-text", "Human reviewed the unknown request"]);
+    }
+    let resolve = run_with_fake_kimi(&home, &fake_bin, "done", &args);
+    assert!(
+        resolve.status.success(),
+        "resolve failed: {}",
+        String::from_utf8_lossy(&resolve.stderr)
+    );
+    let output = child.wait_with_output().expect("wait team run");
+    assert!(
+        output.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resolved = store_rows(&home, &project_id, "pending_interactions.jsonl");
+    assert_ne!(resolved[0]["status"].as_str(), Some("pending"));
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    assert!(actions
+        .iter()
+        .all(|action| action["action_type"].as_str() != Some("provider_control")));
 }
 
 #[test]
-fn blocked_handoff_leaves_member_idle_and_supervisor_can_reattach() {
+fn kimi_reject_only_tool_permission_fails_closed_to_policy() {
+    assert_kimi_permission_request_fails_closed(
+        "team-run-kimi-reject-only-permission",
+        "approval_reject_only",
+        "tool_approval",
+        "policy",
+        "policy",
+        Some("tool_reject_once"),
+    );
+}
+
+#[test]
+fn kimi_unknown_permission_request_fails_closed_to_human() {
+    assert_kimi_permission_request_fails_closed(
+        "team-run-kimi-unknown-permission",
+        "unknown",
+        "unknown",
+        "human",
+        "human",
+        None,
+    );
+}
+
+#[test]
+fn blocked_provider_outcome_leaves_member_idle_and_supervisor_can_reattach() {
     let home = TempHome::new("team-run-start-blocked");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -1211,20 +1360,26 @@ fn blocked_handoff_leaves_member_idle_and_supervisor_can_reattach() {
         "members stay idle after reporting blocked: {members:?}"
     );
 
-    // A blocked member journals a blocked action (the review signal).
+    // A provider-authored `RESULT blocked` is a failed provider turn summary,
+    // not an implicit Work transition. The member must call `work block`
+    // explicitly for the shared board to enter Blocked.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
-        actions
-            .iter()
-            .any(|a| a["action_type"].as_str() == Some("blocked")),
-        "blocked action journaled: {actions:?}"
+        actions.iter().any(|action| {
+            action["action_type"].as_str() == Some("turn_completed")
+                && action["status"].as_str() == Some("failed")
+                && action["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains("fake member finished round"))
+        }),
+        "blocked report remains an explicit failed provider turn: {actions:?}"
     );
 
     let runs = store_rows(&home, &project_id, "team_runs.jsonl");
     assert_eq!(
         runs[0]["status"].as_str(),
         Some("running"),
-        "handoffs do not decide TeamRun status: {runs:?}"
+        "provider outcomes do not decide TeamRun status: {runs:?}"
     );
 
     let reattach = run_with_fake_kimi(

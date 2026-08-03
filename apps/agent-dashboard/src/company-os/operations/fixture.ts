@@ -501,7 +501,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     : records(root.work_items);
   const assignmentRecords = records(root.assignments);
   const standingAssignmentRecords = records(root.standing_assignments);
-  const executionChainRecords = records(root.work_assignment_execution_chains);
+  const executionChainRecords = records(root.work_execution_chains);
   const financeRecords = records(root.financial_records);
   const approvalRecords = records(root.approvals);
   const pageDefinitions = records(root.custom_page_definitions);
@@ -514,20 +514,20 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
   const standingAssignments: StandingExecutionAssignment[] = standingAssignmentRecords.map((record): StandingExecutionAssignment => ({
     id: text(record.id),
     agentMemberId: text(record.agent_member_id),
-    sourceKind: text(record.source_kind) === "agent_team_participation"
-      ? "agent_team_participation"
-      : "agent_team_assignment",
+    sourceKind: text(record.source_kind) === "agent_team_work"
+      ? "agent_team_work"
+      : "agent_team_participation",
     sourceRef: text(record.source_ref) || undefined,
+    workId: text(record.work_id) || undefined,
     missionId: text(record.mission_id) || undefined,
     waveId: text(record.wave_id) || undefined,
     teamRunId: text(record.team_run_id),
     memberRunId: text(record.member_run_id),
-    title: text(record.title, "Agent Team assignment"),
+    title: text(record.title, "Agent Team Work"),
     role: text(record.role, "member"),
     status: text(record.status, "unknown"),
     assignedAt: text(record.assigned_at),
     lastActivityAt: text(record.last_activity_at) || undefined,
-    correlationId: text(record.correlation_id) || undefined,
     nativeSession: record.native_session && typeof record.native_session === "object"
       ? record.native_session as StandingExecutionAssignment["nativeSession"]
       : undefined,
@@ -543,17 +543,19 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     detail: text(record.detail),
     resolutionHint: text(record.resolution_hint) || undefined,
   })).filter((conflict) => conflict.id && conflict.agentMemberId && conflict.standingAgentIds.length > 0);
-  const workAssignmentExecutionChains = executionChainRecords.map((record) => ({
+  const workExecutionChains = executionChainRecords.map((record) => ({
       assignmentId: text(record.assignment_id),
       workItemId: text(record.work_item_id),
+      workId: text(record.work_id) || undefined,
       assignmentState: text(record.assignment_state, "unknown"),
-      correlationId: text(record.correlation_id),
+      workState: text(record.work_state) || undefined,
       linkStatus: text(record.link_status, "unavailable") as "linked" | "mismatch" | "unavailable",
       detail: text(record.detail, "Execution evidence is unavailable."),
-      teamMessage: record.team_message && typeof record.team_message === "object" ? {
-        id: text((record.team_message as Record<string, unknown>).id),
-        deliveryState: text((record.team_message as Record<string, unknown>).delivery_state, "unavailable"),
-        providerReceiptId: text((record.team_message as Record<string, unknown>).provider_receipt_id) || undefined,
+      workDelivery: record.work_delivery && typeof record.work_delivery === "object" ? {
+        id: text((record.work_delivery as Record<string, unknown>).id),
+        status: text((record.work_delivery as Record<string, unknown>).status, "unavailable"),
+        attempt: numeric((record.work_delivery as Record<string, unknown>).attempt),
+        providerReceiptId: text((record.work_delivery as Record<string, unknown>).provider_receipt_id) || undefined,
       } : undefined,
       memberRun: record.member_run && typeof record.member_run === "object" ? {
         id: text((record.member_run as Record<string, unknown>).id),
@@ -561,6 +563,13 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
         nativeSessionId: text((record.member_run as Record<string, unknown>).native_session_id) || undefined,
         nativeSessionAvailability: text((record.member_run as Record<string, unknown>).native_session_availability, "unavailable"),
       } : undefined,
+      conversations: records(record.conversations).map((message) => ({
+        id: text(message.id),
+        kind: text(message.kind, "message"),
+        fromMemberId: text(message.from_member_id),
+        body: text(message.body),
+        createdAt: text(message.created_at),
+      })),
       handoffs: records(record.handoffs).map((handoff) => ({
         id: text(handoff.id), result: text(handoff.result) || undefined,
         body: text(handoff.body), createdAt: text(handoff.created_at),
@@ -1042,7 +1051,7 @@ export function adaptTrademarkOperationsProjection(projection: unknown, options:
     workItems,
     work,
     assignments,
-    workAssignmentExecutionChains: workAssignmentExecutionChains.filter((chain) => chain.workItemId === workItem.id),
+    workExecutionChains: workExecutionChains.filter((chain) => chain.workItemId === workItem.id),
     commitment,
     approval,
     evidence,

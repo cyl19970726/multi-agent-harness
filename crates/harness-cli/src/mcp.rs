@@ -28,16 +28,17 @@ use serde_json::{json, Value};
 
 use crate::{
     acknowledge_team_message, add_team_run_member, advance_wave, close_mission,
-    close_team_member_value, create_mission, create_team_run, create_wave, current_unix_ms_u64,
-    deactivate_team_run_member, drive_prepared_team_run, gate_wave,
+    close_team_member_value, create_mission, create_team_run, create_team_work_value, create_wave,
+    current_unix_ms_u64, deactivate_team_run_member, drive_prepared_team_run, gate_wave,
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    parse_team_actor_kind, parse_team_message_kind, parse_team_message_response_intent,
-    parse_wave_executor_kind, prepare_team_run_start, reconcile_team_message_delivery_value,
+    mutate_team_work_value, parse_team_actor_kind, parse_team_message_kind,
+    parse_team_message_response_intent, parse_wave_executor_kind, prepare_team_run_start,
+    reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
     rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
     resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
-    revise_wave, route_agent_inbox_messages, send_team_message_as, serde_snake_label,
+    revise_wave, route_agent_inbox_messages, send_team_message_as_work, serde_snake_label,
     steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
     team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
     ResolvedStore, TeamMemberSpec,
@@ -182,6 +183,22 @@ fn call_tool(
         "wave_gate" => tool_wave_gate(store, &arguments),
         "team_run_create" => tool_team_run_create(store, resolved, &arguments),
         "team_run_add_member" => tool_team_run_add_member(store, resolved, &arguments),
+        "team_run_work_list" => tool_team_run_work_list(store, &arguments),
+        "team_run_work_show" => tool_team_run_work_show(store, &arguments),
+        "team_run_work_create" => tool_team_run_work_create(store, &arguments),
+        "team_run_work_assign" => tool_team_run_work_mutate(store, &arguments, "assign"),
+        "team_run_work_rebind" => tool_team_run_work_mutate(store, &arguments, "rebind"),
+        "team_run_work_block" => tool_team_run_work_mutate(store, &arguments, "block"),
+        "team_run_work_resume" => tool_team_run_work_mutate(store, &arguments, "resume"),
+        "team_run_work_release" => tool_team_run_work_mutate(store, &arguments, "release"),
+        "team_run_work_request_changes" => {
+            tool_team_run_work_mutate(store, &arguments, "request-changes")
+        }
+        "team_run_work_accept" => tool_team_run_work_mutate(store, &arguments, "accept"),
+        "team_run_work_cancel" => tool_team_run_work_mutate(store, &arguments, "cancel"),
+        "team_run_work_reconcile_delivery" => {
+            tool_team_run_work_reconcile_delivery(store, &arguments)
+        }
         "team_run_rename_member" => tool_team_run_rename_member(store, &arguments),
         "team_run_deactivate_member" => tool_team_run_deactivate_member(store, &arguments),
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
@@ -210,6 +227,74 @@ fn call_tool(
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
     }))
+}
+
+fn tool_team_run_work_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let mut works = store
+        .latest_works()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    works.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then(left.id.cmp(&right.id))
+    });
+    Ok(json!({"works": works}))
+}
+
+fn tool_team_run_work_show(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let work_id = required_str(arguments, "work_id")?;
+    let work = store
+        .latest_works()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|work| work.team_run_id == team_run_id && work.id == work_id)
+        .ok_or_else(|| format!("Work not found: {work_id}"))?;
+    let events = store
+        .work_events()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|event| event.team_run_id == team_run_id && event.work_id == work_id)
+        .collect::<Vec<_>>();
+    let deliveries = store
+        .latest_work_deliveries()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|delivery| delivery.team_run_id == team_run_id && delivery.work_id == work_id)
+        .collect::<Vec<_>>();
+    Ok(json!({"work": work, "events": events, "deliveries": deliveries}))
+}
+
+fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    create_team_work_value(store, required_str(arguments, "team_run_id")?, arguments)
+        .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_work_mutate(
+    store: &HarnessStore,
+    arguments: &Value,
+    operation: &str,
+) -> Result<Value, String> {
+    mutate_team_work_value(
+        store,
+        required_str(arguments, "team_run_id")?,
+        required_str(arguments, "work_id")?,
+        operation,
+        arguments,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_work_reconcile_delivery(
+    store: &HarnessStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    reconcile_team_work_delivery_value(store, required_str(arguments, "team_run_id")?, arguments)
+        .map_err(|error| error.to_string())
 }
 
 fn tool_team_run_steer_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -511,7 +596,7 @@ fn tool_wave_gate(store: &HarnessStore, arguments: &Value) -> Result<Value, Stri
     Ok(json!(wave))
 }
 
-/// `team_run_create` — journal a new run + member runs + assignment messages.
+/// `team_run_create` — journal a new run, idle members, and explicit initial Works.
 fn tool_team_run_create(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -572,7 +657,7 @@ fn tool_team_run_create(
             worktree_ref: optional_str(member, "worktree_ref")?,
             owned_paths,
             resume_native_session_id: optional_str(member, "resume_native_session_id")?,
-            assignment: optional_str(member, "assignment")?,
+            initial_work: optional_str(member, "initial_work")?,
         });
     }
     let agent_team_id = optional_str(arguments, "agent_team_id")?;
@@ -606,20 +691,20 @@ fn tool_team_run_create(
         "wave_id": created.team_run.wave_id,
         "execution_root": created.team_run.execution_root,
         "member_runs": created.member_runs,
-        "assignment_messages": created.assignment_messages,
+        "works": created.works,
         "dashboard_url": team_dashboard_url(store, resolved, &created.team_run.id),
     }))
 }
 
 /// `team_run_add_member` — extend an active long-lived run and create the new
-/// member's first correlated assignment.
+/// member's optional initial Work.
 fn tool_team_run_add_member(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     arguments: &Value,
 ) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
-    let assignment = required_str(arguments, "assignment")?;
+    let initial_work = optional_str(arguments, "initial_work")?;
     let member = arguments
         .get("member")
         .and_then(Value::as_object)
@@ -658,21 +743,21 @@ fn tool_team_run_add_member(
             &Value::Object(member.clone()),
             "resume_native_session_id",
         )?,
-        assignment: optional_str(&Value::Object(member.clone()), "assignment")?,
+        initial_work: None,
     };
-    let (run, member_run, assignment_message) = add_team_run_member(
+    let (run, member_run, work) = add_team_run_member(
         store,
         resolved.context.as_ref(),
         team_run_id,
         &member,
-        assignment,
+        initial_work.as_deref(),
         optional_str(arguments, "origin_wave_id")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
         "team_run": run,
         "member_run": member_run,
-        "assignment_message": assignment_message,
+        "work": work,
         "dashboard_url": team_dashboard_url(store, resolved, team_run_id),
     }))
 }
@@ -929,7 +1014,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
     if sender_kind == TeamActorKind::Host && from_member_id != "host" {
         return Err("sender_kind=host requires from_member_id=host".to_string());
     }
-    let message = send_team_message_as(
+    let message = send_team_message_as_work(
         store,
         team_run_id,
         TeamActorRef {
@@ -941,6 +1026,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         to_member_ids,
         kind,
         body,
+        optional_str(arguments, "work_id")?,
         correlation_id,
         causation_id,
         optional_str(arguments, "origin_wave_id")?,
@@ -1175,7 +1261,7 @@ fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "objective": {"type": "string", "minLength": 1, "description": "What the team should accomplish; also seeds each member's assignment message body."},
+                    "objective": {"type": "string", "minLength": 1, "description": "Durable TeamRun context. It never silently assigns the same responsibility to every member."},
                     "budget_limit_usd": {"type": "number", "minimum": 0, "description": "Optional budget cap in USD, recorded on the run."},
                     "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
                     "agent_team_id": {"type": "string", "description": "Stable independent AgentTeam definition. It must be linked when mission_id is supplied."},
@@ -1200,7 +1286,7 @@ fn tool_definitions() -> Value {
                                 "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
                                 "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
-                                "assignment": {"type": "string", "minLength": 1, "description": "This member's own brief. The run-level objective is used when omitted; supply this so a multi-lane objective is not delivered verbatim to every member."},
+                                "initial_work": {"type": "string", "minLength": 1, "description": "Optional completion criteria for one initial Host-assigned Work. Omit to create the member idle."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
                             },
                             "required": ["name", "role", "provider"]
@@ -1211,13 +1297,100 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "team_run_add_member",
-            "description": "Add one member to an active planning/running/waiting TeamRun and create its first correlated assignment. origin_wave_id is optional Host-plan provenance and does not bind the member lifecycle to a Wave.",
+            "name": "team_run_work_list",
+            "description": "List the authoritative shared Works board for one TeamRun.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}}, "required": ["team_run_id"]}
+        },
+        {
+            "name": "team_run_work_show",
+            "description": "Show one Work with its append-only WorkEvents and latest WorkDeliveries.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}}, "required": ["team_run_id", "work_id"]}
+        },
+        {
+            "name": "team_run_work_create",
+            "description": "Create durable team responsibility. Host may assign it immediately, expose it for self-claim, or leave it unassigned.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
-                    "assignment": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1},
+                    "context_markdown": {"type": "string"},
+                    "completion_criteria_markdown": {"type": "string", "minLength": 1},
+                    "owner_member_run_id": {"type": "string", "description": "Optional concrete MemberRun to receive the first WorkDelivery; stable AgentMember ownership is derived by the store."},
+                    "claim_mode": {"type": "string", "enum": ["host_assign", "team_claim"]},
+                    "eligible_member_ids": {"type": "array", "items": {"type": "string"}},
+                    "parent_work_id": {"type": "string"},
+                    "source_work_item_ref": {"type": "string"},
+                    "prerequisite_work_ids": {"type": "array", "items": {"type": "string"}},
+                    "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
+                    "caused_by_message_id": {"type": "string"},
+                    "idempotency_key": {"type": "string"}
+                },
+                "required": ["team_run_id", "title", "completion_criteria_markdown"]
+            }
+        },
+        {
+            "name": "team_run_work_assign",
+            "description": "Host performs the first assignment of open Work using optimistic versioning. This does not move an existing stable owner to another runtime; use team_run_work_rebind for that.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "member_run_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "member_run_id", "expected_version"]}
+        },
+        {
+            "name": "team_run_work_rebind",
+            "description": "Host preserves the Work's stable AgentMember owner while moving its active runtime binding to another active MemberRun for that same identity, for example after a runtime replacement or crash recovery.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "member_run_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "member_run_id", "expected_version"]}
+        },
+        {
+            "name": "team_run_work_block",
+            "description": "Host pauses owned in-progress Work with a durable blocker reason. Use ordinary Work-linked messages only for the surrounding discussion.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "reason": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "reason"]}
+        },
+        {
+            "name": "team_run_work_resume",
+            "description": "Host resumes blocked Work after recording how the blocker was resolved; the latest owner is woken through WorkDelivery.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "resolution": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "resolution"]}
+        },
+        {
+            "name": "team_run_work_release",
+            "description": "Host releases open owned Work back to the shared Ready Pool when it has not been claimed or delivered to a provider.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version"]}
+        },
+        {
+            "name": "team_run_work_request_changes",
+            "description": "Host returns submitted Work with specific feedback; a new delivery wakes the current owner.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "reason": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "reason"]}
+        },
+        {
+            "name": "team_run_work_accept",
+            "description": "Host explicitly accepts submitted Work. Provider completion alone never performs this transition.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "summary": {"type": "string"}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version"]}
+        },
+        {
+            "name": "team_run_work_cancel",
+            "description": "Host cancels unfinished Work without closing the member or TeamRun.",
+            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "reason": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "reason"]}
+        },
+        {
+            "name": "team_run_work_reconcile_delivery",
+            "description": "A successor Supervisor explicitly requeues one stale claimed WorkDelivery after a crash. The caller must name the successor Supervisor id and generation; this never guesses provider consumption or changes Work responsibility.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "delivery_id": {"type": "string"},
+                    "supervisor_id": {"type": "string"},
+                    "supervisor_generation": {"type": "integer", "minimum": 1}
+                },
+                "required": ["team_run_id", "delivery_id", "supervisor_id", "supervisor_generation"]
+            }
+        },
+        {
+            "name": "team_run_add_member",
+            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work. origin_wave_id is Host-plan provenance only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "initial_work": {"type": "string", "minLength": 1},
                     "origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only."},
                     "member": {
                         "type": "object",
@@ -1231,13 +1404,12 @@ fn tool_definitions() -> Value {
                             "service_tier": {"type": "string", "minLength": 1},
                             "worktree_ref": {"type": "string", "minLength": 1},
                             "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                            "assignment": {"type": "string", "minLength": 1, "description": "This member's own brief; the run-level objective is used when omitted."},
                             "resume_native_session_id": {"type": "string", "minLength": 1}
                         },
                         "required": ["name", "role", "provider"]
                     }
                 },
-                "required": ["team_run_id", "member", "assignment"]
+                "required": ["team_run_id", "member"]
             }
         },
         {
@@ -1348,7 +1520,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_send_message",
-            "description": "Route one typed message inside a team run and fold it into the run's event log. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a MemberRun. Omit lineage fields for a fresh opaque correlation; to reuse an assignment's ownership correlation, pass that assignment's `correlation_id` (and optionally its message id as `causation_id`). Returns the new message id and its correlation id.",
+            "description": "Route one conversation message inside a team run and fold it into the run's event log. Durable responsibility lives on Work; pass work_id only to link the discussion. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a driven MemberRun. Omit lineage fields for a fresh conversation correlation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1358,12 +1530,13 @@ fn tool_definitions() -> Value {
                     "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to from_member_id."},
                     "sender_name": {"type": "string"},
                     "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
-                    "kind": {"type": "string", "enum": ["assignment", "message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Other historical labels are read-only."},
+                    "kind": {"type": "string", "enum": ["message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Work owns assignment and lifecycle."},
                     "body": {"type": "string"},
-                    "correlation_id": {"type": "string", "description": "Optional assignment correlation to reuse. For a non-assignment message, it must identify an Assignment in this team run."},
+                    "work_id": {"type": "string", "description": "Optional Work discussed by this message. It must belong to the same TeamRun."},
+                    "correlation_id": {"type": "string", "description": "Optional existing conversation correlation to reuse."},
                     "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
                     ,"origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
-                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: assignment/handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
+                    ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
                 },
                 "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
             }

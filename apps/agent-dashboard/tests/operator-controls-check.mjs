@@ -69,7 +69,7 @@ async function main() {
     answer.body.correlation_id === "corr/c"
       && answer.body.causation_id === "message/d"
       && answer.body.origin_wave_id === "wave/a",
-    "Lead reply preserves Assignment correlation, causation, and Wave navigation context",
+    "Lead reply preserves conversation correlation, causation, optional Work link, and Wave navigation context",
   );
   check(
     actions.startTeamRun("run/a").path === "/v1/team-runs/run%2Fa/start",
@@ -90,6 +90,15 @@ async function main() {
     create.body.execution_root === "/workspace/project"
       && create.body.members[0].worktree_ref === "/workspace/external-worktree",
     "TeamRun create action preserves run execution root and member worktree override",
+  );
+  const messageCausedWork = actions.createTeamWork("run/a", {
+    title: "Investigate request",
+    completionCriteriaMarkdown: "Root cause is proven",
+    causedByMessageId: "message/c",
+  });
+  check(
+    messageCausedWork.body.caused_by_message_id === "message/c",
+    "Work creation API can preserve an explicit source-message relation",
   );
   const resolve = actions.resolvePendingInteraction("run/a", "interaction/b", "q0_opt_0", "lead");
   check(
@@ -139,7 +148,7 @@ async function main() {
   );
   check(
     teamSource.includes("Lead Inbox")
-      && teamSource.includes("Every Member message addressed to the Host, with its Assignment work chain.")
+      && teamSource.includes("Every Member message addressed to the Host, preserving its conversation thread and delivery state.")
       && teamSource.includes("<LeadInbox")
       && teamSource.includes("correlationId: replyAnchor?.correlation_id")
       && teamSource.includes("causationId: replyAnchor?.id")
@@ -150,14 +159,51 @@ async function main() {
   );
   check(
     teamSource.includes('<option value="message">Message</option>')
-      && teamSource.includes('<option value="assignment">Assignment</option>')
+      && teamSource.includes('<option value="handoff">Handoff</option>')
+      && teamSource.includes("TeamWorksBoard")
+      && !teamSource.includes('<option value="assignment">Assignment</option>')
       && !teamSource.includes("Plan review")
       && !teamSource.includes("sendPlanMessage"),
     "Team War Room uses ordinary messages instead of a dedicated plan lifecycle",
   );
   check(
+    teamSource.includes("const assignableMembers = members.filter(canMemberAcceptWork)")
+      && teamSource.includes("assignableMembers.map((member)")
+      && teamSource.includes("No active members available"),
+    "Works owner controls only offer coordination-active member generations that can accept Work",
+  );
+  check(
+    teamSource.includes('aria-label="Filter Works by owner"')
+      && teamSource.includes('label="Unassigned"')
+      && teamSource.includes("members.map((member)")
+      && teamSource.includes('aria-label="Filter Works by attention state"')
+      && teamSource.includes('label="Needs review"')
+      && teamSource.includes('label="Blocked"')
+      && teamSource.includes("selectFilteredTeamWorks"),
+    "Works board filters by durable owner and attention state without replacing its five status lanes",
+  );
+  check(
+    !teamSource.includes("causedByMessageId")
+      && !teamSource.includes("Convert message to Work"),
+    "Team UI does not invent an ambiguous message-to-Work conversion control before its interaction contract is designed",
+  );
+  check(
+    teamSource.includes('data-testid="terminal-work-integrity-anomaly"')
+      && teamSource.includes("Integrity anomaly · terminal TeamRun has unfinished Work")
+      && teamSource.includes("needsYou.unfinishedWorks.length"),
+    "Terminal TeamRuns visibly flag unfinished Work as an integrity anomaly instead of hiding pressure",
+  );
+  check(
+    teamSource.includes('delivery.status === "provider_received" ? "complete" : "queued"')
+      && teamSource.includes('delivery.status === "provider_received" ? "good" : "info"')
+      && teamSource.includes("delivery.failure_reason")
+      && memberSource.includes('delivery.status === "provider_received" ? "good" : "info"')
+      && memberSource.includes("delivery.failure_reason"),
+    "Team and Member activity treat provider receipt as delivery success and expose delivery failure reasons",
+  );
+  check(
     teamSource.includes("KEY_ACTIVITY_MESSAGE_KINDS")
-      && ["assignment", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "handoff"]
+      && ["plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "handoff"]
         .every((kind) => teamSource.includes(`"${kind}"`)),
     "Team Activity keeps the complete plan, coordination, and handoff story visible by default",
   );
@@ -190,12 +236,12 @@ async function main() {
     "Mission Canvas renders every linked reusable Agent Team instead of collapsing the relation to one latest run",
   );
   check(
-    memberSource.includes('messageKind === "steer"')
+    memberSource.includes('composerMode === "steer"')
       && memberSource.includes("Injects only this explicit Steer")
       && memberSource.includes("Steer is available only while this Codex member has an active turn.")
       && memberSource.includes('execution_mode === "codex_app_server"')
       && memberSource.includes('disabled={!supportsLiveSteer}')
-      && memberSource.includes('if (messageKind === "steer" && !canLiveSteer) return')
+      && memberSource.includes('if (composerMode === "steer" && !canLiveSteer) return')
       && !memberSource.includes("queues control guidance for the next provider round")
       && memberSource.includes("steerTeamMember(")
       && memberSource.includes("interruptTeamMember(")
@@ -222,8 +268,12 @@ async function main() {
     "Team and Member navigation preserve Mission/Wave context across deep links",
   );
   check(
-    memberSource.includes("Current Assignment · Member Goal")
-      && memberSource.includes("assignmentCompletionCriteria")
+    memberSource.includes("Current Work · Member Goal")
+      && memberSource.includes("context.currentWork")
+      && memberSource.includes("context.queuedOwnedWorks")
+      && memberSource.includes("context.eligibleReadyWorks")
+      && memberSource.includes("work.artifact_refs")
+      && memberSource.includes("work.check_refs")
       && memberSource.includes("latestSteerSummary")
       && memberSource.includes("Host & peer threads")
       && memberSource.includes("Native subagent activity")
@@ -232,10 +282,26 @@ async function main() {
     "Member Focus derives its Goal, collaboration threads, latest steer, peers, native subagent entry, and reply lineage",
   );
   check(
+    memberSource.includes('aria-label="Member next Work action"')
+      && memberSource.includes("memberWorkNextAction")
+      && memberSource.includes("This operator view does not impersonate the member.")
+      && memberSource.includes("eligible ready Work from its own runtime")
+      && !memberSource.includes("claimTeamWork("),
+    "Member Focus explains owned/current/eligible next actions without giving the Operator member-only Work controls",
+  );
+  check(
+    memberSource.includes('kind: "message"')
+      && memberSource.includes("responseIntent,")
+      && memberSource.includes("workId: currentWork?.id")
+      && !memberSource.includes('<option value="question">')
+      && !memberSource.includes('<option value="review_request">'),
+    "Member Focus sends ordinary Work-linked messages with explicit response intent",
+  );
+  check(
     !memberSource.includes("Execution plan")
       && !memberSource.includes("selectMemberPlanNegotiation")
-      && memberSource.includes("Current Assignment · Member Goal"),
-    "Member Focus keeps planning inside the Assignment conversation instead of a separate product panel",
+      && memberSource.includes("Current Work · Member Goal"),
+    "Member Focus keeps planning in ordinary conversation while Work remains the responsibility source",
   );
   check(
     memberSource.includes('label="Ordinary mail"'),

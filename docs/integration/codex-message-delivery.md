@@ -1,4 +1,8 @@
-# Codex Agent Team Message Delivery
+# Codex Agent Team Work And Message Delivery
+
+```text
+status: implemented Message baseline; WorkDelivery redesign pending ADR 0050
+```
 
 This document defines how a Codex Agent Team Member receives durable Harness
 coordination. It extends [Codex Integration](codex.md) and the
@@ -11,7 +15,7 @@ app-server owns the native thread, turns, chat, tools and execution history.
 Codex does not poll Harness storage.
 
 ```text
-TeamMessage
+TeamMessage or WorkDelivery
   -> latest-row mailbox projection
   -> eligible recipient/runtime
   -> adapter delivery reservation
@@ -23,20 +27,20 @@ TeamMessage
 New Codex Team members always use `codex_app_server`. `codex_exec` delivery is
 bounded Dynamic Workflow or historical behavior and is not a Team fallback.
 
-## Message Shapes
+## Delivery Shapes
 
-New public coordination writes use four durable shapes:
+New coordination delivery uses three durable shapes:
 
-| Shape | Delivery meaning |
+| Delivered object | Meaning |
 | --- | --- |
-| `assignment` | starts accountable ownership and correlation |
-| `message` | ordinary Host/Member/peer coordination, including planning |
-| `handoff` | returns an explicit lane outcome/evidence |
-| `control` | requests a real supported runtime operation |
+| `WorkDelivery` | delivers one assigned or changed Work version |
+| `TeamMessage(message)` | ordinary Host/Member/peer conversation, including planning |
+| `TeamMessage(control)` | requests a real supported runtime operation |
 
 Human-readable intents such as `PLAN:`, `QUESTION:`, `BLOCKER:`, `REVIEW:` and
-`DECISION:` remain Markdown inside ordinary messages. Historical specialized
-kinds remain readable but are not new lifecycle machines.
+`DECISION:` remain Markdown inside ordinary messages. Assignment and Handoff
+message kinds are removed rather than retained as compatibility after the
+ADR 0050 migration.
 
 Provider-native questions and approvals that pause the current turn are
 `PendingInteraction`, not ordinary TeamMessage delivery.
@@ -48,43 +52,21 @@ Provider-native questions and approvals that pause the current turn are
 - Host → Member and Member → Member ordinary coordination begins `queued`.
 - Peer sender, recipient, correlation and causation must resolve inside the
   same TeamRun.
-- Assignment ownership is proven only by the Assignment message and its
-  correlation id.
+- Work owner/version and WorkEvents prove responsibility and state.
+- WorkDelivery carries the exact `work_id` and version that must enter the
+  Member's safe-boundary context.
+- TeamMessage remains authored conversation with optional `work_id`,
+  correlation and reply lineage; it does not assign or submit Work.
 
-Each completed provider round preserves that Assignment correlation while its
-Handoff `causation_id` names the exact TeamMessage consumed for that round.
-Round one normally points to the Assignment; a later round points to the
-Host/peer follow-up that woke it. Delivery state shows any other messages
-accepted in the same batch. Harness does not infer causation from message body
-text or reset ownership for every round.
+Codex submits results through a Work operation with evidence references. The
+Adapter never converts provider final text into an automatic Work submission
+or duplicate Message. A submission is fenced while a newer WorkDelivery, or a
+newer linked response-required Message, remains queued or claimed.
 
-If the Member explicitly sends one correlated Handoff through the CLI during
-the round, that record is authoritative. The Adapter enriches it with newly
-observed evidence references and does not append a second Handoff from the
-provider's final reply. If no explicit Handoff exists, the final reply becomes
-the automatic fallback Handoff.
-
-If a real same-turn Steer succeeds after that durable Handoff, its control
-message reuses the Assignment correlation and names the Handoff as its direct
-cause. The Steer continues the current native turn and therefore does not
-create a sibling Handoff when the turn ends. An ordinary correlated message
-sent after the Member returns to idle still starts the next round; that later
-round's Handoff names the ordinary message it consumed.
-
-The active Codex adapter keeps the Assignment correlation, exact consumed
-trigger, and pre-turn Handoff baseline only in process. It does not add provider
-turn ownership to `TeamMessage`. A post-baseline Handoff can anchor Steer or
-suppress fallback only when it keeps that Assignment correlation and names the
-exact trigger, or names a delivered `Inject` control whose causation validates
-the same continuation. A Handoff for another delivered Assignment or an older
-same-correlation cause is not current-turn convergence evidence.
-
-Explicit Handoff convergence is also enforced atomically under the store lock.
-Two Handoffs from the same Member with the same Assignment correlation and
-cause cannot both append. After post-Handoff Steer, a second Handoff caused by
-the delivered `Inject` control is likewise rejected because that control points
-to the already-durable Handoff. These checks use existing kind, correlation,
-causation, and delivery facts rather than a new lifecycle field.
+If real same-turn Steer succeeds after submission, Work remains in review until
+the Host accepts it or requests changes. Steer does not create another Work or
+submission. A Host request-changes operation increments the Work version and
+creates a new WorkDelivery; explanatory text may travel in a linked Message.
 
 After the provider acknowledges Steer, Harness constructs the final
 `Control(Inject, Delivered)` row and publishes it exactly once through the
@@ -99,7 +81,7 @@ it does not itself consume or semantically acknowledge mail.
 ## Latest-Row Selection
 
 Harness stores mutable coordination append-only. A dispatcher selects only the
-latest row for each message id:
+latest row for each Message or WorkDelivery id:
 
 ```text
 message-1 queued
@@ -115,11 +97,11 @@ warnings.
 ## Reservation And Receipt
 
 Provider side effects may start a turn, so delivery must reserve the latest
-eligible message before injection:
+eligible Message or WorkDelivery before injection:
 
 ```text
-latest queued message
-  -> verify MemberRun, correlation, runtime and native-session binding
+latest queued Message or WorkDelivery
+  -> verify MemberRun, Work/message lineage, runtime and native-session binding
   -> record in-flight reservation/receipt boundary
   -> submit envelope to the same-process app-server adapter
   -> adapter accepts or rejects envelope
@@ -128,8 +110,8 @@ latest queued message
 
 `delivered` means the adapter accepted the envelope for that MemberRun and
 native thread. It does not mean the model understood, executed, or accepted
-the request. Semantic acknowledgement is a correlated reply, Handoff,
-review result, or real control acknowledgement.
+the request. Semantic acknowledgement is a correlated reply, Work transition,
+Host review action, or real control acknowledgement.
 
 If the adapter fails before receipt, mail remains queued or visibly failed.
 The implementation must prevent duplicate injection while a receipt is in
@@ -162,14 +144,13 @@ project_id
 mission_id? / origin_wave_id?
 team_run_id
 member_run_id
-assignment_message_id
-correlation_id
+work_id / work_version / work_delivery_id
 sender and recipient
 team roster and roles
 owned paths / worktree / permission boundary
-completion standard
-message Markdown
-exact CLI examples for Inbox, Host/peer message and Handoff
+Work context and completion criteria
+optional linked Message Markdown + correlation/reply lineage
+exact CLI examples for Work list/claim/start/block/submit and Work-linked Message
 ```
 
 The envelope provides identity and responsibility, not a copy of earlier
@@ -230,15 +211,14 @@ alone; it receives mail at its next prompt or resume. See
 
 ## Acceptance
 
-1. Host and peer mail validate same-TeamRun identity/correlation.
-2. A busy Member receives ordinary mail once at the next safe round.
+1. Host and peer mail validate same-TeamRun identity and optional Work link.
+2. A busy Member receives ordinary mail and WorkDelivery once at a safe boundary.
 3. Adapter receipt, semantic reply and control acknowledgement remain distinct.
 4. Member → Host delivery is immediately visible.
 5. Closed or incompatible members reject delivery.
 6. `member-run show`, Inbox and Dashboard reconstruct the same mailbox state.
-7. A second-round Handoff retains the Assignment correlation and points its
-   causation at the exact follow-up message.
-8. An explicit Member Handoff and Adapter fallback never produce duplicate
-   Handoffs for one provider round.
+7. A second-round Work submission uses the latest delivered Work version and
+   preserves linked Message lineage where relevant.
+8. Provider final text never creates a duplicate Work submission or Message.
 9. Native Codex transcript, tools, commands, files, reasoning and subagent
    transcript remain outside Harness storage.

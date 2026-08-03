@@ -4,6 +4,10 @@
 
 Accepted and implemented as the storage, read, and resume boundary.
 
+ADR 0050 replaces this document's Assignment/Handoff message examples with
+Agent Team Work, WorkDelivery, Work submission/acceptance, and ordinary
+Work-linked conversation. The provider-native session boundary remains active.
+
 This ADR amends ADR 0010, ADR 0025, ADR 0030, and ADR 0031 where they imply
 that Harness must mirror a provider transcript, tool lifecycle, command stream,
 or file-event stream into durable Harness records.
@@ -17,11 +21,11 @@ the same stream into Harness creates two histories that can diverge, expands
 privacy and retention scope, and makes provider upgrades look like generic
 Harness schema migrations.
 
-Harness still needs durable state above one agent: why a team exists, what a
-member was assigned, who may answer a provider question, which attempt
-finished, what outcome and artifacts were returned, and which Wave attempt was
-accepted. Those are Harness facts and cannot be delegated to a provider's
-private transcript.
+Harness still needs durable state above one agent: why a team exists, which
+Work a member owns, who may answer a provider question, which Work version was
+submitted and accepted, what outcome and artifacts were returned, and which
+Wave revision the Host advanced. Those are Harness facts and cannot be
+delegated to a provider's private transcript.
 
 ## Decision
 

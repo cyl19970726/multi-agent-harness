@@ -26,8 +26,11 @@ and MCP are the shared execution foundation. `Mission` is durable intent and
 may link multiple reusable teams. `Wave` is a lightweight, versioned Markdown
 record of the Host's current plan and judgment; it is not an executor container
 or synchronization barrier. An AgentTeamRun may span multiple Waves while its
-MemberRuns and native sessions continue. Assignment-message correlation owns
-member work. Dynamic Workflow owns its workflow steps; Host execution may use
+MemberRuns and native sessions continue. ADR 0050 defines Work as member
+responsibility and removes Assignment-message ownership. `WorkOperation`
+atomically preserves the resulting Work, its `WorkEvent`, and delivery deltas;
+`WorkDelivery` wakes or updates a Member runtime, and
+`TeamMessage` is authored conversation only. Dynamic Workflow owns its workflow steps; Host execution may use
 provider-native subagents as an implementation detail, with optional hooks for
 honest observation. The target contract allows thinking only as sanitized
 transient live state: it must not be persisted, replayed, treated as evidence,
@@ -84,10 +87,12 @@ ledgers or code are deleted.
 
 For Agent Team execution, Harness owns the coordination records: `AgentTeam`,
 Mission relation, `AgentTeamRun`, `MemberRun` plus its native-session binding,
-`TeamMessage`, `PendingInteraction`, explicit outcome and artifact/check
-references, and control acknowledgements. Assignment ownership is proven by
-`TeamMessage(kind=assignment)` plus `correlation_id`. The provider's native
-session store is the sole execution truth for that member's transcript, tool
+`Work`, `WorkEvent`, `WorkDelivery`, `TeamMessage`, `PendingInteraction`,
+explicit outcome and artifact/check references, and control acknowledgements.
+Work owner and state prove responsibility; TeamMessage is authored conversation.
+There is no Assignment Message compatibility path; active stores using the old
+ownership model must be reset or explicitly migrated rather than dual-read.
+The provider's native session store is the sole execution truth for that member's transcript, tool
 calls, commands, file events, and provider turn lifecycle; do not mirror those
 streams into Harness ledgers
 ([ADR 0032](decisions/0032-provider-native-session-is-execution-truth.md),
@@ -131,8 +136,8 @@ asks through an ordinary correlated Markdown message; the Member replies, the
 Host argues or approves in the same chain, and provider-native plan/goal
 features remain internal execution aids.
 
-An Assignment is durable work ownership; a provider-native Goal is only one
-possible continuation mechanism for executing it. Each active MemberRun/native
+Work is durable responsibility; a provider-native Goal is only one possible
+continuation mechanism for executing it. Each active MemberRun/native
 session/writable Workspace must have exactly one top-level execution driver:
 either Harness starts the next provider cycle (`host_driven`) or an observed
 provider-native continuation loop does (`provider_driven`). Never activate a
@@ -155,11 +160,14 @@ shows:
 
 - a native Mission, its linked `AgentTeam`, and the relevant Host-plan Wave;
 - one or more Mission-scoped `AgentTeamRun` records;
-- role-specific MemberRuns and assignment messages for actual members;
-- correlation-backed blocker, handoff, or review messages where those events
+- role-specific MemberRuns and owned or claimed Works for actual members;
+- ordered WorkOperations preserving append-only WorkEvents, resulting Work
+  projections, and WorkDelivery facts for allocation, execution, blocking,
+  submission, recovery, and acceptance;
+- Work-linked conversation where questions, explanation, or peer coordination
   occurred;
-- an explicit outcome, plus artifact/check references when they are useful;
-- an explicit Host Wave advance decision. Active unrelated assignments may
+- submitted results and explicit Host acceptance, plus artifact/check refs;
+- an explicit Host Wave advance decision. Active unrelated Works may
   continue into the next Wave.
 
 Execution claims must also resolve to the provider-native session when the
@@ -182,20 +190,22 @@ The Lead Agent should use this sequence for non-trivial new work:
    and write the current ordered Wave as Markdown plan and judgment.
 3. Let each executor own its internal plan. A Wave records what changed, what
    the Host decided, which work carries forward, and why it can advance.
-4. For Agent Team work, create one Mission-scoped TeamRun and use Assignment
-   messages and correlations for lane ownership. Give concurrent members
+4. For Agent Team work, create one Mission-scoped TeamRun and put every lane on
+   its shared Works board. Assign bounded responsibility directly or expose
+   eligible unassigned Work for atomic claim. Give concurrent members
    disjoint owned paths or explicit conflict boundaries. Let each Member decide
    whether to create its own same-repository worktree and surface shared-file
    conflicts to the Host. Do not pass a Wave id on the primary path.
-5. Keep Harness-owned checks, artifact references, blockers, handoffs, reviews,
-   control acknowledgements, and outcomes durable. Keep provider chat, tool,
+5. Keep Harness-owned WorkOperations/WorkEvents, WorkDelivery, checks, artifact references,
+   blockers, submissions, Host acceptance, control acknowledgements, and
+   outcomes durable. Keep provider chat, tool,
    command, file, turn, and reasoning streams in the provider-native session;
    do not persist a duplicate in Harness.
 6. Apply review proportional to risk. A reviewer member or stricter repository
    governance may be added when useful, but Proposal/Decision/outcome
    evaluation is not a universal product chain.
 7. Advance the Wave from an explicit Host outcome. Do not wait for unrelated
-   member work; carry its same assignment, MemberRun, and native session into
+   member work; carry its same Work, MemberRun, and native session into
    the next Wave.
 8. Re-plan the next Wave from plan-vs-actual deviation and close the Mission
    with an explicit outcome summary. Closing never archives or deletes a team.
@@ -219,6 +229,10 @@ target/debug/harness wave create --mission-id <mission> --title <title> \
   --objective <objective> --context <wave-markdown>
 target/debug/harness team-run create --mission-id <mission> \
   --agent-team-id <team> --objective <objective>
+target/debug/harness team-run work create --team-run-id <team-run> \
+  --title <title> --context <markdown> \
+  --completion-criteria <criteria> --owner-member-run-id <member-run>
+target/debug/harness team-run work list --team-run-id <team-run>
 target/debug/harness wave advance --id <wave> --advanced-by <actor> \
   --outcome <summary>
 target/debug/harness dashboard snapshot
@@ -303,8 +317,9 @@ mechanism, but must say so and add focused acceptance for the path it creates.
 - A small typo or single-line doc fix may be Lead-local, but the final summary
   must say that it was a Lead-local exception.
 - Any feature claim about Agent Team behavior must be backed by linked
-  team/run, member/native-session binding, assignment/correlation, explicit
-  outcome and useful artifact/check references, Host Wave decisions, and
+  team/run, member/native-session binding, owned or claimed Work, WorkEvent and
+  WorkDelivery lineage, explicit submission/Host acceptance, useful
+  artifact/check references, Host Wave decisions, and
   resolvable native provider records for claims about the member's own
   execution.
 - When the current workflow feels slow or manual, record a follow-up Wave or
@@ -340,9 +355,10 @@ model-control, Plugin, or Skill contract change):
    Session, retaining the old Session as history;
 6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
    roots, and the single writable-Workspace driver before resuming; and
-7. prove the new generation lane by lane: a fresh correlated message reaches
-   the existing MemberRun, the same native Session answers, and the Host can
-   ACK the resulting handoff.
+7. prove the new generation lane by lane: the latest ready WorkDelivery reaches
+   the existing MemberRun, the same native Session can answer linked
+   conversation and submit Work, and the Host can explicitly accept or request
+   changes.
 
 When a scenario runs members in Git worktrees, reconciliation also rebases
 each member worktree onto the new base or recreates a clean same-repository
@@ -360,14 +376,14 @@ companion.
 | --- | --- | --- |
 | Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](company-os/README.md) |
 | Product We Are Building — Mission/Wave relations diagram and semantics | Root §Product Identity; here §Product Context | Full prose kept here |
-| Product We Are Building — assignment correlation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
+| Product We Are Building — Work responsibility, Work-linked conversation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
 | Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: [agent-runtime.md](agent-runtime.md) |
 | Product We Are Building — provider release discovery and version maintenance | Root invariant 5; here §Product Context | Full procedure kept here |
 | Product We Are Building — Standing Agents + Docs direction, honesty about planned objects | Root invariant 10; here §Product Context | ADR 0027 |
 | Product We Are Building — Trademark scenario, module placement | Here §Product Context | Canonical scenario: [prd.md](prd.md) |
 | Native Product And Execution Objects — object inventory | Here §Native Product And Execution Objects | [concept-model.md](concept-model.md) |
 | Native Product And Execution Objects — Mission/Wave only, ADR 0028 retirement | Root invariant 3; here §Native Product And Execution Objects | — |
-| Agent Team execution records, assignment proof, native-session boundary | Root invariants 1–2; here §Native Product And Execution Objects and §Acceptance Evidence | ADR 0032; the exact phrases `provider's native`, `streams into Harness ledgers`, and `Resume must use the provider-native session id` must stay in root AGENTS.md — `scripts/check-native-session-boundary.mjs` greps for them |
+| Agent Team execution records, Work responsibility/delivery proof, native-session boundary | Root invariants 1–2; here §Native Product And Execution Objects and §Acceptance Evidence | ADR 0032; the exact phrases `provider's native`, `streams into Harness ledgers`, and `Resume must use the provider-native session id` must stay in root AGENTS.md — `scripts/check-native-session-boundary.mjs` greps for them |
 | MemberRun ProviderIntegrationProfile, PendingInteraction, `completed` ≠ success | Root invariants 1–2; here §Native Product And Execution Objects | — |
 | Trusted-development Team policy and worktree norms | Root invariant 6; here §Native Product And Execution Objects | — |
 | Member modes, interrupt/close, Team Supervisor lease, reconciliation | Root invariant 7; here §Agent Team Member Lifecycle And Control | — |

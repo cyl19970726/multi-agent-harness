@@ -69,7 +69,7 @@ different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 | --- | --- | --- |
 | Mission Canvas | durable Mission Markdown, linked Teams, ordered Host-plan Wave revisions, explicit judgment, closeout | dependency graph, runtime containment, or implicit acceptance |
 | Agent Teams Home | independent and Mission-scoped AgentTeam/TeamRun discovery | pretending every run belongs to one Wave |
-| Team War Room | stable Team identity, Mission relation, current Supervisor, typed actors, claim/provider receipt/ACK, member presence, assignment lineage, unified activity, and controls | claiming a selected Wave owns the TeamRun, impersonating a Member, or fabricating provider control |
+| Team War Room | stable Team identity, Mission relation, shared Works, current Supervisor, typed actors, WorkDelivery claim/receipt/failure, authored Message delivery/ACK, member presence, Work-linked conversation, unified activity, and controls | claiming a selected Wave owns the TeamRun, impersonating a Member, or fabricating provider control |
 | MemberRun Focus | one run-scoped member's contract, native-session binding, mailbox and evidence | Standing Agent identity or a copied provider transcript |
 | Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
 | Company OS | Documents, WorkItems, actors, approvals, finance, metrics, governance | unimplemented schema authority |
@@ -82,7 +82,7 @@ different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 | `WorkbenchShell` | product rail, source state, responsive workspace, debug boundary |
 | execution portraits and `Avatar` | stable identity with generated asset and text fallback |
 | status/tone primitives | text-backed semantic state, never color-only |
-| timeline/activity rows | assignment, handoff, runtime, evidence, review, decision semantics |
+| timeline/activity rows | WorkEvent, conversation, runtime, evidence, review, and decision semantics |
 | context modules | Wave, Gate, Attempt, Member, Resources, linked company records |
 | document primitives | basic rich content, properties, relations, structured views |
 | operator forms | typed API commands with pending/error state and truthful disable reasons |

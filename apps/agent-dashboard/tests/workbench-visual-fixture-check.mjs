@@ -33,6 +33,32 @@ function hasKey(value, key) {
   return Object.values(value).some((item) => hasKey(item, key));
 }
 
+function workHistory(operations, workId) {
+  return operations.filter((operation) => operation.work?.id === workId);
+}
+
+function hasContinuousVersions(history) {
+  return history.every((operation, index) => (
+    operation.event.sequence === index + 1
+    && operation.event.expected_version === index
+    && operation.event.resulting_version === index + 1
+    && operation.work.version === index + 1
+    && operation.event.work_id === operation.work.id
+  ));
+}
+
+function latestDeliveries(operations) {
+  const byId = new Map();
+  for (const operation of operations) {
+    for (const delivery of operation.deliveries ?? []) byId.set(delivery.id, delivery);
+    for (const update of operation.delivery_updates ?? []) {
+      const delivery = byId.get(update.delivery_id);
+      if (delivery) byId.set(update.delivery_id, { ...delivery, ...update, id: delivery.id });
+    }
+  }
+  return [...byId.values()];
+}
+
 async function main() {
   const manifest = JSON.parse(await readFile(join(fixtureRoot, "fixture-manifest.json"), "utf8"));
   const repoRoot = resolve(dashboardRoot, "../..");
@@ -53,9 +79,9 @@ async function main() {
     readFile(join(dashboardRoot, "src/components/workbench/context/ContextRail.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/index.css"), "utf8"),
   ]);
-  const [missions, waves, teams, runs, members, messages, actions, events] = await Promise.all([
+  const [missions, waves, teams, runs, members, workOperations, messages, actions, events] = await Promise.all([
     rows("missions.jsonl"), rows("waves.jsonl"), rows("teams.jsonl"), rows("team_runs.jsonl"),
-    rows("member_runs.jsonl"), rows("team_messages.jsonl"),
+    rows("member_runs.jsonl"), rows("work_operations.jsonl"), rows("team_messages.jsonl"),
     rows("member_actions.jsonl"), rows("team_run_events.jsonl"),
   ]);
 
@@ -136,8 +162,40 @@ async function main() {
     "Every current MemberRun fixture snapshots non-secret discovered instruction and skill root paths",
   );
   check(members.some((item) => item.status === "blocked") && members.some((item) => item.status === "reviewing"), "Member states include blocked and reviewing pressure");
-  check(messages.filter((item) => item.kind === "assignment").every((item) => item.correlation_id), "Every assignment has a stable correlation anchor");
+  const workIds = [...new Set(workOperations.map((operation) => operation.work?.id))];
+  const leadHistory = workHistory(workOperations, "work-lead-integration");
+  const researchHistory = workHistory(workOperations, "work-contract-review");
+  const backendHistory = workHistory(workOperations, "work-team-console");
+  const qaHistory = workHistory(workOperations, "work-responsive-qa");
+  const openHistory = workHistory(workOperations, "work-accessibility-followup");
+  const assignedHistory = workHistory(workOperations, "work-release-notes");
+  check(workIds.length === 6 && workOperations.every((item) => item.work?.id && item.work?.completion_criteria_markdown), "Every execution lane is a durable Work with explicit completion criteria");
+  check(
+    [leadHistory, researchHistory, backendHistory, qaHistory, openHistory, assignedHistory].every(hasContinuousVersions),
+    "Every Work operation history is a continuous append-only event/version chain",
+  );
+  check(
+    JSON.stringify(leadHistory.map((operation) => operation.event.kind))
+      === JSON.stringify(["created", "assigned", "started", "blocked", "resumed", "submitted", "accepted"])
+      && researchHistory.at(-1)?.work.status === "review"
+      && backendHistory.at(-1)?.work.status === "in_progress"
+      && qaHistory.some((operation) => operation.event.kind === "claimed")
+      && qaHistory.at(-1)?.work.status === "blocked"
+      && !openHistory.at(-1)?.work.owner_member_id
+      && assignedHistory.at(-1)?.work.status === "open"
+      && assignedHistory.at(-1)?.work.owner_member_id === "member-wave2-lead",
+    "Fixture proves unassigned and assigned queues, team claim, block/resume, submit, and explicit Host acceptance while retaining live board pressure",
+  );
+  check(
+    latestDeliveries(workOperations).length >= 4
+      && latestDeliveries(workOperations).every((delivery) => delivery.team_run_id === manifest.team_run_id),
+    "Work history rebuilds concrete same-TeamRun delivery projections",
+  );
   check(messages.some((item) => item.kind === "blocker") && messages.some((item) => item.kind === "review_request"), "Durable activity contains blocker and review request signals");
+  check(
+    messages.filter((item) => item.id !== "msg-kickoff").every((item) => workIds.includes(item.work_id)),
+    "Work-related conversation uses explicit work_id relations instead of assignment-message ownership",
+  );
   check(
     ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].every(
       (kind) => messages.some((item) => item.kind === kind),
@@ -185,8 +243,12 @@ async function main() {
   check(
     captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")
       && captureSource.includes("api=${encodeURIComponent(webBase)}")
-      && captureSource.includes('manifest.routes["agent-teams-home"]'),
-    "Browser capture keeps API and SSE reads on the Vite same-origin proxy and covers the native Agent Team home",
+      && captureSource.includes('manifest.routes["agent-teams-home"]')
+      && captureSource.includes('"mobile-390x844"')
+      && captureSource.includes('"mobile-320x720"')
+      && captureSource.includes("rootScrollWidth")
+      && captureSource.includes('action: "works-default-and-detail"'),
+    "Browser capture keeps API/SSE same-origin, covers Agent Team Works by default, and rejects horizontal clipping at 390px and 320px",
   );
   check(
     missionSource.includes("flex flex-col items-stretch")
@@ -229,6 +291,24 @@ async function main() {
     "Agent Team V3 exposes mailbox projections, Markdown group activity, participant/type filters, and anchored review action",
   );
   check(
+    warRoomSource.includes('data-testid="team-works-board"')
+      && warRoomSource.includes('label: "Works"')
+      && warRoomSource.includes('label: "Activity"')
+      && warRoomSource.includes('label: "Members"')
+      && warRoomSource.includes("Messages discuss Work; they never create ownership.")
+      && warRoomSource.includes('aria-label="Related Work"')
+      && warRoomSource.includes("Discuss Work"),
+    "Team War Room defaults to a shared Works workspace and keeps explicitly related conversation one action away",
+  );
+  check(
+    warRoomSource.includes('className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by owner"')
+      && warRoomSource.includes('className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by attention state"')
+      && warRoomSource.includes('className="max-w-36 truncate"')
+      && warRoomSource.includes('className="hidden grid-cols-5 gap-2 pb-2 lg:grid"')
+      && warRoomSource.includes('className="space-y-3 lg:hidden"'),
+    "Works filters wrap without horizontal overflow while preserving five desktop lanes and stacked mobile lanes",
+  );
+  check(
     executionSource.includes('role="progressbar"')
       && executionSource.includes("motion-reduce")
       && cssSource.includes("@media (prefers-reduced-motion: reduce)"),
@@ -244,7 +324,7 @@ async function main() {
       && activitySource.includes("ArrowRightLeft")
       && activitySource.includes("activityIconSurface")
       && warRoomSource.includes("teamMessageGlyph"),
-    "Team activity uses distinct assignment, handoff, runtime, evidence, review, and decision glyphs",
+    "Team activity uses distinct message, handoff, runtime, evidence, review, and decision glyphs",
   );
   check(
     warRoomSource.includes("<ConversationRoute item={item}")
@@ -263,7 +343,7 @@ async function main() {
   check(
     memberRunSource.includes("<MemberHistoryNarrative")
       && memberRunSource.includes('<ContextRail label="Member context"')
-      && memberRunSource.includes('glyph: assignment ? "assignment"')
+      && memberRunSource.includes('message.kind === "handoff" ? "handoff"')
       && memberRunSource.includes('? "artifact" : "runtime"')
       && memberRunSource.includes('tone: "decision"')
       && memberRunSource.includes("transient: true")

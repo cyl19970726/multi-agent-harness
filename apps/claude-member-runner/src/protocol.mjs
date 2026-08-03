@@ -12,13 +12,13 @@
 export const COMMANDS = Object.freeze({
   /** Begin the member. Payload is the config object (see README). */
   start: "start",
-  /** Deliver one TeamMessage into the live session. */
+  /** Deliver one Work or TeamMessage input into the live session. */
   deliver: "deliver",
   /** Real provider interrupt; replies with `interrupted`. */
   interrupt: "interrupt",
   /** Change the provider permission posture through its real protocol. */
   set_permission_mode: "set_permission_mode",
-  /** Terminal: the Host accepted the handoff, or the run is being torn down. */
+  /** Terminal: the Host accepted the Work, stopped the member, or tore the run down. */
   close: "close",
 });
 

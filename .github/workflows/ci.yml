@@ -29,7 +29,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # Provider lifecycle integration tests intentionally exercise process-local
+      # supervisors and live control handles. Serialize them so the release gate
+      # measures protocol behavior instead of host scheduling contention.
+      - run: cargo test -- --test-threads=1
       # Doc/skill governance gate, native in the binary (replaces the retired
       # node check-doc-*/check-skills scripts). The cargo-test self-host test
       # also covers this; this is the explicit, legible CLI gate.

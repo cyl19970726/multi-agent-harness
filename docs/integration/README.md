@@ -180,8 +180,8 @@ README until they need their own file.
     verify transport health before claim and fence every routed operation.
 14. Team mail has typed actor provenance. Delivery claim, provider receipt,
     recipient ACK, semantic response, and Host acceptance are distinct facts.
-15. Explicit Close is latched and ends one runtime generation. Idle, Handoff,
-    Wave/Team/Mission completion, and service restart never imply Close;
+15. Explicit Close is latched and ends one runtime generation. Idle, Work
+    submission, Wave/Team/Mission completion, and service restart never imply Close;
     explicit Reopen alone may resume the same MemberRun/native session, while
     Retire is permanent.
 

@@ -11,7 +11,8 @@ outputs, adapters, and the Agent Dashboard.
 | `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
 | `AgentTeamRun` | One standalone or Mission-scoped use of an independent Agent Team |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
-| `TeamMessage` | Typed sender/recipients, assignment, correlation/causation, optional origin Wave, semantic kind, claim/provider-receipt/ACK delivery state |
+| `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
+| `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner, generation fence, heartbeat, and loopback locator |
 | `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
@@ -33,6 +34,7 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | `Mission` | Rust + JSON schema + JSONL store + CLI/API/MCP/read model | yes |
 | `Wave` | Rust + JSON schema + JSONL revisions + Host update/advance | yes |
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
+| `Work` / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation JSONL store + CLI/API/MCP/read model | yes |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
 | `AgentMessageRoute` | Rust + JSON schema + JSONL idempotent routing store | yes |
 | `Goal` | historical compatibility schema; retired for new coordination | no for new work |
@@ -65,6 +67,9 @@ schema contracts are checked with valid and invalid fixtures.
 | Wave | [wave.schema.json](../schemas/wave.schema.json) |
 | Agent Team run | [agent-team-run.schema.json](../schemas/agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
+| Work | [work.schema.json](../schemas/work.schema.json) |
+| Work event | [work-event.schema.json](../schemas/work-event.schema.json) |
+| Work delivery | [work-delivery.schema.json](../schemas/work-delivery.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../schemas/team-supervisor-lease.schema.json) |
@@ -88,6 +93,12 @@ schema contracts are checked with valid and invalid fixtures.
 | Review | [review.schema.json](../schemas/review.schema.json) |
 | Gap | [gap.schema.json](../schemas/gap.schema.json) |
 | Vision | [vision.schema.json](../schemas/vision.schema.json) |
+
+`WorkOperation` is the Store's crash-atomic replay envelope around one
+WorkEvent, its complete resulting Work, and delivery creates/updates. It is not
+a separately authored public lifecycle object and therefore has no standalone
+public JSON Schema in V1; the three public schemas above define the projections
+and semantic event/delivery records exposed by CLI/API/Dashboard.
 
 ## Schema Evolution
 

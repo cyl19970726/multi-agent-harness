@@ -142,13 +142,16 @@ async function main() {
   check(pages.includes("sourceDetail(") && fixtureAdapter.includes("maintainedDocumentRef") && types.includes('lifecycle?: "archived" | "missing"'), "operations pages render archived-source history markers from the resolved projection");
   check(workOperatingPage.includes("data-work-source-lifecycle") && workOperatingPage.includes("archived history") && workOperatingPage.includes("documentHref"), "Work ledger links every source to its Document with explicit archived or missing lifecycle");
   const provenanceProjection = structuredClone(fixture);
-  provenanceProjection.work_assignment_execution_chains = [{
+  provenanceProjection.work_execution_chains = [{
     assignment_id: "assignment-provenance",
     work_item_id: provenanceProjection.work_items[0].id,
+    work_id: "agent-team-work-provenance",
     assignment_state: "acknowledged",
-    correlation_id: "corr-provenance",
+    work_state: "review",
     link_status: "linked",
-    detail: "Exact durable chain.",
+    detail: "Exact durable Work chain.",
+    work_delivery: { id: "work-delivery-provenance", status: "provider_received", attempt: 1, provider_receipt_id: "receipt-provenance" },
+    conversations: [{ id: "message-provenance", kind: "message", from_member_id: "host", body: "Review this Work.", created_at: "2026-07-31T00:00:00Z" }],
     handoffs: [{ id: "handoff-provenance", result: "completed", body: "RESULT: completed\nEvidence attached.", created_at: "2026-07-31T00:00:00Z", evidence_refs: ["evidence-provenance"] }],
     external_observations: [{
       id: "pr-provenance", kind: "pull_request", label: "PR #42",
@@ -160,7 +163,14 @@ async function main() {
     }],
   }];
   const provenance = adapterModule.adaptTrademarkOperationsProjection(provenanceProjection);
-  const provenanceChain = provenance.workAssignmentExecutionChains[0];
+  const provenanceChain = provenance.workExecutionChains[0];
+  check(
+    provenanceChain.workId === "agent-team-work-provenance"
+      && provenanceChain.workDelivery?.id === "work-delivery-provenance"
+      && provenanceChain.workDelivery.providerReceiptId === "receipt-provenance"
+      && provenanceChain.conversations[0].id === "message-provenance",
+    "adapter preserves the exact Agent Team Work, delivery receipt, and work-scoped conversation",
+  );
   check(
     provenanceChain.handoffs[0].result === "completed"
       && provenanceChain.handoffs[0].body.includes("Evidence attached")
@@ -398,20 +408,20 @@ async function main() {
   const linkedActor = linkedExecutionProjection.actors.find((actor) => actor.id === "actor-agent-trademark");
   linkedActor.execution_agent_member_ref = "execution-agent-trademark";
   linkedExecutionProjection.standing_assignments = [{
-    id: "standing-assignment-member-build-corr-build",
+    id: "standing-work-member-build-agent-work-build",
     agent_member_id: "execution-agent-trademark",
-    source_kind: "agent_team_assignment",
-    source_ref: "message-build",
+    source_kind: "agent_team_work",
+    source_ref: "agent-work-build",
+    work_id: "agent-work-build",
     mission_id: "mission-build",
     wave_id: null,
     team_run_id: "team-run-build",
     member_run_id: "member-run-build",
     title: "Implement the linked Organization slice",
     role: "builder",
-    status: "idle",
+    status: "in_progress",
     assigned_at: "2026-07-20T09:15:00+08:00",
     last_activity_at: "2026-07-20T09:20:00+08:00",
-    correlation_id: "corr-build",
     native_session: { provider: "codex", native_session_id: "thread-build" },
     navigation_target: "?surface=team&team=team-run-build&memberRun=member-run-build",
   }];
@@ -493,18 +503,18 @@ async function main() {
   check(pages.includes("<LinkedRecord wrapLabel") && components.includes("wrapLabel ? \"whitespace-normal leading-5\" : \"truncate\""), "governance proposal title is allowed to wrap instead of truncating in the context rail");
   check(pages.includes("BoardFact label=\"Requested by\"") && pages.includes("BoardFact label=\"Submitted by\"") && pages.includes("actor={workItem.submittedBy}"), "workboard keeps requester and submitter visible as distinct full actor facts");
   check(pages.indexOf('Panel title="Durable Work truth"') < pages.indexOf('Panel title="Responsibility"') && pages.includes("approvalTitle") && pages.includes("break-words text-sm leading-6"), "WorkItem focus moves durable evidence into the first viewport and wraps a human-readable approval summary");
-  check(types.includes("interface WorkAssignmentExecutionChain") && fixtureAdapter.includes("root.work_assignment_execution_chains"), "adapter exposes the explicit Company Assignment execution-link projection");
-  check(pages.includes('Panel title="Computed execution & delivery evidence"') && pages.includes("data-observation-freshness") && pages.includes("data-handoff-result") && pages.includes("handoff.body") && pages.includes("handoff.evidenceRefs.map") && pages.includes("observation.repository") && pages.includes("observation.pullRequestNumber") && pages.includes("observation.baseRef") && pages.includes("observation.url") && pages.includes("observation.observedAt") && pages.includes("observation.sourceUpdatedAt") && pages.includes("observation.sourceCompletedAt") && pages.includes("do not accept or transition this WorkItem"), "WorkItem focus renders complete Handoff and external observation evidence separately from durable Company acceptance");
+  check(types.includes("interface WorkExecutionChain") && fixtureAdapter.includes("root.work_execution_chains"), "adapter exposes the explicit Company Assignment to Agent Team Work execution-link projection");
+  check(pages.includes('Panel title="Computed Work execution & delivery evidence"') && pages.includes("data-observation-freshness") && pages.includes("data-handoff-result") && pages.includes("handoff.body") && pages.includes("handoff.evidenceRefs.map") && pages.includes("chain.workDelivery") && pages.includes("chain.conversations.map") && pages.includes("observation.repository") && pages.includes("observation.pullRequestNumber") && pages.includes("observation.baseRef") && pages.includes("observation.url") && pages.includes("observation.observedAt") && pages.includes("observation.sourceUpdatedAt") && pages.includes("observation.sourceCompletedAt") && pages.includes("do not accept or transition this WorkItem"), "WorkItem focus renders Work delivery, conversations, complete Handoff and external observation evidence separately from durable Company acceptance");
   check(pages.includes("FinanceRecordTable") && ["Record type", "Amount", "Cost context", "Source", "Approval status"].every((label) => pages.includes(`\"${label}\"`)) && !pages.includes("\"Project\""), "finance renders auditable record fields without reintroducing a Project object");
   check(pages.includes("data-standing-agent-workspace") && pages.includes('mainLabel="Standing Agent work and activity"') && pages.includes("<ActivityStream") && !pages.includes('kind: "thinking"'), "Standing Agent focus has a central projection-backed work/activity surface without thinking persistence");
-  check(types.includes("interface StandingExecutionAssignment") && fixtureAdapter.includes("root.standing_assignments"), "Company OS adapter exposes the explicit standing Agent Team assignment projection");
-  check(pages.includes("MemberRun explicitly links this durable identity") && pages.includes("assignment.memberRunId") && pages.includes("assignment.correlationId"), "Standing Agent focus shows exact MemberRun/correlation evidence and an honest unlinked empty state");
+  check(types.includes("interface StandingExecutionAssignment") && fixtureAdapter.includes("root.standing_assignments"), "Company OS adapter exposes explicit Standing Agent participation and Agent Team Work projection");
+  check(pages.includes("MemberRun explicitly links this durable identity") && pages.includes("assignment.memberRunId") && pages.includes("assignment.workId"), "Standing Agent focus shows exact Work/MemberRun evidence and an honest unlinked empty state");
   check(pages.includes('surface: "team"') && pages.includes("teamId: assignment.teamRunId") && pages.includes("memberRunId: assignment.memberRunId"), "Standing Agent participation deep-links to the native Team/Member surface");
-  check(pages.includes('!["completed", "failed", "stopped"].includes(assignment.status)') && pages.includes("Completed participation remains in Activity"), "terminal MemberRuns remain historical activity instead of active Standing Agent work");
-  check(pages.includes('assignment.sourceKind === "agent_team_assignment"')
-    && pages.includes("Boolean(assignment.correlationId)")
-    && pages.includes("assignment.correlationId!"),
-  "assignment-less Agent Team participation stays out of current work and current cards require a real correlation");
+  check(pages.includes('!["done", "cancelled"].includes(assignment.status)') && pages.includes("Completed Work remains in Activity"), "terminal Agent Team Works remain historical activity instead of active Standing Agent work");
+  check(pages.includes('assignment.sourceKind === "agent_team_work"')
+    && pages.includes("Boolean(assignment.workId)")
+    && pages.includes("assignment.workId!"),
+  "participation without Agent Team Work stays out of current work and current cards require a real Work id");
   check(pages.includes("selectionForActor") && pages.includes("onOpen={selectionForActor") && router.includes("onSelectionChange={onSelectionChange}"), "Organization actor cards route through the shared selection state");
   check(pages.includes("authoredProposal") && pages.includes("proposal-${authoredProposal.id}") && pages.includes('title="Maintained Docs"'), "Standing Agent distinguishes authored proposal activity from related durable Docs");
   check(pages.includes('title="Prompt, tools & skills"') && pages.includes('title="Permissions"') && pages.includes('title="Work routing"'), "Standing Agent composes native configuration and authority modules in the context rail");

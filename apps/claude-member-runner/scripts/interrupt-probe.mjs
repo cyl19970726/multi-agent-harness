@@ -17,7 +17,7 @@ const wait = (n,ms=90000) => new Promise(r=>{const t0=Date.now();
 
 const done = runner.start().catch(e => console.log("START THREW:", String(e).slice(0,110)));
 
-runner.deliver({id:"a1",kind:"assignment",from_member_id:"host",
+runner.deliver({id:"work-interrupt",kind:"work",from_member_id:"host",
   body:"Count slowly from 1 to 120, one number per line, nothing else."});
 await new Promise(r=>setTimeout(r,3000));
 console.log("PRE-INTERRUPT turns=", turns);
@@ -28,7 +28,7 @@ console.log("INTERRUPT receipt:", JSON.stringify(receipt));
 await new Promise(r=>setTimeout(r,1500));
 console.log("POST-INTERRUPT alive? closed=", runner.mailbox.closed, " turns=", turns);
 try {
-  runner.deliver({id:"a2",kind:"message",from_member_id:"host",body:"Reply with exactly: ALIVE-AFTER-INTERRUPT"});
+  runner.deliver({id:"a2",kind:"message",from_member_id:"host",work_id:"work-interrupt",body:"Reply with exactly: ALIVE-AFTER-INTERRUPT"});
   const ok = await wait(turns+1, 60000);
   console.log("POST-INTERRUPT delivery landed:", ok, " turns=", turns);
   const last = of("assistant_message").at(-1);

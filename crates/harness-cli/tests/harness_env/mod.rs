@@ -136,14 +136,88 @@ pub const INHERITED_NATIVE_HARNESS_ENV: &[&str] = &[
     "HARNESS_TEAM_RUN_ID",
     "HARNESS_MEMBER_RUN_ID",
     "HARNESS_AGENT_MEMBER_ID",
-    "HARNESS_ASSIGNMENT_MESSAGE_ID",
-    "HARNESS_ASSIGNMENT_CORRELATION_ID",
+    "HARNESS_WORK_ID",
 ];
 
 pub fn clear_inherited_native_harness_env(command: &mut Command) {
     for key in INHERITED_NATIVE_HARNESS_ENV {
         command.env_remove(key);
     }
+}
+
+/// Reconstruct the latest WorkDelivery projection from crash-atomic Work
+/// operations plus later claim/receipt updates. Integration tests use this
+/// instead of treating update rows as standalone deliveries.
+pub fn work_deliveries(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
+    let store = home.spaces_dir().join(project_id);
+    let mut order = Vec::<String>::new();
+    let mut by_id = std::collections::HashMap::<String, serde_json::Value>::new();
+    let operations =
+        std::fs::read_to_string(store.join("work_operations.jsonl")).expect("work operations");
+    for line in operations.lines().filter(|line| !line.trim().is_empty()) {
+        let row: serde_json::Value = serde_json::from_str(line).expect("work operation JSON");
+        for delivery in row["deliveries"].as_array().into_iter().flatten() {
+            let id = delivery["id"]
+                .as_str()
+                .expect("WorkDelivery id")
+                .to_string();
+            if !by_id.contains_key(&id) {
+                order.push(id.clone());
+            }
+            by_id.insert(id, delivery.clone());
+        }
+    }
+    if let Ok(updates) = std::fs::read_to_string(store.join("work_delivery_updates.jsonl")) {
+        for line in updates.lines().filter(|line| !line.trim().is_empty()) {
+            let update: serde_json::Value =
+                serde_json::from_str(line).expect("WorkDelivery update JSON");
+            let id = update["delivery_id"]
+                .as_str()
+                .expect("WorkDelivery update id");
+            if let Some(delivery) = by_id.get_mut(id) {
+                let object = delivery.as_object_mut().expect("WorkDelivery object");
+                for key in [
+                    "status",
+                    "attempt",
+                    "claim_id",
+                    "claimed_by_supervisor_id",
+                    "claimed_generation",
+                    "provider_receipt_id",
+                    "updated_at",
+                ] {
+                    object.insert(key.to_string(), update[key].clone());
+                }
+            }
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect()
+}
+
+pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
+    let operations = std::fs::read_to_string(
+        home.spaces_dir()
+            .join(project_id)
+            .join("work_operations.jsonl"),
+    )
+    .expect("work operations");
+    let mut order = Vec::<String>::new();
+    let mut by_id = std::collections::HashMap::<String, serde_json::Value>::new();
+    for line in operations.lines().filter(|line| !line.trim().is_empty()) {
+        let row: serde_json::Value = serde_json::from_str(line).expect("work operation JSON");
+        let work = row["work"].clone();
+        let id = work["id"].as_str().expect("Work id").to_string();
+        if !by_id.contains_key(&id) {
+            order.push(id.clone());
+        }
+        by_id.insert(id, work);
+    }
+    order
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect()
 }
 
 /// A spawned `harness serve` child bound to `127.0.0.1:<port>`. Killed on drop.

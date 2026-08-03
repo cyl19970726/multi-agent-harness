@@ -16,6 +16,18 @@ async function jsonl(name) {
     .map((line) => JSON.parse(line));
 }
 
+const workOperations = await jsonl("work_operations");
+const worksById = new Map();
+const deliveriesById = new Map();
+for (const operation of workOperations) {
+  worksById.set(operation.work.id, operation.work);
+  for (const delivery of operation.deliveries ?? []) deliveriesById.set(delivery.id, delivery);
+  for (const update of operation.delivery_updates ?? []) {
+    const delivery = deliveriesById.get(update.delivery_id);
+    if (delivery) deliveriesById.set(update.delivery_id, { ...delivery, ...update, id: delivery.id });
+  }
+}
+
 const snapshot = {
   generated_at: "2026-07-29T00:00:00Z",
   teams: await jsonl("teams"),
@@ -24,6 +36,9 @@ const snapshot = {
   team_runs: await jsonl("team_runs"),
   member_runs: await jsonl("member_runs"),
   team_messages: await jsonl("team_messages"),
+  works: [...worksById.values()],
+  work_events: workOperations.map((operation) => operation.event),
+  work_deliveries: [...deliveriesById.values()],
   member_actions: await jsonl("member_actions"),
   delegation_runs: await jsonl("delegation_runs"),
   team_run_events: await jsonl("team_run_events"),
@@ -42,7 +57,8 @@ const snapshot = {
   pending_interactions: [],
   company_os: {},
 };
-const teamRunId = snapshot.team_runs[0].id;
+const teamRunId = snapshot.team_runs.find((run) => run.member_run_ids?.length)?.id;
+if (!teamRunId) throw new Error("fixture does not contain a current TeamRun with members");
 let scopedReads = 0;
 let globalReads = 0;
 
@@ -56,6 +72,9 @@ const address = vite.httpServer.address();
 const base = `http://127.0.0.1:${address.port}`;
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
+const browserErrors = [];
+page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
+page.on("pageerror", (error) => browserErrors.push(error.message));
 
 await page.route("**/v1/**", async (route) => {
   const url = new URL(route.request().url());
@@ -92,12 +111,21 @@ await page.route("**/v1/**", async (route) => {
 try {
   const query = new URLSearchParams({ api: base, surface: "team", team: teamRunId });
   await page.goto(`${base}/?${query}`, { waitUntil: "domcontentloaded", timeout: 15_000 });
-  await page.getByText("Team Activity", { exact: true }).waitFor({ timeout: 15_000 });
+  try {
+    await page.getByText("Shared Works", { exact: true }).waitFor({ timeout: 15_000 });
+  } catch (error) {
+    const body = (await page.locator("body").innerText()).slice(0, 2_000);
+    throw new Error(`${error.message}\nBrowser errors: ${browserErrors.join(" | ")}\nBody: ${body}`);
+  }
+  await page.getByTestId("team-works-board").getByText("Validate responsive Team UX", { exact: true }).first().waitFor({ timeout: 15_000 });
   if (await page.getByText("Team attempt not found", { exact: true }).count()) {
     throw new Error("deep link rendered Team attempt not found");
   }
   if (scopedReads < 1) throw new Error("TeamRun-scoped snapshot was not requested");
   if (globalReads !== 0) throw new Error(`deep link requested ${globalReads} global snapshots`);
+  if (snapshot.works.length !== 6 || snapshot.work_events.length !== workOperations.length || snapshot.work_deliveries.length < 1) {
+    throw new Error("TeamRun-scoped snapshot omitted Work, WorkEvent, or WorkDelivery projections");
+  }
   console.log(`validated large-store Team deep link via ${scopedReads} scoped read(s), 0 global reads`);
 } finally {
   await browser.close();

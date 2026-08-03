@@ -8,7 +8,7 @@ commands, file activity, native children, and resume state.
 
 ```text
 Harness coordination truth
-  assignment / typed mail / Supervisor / claim / provider receipt / ACK
+  Work / WorkEvent / WorkDelivery / typed mail / Supervisor / transport receipt
   pending interaction / stable Agent route / control acknowledgement
   explicit outcome / artifact / check / Host Wave decision
                      +
@@ -30,10 +30,13 @@ live state and is never replayed or evidence.
 
 | Question | Authoritative signal |
 | --- | --- |
-| Was work assigned? | Harness Assignment message and correlation |
+| What Work exists and who owns it? | latest Work projection plus append-only WorkEvents |
+| Did a Host-pushed Work version reach the runtime? | WorkDelivery claim and `provider_received` receipt |
+| Did a Member pull ready Work itself? | atomic `claimed` WorkEvent plus successful bound-runtime command result; no loopback delivery |
+| Did the Member accept responsibility? | Work `claimed` or `started` event, not WorkDelivery state |
 | Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
 | Who sent the input? | typed TeamMessage actor; bound Member context for Member authorship |
-| Is a delivery attempt active? | latest claim/provider-receipt/recipient-ACK projection |
+| Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
 | Is the runtime executable? | `AgentRuntimeHealth` process, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
 | Is input or approval required? | Harness `PendingInteraction` |
@@ -49,13 +52,15 @@ Durable Harness data:
 
 - runtime identity and health;
 - current Team Supervisor generation, owner locator/heartbeat, reconnect state,
-  typed Team actors, delivery claims/provider receipts/ACKs, and
+  typed Team actors, delivery claims/provider receipts/failures, and
   `AgentMessageRoute`;
 - TeamRun `execution_root`, optional member `worktree_ref`, and the launch-time
   `workspace_snapshot` containing actual cwd, Git HEAD/branch, and only the
   instruction/skill directory paths Harness discovered relative to that cwd;
-- delivery claim, status, terminal source, and native session reference;
-- assignment, handoff, blocker, review, and Host/Lead/Policy interaction;
+- Work, append-only state transition, WorkDelivery, terminal source, and
+  native-session reference;
+- Work blocker, submission, requested changes, Host acceptance, and
+  Host/Lead/Policy conversation or interaction;
 - steer/interrupt/close/resume request and acknowledgement;
 - explicit outcome summaries, artifacts, checks, and Host Wave decisions.
 
@@ -69,7 +74,7 @@ Ephemeral provider projection:
 
 Member Focus joins this projection on read. Its compact activity view must show
 at least representative provider-native message and tool anchors alongside the
-Harness Assignment/Handoff; hiding every native row behind `Full record` makes
+Harness Work transitions and linked conversation; hiding every native row behind `Full record` makes
 a healthy bound Session look empty. Native rows are visibly labeled and remain
 read-through projections, never Harness copies.
 
@@ -121,18 +126,15 @@ Provider acceptance is mode-specific but must identify the active cycle:
   provider request, or terminal response), identified by the prompt request id.
   ACP does not expose a separate prompt-start acknowledgement.
 
-The adapter marks mail delivered at that boundary, not when the whole turn
-finishes. This lets a bound Member send a correlation-valid question, peer
-message, or Handoff during a long-running turn while keeping crash recovery
-honest.
+The adapter marks delivery at that boundary, not when the whole turn finishes.
+This lets a bound Member send a Work-linked question or peer message during a
+long-running turn while keeping crash recovery honest.
 
-Provider output and Harness outcome are also distinct. An automatically
-generated round Handoff contains only the final structured `## RESULT` report;
-the last case-insensitive marker wins even when adjacent provider chunks leave
-it concatenated directly to preceding narration. Interim assistant narration
-remains in the provider-native session. If the Member already authored a valid
-Handoff during that round, it is authoritative and the adapter does not create
-another.
+Provider output and Harness outcome are also distinct. The adapter never turns
+final assistant text into an automatic Work submission, Message, or Host
+acceptance. The Member explicitly submits the latest Work version with result
+and evidence references; interim and final narration remain solely in the
+provider-native session.
 
 ## Interaction routing
 
@@ -157,9 +159,11 @@ runtime; Resume must use the bound provider-native session. The Host can
 perform the same lifecycle operations through CLI, HTTP, MCP, and Dashboard
 application logic.
 
-Team and Member views show claim, provider receipt, recipient ACK, and semantic
-reply as distinct states. A stale/missing Supervisor disables live controls
-without hiding durable mail or changing Member status locally.
+Team and Member views show delivery claim, provider receipt or failure, and the
+semantic Work claim/start event as distinct facts. `provider_received` is a
+successful transport receipt; it is not responsibility acceptance. A
+stale/missing Supervisor disables live controls without hiding durable mail or
+changing Member status locally.
 
 The Team and Member views also expose the selected Execution Space, Project
 Binding root, TeamRun execution root, member worktree override, and actual

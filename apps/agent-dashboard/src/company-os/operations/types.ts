@@ -161,15 +161,17 @@ export interface AssignmentView {
 
 export type EvidenceFreshness = "fresh" | "stale" | "unavailable";
 
-export interface WorkAssignmentExecutionChain {
+export interface WorkExecutionChain {
   assignmentId: string;
   workItemId: string;
+  workId?: string;
   assignmentState: string;
-  correlationId: string;
+  workState?: string;
   linkStatus: "linked" | "mismatch" | "unavailable";
   detail: string;
-  teamMessage?: { id: string; deliveryState: string; providerReceiptId?: string };
+  workDelivery?: { id: string; status: string; attempt: number; providerReceiptId?: string };
   memberRun?: { id: string; status: string; nativeSessionId?: string; nativeSessionAvailability: string };
+  conversations: Array<{ id: string; kind: string; fromMemberId: string; body: string; createdAt: string }>;
   handoffs: Array<{ id: string; result?: string; body: string; createdAt: string; evidenceRefs: string[] }>;
   externalObservations: Array<{
     id: string;
@@ -193,8 +195,9 @@ export interface WorkAssignmentExecutionChain {
 export interface StandingExecutionAssignment {
   id: string;
   agentMemberId: string;
-  sourceKind: "agent_team_assignment" | "agent_team_participation";
+  sourceKind: "agent_team_work" | "agent_team_participation";
   sourceRef?: string;
+  workId?: string;
   missionId?: string;
   waveId?: string;
   teamRunId: string;
@@ -204,7 +207,6 @@ export interface StandingExecutionAssignment {
   status: string;
   assignedAt: string;
   lastActivityAt?: string;
-  correlationId?: string;
   nativeSession?: {
     provider?: string;
     execution_mode?: string;
@@ -359,7 +361,7 @@ export interface TrademarkOperationsProjection {
   work: WorkAggregateView;
   assignments?: AssignmentView[];
   /** Computed read projection. It never changes or accepts durable Work truth. */
-  workAssignmentExecutionChains?: WorkAssignmentExecutionChain[];
+  workExecutionChains?: WorkExecutionChain[];
   standingAssignments?: StandingExecutionAssignment[];
   /** Empty/absent means no conflict; a healthy snapshot renders nothing extra. */
   standingAssignmentConflicts?: StandingLinkConflict[];

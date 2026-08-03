@@ -27,11 +27,11 @@ change. The Wave does not own the execution run.
 
 | Executor | Ownership truth | Git integration |
 | --- | --- | --- |
-| Agent Team | assignment `TeamMessage` plus correlation and MemberRun actions | members use disjoint worktrees/owned paths; Host integrates reviewed results |
+| Agent Team | Work/WorkEvent responsibility plus submitted result and Host acceptance | members use disjoint worktrees/owned paths; Host integrates reviewed results |
 | Dynamic Workflow | WorkflowRun/WorkflowStep and WorkflowPatch | isolated writable leaves produce explicit apply/reject patches |
 | Host | observable Host outcome and artifacts | normal branch/commit/PR flow; native subagents remain implementation detail |
 
-The Harness must not synthesize a MemberRun or assignment for a provider-native
+The Harness must not synthesize a MemberRun or Work for a provider-native
 Host child it does not control.
 
 ## Branch And Worktree Policy
@@ -71,7 +71,7 @@ A PR should reference:
 
 - Mission and Wave ids;
 - relevant executor run id, when one exists;
-- assignment correlation for Agent Team-owned work;
+- Work id/version and accepted result for Agent Team-owned work;
 - checks and relevant artifact/diff refs; and
 - the outcome the Host may use when updating or advancing its Wave plan.
 

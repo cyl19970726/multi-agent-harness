@@ -1,4 +1,4 @@
 interface:
   display_name: "Collaborate as Agent Team Member"
-  short_description: "Own a durable Agent Team assignment"
-  default_prompt: "Use $collaborate-as-agent-team-member to execute this Agent Team assignment, coordinate through the mailbox, and hand off evidence for review."
+  short_description: "Own and submit shared Agent Team Work"
+  default_prompt: "Use $collaborate-as-agent-team-member to claim or execute shared Work, coordinate through Work-linked messages, and submit evidence for Host acceptance."

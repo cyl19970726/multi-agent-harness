@@ -14,6 +14,8 @@ Mission -> ordered Host-plan Wave
 Mission <-> AgentTeam -> Mission-scoped TeamRun -> MemberRun
   -> TeamSupervisorLease generation
   -> TeamMemberCloseRequest pending/applied
+  -> Work -> WorkOperation(WorkEvent + resulting Work + delivery deltas)
+       -> WorkDelivery -> provider receipt
   -> typed TeamMessage -> claim -> provider receipt -> recipient ACK
   -> explicit coordination/artifacts/outcome + provider-native session refs
   -> explicit Host advance -> next Wave or Mission closeout
@@ -22,7 +24,7 @@ Mission <-> AgentTeam -> Mission-scoped TeamRun -> MemberRun
 Agent Team, Dynamic Workflow, and Host work retain distinct runtime truth. A
 Wave never requires a legacy dependency graph and never owns their lifecycle.
 The data model succeeds when another human or agent can reconstruct Host plan
-changes, execution selection, assignment ownership, outcomes, and advance
+changes, execution selection, Work responsibility, outcomes, and advance
 decisions from Harness state, then resolve member execution detail from
 provider-native sessions without duplicating those sessions.
 
@@ -33,14 +35,14 @@ provider-native sessions without duplicating those sessions.
 | What is the durable intent? | Native `Mission`. |
 | What is the ordered plan record? | Native `Wave` rows ordered by `index`; there is no required work graph. |
 | Which execution happened? | Mission-linked TeamRuns, WorkflowRuns, Host outcomes, and their native records. |
-| How is Agent Team work assigned? | `TeamMessage(kind=assignment)` plus its `correlation_id`. |
-| Who is accountable inside a team attempt? | `MemberRun` role/identity plus assignment and handoff lineage. |
+| How is Agent Team work assigned? | Work assignment or atomic claim, recorded by WorkEvent and delivered through WorkDelivery. |
+| Who is accountable inside a team attempt? | Work owner plus its active MemberRun, version and state history. |
 | Who currently owns live Team control? | Latest active `TeamSupervisorLease` generation and its loopback owner locator. |
 | Does an explicit Close survive restart? | Latest `TeamMemberCloseRequest`; `pending` is applied before Provider resume. |
 | Who actually sent and receives a message? | Typed `TeamActorRef` sender/recipients; Member authorship requires a bound Member context. |
-| Was mail safely accepted? | Atomic delivery claim, provider receipt, and recipient ACK are distinct states. |
+| Was authored mail safely accepted? | TeamMessage claim, provider receipt, and optional recipient ACK are distinct states. WorkDelivery stops at provider receipt/failure/invalidation; Work start/claim is the separate responsibility acknowledgement. |
 | How does durable Agent mail reach a run? | `AgentMessageRoute` explicitly joins one stable Agent Inbox message to one active MemberRun and TeamMessage. |
-| What supports an outcome? | Explicit Harness outcome/check/artifact refs and handoffs, plus provider-native records for member-execution claims. |
+| What supports an outcome? | Submitted Work results, explicit Host acceptance, outcome/check/artifact refs, plus provider-native records for member-execution claims. |
 | What advances? | The Host's explicit Wave outcome; unrelated execution may continue. |
 | What is provider state? | A mode-aware native session binding; the provider-native store owns transcript, tools, turns, and resume state. |
 | What becomes reusable learning? | Mission closeout, follow-up Waves/issues, and optional evaluation/cases. |
@@ -56,7 +58,8 @@ provider-native sessions without duplicating those sessions.
 | Wave order and Host judgment | latest native `Wave` rows and revision history | Dashboard Wave timeline |
 | Mission-team relation | `Mission.agent_team_ids` plus stable `AgentTeam` | linked-team controls |
 | Agent Team runs | `AgentTeamRun` rows linked by Mission/team ids | run cards |
-| Agent Team assignment | assignment `TeamMessage` plus correlation lineage | member current action, lane UI |
+| Agent Team responsibility | latest `Work` rebuilt from ordered `WorkOperation` rows; each row preserves its append-only `WorkEvent` and complete resulting projection | Works Kanban, Member current Work |
+| Work delivery | latest `WorkDelivery` projection plus provider receipt/failure facts | Inbox delivery indicator; Work start/claim is semantic acknowledgement |
 | Agent Team identity | `MemberRun` inside one TeamRun | provider thread id, prompt file |
 | Team control ownership | latest active `TeamSupervisorLease` generation | process-local handle, pid, socket |
 | Member Close intent | latest `TeamMemberCloseRequest` | provider-specific shutdown acknowledgement |
@@ -81,7 +84,12 @@ flowchart TD
   Wave -. Host plan .-> TeamRun
   Wave -. Host plan .-> WorkflowRun[WorkflowRun]
   Wave -. Host plan .-> HostRun[Host outcome reference]
-  TeamRun --> TeamMsg[TeamMessage assignment + correlation]
+  TeamRun --> Work[Work]
+  Work --> WorkOperation[WorkOperation]
+  WorkOperation --> WorkEvent[WorkEvent]
+  WorkOperation --> WorkDelivery[WorkDelivery]
+  WorkDelivery --> Member
+  TeamRun --> TeamMsg[TeamMessage conversation]
   TeamRun --> Member[MemberRun]
   TeamRun --> Supervisor[TeamSupervisorLease]
   TeamRun --> CloseRequest[TeamMemberCloseRequest]
@@ -90,7 +98,8 @@ flowchart TD
   Route --> Member
   Member --> Binding[NativeSessionRef]
   Binding --> Session[Provider-native session]
-  TeamMsg --> Artifact[Artifacts/checks/outcome]
+  Work --> Artifact[Artifacts/checks/outcome]
+  TeamMsg -. explanation .-> Work
   Session -. execution detail .-> Artifact
   WorkflowRun --> Artifact
   HostRun --> Artifact
@@ -112,10 +121,11 @@ read into native Mission/Wave projections or used as a reason to retain old UI.
 
 ## Projection Rules
 
-- `Task.assignee_agent_id` is allowed only as a read-model or convenience
-  projection of assignment; assignment truth is the task message.
-- `AgentMember.current_task_id` is a projection of delivery and active runtime
-  events; it is not proof that the member received the task.
+- `Work.owner_member_id` and `Work.active_member_run_id` are canonical TeamRun
+  responsibility facts; board columns and Member current-Work cards are
+  projections of them.
+- `WorkDelivery` proves transport progression for a Work version. It does not
+  prove that the Member started, submitted, or received Host acceptance.
 - Dashboard columns are read models; safe actions must create or update
   canonical harness objects.
 - Provider thread/session ids are native execution refs; they do not own
@@ -133,13 +143,15 @@ Native invariants:
 2. Every Mission-linked team id resolves to an independent AgentTeam.
 3. Every Mission-scoped AgentTeamRun resolves to a team linked to the same
    Mission; its optional `wave_id` exists only for legacy direct-executor rows.
-4. Wave advance never terminates an active run, member, assignment, or native
+4. Wave advance never terminates an active run, member, Work, or native
    session.
-5. Explicit message lineage stays inside one TeamRun; assignment correlation is
-   never fabricated from body text.
+5. Explicit message lineage and optional `work_id` stay inside one TeamRun.
+   Message prose never creates ownership or changes Work state.
 6. Only the current Supervisor generation may claim queued mail or execute live
    controls. It verifies provider transport health before the claim and records
-   native receipt separately from semantic reply and recipient ACK.
+   native receipt separately from semantic reply. TeamMessage may add an
+   intake ACK; WorkDelivery instead relies on a Work claim/start transition for
+   semantic responsibility acknowledgement.
 7. Typed sender/recipient identity is structural. Unbound API/MCP/UI callers
    cannot author Member-originated messages.
 8. Explicit Close is latched and terminal for one runtime generation; idle,

@@ -1,7 +1,7 @@
 # ADR 0047: Scoped Company authority broker
 
 ```text
-status: accepted target contract; implementation pending
+status: accepted target contract; Agent Team execution chain amended by ADR 0050; implementation pending
 date: 2026-07-31
 owner_role: company-authority-architecture
 ```
@@ -27,14 +27,15 @@ Adopt the target contract in
 [Scoped Company Authority Broker](../company-os/scoped-authority-broker.md).
 
 The durable, non-secret `ScopedPermissionGrant` belongs to the Company Store
-and grants one StandingAgent an intersection of exact Company, delivered
-Assignment/correlation, permission, command, subject id, effect, and
+and grants one StandingAgent an intersection of exact Company Assignment,
+Agent Team Work/version, WorkDelivery to an exact MemberRun, permission,
+command, subject id, effect, and
 command-specific constraints. V1 has no wildcard, inherited, module-wide, or
 delegable scope.
 
 Every authority-bearing `(grant_id, grant_generation)` snapshot is immutable
 and has a canonical grant/scope digest. Any change to the grantee, permission,
-rules, Assignment, correlation, validity, expiry, lease TTL, use budget, or
+rules, Company Assignment, Work/version, WorkDelivery, validity, expiry, lease TTL, use budget, or
 other authorization input creates a new grant or higher generation and fences
 older unconsumed receipts. The Human R3 activation decision binds the exact
 grant id, generation, and digest. Display-only metadata is outside the digest
@@ -44,7 +45,8 @@ A Supervisor-bound Company broker resolves:
 
 ```text
 StandingAgent -> AgentMember -> MemberRun -> native session
-Company Assignment -> delivered TeamMessage -> exact MemberRun
+Company Assignment -> WorkExecutionChain -> Agent Team Work
+Agent Team Work -> WorkDelivery -> exact MemberRun
 ```
 
 It then issues and consumes one short internal lease while dispatching at most
@@ -102,8 +104,8 @@ possession never activate authority.
 Acceptance requires deterministic expiry, revocation, generation,
 idempotency, denial-audit, and recovery checks plus one real proof that:
 
-- the exact StandingAgent/AgentMember/MemberRun/native-session and
-  Assignment/TeamMessage chains resolve;
+- the exact StandingAgent/AgentMember/MemberRun/native-session and Company
+  Assignment/WorkExecutionChain/Work/WorkDelivery chains resolve;
 - the named WorkItem transitions once from `in_progress` to `in_review` with
   only the frozen result/evidence/outcome payload;
 - unrelated Work, unrelated payload mutation, a second successful use, and

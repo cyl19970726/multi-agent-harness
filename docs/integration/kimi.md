@@ -226,12 +226,19 @@ version.
   Thought is sanitized into transient live display only. Tool calls remain in
   Kimi's native session and feed only an ephemeral activity projection; they
   are not converted into provider-derived MemberAction rows.
-- `session/request_permission` is implemented as a reverse-RPC bridge. Harness
-  creates a durable `PendingInteraction`, marks the MemberRun waiting, and
-  returns the exact selected ACP `optionId` after Lead/Policy/Human resolution.
-- `AskUserQuestion` routes to Lead. Tool approvals route to policy by default;
-  Plan Review routes to Lead. Company-level legal, financial, permission, and
-  organization effects remain subject to their native Human Approval contract.
+- `session/request_permission` is implemented as a reverse-RPC bridge. For a
+  trusted full-access Member, an ordinary tool request with an exact provider
+  intent of `allow_always` or `allow_once` is acknowledged immediately before
+  any interaction record is created. Harness writes one bounded
+  `provider_control` acknowledgement without command or prompt content; it
+  does not mark the Member waiting or manufacture a created/resolved
+  PendingInteraction pair.
+- `AskUserQuestion` and Plan Review route to Lead. Reject-only tool requests
+  route to Policy, and unknown requests route to Human; these create durable
+  `PendingInteraction` records and resume with the exact selected ACP
+  `optionId` after authorization. Company-level legal, financial, permission,
+  and organization effects remain subject to their native Human Approval
+  contract and are never converted into ordinary full-access tool ACKs.
 - Cancellation is execution-mode **and reviewed-version specific**. The
   reviewed Kimi ACP 0.31.0 path sends `session/cancel` as a JSON-RPC
   notification, waits for terminal `stopReason=cancelled`, and only then
@@ -252,9 +259,9 @@ version.
   session. `delivered` is recorded only after ACP returns its native
   request/session receipt. An uncertain post-crash claim requires explicit
   reconciliation and is never blindly replayed. A delivered trigger without a
-  Handoff resumes the same native session with a recovery prompt that asks the
-  Member to inspect its native state and workspace; the Assignment is not
-  replayed as a new attempt. Explicit Close is durably latched before process
+  Work submission resumes the same native session with a recovery prompt that
+  asks the Member to inspect its native state, workspace, and latest Work
+  version; Work is not replayed as a new attempt. Explicit Close is durably latched before process
   teardown.
 - Client FS and terminal reverse-RPC are not advertised. Unknown client methods
   fail closed with `methodNotFound`.

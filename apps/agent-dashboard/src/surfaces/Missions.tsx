@@ -53,7 +53,6 @@ import {
 } from "../api/actions";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import { selectMemberPressureMessage } from "../model/teamSelectors";
 import type { Mission, TeamRun, Wave } from "../types";
 
 interface MissionsProps {
@@ -381,14 +380,23 @@ function MissionDetail({
   const selectedMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id && missionRunIds.has(member.team_run_id),
   );
-  const selectedMessages = (model.snapshot.team_messages ?? []).filter(
-    (message) => message.team_run_id && missionRunIds.has(message.team_run_id),
+  const missionWorks = (model.snapshot.works ?? []).filter(
+    (work) => missionRunIds.has(work.team_run_id),
   );
   const pendingMembers = selectedMembers.filter((member) =>
-    ["waiting", "reviewing", "blocked"].includes(member.status ?? ""),
+    ["waiting", "reviewing"].includes(member.status ?? ""),
   );
-  const blockedMember = selectedMembers.find((member) => member.status === "blocked");
-  const pressureMessage = selectMemberPressureMessage(selectedMessages, blockedMember);
+  const blockedWork = missionWorks.find((work) => work.status === "blocked");
+  const reviewWorkCount = missionWorks.filter((work) => work.status === "review").length;
+  const blockedMember = blockedWork
+    ? selectedMembers.find((member) =>
+      member.id === blockedWork.active_member_run_id
+      || member.agent_member_id === blockedWork.owner_member_id
+      || member.slot_id === blockedWork.owner_member_id)
+    : undefined;
+  const blockedRun = blockedWork
+    ? missionRuns.find((run) => run.id === blockedWork.team_run_id)
+    : undefined;
   const gateCriteria = selectedWave ? exitCriteriaFor(selectedWave) : [];
   const evidencedCriteria = selectedWave
     ? reportedGateReadiness(selectedWave, gateCriteria.length)
@@ -572,7 +580,7 @@ function MissionDetail({
             </dl>
           </ContextModule>
 
-          {(pendingMembers.length > 0 || gateNeedsReview || selectedWave?.gate_status === "blocked") && (
+          {(pendingMembers.length > 0 || blockedWork || reviewWorkCount > 0 || gateNeedsReview || selectedWave?.gate_status === "blocked") && (
             <ContextModule
               className="order-1 xl:order-2"
               title="Needs you"
@@ -584,21 +592,23 @@ function MissionDetail({
               <div className="space-y-2 text-[11px] leading-relaxed text-muted-foreground">
                 {gateNeedsReview && <p>Completed attempt is available for an explicit Wave gate decision.</p>}
                 {selectedWave?.gate_status === "blocked" && <p>Wave is blocked; record the next decision or a revised attempt.</p>}
-                {blockedMember ? (
+                {blockedWork ? (
                   <div className="space-y-1">
-                    <p className="font-medium text-foreground">{blockedMember.name ?? blockedMember.id} is blocked.</p>
-                    <p>{pressureMessage?.body ?? "Open the member activity and provide unblock direction."}</p>
+                    <p className="font-medium text-foreground">{blockedMember?.name ?? blockedWork.owner_member_id ?? "Assigned member"} is blocked on {blockedWork.title}.</p>
+                    <p>{blockedWork.blocker_reason ?? "Open the Work and provide unblock direction."}</p>
                   </div>
+                ) : reviewWorkCount > 0 ? (
+                  <p>{reviewWorkCount} Work{reviewWorkCount === 1 ? "" : "s"} await Host acceptance.</p>
                 ) : pendingMembers.length > 0 ? (
                   <p>{pendingMembers.length} member{pendingMembers.length === 1 ? "" : "s"} need review or a response.</p>
                 ) : null}
-                {blockedMember && latestMissionRun && (
+                {blockedWork && blockedMember && blockedRun && (
                   <button
                     type="button"
                     onClick={() =>
                       onSelectionChange({
                         surface: "team",
-                        teamId: latestMissionRun.id,
+                        teamId: blockedRun.id,
                         memberRunId: blockedMember.id,
                         missionId: selectedWave?.mission_id,
                         waveId: selectedWave?.id,

@@ -4,6 +4,13 @@ Everything below was executed against the real provider (Claude Code 2.1.220,
 bundled by `@anthropic-ai/claude-agent-sdk` 0.3.220) in this worktree. Facts
 only; anything not verified is marked as such.
 
+> Historical terminology note: these probes predate the Agent Team Work board.
+> Rows that say “assignment” or “handoff” describe the payloads used by those
+> historical runs, not the active contract. New runs deliver durable
+> `kind=work` input, use `kind=message` for conversation, submit Work through
+> Harness, and require explicit Host acceptance; the runner remains only the
+> persistent provider input stream.
+
 > Historical evidence note: the plan-gate experiments below describe an
 > implementation that ADR 0039 subsequently retired. Harness now represents
 > planning as ordinary correlated Markdown conversation; there is no Plan

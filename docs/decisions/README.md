@@ -35,11 +35,11 @@ consequences, affected modules, and validation path.
 | [0034](0034-host-plan-waves-and-mission-teams.md) | active | Wave is the Host's versioned operational memo; Missions link independent long-lived Agent Teams |
 | [0035](0035-company-os-sql-read-model.md) | active | SQL is a derived Company OS read/query/index layer, not the current canonical Store |
 | [0036](0036-agent-operated-docs-and-code-declared-pages.md) | active | Docs is an Agent-operated substrate with code-declared custom business pages |
-| [0037](0037-agent-member-autonomy-and-collaboration.md) | active | Members own end-to-end assignments; TeamMessage is the collaboration mailbox; subagents remain member-internal |
+| [0037](0037-agent-member-autonomy-and-collaboration.md) | active; assignment ownership amended by 0050 | Members own end-to-end Work; TeamMessage is conversation; subagents remain member-internal |
 | [0038](0038-provider-native-member-plan-negotiation.md) | superseded | Historical provider-native Plan Gate, replaced by ordinary correlated planning |
-| [0039](0039-ordinary-member-planning-and-durable-mailbox-delivery.md) | active | Planning is ordinary Host/Member conversation; Harness owns durable mailbox and adapters prove delivery |
+| [0039](0039-ordinary-member-planning-and-durable-mailbox-delivery.md) | active; kinds amended by 0050 | Planning is ordinary Host/Member conversation; Harness owns durable authored-message delivery |
 | [0040](0040-native-host-inbox-delivery.md) | active | Host mail is scoped to an exact native task; Codex busy delivery uses a one-shot Stop continuation and unowned idle tasks remain safe-boundary pull |
-| [0041](0041-provider-neutral-member-continuation.md) | active | Agent Team continuation separates the durable Assignment from a provider-native execution driver, completion policy, and one top-level workspace lease |
+| [0041](0041-provider-neutral-member-continuation.md) | active; responsibility ref amended by 0050 | Continuation separates durable Work from the provider-native execution driver and one top-level Workspace lease |
 | [0042](0042-company-store-execution-space-project-binding.md) | active | Company Store, Execution Space, and Project Binding are distinct identities |
 | [0044](0044-durable-team-supervision-and-typed-mail.md) | active | One durable Supervisor lease owns Provider control; typed mail and atomic delivery claims make multi-client coordination safe |
 | [0045](0045-company-owned-standing-agent-execution-relation.md) | active | Company-owned one-to-one StandingAgent execution ref; no inferred identity or lifecycle writeback |
@@ -47,6 +47,7 @@ consequences, affected modules, and validation path.
 | [0047](0047-scoped-company-authority-broker.md) | accepted target; implementation pending | Company-side one-command authority broker binds exact Standing Agent execution and delivered Work Assignment to a short, non-secret, auditable capability receipt |
 | [0048](0048-human-rooted-company-constitution.md) | accepted target; implementation pending | Human Principal roots Company authority; Leads operate through one attenuating grant lineage while the Runtime Supervisor remains provenance-only |
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
+| [0050](0050-agent-team-work-board-and-message-boundary.md) | accepted target; implementation pending | Agent Team Work is the scheduling primitive; shared Kanban, atomic claim, Work delivery and authored Message are separate |
 
 ## Split Rule
 

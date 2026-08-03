@@ -53,8 +53,11 @@ doc carries the contract behind each rule.
    `AgentTeam`, Mission relation, `AgentTeamRun`, `MemberRun` plus its
    native-session binding, `TeamMessage`, `PendingInteraction`, explicit
    outcome and artifact/check references, and control acknowledgements.
-   Assignment ownership is proven by `TeamMessage(kind=assignment)` plus
-   `correlation_id`. For `dynamic_workflow`, WorkflowRun/WorkflowStep and its
+   Agent Team responsibility is proven by the latest `Work` rebuilt from
+   ordered `WorkOperation` rows, each preserving its append-only `WorkEvent`
+   and delivery deltas; `TeamMessage` is authored conversation only
+   and may link a `work_id`. There is no Assignment Message compatibility
+   path. For `dynamic_workflow`, WorkflowRun/WorkflowStep and its
    result/artifacts are the execution truth; for `host`, record the observable
    outcome and artifacts without inventing controlled child objects.
 3. **Mission and Wave are the only native coordination objects** for new work.
@@ -132,8 +135,8 @@ doc carries the contract behind each rule.
   was a Lead-local exception.
 - Non-trivial work follows the Lead sequence: inspect native state; create or
   select the Mission and write the current Wave; run one Mission-scoped
-  TeamRun with assignment messages and disjoint owned paths; keep outcomes,
-  checks, blockers, handoffs, reviews, and control acknowledgements durable;
+  TeamRun with shared Works and disjoint owned paths; keep Work events,
+  deliveries, results, checks, blockers, reviews, and control acknowledgements durable;
   advance each Wave from an explicit Host outcome; close the Mission with an
   explicit outcome summary. Full sequence and command reference:
   [docs/agent-operating-rules.md](docs/agent-operating-rules.md).
@@ -183,12 +186,12 @@ doc carries the contract behind each rule.
 ## Proportional Acceptance
 
 Every non-trivial native Wave advances in four small stages: **Context**
-(Mission intent, Wave plan, permissions, risk, assignments, and decision
+(Mission intent, Wave plan, permissions, risk, Works, and decision
 boundary are clear), **Execution** (the selected Host, Team, or Workflow owns
-its internal plan and emits honest native records), **Outcome** (explicit
-checks, artifacts, blockers, handoffs, and review results are recorded), and
+its internal plan and emits honest native records), **Outcome** (explicit Work
+submissions, checks, artifacts, blockers, and review results are recorded), and
 **Advance** (the Host records the outcome and next judgment; unrelated active
-assignments may carry forward unchanged). Review depth is proportional to risk;
+Works may carry forward unchanged). Review depth is proportional to risk;
 Proposal/Decision/outcome evaluation is not a universal product chain.
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
@@ -235,7 +238,7 @@ through an ordinary correlated Markdown message; the Member replies, the Host
 argues or approves in the same chain, and provider-native plan/goal features
 remain internal execution aids.
 
-An Assignment is durable work ownership; a provider-native Goal is only one
+Work is durable responsibility; a provider-native Goal is only one
 possible continuation mechanism for executing it. Each active MemberRun/native
 session/writable Workspace must have exactly one top-level execution driver:
 either Harness starts the next provider cycle (`host_driven`) or an observed
@@ -252,9 +255,10 @@ the harness must not claim lifecycle control it does not have.
 
 Do not claim that Mission-scoped Agent Team work was accepted unless the store
 shows the native Mission, its linked `AgentTeam`, the relevant Host-plan Wave,
-Mission-scoped `AgentTeamRun` records, role-specific MemberRuns with assignment
-messages, correlation-backed blocker/handoff/review messages where those events
-occurred, an explicit outcome with artifact/check references, and an explicit
+Mission-scoped `AgentTeamRun` records, role-specific MemberRuns with owned or
+claimed Works, versioned WorkEvents and delivery facts, Work-linked messages
+where conversation occurred, explicit submitted results and Host acceptance,
+and an explicit
 Host Wave advance decision — with execution claims resolvable to the
 provider-native session.
 
@@ -266,8 +270,9 @@ permission change, or organization change.
 
 A native Mission/Wave slice is done only when the store can explain why the
 work existed, how the Host's Wave context and judgment changed, which
-teams/runs and assignments were used, which TeamMessages assigned or handed off
-lanes, which outcomes/checks/artifacts and provider-native sessions support
+teams/runs and Works were used, which WorkEvents allocated, blocked, submitted,
+or accepted responsibility, which Messages explained coordination, and which
+outcomes/checks/artifacts and provider-native sessions support
 acceptance, why the Host advanced each Wave and closed the Mission, and what
 should be reused, improved, split, or followed up next. If a future agent
 cannot reconstruct the answer from repository files and native harness state,

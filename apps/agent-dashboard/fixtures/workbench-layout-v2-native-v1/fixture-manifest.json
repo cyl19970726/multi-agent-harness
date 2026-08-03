@@ -1,6 +1,6 @@
 {
   "id": "workbench-layout-v2-native-v1",
-  "description": "Deterministic Mission context, Host-plan Waves, Mission-linked long-lived Agent Team, and member pressure state for visual-contract capture.",
+  "description": "Deterministic Mission context, Host-plan Waves, Mission-linked long-lived Agent Team, crash-atomic Work history, and member pressure state for visual-contract capture.",
   "capture_now": "2026-07-23T10:15:00Z",
   "mission_id": "mission-workbench-v2",
   "wave_id": "wave-team-console",
@@ -19,6 +19,7 @@
     "teams.jsonl",
     "team_runs.jsonl",
     "member_runs.jsonl",
+    "work_operations.jsonl",
     "team_messages.jsonl",
     "member_actions.jsonl",
     "team_run_events.jsonl",
@@ -30,8 +31,9 @@
     "Waves store versioned Host plan and judgment; Wave 2 does not own the TeamRun.",
     "The Mission-scoped TeamRun has agent_team_id and mission_id but no wave_id.",
     "Four MemberRuns include running, reviewing, and blocked pressure states and remain eligible to carry forward.",
-    "Assignments use stable correlation ids and optional origin_wave_id provenance without a task graph.",
-    "The selected Member exposes a native plan request, Host challenge, revised proposal, and approval in one Assignment correlation.",
+    "Shared Works carry stable ownership without using Messages as an assignment authority; their append-only events preserve a continuous version chain.",
+    "The fixture covers visible unassigned and assigned queues, team claim, start, block, resume, submit, and explicit Host acceptance, including Work delivery invalidation.",
+    "The selected Member exposes a native plan request, Host challenge, revised proposal, and approval in one conversation correlation explicitly linked by work_id.",
     "The current TeamRun records execution root; member snapshots record actual cwd, Git identity, and discovered path roots only.",
     "No durable thinking row exists; live preview must be injected after SSE connects."
   ]

@@ -236,6 +236,8 @@ export interface TeamRunMemberSpec {
   worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */
   ownedPaths?: string[];
+  /** Optional first Work. Omit to create an idle, addressable member. */
+  initialWork?: string;
 }
 
 /**
@@ -281,6 +283,9 @@ export function createTeamRun(params: {
       }
       if (member.ownedPaths && member.ownedPaths.length) {
         spec.owned_paths = member.ownedPaths;
+      }
+      if (member.initialWork) {
+        spec.initial_work = member.initialWork;
       }
       return spec;
     }),
@@ -458,12 +463,15 @@ export function sendTeamMessage(
     toMemberIds: string[];
     kind: string;
     body: string;
+    /** Optional Work discussed by this conversation message. */
+    workId?: string;
+    /** Whether this conversation should wake an idle recipient into a turn. */
+    responseIntent?: "informational" | "response_required";
     /**
-     * Reuse an existing assignment's correlation only when the operator has
-     * explicitly selected that assignment as this message's ownership anchor.
+     * Reuse an existing conversation correlation when replying.
      */
     correlationId?: string;
-    /** The assignment message that caused this anchored follow-up. */
+    /** The direct message that caused this reply. */
     causationId?: string;
     originWaveId?: string;
   },
@@ -479,6 +487,12 @@ export function sendTeamMessage(
   if (params.senderName) {
     body.sender_name = params.senderName;
   }
+  if (params.workId) {
+    body.work_id = params.workId;
+  }
+  if (params.responseIntent) {
+    body.response_intent = params.responseIntent;
+  }
   if (params.correlationId) {
     body.correlation_id = params.correlationId;
   }
@@ -492,6 +506,64 @@ export function sendTeamMessage(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/messages`,
     body,
+  };
+}
+
+export function createTeamWork(
+  teamRunId: string,
+  params: {
+    title: string;
+    contextMarkdown?: string;
+    completionCriteriaMarkdown: string;
+    activeMemberRunId?: string;
+    claimMode?: "host_assign" | "team_claim";
+    eligibleMemberIds?: string[];
+    priority?: "low" | "normal" | "high" | "urgent";
+    causedByMessageId?: string;
+  },
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/works`,
+    body: {
+      title: params.title,
+      context_markdown: params.contextMarkdown ?? "",
+      completion_criteria_markdown: params.completionCriteriaMarkdown,
+      owner_member_run_id: params.activeMemberRunId,
+      claim_mode: params.claimMode ?? (params.activeMemberRunId ? "host_assign" : "team_claim"),
+      eligible_member_ids: params.eligibleMemberIds ?? [],
+      priority: params.priority ?? "normal",
+      caused_by_message_id: params.causedByMessageId,
+    },
+  };
+}
+
+export function assignTeamWork(
+  teamRunId: string,
+  workId: string,
+  memberRunId: string,
+  expectedVersion: number,
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/works/${encodeId(workId)}/assign`,
+    body: { member_run_id: memberRunId, expected_version: expectedVersion },
+  };
+}
+
+export function reviewTeamWork(
+  teamRunId: string,
+  workId: string,
+  expectedVersion: number,
+  decision: "accept" | "request-changes",
+  note?: string,
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/works/${encodeId(workId)}/${decision}`,
+    body: decision === "accept"
+      ? { expected_version: expectedVersion, summary: note ?? "Accepted by Host" }
+      : { expected_version: expectedVersion, reason: note ?? "Host requested changes" },
   };
 }
 

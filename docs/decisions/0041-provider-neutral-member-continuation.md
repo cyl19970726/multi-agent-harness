@@ -1,10 +1,14 @@
 # ADR 0041: Provider-Neutral Member Continuation And Execution Ownership
 
 ```text
-status: active
+status: active; Assignment references amended by ADR 0050
 date: 2026-07-28
 extends: ADR 0031 interactive provider modes; ADR 0032 native execution truth; ADR 0037 Member autonomy; ADR 0039 durable mailbox
 ```
+
+ADR 0050 replaces Assignment correlation as responsibility truth with Work
+ownership and WorkDelivery. This ADR's one-top-level-driver, native
+continuation, Workspace lease, and Host-acceptance boundaries remain active.
 
 ## Context
 
@@ -34,8 +38,8 @@ execution driver. A provider-driven continuation may create many native turns
 or cycles, but Harness must not start an independent cycle while that provider
 mechanism owns the execution lease.
 
-Harness does not create a new Goal object. Assignment correlation remains the
-durable work contract; Mission and Wave remain Host intent and judgment;
+Harness does not create a new Goal object. Work ownership remains the durable
+responsibility contract; Mission and Wave remain Host intent and judgment;
 provider-native goals, plans, turns, evaluators and subagents remain
 provider-owned execution state.
 
@@ -48,11 +52,11 @@ state instead of relying only on a broad `goal_mode` label.
 
 - Codex and Claude native goals can be used without forcing future providers
   to copy their APIs.
-- Provider Goal achievement stops provider continuation but does not accept an
-  Assignment.
+- Provider Goal achievement stops provider continuation but does not accept a
+  Work.
 - Normal TeamMessages stay in the Harness mailbox; busy delivery never
   silently interrupts native continuation.
-- Dashboard primary IA centers Assignment, driver, continuation state,
+- Dashboard primary IA centers current Work, driver, continuation state,
   Workspace lease, permissions and PendingInteraction. Native turns remain
   expandable diagnostics.
 - Natural-language self-activation is valid only after an Adapter observes the
@@ -66,7 +70,7 @@ state instead of relying only on a broad `goal_mode` label.
 
 ### One Harness Goal object
 
-Rejected because it duplicates Assignment/Mission intent and falsely suggests
+Rejected because it duplicates Work/Mission intent and falsely suggests
 that every provider implements the same lifecycle.
 
 ### Always let Harness start turns
@@ -82,7 +86,7 @@ injection, permission continuity or deterministic stop controls.
 ### Treat turns as the product lifecycle
 
 Rejected because provider definitions of a turn differ. The stable product
-boundary is MemberRun + Assignment + Mailbox + native session + Workspace.
+boundary is MemberRun + Work + Mailbox + native session + Workspace.
 
 ## Validation
 
@@ -96,4 +100,3 @@ Implementation work following this ADR must add:
 5. host-driven fallback tests for Kimi and future providers; and
 6. CLI/Dashboard projections that distinguish inactive, active, evaluating,
    blocked, satisfied, interrupted and unknown native continuation.
-

@@ -32,8 +32,9 @@ dependency.
 - A Mission may link multiple teams.
 - Primary TeamRun creation uses `mission_id + agent_team_id` and no Wave id.
 - MemberRuns and provider-native sessions may continue across Wave advance.
-- Assignment ownership uses `TeamMessage(kind=assignment)` and
-  `correlation_id`; optional `origin_wave_id` is navigation metadata.
+- Agent Team ownership uses Work assignment/claim, WorkEvent and WorkDelivery
+  under ADR 0050. Optional Mission/Wave
+  links are navigation and judgment context, not Work ownership.
 - One latest-wins `TeamSupervisorLease` generation owns provider transports,
   message claims, reconnect, and real live controls for the TeamRun.
 - TeamMessage uses typed Host/Member/Agent/Operator sender and recipients;
@@ -43,7 +44,7 @@ dependency.
 - A stable Agent Inbox may route explicitly and idempotently through
   `AgentMessageRoute`; it does not turn a Standing Agent into a MemberRun.
 - Host can add a repair member while the run is active without erasing prior
-  assignments or attempts.
+  Works, MemberRuns, or native sessions.
 
 ### 3. Other Execution
 

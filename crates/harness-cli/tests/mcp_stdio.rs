@@ -8,10 +8,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use harness_core::{
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamRecipientKind, TeamRecipientRef,
+    MemberCoordinationStatus, MemberRunStatus, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
+    TeamRecipientRef, WorkDeliveryStatus,
 };
-use harness_store::HarnessStore;
+use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
 mod fake_provider;
 mod harness_env;
@@ -207,6 +208,18 @@ fn mcp_stdio_agent_team_tools() {
             "wave_list",
             "wave_gate",
             "team_run_create",
+            "team_run_work_list",
+            "team_run_work_show",
+            "team_run_work_create",
+            "team_run_work_assign",
+            "team_run_work_rebind",
+            "team_run_work_block",
+            "team_run_work_resume",
+            "team_run_work_release",
+            "team_run_work_request_changes",
+            "team_run_work_accept",
+            "team_run_work_cancel",
+            "team_run_work_reconcile_delivery",
             "team_run_add_member",
             "team_run_rename_member",
             "team_run_deactivate_member",
@@ -232,6 +245,40 @@ fn mcp_stdio_agent_team_tools() {
         assert!(tool["description"].is_string(), "tool description: {tool}");
         assert_eq!(tool["inputSchema"]["type"].as_str(), Some("object"));
     }
+    let assign_descriptor = tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("team_run_work_assign"))
+        .expect("team_run_work_assign definition")["description"]
+        .as_str()
+        .expect("team_run_work_assign description");
+    assert!(assign_descriptor.contains("first assignment of open Work"));
+    assert!(assign_descriptor.contains("team_run_work_rebind"));
+    let rebind_schema = &tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("team_run_work_rebind"))
+        .expect("team_run_work_rebind definition")["inputSchema"];
+    assert_eq!(
+        rebind_schema["required"],
+        serde_json::json!([
+            "team_run_id",
+            "work_id",
+            "member_run_id",
+            "expected_version"
+        ])
+    );
+    let reconcile_work_schema = &tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("team_run_work_reconcile_delivery"))
+        .expect("team_run_work_reconcile_delivery definition")["inputSchema"];
+    assert_eq!(
+        reconcile_work_schema["required"],
+        serde_json::json!([
+            "team_run_id",
+            "delivery_id",
+            "supervisor_id",
+            "supervisor_generation"
+        ])
+    );
     let create_schema = tools
         .iter()
         .find(|tool| tool["name"].as_str() == Some("team_run_create"))
@@ -328,8 +375,8 @@ fn mcp_stdio_agent_team_tools() {
                 "host_surface": "codex-app",
                 "host_thread_id": "codex-host-mcp",
                 "members": [
-                    {"name": "lead", "role": "coordinator", "provider": "kimi", "agent_member_id": stable_agent_id},
-                    {"name": "worker-1", "role": "implementer", "provider": "codex", "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a", "docs"]}
+                    {"name": "lead", "role": "coordinator", "provider": "kimi", "agent_member_id": stable_agent_id, "initial_work": "Coordinate the TeamRun and report evidence."},
+                    {"name": "worker-1", "role": "implementer", "provider": "codex", "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a", "docs"], "initial_work": "Implement the requested slice and pass checks."}
                 ]
             }
         }),
@@ -360,15 +407,15 @@ fn mcp_stdio_agent_team_tools() {
         .map(|id| id.as_str().expect("member id").to_string())
         .collect();
     assert_eq!(member_ids.len(), 2, "member ids: {payload}");
-    let automatic_assignment = &payload["assignment_messages"][0];
-    let assignment_id = automatic_assignment["id"]
+    let initial_work = &payload["works"][0];
+    let initial_work_id = initial_work["id"]
         .as_str()
-        .expect("automatic assignment id")
+        .expect("initial Work id")
         .to_string();
-    let assignment_correlation = automatic_assignment["correlation_id"]
-        .as_str()
-        .expect("automatic assignment correlation")
-        .to_string();
+    assert_eq!(
+        initial_work["active_member_run_id"].as_str(),
+        Some(member_ids[0].as_str())
+    );
     assert_eq!(
         payload["dashboard_url"].as_str(),
         Some(expected_dashboard.as_str())
@@ -410,7 +457,7 @@ fn mcp_stdio_agent_team_tools() {
             "arguments": {
                 "team_run_id": team_run_id,
                 "origin_wave_id": "wave-mcp",
-                "assignment": "repair the interaction path",
+                "initial_work": "repair the interaction path",
                 "member": {
                     "name": "repair",
                     "role": "fixer",
@@ -422,8 +469,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     let added = call_payload(&response);
     assert_eq!(
-        added["assignment_message"]["origin_wave_id"].as_str(),
-        Some("wave-mcp")
+        added["work"]["active_member_run_id"].as_str(),
+        added["member_run"]["id"].as_str()
     );
     assert_eq!(
         added["team_run"]["member_run_ids"].as_array().map(Vec::len),
@@ -461,8 +508,8 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert_eq!(call_payload(&response)["status"].as_str(), Some("stopped"));
 
-    // 6. team_run_status → all members + dashboard URL. Queued assignments
-    // are not actionable manual acknowledgements.
+    // 6. team_run_status → all members + dashboard URL. Work ownership does
+    // not impersonate a manual-ACK message.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -542,7 +589,7 @@ fn mcp_stdio_agent_team_tools() {
 
     // 8. An unbound MCP connection cannot impersonate a MemberRun. The same
     // tool remains the Host/operator/service send path and can immediately
-    // reuse the automatic Assignment correlation returned by team_run_create.
+    // create an ordinary Work-linked conversation correlation.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -554,8 +601,7 @@ fn mcp_stdio_agent_team_tools() {
                 "to_member_ids": [member_ids[1]],
                 "kind": "handoff",
                 "body": "attempted member impersonation",
-                "correlation_id": assignment_correlation.clone(),
-                "causation_id": assignment_id.clone()
+                "work_id": initial_work_id.clone()
             }
         }),
     );
@@ -575,8 +621,7 @@ fn mcp_stdio_agent_team_tools() {
                 "to_member_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "Host coordination for the assigned slice",
-                "correlation_id": assignment_correlation.clone(),
-                "causation_id": assignment_id.clone()
+                "work_id": initial_work_id.clone()
             }
         }),
     );
@@ -585,11 +630,14 @@ fn mcp_stdio_agent_team_tools() {
         .as_str()
         .expect("message_id")
         .to_string();
+    let coordination_correlation = payload["correlation_id"]
+        .as_str()
+        .expect("conversation correlation")
+        .to_string();
     assert!(message_id.starts_with("tmsg-"), "message id: {message_id}");
     assert!(
-        payload["correlation_id"].as_str().expect("correlation_id")
-            == automatic_assignment["correlation_id"].as_str().unwrap(),
-        "correlation id: {payload}"
+        !coordination_correlation.is_empty(),
+        "fresh conversation correlation: {payload}"
     );
 
     // An ambiguous crash leaves a claim. MCP reconciliation requires the exact
@@ -659,6 +707,7 @@ fn mcp_stdio_agent_team_tools() {
         .append_team_message(&TeamMessage {
             id: host_message.clone(),
             team_run_id: team_run_id.clone(),
+            work_id: Some(initial_work_id.clone()),
             origin_wave_id: None,
             sender: Some(TeamActorRef {
                 kind: TeamActorKind::MemberRun,
@@ -674,8 +723,8 @@ fn mcp_stdio_agent_team_tools() {
             to_member_ids: vec!["host".to_string()],
             kind: TeamMessageKind::Message,
             body: "QUESTION: choose interface A or B".to_string(),
-            correlation_id: assignment_correlation.clone(),
-            causation_id: Some(assignment_id.clone()),
+            correlation_id: coordination_correlation.clone(),
+            causation_id: Some(message_id.clone()),
             response_intent: None,
             evidence_refs: Vec::new(),
             deliveries: vec![TeamMessageDelivery {
@@ -747,8 +796,8 @@ fn mcp_stdio_agent_team_tools() {
         }),
     );
     let payload = call_payload(&response);
-    //    create journals 1 (run) + 2×2 (member + assignment) = 5 events,
-    //    add-member journals two and the handoff adds one more.
+    //    create journals the run, members, and initial Works; add-member and
+    //    conversation events remain part of the same ordered event stream.
     let events = payload.as_array().expect("events array");
     assert!(events.len() >= 9, "events: {}", events.len());
     let seqs: Vec<u64> = events
@@ -783,7 +832,7 @@ fn mcp_stdio_agent_team_tools() {
         "tools/call",
         serde_json::json!({
             "name": "team_message_acknowledge",
-            "arguments": {"message_id": assignment_id, "member_id": member_ids[0]}
+            "arguments": {"message_id": message_id, "member_id": member_ids[1]}
         }),
     );
     assert_eq!(response["result"]["isError"].as_bool(), Some(true));
@@ -795,18 +844,18 @@ fn mcp_stdio_agent_team_tools() {
     // Simulate the provider delivery boundary, then prove ACK persists and
     // appears in the run event stream. The provider-specific start tests own
     // actual delivery; this test owns the Host-facing MCP contract.
-    let mut delivered_assignment = store
+    let mut delivered_message = store
         .team_messages()
         .expect("team messages")
         .into_iter()
         .rev()
-        .find(|message| message.id == assignment_id)
-        .expect("assignment row");
-    delivered_assignment.deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
-    delivered_assignment.deliveries[0].status = TeamDeliveryStatus::Delivered;
+        .find(|message| message.id == message_id)
+        .expect("coordination message row");
+    delivered_message.deliveries[0].policy = TeamDeliveryPolicy::ManualAck;
+    delivered_message.deliveries[0].status = TeamDeliveryStatus::Delivered;
     store
-        .append_team_message(&delivered_assignment)
-        .expect("mark assignment as delivered manual ACK");
+        .append_team_message(&delivered_message)
+        .expect("mark coordination message as delivered manual ACK");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -823,7 +872,7 @@ fn mcp_stdio_agent_team_tools() {
         "tools/call",
         serde_json::json!({
             "name": "team_message_acknowledge",
-            "arguments": {"message_id": assignment_id, "member_id": member_ids[0]}
+            "arguments": {"message_id": message_id, "member_id": member_ids[1]}
         }),
     );
     let payload = call_payload(&response);
@@ -839,7 +888,7 @@ fn mcp_stdio_agent_team_tools() {
         "tools/call",
         serde_json::json!({
             "name": "team_message_acknowledge",
-            "arguments": {"message_id": assignment_id, "member_id": member_ids[0]}
+            "arguments": {"message_id": message_id, "member_id": member_ids[1]}
         }),
     );
     assert_eq!(
@@ -872,7 +921,7 @@ fn mcp_stdio_agent_team_tools() {
         .expect("events array")
         .iter()
         .filter(|event| {
-            event["entity_id"].as_str() == Some(assignment_id.as_str())
+            event["entity_id"].as_str() == Some(message_id.as_str())
                 && event["operation"].as_str() == Some("updated")
                 && event["summary"]
                     .as_str()
@@ -1086,7 +1135,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
                 "execution_root": project_root,
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi"},
-                    {"name": "ext-reviewer", "role": "reviewer", "provider": "kimi", "execution_mode": "external_interactive"}
+                    {"name": "ext-reviewer", "role": "reviewer", "provider": "kimi", "execution_mode": "external_interactive", "initial_work": "Review the proposed change and report evidence."}
                 ]
             }
         }),
@@ -1103,18 +1152,39 @@ fn mcp_stdio_external_interactive_member_authorship() {
         .map(|id| id.as_str().expect("member id").to_string())
         .collect();
     assert_eq!(member_ids.len(), 2, "member ids: {payload}");
-    let assignment = &payload["assignment_messages"][1];
-    let assignment_id = assignment["id"]
+    let work = &payload["works"][0];
+    let work_id = work["id"].as_str().expect("Work id").to_string();
+    assert_eq!(
+        work["active_member_run_id"].as_str(),
+        Some(member_ids[1].as_str())
+    );
+
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_send_message",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "from_member_id": "host",
+                "to_member_ids": [member_ids[1]],
+                "kind": "message",
+                "body": "Please review the linked Work and reply with evidence.",
+                "work_id": work_id
+            }
+        }),
+    );
+    let host_request = call_payload(&response);
+    let request_id = host_request["message_id"]
         .as_str()
-        .expect("assignment id")
+        .expect("request id")
         .to_string();
-    let assignment_correlation = assignment["correlation_id"]
+    let conversation_correlation = host_request["correlation_id"]
         .as_str()
-        .expect("assignment correlation")
+        .expect("conversation correlation")
         .to_string();
 
     // The external session's own authorship is accepted with explicit
-    // provenance and keeps the Assignment lineage.
+    // provenance and keeps the Work-linked conversation lineage.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1126,8 +1196,9 @@ fn mcp_stdio_external_interactive_member_authorship() {
                 "to_member_ids": ["host"],
                 "kind": "message",
                 "body": "External review: no defects found",
-                "correlation_id": assignment_correlation.clone(),
-                "causation_id": assignment_id.clone()
+                "work_id": work_id,
+                "correlation_id": conversation_correlation.clone(),
+                "causation_id": request_id.clone()
             }
         }),
     );
@@ -1135,7 +1206,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
     let reply_id = sent["message_id"].as_str().expect("message_id").to_string();
     assert_eq!(
         sent["correlation_id"].as_str(),
-        Some(assignment_correlation.as_str())
+        Some(conversation_correlation.as_str())
     );
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let reply = store
@@ -1167,7 +1238,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
                 "to_member_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "attempted driven-member impersonation",
-                "correlation_id": assignment_correlation.clone()
+                "correlation_id": conversation_correlation.clone()
             }
         }),
     );
@@ -1197,7 +1268,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
         "tools/call",
         serde_json::json!({
             "name": "team_message_acknowledge",
-            "arguments": {"message_id": assignment_id, "member_id": member_ids[1]}
+            "arguments": {"message_id": request_id, "member_id": member_ids[1]}
         }),
     );
     call_payload(&response);
@@ -1241,7 +1312,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
                 "to_member_ids": ["host"],
                 "kind": "message",
                 "body": "must not author after coordination close",
-                "correlation_id": assignment_correlation
+                "correlation_id": conversation_correlation
             }
         }),
     );
@@ -1286,9 +1357,241 @@ fn mcp_stdio_external_interactive_member_authorship() {
                 "to_member_ids": ["host"],
                 "kind": "message",
                 "body": "authoring resumes after explicit reopen",
-                "correlation_id": assignment_correlation
+                "correlation_id": conversation_correlation
             }
         }),
     );
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+}
+
+#[test]
+fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
+    let home = TempHome::new("mcp-work-rebind-reconcile");
+    let project_id = init_project(&home, "mcp-work-control-proj");
+    let project_root = std::fs::canonicalize(home.base().join("mcp-work-control-proj"))
+        .expect("canonical project root");
+    let stable_agent = run_harness(
+        &home,
+        &project_root,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "stable-worker",
+            "--role",
+            "implementer",
+            "--provider",
+            "kimi",
+        ],
+    );
+    assert!(
+        stable_agent.status.success(),
+        "create stable Agent failed: {}",
+        String::from_utf8_lossy(&stable_agent.stderr)
+    );
+    let stable_agent: serde_json::Value =
+        serde_json::from_slice(&stable_agent.stdout).expect("stable Agent JSON");
+    let stable_agent_id = stable_agent["id"]
+        .as_str()
+        .expect("stable Agent id")
+        .to_string();
+
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Exercise MCP Work lifecycle recovery",
+                "execution_root": project_root,
+                "members": [{
+                    "name": "stable-worker",
+                    "role": "implementer",
+                    "provider": "kimi",
+                    "agent_member_id": stable_agent_id,
+                    "initial_work": "Preserve durable ownership across runtime replacement."
+                }]
+            }
+        }),
+    );
+    let created = call_payload(&response);
+    let team_run_id = created["team_run_id"]
+        .as_str()
+        .expect("team run id")
+        .to_string();
+    let old_member_id = created["member_run_ids"][0]
+        .as_str()
+        .expect("old member id")
+        .to_string();
+    let work_id = created["works"][0]["id"]
+        .as_str()
+        .expect("Work id")
+        .to_string();
+    let initial_version = created["works"][0]["version"]
+        .as_u64()
+        .expect("initial Work version");
+
+    // Assign is deliberately not a reassignment primitive. An already-owned
+    // Work must move to another runtime only through rebind.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_assign",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": work_id,
+                "member_run_id": old_member_id,
+                "expected_version": initial_version
+            }
+        }),
+    );
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("assign conflict")
+        .contains("must be open to assign"));
+
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_deactivate_member",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "member_run_id": old_member_id,
+                "reason": "replace crashed runtime generation"
+            }
+        }),
+    );
+    call_payload(&response);
+
+    // Runtime replacement is normally produced by the lifecycle controller.
+    // The focused MCP test materializes that prerequisite directly, then proves
+    // the public rebind tool preserves the stable AgentMember owner.
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let old_member = store
+        .member_runs()
+        .expect("member runs")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == old_member_id)
+        .expect("deactivated member");
+    let mut replacement = old_member.clone();
+    replacement.id = "member-mcp-stable-worker-generation-2".to_string();
+    replacement.coordination_status = MemberCoordinationStatus::Active;
+    replacement.runtime_generation += 1;
+    replacement.status = MemberRunStatus::Idle;
+    replacement.native_session = None;
+    replacement.started_at = "unix-ms:mcp-replacement".to_string();
+    replacement.last_event_at = None;
+    replacement.finished_at = None;
+    store
+        .append_member_run(&replacement)
+        .expect("append replacement MemberRun");
+    let mut run = store
+        .team_runs()
+        .expect("team runs")
+        .into_iter()
+        .rev()
+        .find(|run| run.id == team_run_id)
+        .expect("TeamRun");
+    run.member_run_ids.push(replacement.id.clone());
+    store
+        .append_team_run(&run)
+        .expect("append replacement to run");
+
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_rebind",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": work_id,
+                "member_run_id": replacement.id,
+                "expected_version": initial_version
+            }
+        }),
+    );
+    let rebound = call_payload(&response);
+    assert_eq!(
+        rebound["owner_member_id"].as_str(),
+        created["works"][0]["owner_member_id"].as_str()
+    );
+    assert_eq!(
+        rebound["active_member_run_id"].as_str(),
+        Some(replacement.id.as_str())
+    );
+    let rebound_version = rebound["version"].as_u64().expect("rebound version");
+    assert_eq!(rebound_version, initial_version + 1);
+
+    let delivery = store
+        .latest_work_deliveries()
+        .expect("latest WorkDeliveries")
+        .into_iter()
+        .find(|delivery| {
+            delivery.work_id == work_id
+                && delivery.work_version == rebound_version
+                && delivery.recipient_member_run_id == replacement.id
+        })
+        .expect("replacement WorkDelivery");
+    assert_eq!(delivery.status, WorkDeliveryStatus::Queued);
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("unix epoch")
+        .as_millis() as u64;
+    let first = store
+        .acquire_team_supervisor_lease(
+            &team_run_id,
+            "supervisor-mcp-generation-1",
+            11,
+            "mcp:test:first",
+            now_unix_ms,
+            10,
+        )
+        .expect("first Supervisor lease");
+    let claimed = match store
+        .claim_work_delivery(
+            &team_run_id,
+            &delivery.id,
+            &replacement.id,
+            &first.supervisor_id,
+            first.generation,
+            "claim-mcp-work-generation-1",
+            now_unix_ms + 1,
+            "unix-ms:mcp-claim",
+        )
+        .expect("claim replacement delivery")
+    {
+        WorkDeliveryClaimResult::Claimed(delivery) => delivery,
+        WorkDeliveryClaimResult::NotQueued => panic!("replacement delivery must be queued"),
+    };
+    assert_eq!(claimed.status, WorkDeliveryStatus::Claimed);
+    let successor = store
+        .acquire_team_supervisor_lease(
+            &team_run_id,
+            "supervisor-mcp-generation-2",
+            22,
+            "mcp:test:successor",
+            now_unix_ms + 11,
+            60_000,
+        )
+        .expect("successor Supervisor lease");
+    assert_eq!(successor.generation, first.generation + 1);
+
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_reconcile_delivery",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "delivery_id": delivery.id,
+                "supervisor_id": successor.supervisor_id,
+                "supervisor_generation": successor.generation
+            }
+        }),
+    );
+    let reconciled = call_payload(&response);
+    assert_eq!(reconciled["status"].as_str(), Some("queued"));
+    assert!(reconciled["claim_id"].is_null());
+    assert!(reconciled["claimed_by_supervisor_id"].is_null());
+    assert!(reconciled["claimed_generation"].is_null());
 }

@@ -54,15 +54,16 @@ Execution Space with `company_id = null`.
 An `AgentTeamRun` is a standalone or Mission-scoped use of an independent
 AgentTeam. It may remain active across multiple Waves. A `MemberRun` is one
 participant instance inside that run; its provider-native session may continue
-while the Host advances the plan. Assignment-message correlation proves lane
-ownership:
+while the Host advances the plan. The Agent Team Works contract proves lane
+responsibility:
 
 ```text
-TeamMessage(kind=assignment)
-  -> correlation_id
-  -> Harness handoff / blocker / review / PendingInteraction
+Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
+  -> WorkDelivery
+  -> MemberRun + provider-native session
+  -> Work block / submission / review / acceptance
+  -> linked TeamMessage / PendingInteraction when needed
   -> explicit outcome and artifact/check references
-  -> provider-native session reference for member execution detail
 ```
 
 Neither object is an OrgUnit, a standing organization member, or a business
@@ -111,7 +112,7 @@ and MemberRun are one lifecycle. Unbound Dashboard/MCP/API clients cannot
 impersonate a Member.
 
 Explicit Close is durably latched before process-local teardown. A racing lease
-or control receiver cannot silently revive the member; idle, Handoff, Wave
+or control receiver cannot silently revive the member; idle, Work submission, Wave
 advance, TeamRun completion, and Mission closeout are all non-terminal.
 
 Status-only
@@ -159,7 +160,7 @@ must not invent lifecycle control over provider children it does not control.
 threads, capability snapshots, permission/budget ceilings, hooks, and plugins
 remain shared infrastructure. The provider-native store is the sole truth for
 one agent's transcript, tool/command/file events, turn lifecycle, and resume
-state. Harness references that session and owns assignment, organization
+state. Harness references that session and owns Work responsibility, organization
 responsibility, interaction routing, explicit outcomes, artifact/check refs,
 and gates. It does not keep a second provider event history. Private thinking
 remains sanitized, transient live state only: it is not stored, replayed,
@@ -181,7 +182,7 @@ accountable owner chooses proportionate execution:
 | --- | --- |
 | Small document update or human follow-up | direct human/Agent action recorded on the WorkItem |
 | One-shot, structured, bounded work | Dynamic Workflow |
-| Collaborative work needing messages, handoffs, or review | standalone or Mission-linked Agent Team |
+| Collaborative work needing shared responsibility, messages, or review | standalone or Mission-linked Agent Team |
 | Durable, staged outcome with several gates | Mission with ordered Waves |
 | Direct resident-agent operation | Host action, with observable outcome |
 
@@ -233,8 +234,8 @@ Mission, WorkItem, Approval, or organization membership.
    every Mission, Wave, TeamRun, MemberRun, WorkflowRun, and provider session.
 3. A selected executor cannot overwrite accountable ownership, approval
    authority, or document provenance held by the WorkItem.
-4. Agent Team lane ownership is proved by TeamMessage correlation, not an
-   assignee display field.
+4. Agent Team responsibility is proved by Work owner/version and WorkEvents;
+   TeamMessage correlation explains conversation only.
 5. A TeamRun/MemberRun never becomes a standing Agent or OrgUnit by inference.
 6. Provider-native subagents stay implementation detail unless explicitly
    materialized through a truthful observation or promotion contract.
@@ -246,7 +247,7 @@ Mission, WorkItem, Approval, or organization membership.
 9. Dashboard activity joins durable Harness coordination with an ephemeral,
    rebuildable provider-native projection. That projection is not a second
    ledger and cannot make the Host's Wave decision.
-10. Advancing a Wave never implicitly stops a TeamRun, MemberRun, assignment, or
+10. Advancing a Wave never implicitly stops a TeamRun, MemberRun, Work, or
    native session. Closing a Mission never deletes or archives a linked team.
 11. Only the current Supervisor generation may claim queued Team mail or use
     live provider controls; it must prove transport health first.

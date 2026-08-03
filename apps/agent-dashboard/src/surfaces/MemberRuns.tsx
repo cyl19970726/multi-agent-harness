@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
+  ArrowRight,
   Bot,
   CheckCircle2,
   ChevronRight,
@@ -54,6 +55,8 @@ import type {
   TeamMemberCloseRequest,
   TeamMessage,
   Wave,
+  Work,
+  TeamMessageResponseIntent,
 } from "@/types";
 import type { SelectionState } from "@/app/selection";
 
@@ -111,7 +114,8 @@ export function MemberRunFocus({
 }: MemberRunFocusProps) {
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState("");
-  const [messageKind, setMessageKind] = useState("question");
+  const [composerMode, setComposerMode] = useState<"message" | "steer">("message");
+  const [responseIntent, setResponseIntent] = useState<TeamMessageResponseIntent>("response_required");
   // Member Focus is an audit/work surface. Open on the complete native-backed
   // chronology; Key activity is an optional focus lens, never the default
   // substitute for the member's history.
@@ -174,10 +178,10 @@ export function MemberRunFocus({
   ]);
 
   useEffect(() => {
-    if (messageKind === "steer" && !canLiveSteer) {
-      setMessageKind("question");
+    if (composerMode === "steer" && !canLiveSteer) {
+      setComposerMode("message");
     }
-  }, [canLiveSteer, messageKind]);
+  }, [canLiveSteer, composerMode]);
 
   if (!context) {
     if (isLoading) {
@@ -192,7 +196,7 @@ export function MemberRunFocus({
   const livePreview = isCurrentPreview(context.liveActivity?.expires_at, now)
     ? context.liveActivity
     : undefined;
-  const assignment = context.assignments[context.assignments.length - 1];
+  const currentWork = context.currentWork;
   const pendingInteraction = context.interactions.find(
     (interaction) => interaction.member_run_id === context.member.id && interaction.status === "pending",
   );
@@ -221,8 +225,8 @@ export function MemberRunFocus({
   const dispatchMessage = () => {
     const body = draft.trim();
     if (!body || !actionsEnabled || finished || !coordinationOpen) return;
-    if (messageKind === "steer" && !canLiveSteer) return;
-    const descriptor = messageKind === "steer"
+    if (composerMode === "steer" && !canLiveSteer) return;
+    const descriptor = composerMode === "steer"
       ? steerTeamMember(context.run.id, context.member.id, body)
       : sendTeamMessage(context.run.id, {
         fromMemberId: "host",
@@ -230,10 +234,10 @@ export function MemberRunFocus({
         senderId: "operator",
         senderName: "Operator",
         toMemberIds: [context.member.id],
-        kind: messageKind,
+        kind: "message",
         body,
-        correlationId: assignment?.correlationId,
-        causationId: assignment?.assignment.id,
+        workId: currentWork?.id,
+        responseIntent,
         originWaveId: navigationWave?.id,
       });
     dispatch(onAction, descriptor);
@@ -272,7 +276,8 @@ export function MemberRunFocus({
       composer={
         <MemberComposer
           value={draft}
-          kind={messageKind}
+          mode={composerMode}
+          responseIntent={responseIntent}
           disabled={!actionsEnabled || finished || !coordinationOpen}
           disabledReason={!coordinationOpen
             ? coordinationStatus === "retired"
@@ -287,11 +292,12 @@ export function MemberRunFocus({
             : context.member.status !== "running"
               ? "Steer is available only while this Codex member has an active turn."
               : undefined}
-          deliveryHint={messageKind === "steer"
+          deliveryHint={composerMode === "steer"
             ? "Injects only this explicit Steer into the active Codex turn."
-            : "Queues a Host message for the member's next provider round."}
+            : `${responseIntent === "response_required" ? "Requests a reply in" : "Adds context to"} the member's next provider round${currentWork ? ` and links Work ${currentWork.id}` : ""}.`}
           onChange={setDraft}
-          onKindChange={setMessageKind}
+          onModeChange={(mode) => setComposerMode(mode as "message" | "steer")}
+          onResponseIntentChange={(intent) => setResponseIntent(intent as TeamMessageResponseIntent)}
           onSend={dispatchMessage}
         />
       }
@@ -536,30 +542,107 @@ function Breadcrumb({
 }
 
 function MemberGoalPanel({ context }: { context: MemberRunContext }) {
-  const assignment = context.assignments[context.assignments.length - 1];
-  const completion = assignmentCompletionCriteria(assignment?.assignment.body);
+  const work = context.currentWork;
+  const queuedOwnedWorks = context.queuedOwnedWorks.filter((candidate) => candidate.id !== work?.id);
+  const eligibleReadyWorks = context.eligibleReadyWorks.filter((candidate) => candidate.id !== work?.id);
   const latestSteer = latestSteerSummary(context);
+  const nextAction = memberWorkNextAction(context);
   return (
-    <section aria-label="Current Assignment (Member Goal)" className="mb-2 rounded-xl border border-primary/20 bg-[linear-gradient(135deg,hsl(var(--primary)/.055),hsl(var(--background))_52%)] px-4 py-3 shadow-[0_14px_34px_-30px_rgba(15,23,42,.55)]">
+    <section aria-label="Current Work (Member Goal)" className="mb-2 rounded-xl border border-primary/20 bg-[linear-gradient(135deg,hsl(var(--primary)/.055),hsl(var(--background))_52%)] px-4 py-3 shadow-[0_14px_34px_-30px_rgba(15,23,42,.55)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="size-4 text-primary" />
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Current Assignment · Member Goal</p>
-            <Badge tone={memberStatusTone(context.member.status)}>{context.member.status ?? "unknown"}</Badge>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Current Work · Member Goal</p>
+            <Badge tone={workStatusTone(work?.status)}>{work?.status ?? "unassigned"}</Badge>
           </div>
-          <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-[12px] leading-relaxed text-foreground">
-            {assignment?.assignment.body ?? "No assignment message is recorded; observed activity does not prove ownership."}
-          </p>
+          <p className="mt-2 text-sm font-semibold text-foreground">{work?.title ?? "No Work currently owned"}</p>
+          <div className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-muted-foreground">
+            {work?.context_markdown ? <Markdown source={work.context_markdown} compact /> : "This member has no durable Work ownership yet."}
+          </div>
         </div>
         <div className="grid min-w-[15rem] gap-1.5 text-[10px] sm:max-w-[22rem]">
-          <GoalFact label="Completion" value={completion} />
+          <GoalFact label="Completion" value={work?.completion_criteria_markdown || "Not declared"} />
           <GoalFact label="Owned paths" value={context.member.owned_paths?.join(", ") || "No path ownership recorded"} mono />
           <GoalFact label="Latest steer" value={latestSteer ?? "No durable steer recorded"} />
-          <GoalFact label="Correlation" value={assignment?.correlationId ?? "Not recorded"} mono />
+          <GoalFact label="Work ID" value={work?.id ?? "Not assigned"} mono />
         </div>
       </div>
+      <div className="mt-3 grid gap-2 border-t border-border/60 pt-3 sm:grid-cols-2">
+        <MemberWorkQueue
+          label="Owned queue"
+          description="Assigned to this member and ready after the current Work."
+          works={queuedOwnedWorks}
+          empty="No additional owned Work is queued."
+        />
+        <MemberWorkQueue
+          label="Eligible ready pool"
+          description="Unowned team Work this member may claim from its own runtime."
+          works={eligibleReadyWorks}
+          empty="No unowned ready Work is eligible for this member."
+        />
+      </div>
+      <div className="mt-2 flex items-start gap-2 rounded-lg border border-primary/15 bg-primary/[0.035] px-3 py-2 text-[10px] leading-relaxed text-muted-foreground" aria-label="Member next Work action">
+        <ArrowRight className="mt-0.5 size-3 shrink-0 text-primary" />
+        <p><span className="font-semibold text-foreground">Next:</span> {nextAction}</p>
+      </div>
     </section>
+  );
+}
+
+function memberWorkNextAction(context: MemberRunContext): string {
+  const work = context.currentWork;
+  if (work?.status === "open") {
+    return "Start this owned Work from the member's native runtime. This operator view does not impersonate the member.";
+  }
+  if (work?.status === "in_progress") {
+    return "Continue the current Work in the provider-native session, then submit its result and evidence for Host review.";
+  }
+  if (work?.status === "blocked") {
+    return "Wait for the Host to resolve and resume this Work; keep the blocker conversation linked to this Work.";
+  }
+  if (work?.status === "review") {
+    return "Host review is pending. Changes requested return this same Work and ownership to the member.";
+  }
+  if (context.eligibleReadyWorks.length > 0) {
+    return "No Work is currently owned. The member may claim an eligible ready Work from its own runtime.";
+  }
+  return "No owned or eligible Work is ready. The member remains available for Host assignment or team coordination.";
+}
+
+function MemberWorkQueue({
+  label,
+  description,
+  works,
+  empty,
+}: {
+  label: string;
+  description: string;
+  works: Work[];
+  empty: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-background/75 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground">{label}</p>
+        <Badge tone={works.length ? "info" : "muted"}>{works.length}</Badge>
+      </div>
+      <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">{description}</p>
+      {works.length ? (
+        <ul className="mt-2 space-y-1.5">
+          {works.slice(0, 3).map((work) => (
+            <li key={work.id} className="flex min-w-0 items-start justify-between gap-2 rounded-md border border-border/50 bg-card px-2 py-1.5">
+              <div className="min-w-0">
+                <p className="truncate text-[11px] font-medium text-foreground" title={work.title}>{work.title}</p>
+                <p className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground" title={work.id}>{work.id}</p>
+              </div>
+              <Badge tone={workStatusTone(work.status)}>{work.status}</Badge>
+            </li>
+          ))}
+          {works.length > 3 && <li className="text-[10px] text-muted-foreground">+{works.length - 3} more on the Team Works board</li>}
+        </ul>
+      ) : <p className="mt-2 text-[10px] text-muted-foreground">{empty}</p>}
+    </div>
   );
 }
 
@@ -593,7 +676,7 @@ function MemberContextRail({
   organizationLinkConflict: boolean;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
-  const assignment = context.assignments[context.assignments.length - 1];
+  const work = context.currentWork;
   const activeMembers = context.members.filter((member) => member.status === "running").length;
   const gateTone = waveGateTone(navigationWave?.gate_status);
   const peerMembers = context.members.filter((member) => member.id !== context.member.id);
@@ -603,7 +686,6 @@ function MemberContextRail({
   const peerThread = context.messagesForMember.filter((message) =>
     message.from_member_id !== "host"
     && !(message.to_member_ids ?? []).includes("host")
-    && message.kind !== "assignment",
   );
   const latestSteer = latestSteerSummary(context);
 
@@ -631,7 +713,7 @@ function MemberContextRail({
               <Badge tone={gateTone}>decision {navigationWave.gate_status ?? "pending"}</Badge>
               <Badge tone="muted">{context.wave ? "legacy direct executor" : "navigation context"}</Badge>
             </div>
-            {!context.wave && <p className="text-[11px] leading-relaxed text-muted-foreground">This MemberRun continues independently; its assignment message records what it owns in this Wave.</p>}
+            {!context.wave && <p className="text-[11px] leading-relaxed text-muted-foreground">This MemberRun continues independently; the shared Works board records durable ownership while the Wave remains Host planning context.</p>}
           </div>
         ) : (
           <RailEmpty>Open this member from a Mission to retain the current Host-plan context.</RailEmpty>
@@ -704,19 +786,23 @@ function MemberContextRail({
       </ContextModule>
 
       <ContextModule
-        title="Current Assignment · Member Goal"
+        title="Current Work · Member Goal"
         icon={<ShieldCheck className="size-3.5" />}
-        tone={assignment ? "info" : "warn"}
+        tone={work ? workStatusTone(work.status) : "warn"}
         className="order-2 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
       >
-        {assignment ? (
+        {work ? (
           <div className="space-y-2.5 text-[12px]">
-            <p className="line-clamp-5 whitespace-pre-wrap text-foreground">{assignment.assignment.body ?? "No assignment body recorded."}</p>
-            <RailKeyValue label="Status" value={context.member.status ?? "unknown"} />
-            <RailKeyValue label="From" value={assignment.assignment.from_member_id === "host" ? "Host" : assignment.assignment.from_member_id ?? "Unknown"} />
-            <RailKeyValue label="Assigned" value={formatTime(assignment.assignment.created_at)} />
-            <RailKeyValue label="Correlation" value={assignment.correlationId ?? "Not recorded"} mono />
+            <p className="font-semibold text-foreground">{work.title}</p>
+            {work.context_markdown && <div className="line-clamp-5 text-muted-foreground"><Markdown source={work.context_markdown} compact /></div>}
+            <RailKeyValue label="Status" value={work.status} />
+            <RailKeyValue label="Priority" value={work.priority} />
+            <RailKeyValue label="Updated" value={formatTime(work.updated_at)} />
+            <RailKeyValue label="Version" value={String(work.version)} mono />
+            <RailKeyValue label="Completion" value={work.completion_criteria_markdown || "Not declared"} />
             <RailKeyValue label="Latest steer" value={latestSteer ?? "No durable steer recorded"} />
+            <RailReferenceList label="Artifacts" refs={work.artifact_refs} empty="No Work artifacts attached." />
+            <RailReferenceList label="Checks" refs={work.check_refs} empty="No Work checks attached." />
             <div>
               <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Owned paths</p>
               {context.member.owned_paths?.length ? (
@@ -728,8 +814,12 @@ function MemberContextRail({
             <RailKeyValue label="Permissions" value="Not reported by this member run" />
           </div>
         ) : (
-          <RailEmpty>No assignment recorded. Observed activity does not prove ownership.</RailEmpty>
+          <RailEmpty>No Work is owned by this member. Messages and observed activity do not prove responsibility.</RailEmpty>
         )}
+        <div className="mt-2 grid grid-cols-2 gap-2 border-t border-border/60 pt-2">
+          <RailKeyValue label="Owned queued" value={String(context.queuedOwnedWorks.length)} />
+          <RailKeyValue label="Eligible ready" value={String(context.eligibleReadyWorks.length)} />
+        </div>
       </ContextModule>
 
       <ContextModule
@@ -874,6 +964,8 @@ function MessageThreadGroup({
               <div key={message.id} className="rounded-md border border-border/60 bg-background/70 px-2 py-1.5">
                 <div className="flex min-w-0 items-center gap-1.5 text-[9px] text-muted-foreground">
                   <Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>
+                  {message.response_intent && <Badge tone="muted">{message.response_intent === "response_required" ? "reply" : "info"}</Badge>}
+                  {message.work_id && <Badge tone="info" title={message.work_id}><ShieldCheck className="size-2.5" /> Work</Badge>}
                   <span className="min-w-0 flex-1 truncate">{outgoing ? `to ${counterpart}` : `from ${counterpart}`}</span>
                   <span>{messageDeliverySummary(message, context.member.id)}</span>
                 </div>
@@ -898,23 +990,6 @@ function messageDeliverySummary(message: TeamMessage, memberId: string): string 
     : (message.deliveries ?? []).filter((delivery) => delivery.member_id === memberId);
   const statuses = [...new Set(relevant.map((delivery) => delivery.status).filter(Boolean))];
   return statuses.length ? statuses.join("/") : "recorded";
-}
-
-function assignmentCompletionCriteria(body?: string): string {
-  if (!body?.trim()) return "Not declared";
-  const lines = body.split("\n").map((line) => line.trim());
-  const headingIndex = lines.findIndex((line) => /^(?:#{1,6}\s*)?(?:completion criteria|acceptance|done when|完成标准)\s*:?\s*$/i.test(line));
-  if (headingIndex >= 0) {
-    const collected: string[] = [];
-    for (const line of lines.slice(headingIndex + 1)) {
-      if (/^#{1,6}\s+/.test(line)) break;
-      if (/^(?:[-*]|\d+\.)\s+/.test(line)) collected.push(line.replace(/^(?:[-*]|\d+\.)\s+/, ""));
-      else if (line && collected.length === 0) collected.push(line);
-    }
-    if (collected.length) return collected.slice(0, 3).join(" · ");
-  }
-  const inline = body.match(/(?:completion criteria|acceptance|done when|完成标准)\s*:\s*([^\n]+)/i);
-  return inline?.[1]?.trim() || "Not separately declared; Host review_result remains the acceptance boundary";
 }
 
 function latestSteerSummary(context: MemberRunContext): string | undefined {
@@ -942,25 +1017,29 @@ function formatWorkspaceRoots(roots?: string[]): string {
 
 function MemberComposer({
   value,
-  kind,
+  mode,
+  responseIntent,
   disabled,
   disabledReason,
   deliveryHint,
   supportsLiveSteer,
   steerUnavailableReason,
   onChange,
-  onKindChange,
+  onModeChange,
+  onResponseIntentChange,
   onSend,
 }: {
   value: string;
-  kind: string;
+  mode: "message" | "steer";
+  responseIntent: TeamMessageResponseIntent;
   disabled: boolean;
   disabledReason: string;
   deliveryHint: string;
   supportsLiveSteer: boolean;
   steerUnavailableReason?: string;
   onChange: (value: string) => void;
-  onKindChange: (value: string) => void;
+  onModeChange: (value: string) => void;
+  onResponseIntentChange: (value: string) => void;
   onSend: () => void;
 }) {
   if (disabled) {
@@ -999,18 +1078,29 @@ function MemberComposer({
         <p className="mt-1 text-[10px] text-muted-foreground">{disabled ? disabledReason : `${deliveryHint} ⌘/Ctrl + Enter to send.`}</p>
       </div>
       <select
-        aria-label="Message type"
-        value={kind}
+        aria-label="Delivery mode"
+        value={mode}
         disabled={disabled}
-        onChange={(event) => onKindChange(event.target.value)}
+        onChange={(event) => onModeChange(event.target.value)}
         className="h-8 max-w-28 rounded-md border border-border bg-background px-2 text-[11px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
       >
-        <option value="question">Clarify</option>
-        <option value="review_request">Review</option>
+        <option value="message">Message</option>
         <option value="steer" disabled={!supportsLiveSteer}>
           {supportsLiveSteer ? "Steer" : "Steer unavailable"}
         </option>
       </select>
+      {mode === "message" && (
+        <select
+          aria-label="Response intent"
+          value={responseIntent}
+          disabled={disabled}
+          onChange={(event) => onResponseIntentChange(event.target.value)}
+          className="h-8 max-w-32 rounded-md border border-border bg-background px-2 text-[11px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <option value="response_required">Needs reply</option>
+          <option value="informational">Informational</option>
+        </select>
+      )}
       {!supportsLiveSteer && steerUnavailableReason && (
         <span className="sr-only" aria-live="polite">{steerUnavailableReason}</span>
       )}
@@ -1031,6 +1121,19 @@ function RailEmpty({ children }: { children: string }) {
 
 function RailKeyValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return <div className="flex min-w-0 items-start justify-between gap-3"><span className="shrink-0 text-muted-foreground">{label}</span><span className={cn("min-w-0 text-right text-foreground", mono && "truncate font-mono text-[11px]")}>{value}</span></div>;
+}
+
+function RailReferenceList({ label, refs, empty }: { label: string; refs?: string[]; empty: string }) {
+  return (
+    <div>
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      {refs?.length ? (
+        <div className="flex flex-wrap gap-1">
+          {refs.map((ref) => <Badge key={ref} tone="muted" title={ref}>{ref}</Badge>)}
+        </div>
+      ) : <p className="text-[11px] text-muted-foreground">{empty}</p>}
+    </div>
+  );
 }
 
 function providerControlSummary(control?: ProviderControlValue | null, legacyRequested?: string | null): string {
@@ -1103,7 +1206,7 @@ function projectKeyActivity(items: WorkbenchActivityItem[]): WorkbenchActivityIt
   const selected = new Set<string>();
   const select = (item: WorkbenchActivityItem | undefined) => item && selected.add(item.id);
   visible.filter((item) => item.transient || item.prominence === "pressure").forEach(select);
-  select(visible.find((item) => item.glyph === "assignment"));
+  select(visible.find((item) => item.kind === "message"));
   // The compact narrative must prove that the bound provider session is
   // actually visible. Keep its opening response, latest runtime/tool action,
   // and latest message while Full record exposes every native row.
@@ -1135,32 +1238,36 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
   if (item.kind === "message") {
     const message = item.message;
     const label = message.from_member_id === "host" ? "Host" : context.memberById.get(message.from_member_id ?? "")?.name ?? message.from_member_id ?? "Unknown sender";
-    const assignment = message.kind === "assignment";
-    const needsAttention = message.kind === "blocker" || message.kind === "review_request";
+    const needsAttention = message.response_intent === "response_required";
     return {
       id: item.id,
-      kind: needsAttention ? "blocker" : assignment ? "decision" : "message",
-      glyph: assignment ? "assignment" : message.kind === "handoff" ? "handoff" : message.kind === "review_request" ? "review" : "message",
+      kind: "message",
+      glyph: message.kind === "handoff" ? "handoff" : "message",
       title: teamMessageTitle(message.kind),
       body: readableHistoryBody(message.body),
-      actor: <><span>{label}</span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge></>,
+      actor: <><span>{label}</span><Badge tone={messageTone(message.kind)}>{message.kind ?? "message"}</Badge>{message.response_intent && <Badge tone="muted">{message.response_intent === "response_required" ? "reply requested" : "informational"}</Badge>}</>,
       timestamp: formatTime(item.at),
       occurredAt: item.at,
       tone: messageTone(message.kind),
       evidenceRefs: message.evidence_refs,
-      action: message.correlation_id ? (
-        <Badge
-          tone="muted"
-          title={`correlation ${message.correlation_id}${message.causation_id ? ` · caused by ${message.causation_id}` : ""}`}
-        >
-          <Link2 className="size-2.5" /> {message.causation_id ? "reply linked" : "linked"}
-        </Badge>
+      action: message.correlation_id || message.work_id ? (
+        <span className="flex flex-wrap items-center justify-end gap-1">
+          {message.work_id && <Badge tone="info" title={`Discusses Work ${message.work_id}`}><ShieldCheck className="size-2.5" /> Work</Badge>}
+          {message.correlation_id && (
+            <Badge
+              tone="muted"
+              title={`correlation ${message.correlation_id}${message.causation_id ? ` · caused by ${message.causation_id}` : ""}`}
+            >
+              <Link2 className="size-2.5" /> {message.causation_id ? "reply linked" : "linked"}
+            </Badge>
+          )}
+        </span>
       ) : undefined,
-      prominence: assignment || needsAttention || ["handoff", "progress"].includes(message.kind ?? "") ? (needsAttention ? "pressure" : "primary") : "detail",
+      prominence: message.kind === "handoff" || needsAttention ? "primary" : "detail",
       source: "harness",
-      rawText: `${message.body ?? ""} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
+      rawText: `${message.body ?? ""} ${message.work_id ?? ""} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
       actorLabel: label,
-      statusLabel: message.kind ?? "message",
+      statusLabel: message.response_intent ?? message.kind ?? "message",
     };
   }
   if (item.kind === "action") {
@@ -1186,6 +1293,54 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
       statusLabel: action.status ?? undefined,
     };
   }
+  if (item.kind === "work_event") {
+    const event = item.workEvent;
+    const work = context.works.find((candidate) => candidate.id === event.work_id);
+    const isBlocker = /blocked|cancelled/i.test(event.kind);
+    const isReview = /submitted|changes_requested|accepted/i.test(event.kind);
+    return {
+      id: item.id,
+      kind: isBlocker ? "blocker" : isReview ? "evidence" : "action",
+      glyph: isReview ? "review" : isBlocker ? "runtime" : "complete",
+      title: `Work ${humanizeWorkEventKind(event.kind)}`,
+      body: work?.title ?? event.work_id,
+      actor: event.performed_by_actor.display_name ?? event.performed_by_actor.id,
+      timestamp: formatTime(item.at),
+      occurredAt: item.at,
+      tone: isBlocker ? "bad" : event.kind === "accepted" ? "good" : isReview ? "warn" : "info",
+      action: <Badge tone="info" title={event.work_id}><ShieldCheck className="size-2.5" /> Work v{event.resulting_version}</Badge>,
+      prominence: isBlocker || isReview ? "primary" : "detail",
+      source: "harness",
+      rawText: `${work?.title ?? ""} ${event.work_id} ${event.kind}`,
+      actorLabel: event.performed_by_actor.display_name ?? event.performed_by_actor.id,
+      statusLabel: event.kind,
+    };
+  }
+  if (item.kind === "work_delivery") {
+    const delivery = item.workDelivery;
+    const work = context.works.find((candidate) => candidate.id === delivery.work_id);
+    const failed = delivery.status === "failed";
+    const deliveryBody = failed && delivery.failure_reason
+      ? `${work?.title ?? delivery.work_id} · ${delivery.failure_reason}`
+      : work?.title ?? delivery.work_id;
+    return {
+      id: item.id,
+      kind: failed ? "blocker" : "action",
+      glyph: failed ? "runtime" : delivery.status === "queued" ? "queued" : "complete",
+      title: failed ? "Work delivery failed" : `Work delivery ${delivery.status}`,
+      body: deliveryBody,
+      actor: "Team supervisor",
+      timestamp: formatTime(item.at),
+      occurredAt: item.at,
+      tone: failed ? "bad" : delivery.status === "provider_received" ? "good" : "info",
+      action: <Badge tone="muted" title={delivery.work_id}>attempt {delivery.attempt}</Badge>,
+      prominence: failed ? "pressure" : "detail",
+      source: "harness",
+      rawText: `${work?.title ?? ""} ${delivery.work_id} ${delivery.status} ${delivery.failure_reason ?? ""}`,
+      actorLabel: "Team supervisor",
+      statusLabel: delivery.status,
+    };
+  }
   const event = item.event;
   const isBlocker = /blocked|failed|error/i.test(`${event.operation ?? ""} ${event.summary ?? ""}`);
   return {
@@ -1203,6 +1358,10 @@ function toActivityItem(item: StableTeamActivity, context: MemberRunContext): Wo
     actorLabel: event.source_kind === "member" ? context.member.name ?? context.member.id : event.source_kind ?? "team",
     statusLabel: event.operation ?? undefined,
   };
+}
+
+function humanizeWorkEventKind(kind: string): string {
+  return kind.replace(/_/g, " ");
 }
 
 function compareActivityChronology(left: WorkbenchActivityItem, right: WorkbenchActivityItem): number {
@@ -1275,7 +1434,6 @@ function runtimeEventGlyph(value?: string | null): WorkbenchActivityItem["glyph"
 
 function teamMessageTitle(kind?: string | null): string {
   switch (kind) {
-    case "assignment": return "Host assignment";
     case "handoff": return "Member handoff";
     case "blocker": return "Blocker reported";
     case "review_request": return "Review requested";
@@ -1292,6 +1450,10 @@ interface EvidenceItem { id: string; label: string; source: string }
 function collectEvidence(context: MemberRunContext, model: WorkbenchModel): EvidenceItem[] {
   const entries = [
     ...(context.wave?.artifact_refs ?? []).map((ref) => ({ id: `wave:${ref}`, label: ref, source: "Wave artifact" })),
+    ...context.ownedWorks.flatMap((work) => [
+      ...(work.artifact_refs ?? []).map((ref) => ({ id: `work:${work.id}:artifact:${ref}`, label: ref, source: `Work artifact · ${work.title}` })),
+      ...(work.check_refs ?? []).map((ref) => ({ id: `work:${work.id}:check:${ref}`, label: ref, source: `Work check · ${work.title}` })),
+    ]),
     ...context.actionsForMember.flatMap((action) => (action.evidence_refs ?? []).map((ref) => ({ id: `action:${action.id}:${ref}`, label: ref, source: action.title ?? "Member action" }))),
     ...context.messagesForMember.flatMap((message) => (message.evidence_refs ?? []).map((ref) => ({ id: `message:${message.id}:${ref}`, label: ref, source: message.kind ?? "Team message" }))),
   ];
@@ -1362,7 +1524,16 @@ function messageTone(kind?: string | null): StatusTone {
   if (kind === "review_result" || kind === "answer") return "good";
   if (kind === "handoff" || kind === "question") return "decision";
   if (kind === "progress") return "running";
-  return kind === "assignment" || kind === "broadcast" ? "info" : "idle";
+  return kind === "broadcast" ? "info" : "idle";
+}
+
+function workStatusTone(status?: string | null): StatusTone {
+  if (status === "done") return "good";
+  if (status === "cancelled") return "bad";
+  if (status === "blocked") return "warn";
+  if (status === "in_progress") return "running";
+  if (status === "review") return "info";
+  return "idle";
 }
 
 function actionTone(status?: string | null): StatusTone {

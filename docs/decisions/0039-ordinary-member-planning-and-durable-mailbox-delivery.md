@@ -1,11 +1,16 @@
 # ADR 0039: Ordinary Member Planning And Durable Mailbox Delivery
 
 ```text
-status: active
+status: active; Assignment/Handoff kinds amended by ADR 0050
 date: 2026-07-27
 supersedes: ADR 0038 provider-native member plan negotiation
 extends: ADR 0037 member autonomy and collaboration
 ```
+
+ADR 0050 removes Assignment Message and moves assignment, blocker, submission,
+review, and acceptance into Work operations. This ADR remains authoritative for
+ordinary planning conversation, durable authored-message delivery, busy/idle
+queueing, and Provider-safe mailbox boundaries.
 
 ## Context
 
@@ -19,10 +24,10 @@ provider, and could not enforce its claimed boundary: a hook that blocks an
 `Edit` tool cannot prevent the same write through `Bash`. It added complexity
 without a trustworthy execution boundary.
 
-The real cross-provider problem is reliable message delivery:
+The real cross-provider problem is reliable delivery at a safe boundary:
 
 ```text
-durable TeamMessage
+durable TeamMessage or WorkDelivery
   -> recipient queue
   -> adapter delivery receipt
   -> provider-native turn/session
@@ -44,17 +49,17 @@ This boundary is intentionally small. Harness must not model an action merely
 because the Host can say it clearly in natural language. The Host may tell a
 Member to propose a plan, create a Git worktree, ask a peer for an interface,
 or wait for review. The Member decides how to perform those actions and reports
-the actual result. Harness records the Assignment and communication facts; it
-does not schedule the Member's Git commands or copy the provider's execution
+the actual result. Harness records Work responsibility and communication facts;
+it does not schedule the Member's Git commands or copy the provider's execution
 stream.
 
-New work needs only four durable coordination shapes:
+Team collaboration needs only four durable coordination shapes:
 
 | Shape | Purpose |
 | --- | --- |
-| `assignment` | Give one Member accountable ownership and acceptance criteria |
+| `Work` + `WorkEvent` | Preserve responsibility, criteria, state and acceptance |
 | `message` | Ask, answer, plan, revise, report progress/blockers, or coordinate with a peer |
-| `handoff` | Return a lane outcome and evidence for Host review |
+| `WorkDelivery` | Reliably notify one runtime of a Work version it must consume |
 | control/PendingInteraction | Represent a real runtime control or provider pause |
 
 Question, answer, plan, review, progress, and blocker are human-readable
@@ -76,15 +81,15 @@ Provider-native planning features remain optional execution aids inside the
 native session. They never create Harness state, change permission, or prove
 Host approval.
 
-Historical `plan_*`, question/answer/progress/blocker/review, and broadcast
-TeamMessage kinds remain readable for compatibility. New public writes accept
-only `assignment`, `message`, `handoff`, and `control`; planning and routine
-coordination attach no special validation or runtime behavior to their
-human-readable intent.
+New authored coordination uses ordinary TeamMessage conversation and control.
+Assignment and Handoff message kinds are deleted with their readers, fixtures,
+and active dogfood data; there is no dual-read compatibility projection.
+Planning and routine coordination attach no special validation or runtime
+behavior to their human-readable intent.
 
 ### Example: two autonomous feature lanes
 
-The Host creates one TeamRun and two correlated Assignments:
+The Host creates one TeamRun and two Works:
 
 ```text
 Host -> Member A
@@ -106,11 +111,11 @@ Member B -> Member A  message   REVIEW: one incompatibility and suggested fix
 Member A -> Host      message   PROGRESS: worktree path and agreed interface
 Member B -> Host      message   BLOCKER: shared file needs Host ownership decision
 Host -> Member B      message   DECISION: Member A owns shared file; adapt locally
-Member A -> Host      handoff   patch, commit, checks, evidence
-Member B -> Host      handoff   patch, commit, checks, evidence
+Member A -> Work A    submit    patch, commit, checks, evidence
+Member B -> Work B    submit    patch, commit, checks, evidence
 ```
 
-The Host integrates or rejects each Handoff. There is no Task Graph, worktree
+The Host accepts or requests changes on each Work. There is no Task Graph, worktree
 state machine, plan gate, or automatic peer dependency. Correlation preserves
 the work chain; natural language carries the judgment.
 
@@ -123,8 +128,8 @@ on which the adapter checks for mail.
 
 `delivered` means the live adapter recorded a provider-native receipt for the
 selected MemberRun and native session. It does not mean the model understood or
-acted on the message. Semantic acknowledgement is an explicit reply, handoff,
-review, or control acknowledgement.
+acted on the message. Semantic acknowledgement is an explicit reply, Work
+submission, review action, or control acknowledgement.
 
 The current Supervisor generation atomically claims a delivery before provider
 side effects, but only after verifying that the selected provider transport is
@@ -136,7 +141,7 @@ return the claim to `queued`, never blindly replay it.
 ### Member lifetime is independent of a turn or TeamRun status
 
 A Host-created Member remains addressable until the Host explicitly closes it.
-Provider turn completion and a Member Handoff return the MemberRun to `idle`;
+Provider turn completion and a Work submission return the MemberRun to `idle`;
 they do not end the native runtime. Host or peer mail queued while it is idle
 wakes the same MemberRun and provider-native session exactly once.
 
@@ -150,7 +155,7 @@ receiver, or reconnect cannot revive the Member after Host Close.
 The Harness process that starts a TeamRun supervises every unclosed Member.
 Unexpected provider transport loss records an explicit `disconnected` action,
 keeps the native-session binding, and resumes that session rather than
-replaying the Assignment. Re-running TeamRun start after a Host process restart
+replaying stale Work content. Re-running TeamRun start after a Host process restart
 reattaches unclosed Members to their recorded native sessions. Physical
 interrupt, steer, and close handles remain process-local. The active lease
 publishes the owning service's loopback locator, so other Harness clients route
@@ -163,9 +168,9 @@ operation.
 single-member operator read. It joins:
 
 - MemberRun identity, status, provider profile, Workspace and worktree facts;
-- TeamRun, Mission, AgentTeam and current Assignment correlation;
+- TeamRun, Mission, AgentTeam and current/queued Works;
 - Inbox, Outbox, delivery states and PendingInteractions;
-- actions, latest handoff, evidence refs and native-session locator;
+- WorkEvents, latest submission, evidence refs and native-session locator;
 - current Team Supervisor lease and stable Agent Inbox route records.
 
 It does not copy provider chat, tool, command, reasoning, or subagent history.
@@ -193,11 +198,12 @@ Those remain readable from the provider-native session through its locator.
    no hook or provider mode is presented as a Plan Gate.
 5. `member-run show` reconstructs the Member's coordination state while
    returning only a native-session locator for provider execution history.
-6. Deterministic tests cover busy delivery, retry/no-duplicate behavior,
-   Member-to-Host visibility, peer delivery, handoff evidence, and CLI detail.
-7. Turn completion, Handoff, Interrupt, Wave advance, TeamRun completion, and
+6. Deterministic tests cover busy Message/WorkDelivery, retry/no-duplicate
+   behavior, Member-to-Host visibility, peer delivery, submission evidence, and
+   CLI detail.
+7. Turn completion, Work submission, Interrupt, Wave advance, TeamRun completion, and
    Mission completion leave an unclosed Member available on the same native
    session.
 8. Unexpected transport loss is visible and recoverable without duplicate
-   Assignment delivery; explicit Close is the only normal runtime-shutdown
+   WorkDelivery; explicit Close is the only normal runtime-shutdown
    operation. ADR 0049 adds explicit same-MemberRun Reopen and permanent Retire.

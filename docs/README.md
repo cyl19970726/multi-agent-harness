@@ -11,7 +11,8 @@ lifecycle and archive rules are defined in
 | --- | --- |
 | Understand the AI Company OS | [Company OS product system map](company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](company-os/README.md) |
-| Change Mission/Wave or Agent Team orchestration | [Host-plan product contract](product/mission-wave-host-plan.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Member continuation model](member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), [ADR 0039](decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md), [ADR 0041](decisions/0041-provider-neutral-member-continuation.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), and [Architecture map](architecture-map.md) |
+| Change Mission/Wave or Agent Team orchestration | [Host-plan contract](product/mission-wave-host-plan.md), [Agent Team Works](product/agent-team-works.md), [Works implementation/acceptance](design/agent-team-works-implementation-plan.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Member continuation](member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](architecture-map.md) |
+| Evaluate unresolved product or architecture evidence | [Research index](research/README.md); promote accepted findings into canonical contracts and ADRs before implementation |
 | Implement or operate the repository | [Getting started](getting-started.md), [Operations](operations.md), [Schemas](schemas.md) |
 | Change repository agent operating rules | Root [AGENTS.md](../AGENTS.md) and [Agent operating rules detail](agent-operating-rules.md) |
 | Change frontend visual direction | [Company OS visual inventory](design/company-os-v2/visual-index.md) or [Execution Workbench V3](design/execution-workbench-v3/README.md) |
@@ -24,9 +25,10 @@ lifecycle and archive rules are defined in
 | --- | --- |
 | Product | [PRD](prd.md), [Company OS](company-os/README.md), [Design basis](design-basis.md) |
 | Architecture | [Architecture map](architecture-map.md), [Concept model](concept-model.md), [Data model](data-model.md), [ADRs](decisions/README.md) |
-| Execution | [Dashboard](dashboard.md), [Workflow runtime](workflow-runtime.md), [Agent runtime](agent-runtime.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Integration](integration/README.md) |
+| Execution | [Dashboard](dashboard.md), [Workflow runtime](workflow-runtime.md), [Agent runtime](agent-runtime.md), [Agent Team Works](product/agent-team-works.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Integration](integration/README.md) |
 | Design evidence | [`design/`](design/) workstreams; use each workstream README/manifest, not the directory as product authority |
 | Operations | [Getting started](getting-started.md), [Operations](operations.md), [Multi-project](multi-project.md), [Governance engine](governance-engine.md) |
+| Research | [Research index](research/README.md); active input to decisions, never product authority or default context |
 | Historical evidence | Verified native exports and Git history; never default context |
 
 Project-specific tool usage belongs in `examples/adapters/**` or in the
@@ -36,8 +38,8 @@ integrating project repository, not in the generic core docs.
 
 | Skill | Use |
 | --- | --- |
-| [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Thin Host guidance for durable Mission context, versioned Wave memos, Mission-linked long-lived Teams, assignments, and advance/re-plan. CLI remains the authority. |
-| [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for assignment ownership, mailbox collaboration, native subagents, evidence, and review acceptance. |
+| [orchestrate-mission-waves](../skills/orchestrate-mission-waves/SKILL.md) | Thin Host guidance for durable Mission context, versioned Wave memos, shared Works, Mission-linked long-lived Teams, and advance/re-plan. CLI remains the authority. |
+| [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for Work claim/start/block/submit, Work-linked conversation, native subagents, evidence, and Host acceptance. |
 | [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not a Mission/Wave planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |
 | [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Reusable mailbox, runtime lifecycle, permission, recovery, and dashboard-proof design guidance. |

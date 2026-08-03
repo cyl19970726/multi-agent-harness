@@ -6,10 +6,12 @@ owner_role: execution-foundation
 canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted-attempt recovery
 ```
 
-> Historical implementation evidence: this run predates ADR 0032 and therefore
+> Historical implementation evidence: this run predates ADR 0032 and ADR 0050
+> and therefore
 > includes provider-derived MemberAction/TeamRunEvent mirrors. It remains valid
-> evidence for transport, correlation, interruption recovery, and gates, but it
-> is not the target storage contract. The 2026-07-22 acceptance below replaces
+> evidence for transport, correlation, interruption recovery, and gates, but
+> its Assignment/Handoff records are not the current responsibility or
+> acceptance contract. The 2026-07-22 acceptance below replaces
 > its storage claim with native-session reads and no mirrored provider history.
 
 ## 2026-07-30 consecutive persistent-Team release acceptance

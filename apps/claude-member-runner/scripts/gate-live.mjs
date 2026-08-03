@@ -24,7 +24,7 @@ const runner = createMemberRunner({
   },
 });
 const done = runner.start();
-runner.deliver({ id:"m1", kind:"assignment", from_member_id:"host",
+runner.deliver({ id:"work-gate", kind:"work", from_member_id:"host",
   body:`Create a file at ${SANDBOX}/owned/allowed.txt containing the word INSIDE-LANE. Use the Write tool. Do it now.` });
 await new Promise(r => { const i = setInterval(() => { if (turns >= 1) { clearInterval(i); r(); } }, 200); });
 runner.close("probe done");

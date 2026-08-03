@@ -1,7 +1,7 @@
 # MemberRun Focus Page Spec
 
 ```text
-status: implemented_candidate
+status: implemented candidate; Works redesign accepted and pending
 owner_role: dashboard
 canonical_for: one autonomous MemberRun working within one AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun -> MemberRun (Mission/Wave optional)
@@ -14,24 +14,27 @@ from separate message, action, session, and evidence tabs. They need to answer
 four questions in the first viewport:
 
 1. What Mission/Team context and current Host-plan Wave is this member serving?
-2. What was it assigned to do, and under which boundaries?
+2. Which Work does it own, what is queued, and under which boundaries?
 3. What is it doing or waiting for now?
 4. What output supports its contribution to the Wave?
 
 The page is a focused, continuous working surface: durable Harness
-coordination, on-demand native provider activity, artifacts, and review
+coordination, My Works, on-demand native provider activity, artifacts, and review
 requests appear in one chronological presentation. It is not a copied provider
-transcript or a task-management page.
+transcript or a duplicate Team Kanban.
 
 ## Canonical Data And Semantics
 
 Required data:
 
-- `Mission`, `Wave`, and Wave exit criteria/gate projection;
+- optional `Mission`, selected/current Wave context, and Host judgment/advance
+  projection;
 - parent `AgentTeamRun` and retry lineage;
 - the selected `MemberRun`;
 - current `TeamSupervisorLease` generation and control/reconnect state;
-- `TeamMessage`, especially `kind=assignment` and its `correlation_id`;
+- current/queued/eligible `Work`, WorkEvent history, WorkDelivery receipts,
+  criteria, ownership, blockers, child Works, results and evidence;
+- `TeamMessage` with optional Work relation and conversational correlation;
 - typed message actors, delivery claim, provider receipt, recipient ACK, and
   any explicit `AgentMessageRoute`;
 - Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
@@ -46,8 +49,8 @@ Required data:
 - ephemeral `NativeActivityProjection` read from the provider session, plus a
   sanitized `member_activity` preview only when live data exists.
 
-The assignment message plus correlation is the sole run-scoped ownership proof;
-a provider self-description does not replace it.
+The latest Work projection is the sole run-scoped responsibility proof; a
+Message or provider self-description does not replace it.
 
 `AgentMember` is the stable reusable execution identity/configuration.
 `MemberRun` is one participation of that identity in one TeamRun. A Company OS
@@ -64,7 +67,7 @@ current project/session, never persisted, replayed, forwarded, or accepted as
 evidence. On refresh or expiry it disappears rather than becoming a blank
 historical event.
 
-The projection must distinguish source and durability. Assignment, handoff,
+The projection must distinguish source and durability. WorkEvents,
 PendingInteraction resolution, explicit outcome, control acknowledgement, and
 Host Wave decisions are durable Harness records. Native chat/tool/command/file/turn
 activity is read from the provider session and is rebuildable, non-evidence UI
@@ -72,11 +75,11 @@ state. Harness does not silently fall back to a mirrored history.
 
 ## Layout Contract
 
-The active visual candidate is the desktop/tablet/mobile MemberRun Focus V3
-set in
+The desktop/tablet/mobile MemberRun Focus V3 set in
 [`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
-The older Workbench V2 image remains baseline evidence, not the target visual
-contract.
+It predates Works and is a legacy visual baseline, not ADR 0050 product-truth
+evidence. A new immutable expected/actual set must be registered before Works
+is accepted. The older Workbench V2 image is historical baseline only.
 
 ### Desktop — `1440x1000`
 
@@ -89,7 +92,7 @@ tab bar, owns the page.
 | Product sidebar      | Member header                        | Context Rail     |
 | Missions / Agents    | role · provider/model · status       | Wave compact     |
 | Workflows / Knowledge| Mission > Wave > Team > Member       | Team compact     |
-| Active context tree  +--------------------------------------+ Assignment       |
+| Active context tree  +--------------------------------------+ Current Work     |
 |                      | unified chronological activity        | Outputs/evidence |
 |                      | host/member messages                  | Runtime          |
 |                      | actions / file changes / reviews      | Delegations      |
@@ -108,7 +111,7 @@ the recipient and permits a reply, clarification, or review request.
 
 - Keep a narrow/collapsed product sidebar and a full-width main stream.
 - Context modules move into a right sheet or an ordered inline section; only
-  `Wave`, `Assignment`, and `Needs You` are initially visible.
+  `Wave`, `Current Work`, and `Needs You` are initially visible.
 - Header stays above the stream; the composer stays sticky at the bottom.
 - A selected module opens without hiding the activity stream permanently.
 
@@ -119,7 +122,7 @@ the recipient and permits a reply, clarification, or review request.
 - Preserve one vertical stream and fixed composer; do not create separate
   Chat and Activity tabs.
 - Context modules are a bottom sheet in this priority: `Needs You`,
-  `Assignment`, `Wave`, `Outputs`, `Runtime`, `Delegations`.
+  `Current Work`, `Wave`, `Outputs`, `Runtime`, `Delegations`.
 - Long paths, IDs, and raw data truncate or disclose progressively; no
   horizontal page overflow.
 
@@ -130,11 +133,12 @@ than page-specific cards. Its default order is:
 
 1. **WaveCompact** — the selected Host-plan Wave's title/index, objective,
    revision, judgment state, and open-Wave action. For a Mission-scoped
-   TeamRun this is navigation/assignment context, not a parent runtime.
+   TeamRun this is navigation/Work context, not a parent runtime.
 2. **TeamCompact** — run identity, member status roll-up, one blocked or
    waiting signal, and open-war-room action.
-3. **AssignmentContract** — assignment sender/time/correlation, requested
-   outcome, owned paths, permissions, and applicable constraints.
+3. **CurrentWork** — Work id/version, creator/owner, status/readiness, context,
+   completion criteria, owned paths, permissions, blockers, child progress and
+   applicable constraints; queued and eligible Works remain one action away.
 4. **OutputsEvidence** — artifacts, checks, report, and contribution to the
    Host's current judgment. It must label absent evidence honestly.
 5. **RuntimeSummary** — provider/model/native-session binding, availability,
@@ -146,16 +150,16 @@ than page-specific cards. Its default order is:
    account/source boundary, observed time, reset time, evidence source and
    confidence — as a row BESIDE adapter compatibility, never merged into it. A
    `blocked` member whose latest action is `provider_unavailable` reads as
-   "not started, Assignment still queued", not as a failed member. `unknown`
+   "not started, Work delivery still queued", not as a failed member. `unknown`
    renders as unknown; it must never render as healthy, and an absent snapshot
    renders as "not observed".
 6. **DelegationSummary** — observed provider-native or orchestrated child work,
    with attribution and control limits made explicit.
-7. **CollaborationThread** — Host and same-Team peer messages for the current
-   Assignment correlation, including queued/delivered/acknowledged state.
+7. **CollaborationThread** — Host and same-Team peer messages linked to the
+   current Work, including queued/delivered/acknowledged state.
 
-The first module group is labeled **Current Assignment (Member Goal)**. It is a
-derived projection, not a Goal record: Assignment body and completion standard,
+The first module group is labeled **Current Work (Member Goal)**. It is a
+derived projection, not a Goal record: Work context and completion standard,
 owned paths, member state, latest progress/blocker, and latest applicable
 Steer. Missing inputs are shown as missing rather than inferred from provider
 chat.
@@ -164,7 +168,7 @@ The label must not imply that Harness owns a Goal lifecycle. Show these as
 separate rows:
 
 ```text
-Assignment       durable · corr-...
+Work             durable · work-... · version
 Execution        host-driven | provider-driven
 Continuation     inactive | active | waiting | satisfied | unknown
 Acceptance       pending | accepted | changes requested
@@ -180,7 +184,7 @@ reordering is not a requirement.
 
 ## Actions
 
-- Send a message, clarification, handoff, or review request directly to this
+- Send a message, clarification, or review discussion directly to this
   member when it is addressable.
 - **Steer** is a separate explicit action. Only that selection may inject into
   a currently active provider turn; ordinary Clarify/Review messages stay in
@@ -188,11 +192,11 @@ reordering is not a requirement.
   active turn, Steer is disabled with the reason. The operator may deliberately
   choose an ordinary queued Message, but the UI never converts one into the
   other.
-- Select an existing Assignment correlation when replying. A new message chain
-  is visually distinct and never silently loses lineage.
+- Link the current Work when replying about execution. A new conversation is
+  visually distinct and never silently changes Work state.
 - Render the selected typed author explicitly. Operator-authored messages remain
   Operator messages; only the bound provider session can author as this Member.
-- Open the assignment anchor and other correlated messages.
+- Open the Work card, WorkEvent history and linked messages.
 - Open the Team or selected Host-plan Wave without losing navigation context.
 - Open an artifact, check, or provider session summary.
 - Acknowledge a waiting/blocker signal where the message protocol permits it.
@@ -219,11 +223,11 @@ modes do not receive a fabricated Desktop target.
 
 ## Empty, Loading, And Failure States
 
-- **No assignment:** show `No assignment recorded` prominently; preserve
+- **No Work:** show `No active Work` prominently; preserve
   observed activity but do not infer ownership.
 - **No coordination/native activity yet:** show the member's starting state and
   explain which source is empty.
-- **Native session unavailable:** retain Harness identity, assignment, outcome,
+- **Native session unavailable:** retain Harness identity, Work, outcome,
   and gate history; mark native detail `missing`, `stale`, or `incompatible`
   and offer reconnect/resume only if the mode supports it.
 - **Member failed/blocked:** show the explicit failure or blocker action, its
@@ -234,33 +238,39 @@ modes do not receive a fabricated Desktop target.
   current generation-acquisition path. Unclaimed mail stays queued.
 - **Read/model error:** keep the last successful header/context state marked
   stale, show scoped retry, and do not replace the page with an empty shell.
-- **Finished assignment or TeamRun:** render history read-only and disable
+- **Finished Work or TeamRun:** render history read-only and disable
   ordinary coordination when the member is no longer addressable. If the
   provider runtime is still live, Host Close remains available and explicitly
   explains that completion did not end the runtime.
+- **Mutation conflict:** show pending mutation, claim lost, version conflict,
+  delivery uncertainty/failure, and reconciliation-required states with the
+  latest Work version and a non-destructive retry path. Never imply the
+  Member-owned Work changed when the command failed.
 
 ## Screenshot Acceptance
 
-For `member-run-focus--running-needs-you--desktop` in the visual contract:
+The previous `member-run-focus--running-needs-you--desktop` case is a legacy
+baseline. The Works contract adds new desktop/tablet/mobile cases in which:
 
 - baseline, approval-pending expected candidate, implementation capture, and labeled comparison
   all use the registered fixture, route, and `1440x1000` viewport;
 - first viewport visibly contains the Member header, a continuous mixed
-  activity/chat stream, assignment context, a Wave module, Team module, and
+  activity/chat stream, Work context, a Wave module, Team module, and
   sticky composer;
 - a live preview, when fixture-provided, is visibly labelled `not saved`; it
   must not appear in stored activity after a refresh fixture;
-- Assignment appears before dependent report/evidence in the stream or exposes
-  a clear correlation link;
+- Work context appears before dependent result/evidence and exposes linked
+  discussion;
 - the implementation does not use the legacy Member drawer or
   Overview/Activity/Messages primary tabs;
 - deviations from the approved image are recorded in
   `visual-contract.json`, not silently normalized by changing the expected
   image.
 
-The implementation and exact-viewport desktop/tablet/mobile evidence are
-complete. Product-truth and internal visual checks pass; the expected candidate
-must remain immutable while awaiting explicit user approval.
+Pre-Works implementation evidence is complete only for the legacy baseline.
+Works product truth remains pending until the new expected candidate is frozen,
+the implementation is captured at exact viewports, and product/visual/browser
+checks pass without mutating the expected image.
 
 ## Explicit Boundaries
 

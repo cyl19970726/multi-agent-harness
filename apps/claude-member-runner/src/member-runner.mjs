@@ -2,8 +2,8 @@
  * A persistent Claude Agent Team member.
  *
  * One runner == one `MemberRun` == one provider-native Claude session that
- * stays alive across many TeamMessages, many Host plan revisions, and (per
- * ADR 0037) across Waves — until the Host accepts its handoff.
+ * stays alive across durable Work inputs, ordinary TeamMessages, many Host
+ * plan revisions, and (per ADR 0037) across Waves — until the Host closes it.
  *
  * What this replaces
  * ------------------
@@ -47,10 +47,10 @@ import { buildHooks } from "./gates.mjs";
 export function createMemberRunner({ sdk, config, emit }) {
   const mailbox = new Mailbox();
   const evidence = [];
-  // `delivered` means the runner accepted a TeamMessage into its mailbox.
+  // `delivered` means the runner accepted a Work or TeamMessage input into its mailbox.
   // `consumedMessageIds` records the stronger fact that the provider stream
   // actually pulled that message as the input for a turn. The Rust control
-  // plane uses the matching id as the handoff's causation id.
+  // plane uses the matching id to acknowledge the exact input it consumed.
   const consumedMessageIds = [];
 
   const state = {
@@ -262,7 +262,7 @@ export function createMemberRunner({ sdk, config, emit }) {
       });
     },
 
-    /** Deliver a TeamMessage into the live session. */
+    /** Deliver a durable Work or ordinary TeamMessage into the live session. */
     deliver(message) {
       mailbox.push(message);
       emit("delivered", { id: message.id, kind: message.kind });
@@ -276,8 +276,8 @@ export function createMemberRunner({ sdk, config, emit }) {
       if (!query) throw new Error("member not started");
       interruptedGeneration = true;
       const receipt = await query.interrupt();
-      // The interrupted turn has no semantic handoff. Do not let its input id
-      // become the causation of a later resumed turn.
+      // The interrupted turn did not finish consuming its durable input. Do
+      // not let that input id become the trigger of a later resumed turn.
       const abandonedTriggerMessageIds = consumedMessageIds.splice(0);
       // Retire this query's consumer, then end its iterator, so `start()`
       // leaves the for-await and opens a fresh query on the same session.

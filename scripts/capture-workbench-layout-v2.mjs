@@ -147,13 +147,14 @@ async function main() {
     const cases = [
       ["agent-teams-home", "native-attempts", manifest.routes["agent-teams-home"], "Agent Teams"],
       ["mission-wave-canvas", "running-gate-pending", manifest.routes["mission-wave-canvas"], "Agent Team Console"],
-      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Team Activity"],
+      ["team-war-room", "running-needs-you", manifest.routes["team-war-room"], "Shared Works"],
       ["member-run-focus", "running-needs-you", manifest.routes["member-run-focus"], "Research Engineer"],
     ];
     const viewports = [
       [desktopWidth, desktopHeight, `desktop-${desktopWidth}x${desktopHeight}`, ""],
       [900, 1180, "tablet-900x1180", "responsive"],
       [390, 844, "mobile-390x844", "responsive"],
+      [320, 720, "mobile-320x720", "responsive"],
     ];
     const captures = [];
     const interactionChecks = [];
@@ -193,8 +194,16 @@ async function main() {
         const dimensions = await page.evaluate(() => ({
           scrollWidth: document.documentElement.scrollWidth,
           clientWidth: document.documentElement.clientWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          bodyClientWidth: document.body.clientWidth,
+          rootScrollWidth: document.getElementById("root")?.scrollWidth ?? 0,
+          rootClientWidth: document.getElementById("root")?.clientWidth ?? 0,
         }));
-        if (dimensions.scrollWidth > dimensions.clientWidth) {
+        if (
+          dimensions.scrollWidth > dimensions.clientWidth
+          || dimensions.bodyScrollWidth > dimensions.bodyClientWidth
+          || dimensions.rootScrollWidth > dimensions.rootClientWidth
+        ) {
           throw new Error(`${pageName} ${viewportName} has horizontal overflow: ${JSON.stringify(dimensions)}`);
         }
         if (errors.length) throw new Error(`${pageName} ${viewportName} console errors: ${errors.join(" | ")}`);
@@ -266,6 +275,19 @@ async function main() {
         }
 
         if (width === desktopWidth && pageName === "team-war-room") {
+          await page.getByRole("button", { name: /Works/, exact: false }).first().waitFor({ state: "visible" });
+          await page.getByRole("region", { name: "Shared team Works board", exact: true }).waitFor({ state: "visible" });
+          await page.getByTestId("team-works-board").getByText("Validate responsive Team UX", { exact: true }).first().click();
+          await page.getByText("Waiting for pressure fixture and screenshots.", { exact: true }).waitFor({ state: "visible" });
+          interactionChecks.push({
+            page: pageName,
+            action: "works-default-and-detail",
+            selected_work_id: "work-responsive-qa",
+            result: "passed",
+          });
+
+          await page.getByRole("button", { name: "Close Work details", exact: true }).click();
+          await page.getByRole("button", { name: /Activity/, exact: false }).first().click();
           const conversationRows = page.locator('[data-testid="team-conversation"] ol > li');
           const initialCount = await conversationRows.count();
           await page.getByTestId("mailbox-member-wave2-qa").click();

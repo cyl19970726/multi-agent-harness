@@ -74,7 +74,8 @@ context:
 ```text
 Mission context -> ordered Host-plan Wave revisions
   -> linked independent Agent Team(s)
-  -> assignment/messages/actions/native sessions
+  -> shared Works / WorkDelivery / linked conversation / native sessions
+  -> Member submit -> Host accept or request changes
   -> Host judgment -> next Wave or Mission closeout
 ```
 
@@ -106,8 +107,8 @@ copied into Mission/Wave IA.
 | Page spec | Owns |
 | --- | --- |
 | [Mission/Wave Canvas](pages/mission-wave-canvas.md) | One Mission's durable context, linked Teams, ordered Host-plan Wave revisions, decisions, and closeout. |
-| [Agent Team War Room](pages/team-run-war-room.md) | One independent or Mission-scoped AgentTeamRun: assignment/message ownership, member presence, unified activity, artifacts, and selected Host-plan context. |
-| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: assignment, activity, evidence, runtime, and direct Team messages. |
+| [Agent Team War Room](pages/team-run-war-room.md) | One independent or Mission-scoped AgentTeamRun: shared Works ownership/status, Work-linked conversation, member presence, unified activity, artifacts, and selected Host-plan context. |
+| [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct Team messages. |
 | [Standing Agent Focus](pages/standing-agent-focus.md) | One durable organization Agent: responsibilities, WorkItems, documents, availability, and subject-linked collaboration. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
 

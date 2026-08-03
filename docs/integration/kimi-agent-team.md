@@ -1,7 +1,7 @@
 # Kimi ACP Agent Team runtime
 
 ```text
-status: implementation reference
+status: implementation reference; Work/WorkDelivery target pending ADR 0050
 owner_role: provider-integration
 canonical_for: Kimi persistent Agent Team execution, controls, mailbox boundary, and resume
 ```
@@ -79,12 +79,12 @@ receipt in the Member control snapshot.
 ## Runtime sequence
 
 ```text
-MemberRun + correlated Assignment
+MemberRun + active Work/version
   -> Kimi ACP process over stdio
   -> initialize
   -> session/new, or session/resume for a known compatible session
   -> session/load only when an older ACP server does not implement resume
-  -> session/prompt for one eligible mailbox envelope
+  -> session/prompt for one eligible Work/message envelope
   -> explicit Host Close ends the Member runtime
 ```
 
@@ -101,7 +101,7 @@ surface. Harness adopts it in layers:
 | --- | --- |
 | `session/resume` | implemented and preferred for exact-session reattachment |
 | `session/set_config_option` | implemented for model, thinking effort, and mode receipts |
-| `session/update` / `session/request_permission` | implemented for transient activity and durable `PendingInteraction` routing |
+| `session/update` / `session/request_permission` | implemented for transient activity; trusted full-access safe-allow tool requests receive a bounded synchronous ACK, while questions, reviews, reject-only, and unknown requests use durable `PendingInteraction` routing |
 | image and embedded resource prompt blocks | supported upstream; add only through a typed, bounded Member input contract rather than embedding arbitrary blobs in `TeamMessage` |
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |
@@ -130,17 +130,18 @@ Its ordinary-message boundary is `next_round_batched`:
   boundary. Interrupt can stop the current turn through the reviewed
   `session/cancel` notification, but it does not inject the correction into
   that turn; the queued message still belongs to the next safe provider round;
-- a handoff produced before a newer correction is delivered cannot satisfy the
-  newer assignment/revision chain. The corrected round needs its own receipt
-  and a handoff that restates the binding.
+- a Work submission created before a newer Work version or correction is
+  delivered cannot satisfy the newer version. The corrected round needs its
+  own receipt and explicit resubmission.
 
 [Issue #274](https://github.com/cyl19970726/multi-agent-harness/issues/274)
 is the live dogfood trail for this contract. CLI and Dashboard label durable
 acceptance separately from provider receipt. The Supervisor pumps queued mail
 after the terminal prompt boundary; two corrections are rendered in order in
-one next-round envelope and receive one native prompt receipt. A Handoff is
-fenced while same-correlation mail remains `queued` or `claimed`, so the
-pre-correction result cannot satisfy the updated work chain.
+one next-round envelope and receive one native prompt receipt. Submission is
+fenced while a newer WorkDelivery or linked response-required Message remains
+`queued` or `claimed`, so the pre-correction result cannot satisfy the updated
+Work version.
 
 ## Restart and resume
 
@@ -157,12 +158,13 @@ Recovery distinguishes three delivery states:
 - `queued`: no provider side effect exists; reconnect, then claim normally;
 - `claimed`: acceptance is uncertain; expose reconciliation instead of
   replaying the content;
-- `delivered` without a correlated Handoff: resume the same native session and
-  ask the Member to inspect native state/workspace and complete or restate the
-  work. Do not redeliver the Assignment as a new attempt.
+- `provider_received` without a Work submission: resume the same native session
+  and ask the Member to inspect native state/workspace and the latest Work
+  version. Do not redeliver Work as a new attempt.
 
 Acceptance must repeat the busy-turn scenario after Supervisor replacement:
 two ordered deferred messages reach the same MemberRun/session exactly once,
-the Member produces a corrected handoff, and Host ACKs it. An incompatible
+the Member submits the corrected Work version, and Host accepts or requests
+changes explicitly. An incompatible
 native session remains historical provider evidence while the durable Standing
 Agent and Company Work continue through an explicit new session.
