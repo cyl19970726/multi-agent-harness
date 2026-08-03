@@ -1,0 +1,12 @@
+{
+  "id": "work-event-1",
+  "team_run_id": "team-run-1",
+  "work_id": "work-1",
+  "sequence": 1,
+  "kind": "created",
+  "expected_version": 0,
+  "resulting_version": 1,
+  "performed_by_actor": { "kind": "host", "id": "host" },
+  "payload": null,
+  "created_at": "unix-ms:1"
+}

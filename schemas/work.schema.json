@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work.schema.json",
+  "title": "AgentTeamWork",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "team_run_id", "title", "context_markdown", "completion_criteria_markdown", "status", "claim_mode", "priority", "created_by_actor", "version", "created_at", "updated_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "parent_work_id": { "type": ["string", "null"], "minLength": 1 },
+    "source_work_item_ref": { "type": ["string", "null"], "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "context_markdown": { "type": "string" },
+    "completion_criteria_markdown": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["open", "in_progress", "blocked", "review", "done", "cancelled"] },
+    "owner_member_id": { "type": ["string", "null"], "minLength": 1 },
+    "active_member_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "claim_mode": { "type": "string", "enum": ["host_assign", "team_claim"] },
+    "eligible_member_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "prerequisite_work_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+    "created_by_actor": { "$ref": "#/$defs/actor" },
+    "result_summary": { "type": ["string", "null"] },
+    "blocker_reason": { "type": ["string", "null"], "minLength": 1 },
+    "artifact_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "check_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "version": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

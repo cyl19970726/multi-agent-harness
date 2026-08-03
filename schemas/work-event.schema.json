@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-event.schema.json",
+  "title": "AgentTeamWorkEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "team_run_id", "work_id", "sequence", "kind", "expected_version", "resulting_version", "performed_by_actor", "idempotency_key", "payload", "created_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "work_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "kind": { "type": "string", "enum": ["created", "assigned", "claimed", "started", "released", "blocked", "resumed", "submitted", "changes_requested", "accepted", "cancelled", "updated", "became_ready", "prerequisite_cancelled", "rebound"] },
+    "expected_version": { "type": "integer", "minimum": 0 },
+    "resulting_version": { "type": "integer", "minimum": 1 },
+    "performed_by_actor": { "$ref": "#/$defs/actor" },
+    "authority_actor": { "anyOf": [{ "$ref": "#/$defs/actor" }, { "type": "null" }] },
+    "causation_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": { "kind": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1 } }
+    },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "payload": {},
+    "created_at": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

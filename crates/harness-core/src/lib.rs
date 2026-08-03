@@ -2839,6 +2839,227 @@ impl TeamMessage {
     }
 }
 
+/// Agent Team Work is durable responsibility inside one TeamRun. WorkEvent is
+/// the append-only authority; this row is the latest rebuildable projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkStatus {
+    Open,
+    InProgress,
+    Blocked,
+    Review,
+    Done,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkClaimMode {
+    HostAssign,
+    TeamClaim,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkPriority {
+    Low,
+    Normal,
+    High,
+    Urgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkRef {
+    pub team_run_id: String,
+    pub work_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCausationRef {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCommandContext {
+    pub event_id: String,
+    pub performed_by_actor: TeamActorRef,
+    #[serde(default)]
+    pub authority_actor: Option<TeamActorRef>,
+    #[serde(default)]
+    pub causation_ref: Option<WorkCausationRef>,
+    pub idempotency_key: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Work {
+    pub id: String,
+    pub team_run_id: String,
+    /// Same-TeamRun hierarchy only. Cross-Team delegation uses
+    /// [`WorkDelegation`].
+    #[serde(default)]
+    pub parent_work_id: Option<String>,
+    #[serde(default)]
+    pub source_work_item_ref: Option<String>,
+    pub title: String,
+    pub context_markdown: String,
+    pub completion_criteria_markdown: String,
+    pub status: WorkStatus,
+    /// Stable AgentMember/slot identity. Runtime generations bind through
+    /// `active_member_run_id`.
+    #[serde(default)]
+    pub owner_member_id: Option<String>,
+    #[serde(default)]
+    pub active_member_run_id: Option<String>,
+    pub claim_mode: WorkClaimMode,
+    #[serde(default)]
+    pub eligible_member_ids: Vec<String>,
+    #[serde(default)]
+    pub prerequisite_work_ids: Vec<String>,
+    pub priority: WorkPriority,
+    pub created_by_actor: TeamActorRef,
+    #[serde(default)]
+    pub result_summary: Option<String>,
+    #[serde(default)]
+    pub blocker_reason: Option<String>,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub check_refs: Vec<String>,
+    pub version: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl Work {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status, WorkStatus::Done | WorkStatus::Cancelled)
+    }
+
+    pub fn is_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
+        if self.status != WorkStatus::Open {
+            return false;
+        }
+        let by_id = works
+            .into_iter()
+            .map(|work| (work.id.as_str(), work.status))
+            .collect::<std::collections::HashMap<_, _>>();
+        self.prerequisite_work_ids
+            .iter()
+            .all(|id| by_id.get(id.as_str()) == Some(&WorkStatus::Done))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkEventKind {
+    Created,
+    Assigned,
+    Claimed,
+    Started,
+    Released,
+    Blocked,
+    Resumed,
+    Submitted,
+    ChangesRequested,
+    Accepted,
+    Cancelled,
+    Updated,
+    BecameReady,
+    PrerequisiteCancelled,
+    Rebound,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkEvent {
+    pub id: String,
+    pub team_run_id: String,
+    pub work_id: String,
+    pub sequence: u64,
+    pub kind: WorkEventKind,
+    pub expected_version: u64,
+    pub resulting_version: u64,
+    pub performed_by_actor: TeamActorRef,
+    #[serde(default)]
+    pub authority_actor: Option<TeamActorRef>,
+    #[serde(default)]
+    pub causation_ref: Option<WorkCausationRef>,
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDeliveryStatus {
+    Queued,
+    Claimed,
+    ProviderReceived,
+    Acknowledged,
+    Failed,
+    Invalidated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkDelivery {
+    pub id: String,
+    pub work_event_id: String,
+    pub team_run_id: String,
+    pub work_id: String,
+    pub work_version: u64,
+    pub recipient_member_run_id: String,
+    pub status: WorkDeliveryStatus,
+    pub attempt: u32,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claimed_by_supervisor_id: Option<String>,
+    #[serde(default)]
+    pub claimed_generation: Option<u64>,
+    #[serde(default)]
+    pub provider_receipt_id: Option<String>,
+    pub updated_at: String,
+}
+
+/// One crash-atomic store row: event, resulting projection, and initial outbox
+/// deliveries are serialized as one JSONL record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkOperation {
+    pub event: WorkEvent,
+    pub work: Work,
+    #[serde(default)]
+    pub deliveries: Vec<WorkDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkDeliveryUpdate {
+    pub delivery_id: String,
+    pub status: WorkDeliveryStatus,
+    pub attempt: u32,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claimed_by_supervisor_id: Option<String>,
+    #[serde(default)]
+    pub claimed_generation: Option<u64>,
+    #[serde(default)]
+    pub provider_receipt_id: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkDelegation {
+    pub id: String,
+    pub parent_work_ref: WorkRef,
+    pub parent_owner_member_run_id: String,
+    pub child_agent_team_id: String,
+    pub child_team_run_id: String,
+    pub child_host_actor: TeamActorRef,
+    pub created_at: String,
+}
+
 /// Status of a single [`MemberAction`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

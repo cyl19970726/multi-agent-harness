@@ -12,8 +12,10 @@ use harness_core::{
     Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
     TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
     TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkflowArtifactManifest,
-    WorkflowPatch, WorkflowRun, WorkflowStep,
+    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
+    WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -709,6 +711,511 @@ impl HarnessStore {
 
     pub fn append_member_run(&self, value: &MemberRun) -> StoreResult<()> {
         self.append_jsonl("member_runs.jsonl", value)
+    }
+
+    /// Insert a Work and its authoritative creation event/outbox as one
+    /// crash-atomic JSONL row. Work commands intentionally refuse a legacy
+    /// Assignment-message store so one Execution Space never has two ownership
+    /// authorities.
+    pub fn insert_work(&self, mut work: Work, context: WorkCommandContext) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) =
+            self.operation_by_idempotency_unlocked(&work.team_run_id, &context.idempotency_key)?
+        {
+            return Ok(existing.work);
+        }
+        self.require_team_run_unlocked(&work.team_run_id)?;
+        if self.latest_works_unlocked()?.contains_key(work.id.as_str()) {
+            return Err(StoreError::Conflict(format!(
+                "work already exists: {}",
+                work.id
+            )));
+        }
+        if work.title.trim().is_empty() || work.completion_criteria_markdown.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "work title and completion criteria are required".to_string(),
+            ));
+        }
+        work.version = 1;
+        work.status = WorkStatus::Open;
+        work.created_at = context.created_at.clone();
+        work.updated_at = context.created_at.clone();
+        self.validate_work_relations_unlocked(&work)?;
+        let deliveries =
+            self.initial_work_deliveries_unlocked(&work, &context.event_id, &context.created_at)?;
+        let operation = WorkOperation {
+            event: WorkEvent {
+                id: context.event_id,
+                team_run_id: work.team_run_id.clone(),
+                work_id: work.id.clone(),
+                sequence: 1,
+                kind: WorkEventKind::Created,
+                expected_version: 0,
+                resulting_version: 1,
+                performed_by_actor: context.performed_by_actor,
+                authority_actor: context.authority_actor,
+                causation_ref: context.causation_ref,
+                idempotency_key: context.idempotency_key,
+                payload: serde_json::Value::Null,
+                created_at: context.created_at,
+            },
+            work: work.clone(),
+            deliveries,
+        };
+        self.append_jsonl_unlocked("work_operations.jsonl", &operation)?;
+        Ok(work)
+    }
+
+    pub fn assign_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        owner_member_run_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) =
+            self.operation_by_idempotency_unlocked_for_any_team(&context.idempotency_key)?
+        {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.is_terminal() || current.status != WorkStatus::Open {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} must be open to assign"
+            )));
+        }
+        self.ensure_deliveries_reassignable_unlocked(work_id)?;
+        let member = self.require_member_run_unlocked(owner_member_run_id, &current.team_run_id)?;
+        let owner_id = stable_member_identity(&member);
+        let mut next = current.clone();
+        next.owner_member_id = Some(owner_id);
+        next.active_member_run_id = Some(member.id.clone());
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_unlocked(current, next, WorkEventKind::Assigned, context)
+    }
+
+    pub fn claim_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) =
+            self.operation_by_idempotency_unlocked_for_any_team(&context.idempotency_key)?
+        {
+            return Ok(existing.work);
+        }
+        require_member_actor(&context.performed_by_actor, member_run_id)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.status != WorkStatus::Open
+            || current.owner_member_id.is_some()
+            || current.claim_mode != WorkClaimMode::TeamClaim
+        {
+            return Err(StoreError::Conflict(format!(
+                "CLAIM_LOST: work {work_id} is not an unowned team-claim Work"
+            )));
+        }
+        let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+        if member.status != harness_core::MemberRunStatus::Idle || !member.coordination_is_active()
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_BUSY: MemberRun {member_run_id} is not idle and active"
+            )));
+        }
+        let owner_id = stable_member_identity(&member);
+        if !current.eligible_member_ids.is_empty()
+            && !current.eligible_member_ids.iter().any(|id| id == &owner_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "member {owner_id} is not eligible to claim work {work_id}"
+            )));
+        }
+        let works = self
+            .latest_works_unlocked()?
+            .into_values()
+            .collect::<Vec<_>>();
+        if !current.is_ready(works.iter()) {
+            return Err(StoreError::Conflict(format!("work {work_id} is not ready")));
+        }
+        if works.iter().any(|work| {
+            work.team_run_id == current.team_run_id
+                && work.status == WorkStatus::InProgress
+                && work.active_member_run_id.as_deref() == Some(member_run_id)
+        }) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_BUSY: MemberRun {member_run_id} already has active Work"
+            )));
+        }
+        let mut next = current.clone();
+        next.owner_member_id = Some(owner_id);
+        next.active_member_run_id = Some(member.id.clone());
+        next.status = WorkStatus::InProgress;
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_unlocked(current, next, WorkEventKind::Claimed, context)
+    }
+
+    pub fn block_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        reason: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        if reason.trim().is_empty() {
+            return Err(StoreError::Conflict("BLOCKER_REASON_REQUIRED".to_string()));
+        }
+        self.transition_owned_work(
+            work_id,
+            expected_version,
+            member_run_id,
+            context,
+            WorkEventKind::Blocked,
+            WorkStatus::InProgress,
+            WorkStatus::Blocked,
+            |work| work.blocker_reason = Some(reason.to_string()),
+        )
+    }
+
+    pub fn submit_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        result_summary: &str,
+        artifact_refs: Vec<String>,
+        check_refs: Vec<String>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        if result_summary.trim().is_empty() {
+            return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
+        }
+        self.transition_owned_work(
+            work_id,
+            expected_version,
+            member_run_id,
+            context,
+            WorkEventKind::Submitted,
+            WorkStatus::InProgress,
+            WorkStatus::Review,
+            |work| {
+                work.result_summary = Some(result_summary.to_string());
+                work.artifact_refs = artifact_refs;
+                work.check_refs = check_refs;
+                work.blocker_reason = None;
+            },
+        )
+    }
+
+    pub fn accept_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) =
+            self.operation_by_idempotency_unlocked_for_any_team(&context.idempotency_key)?
+        {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.status != WorkStatus::Review {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} must await Host acceptance"
+            )));
+        }
+        let mut next = current.clone();
+        next.status = WorkStatus::Done;
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_unlocked(current, next, WorkEventKind::Accepted, context)
+    }
+
+    fn transition_owned_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        context: WorkCommandContext,
+        kind: WorkEventKind,
+        required_status: WorkStatus,
+        resulting_status: WorkStatus,
+        mutate: impl FnOnce(&mut Work),
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) =
+            self.operation_by_idempotency_unlocked_for_any_team(&context.idempotency_key)?
+        {
+            return Ok(existing.work);
+        }
+        require_member_actor(&context.performed_by_actor, member_run_id)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.status != required_status
+            || current.active_member_run_id.as_deref() != Some(member_run_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {member_run_id} does not own active work {work_id} in required state"
+            )));
+        }
+        let mut next = current.clone();
+        mutate(&mut next);
+        next.status = resulting_status;
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_unlocked(current, next, kind, context)
+    }
+
+    fn append_work_transition_unlocked(
+        &self,
+        current: Work,
+        next: Work,
+        kind: WorkEventKind,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        let sequence = self
+            .work_operations_unlocked()?
+            .iter()
+            .filter(|operation| operation.work.id == current.id)
+            .count() as u64
+            + 1;
+        let deliveries =
+            self.initial_work_deliveries_unlocked(&next, &context.event_id, &context.created_at)?;
+        let operation = WorkOperation {
+            event: WorkEvent {
+                id: context.event_id,
+                team_run_id: next.team_run_id.clone(),
+                work_id: next.id.clone(),
+                sequence,
+                kind,
+                expected_version: current.version,
+                resulting_version: next.version,
+                performed_by_actor: context.performed_by_actor,
+                authority_actor: context.authority_actor,
+                causation_ref: context.causation_ref,
+                idempotency_key: context.idempotency_key,
+                payload: serde_json::Value::Null,
+                created_at: context.created_at,
+            },
+            work: next.clone(),
+            deliveries,
+        };
+        self.append_jsonl_unlocked("work_operations.jsonl", &operation)?;
+        Ok(next)
+    }
+
+    fn ensure_work_store_compatible_unlocked(&self) -> StoreResult<()> {
+        if self
+            .read_jsonl::<TeamMessage>("team_messages.jsonl")?
+            .iter()
+            .any(|message| message.kind == TeamMessageKind::Assignment)
+        {
+            return Err(StoreError::Conflict(
+                "legacy Agent Team Assignment messages found; archive this Execution Space and use a fresh Works space"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_team_run_unlocked(&self, team_run_id: &str) -> StoreResult<AgentTeamRun> {
+        latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        })
+        .remove(team_run_id)
+        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))
+    }
+
+    fn require_member_run_unlocked(
+        &self,
+        member_run_id: &str,
+        team_run_id: &str,
+    ) -> StoreResult<MemberRun> {
+        let member = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        })
+        .remove(member_run_id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {member_run_id}")))?;
+        if member.team_run_id != team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {member_run_id} does not belong to TeamRun {team_run_id}"
+            )));
+        }
+        Ok(member)
+    }
+
+    fn validate_work_relations_unlocked(&self, work: &Work) -> StoreResult<()> {
+        let works = self.latest_works_unlocked()?;
+        for prerequisite_id in &work.prerequisite_work_ids {
+            let prerequisite = works.get(prerequisite_id).ok_or_else(|| {
+                StoreError::Conflict(format!("prerequisite work not found: {prerequisite_id}"))
+            })?;
+            if prerequisite.team_run_id != work.team_run_id || prerequisite.id == work.id {
+                return Err(StoreError::Conflict(
+                    "prerequisites must be distinct Works in the same TeamRun".to_string(),
+                ));
+            }
+        }
+        if let Some(parent_id) = work.parent_work_id.as_deref() {
+            let parent = works.get(parent_id).ok_or_else(|| {
+                StoreError::Conflict(format!("parent work not found: {parent_id}"))
+            })?;
+            if parent.team_run_id != work.team_run_id || parent.id == work.id {
+                return Err(StoreError::Conflict(
+                    "parent_work_id must reference a distinct Work in the same TeamRun".to_string(),
+                ));
+            }
+        }
+        if let Some(member_run_id) = work.active_member_run_id.as_deref() {
+            let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+            if work.owner_member_id.as_deref() != Some(stable_member_identity(&member).as_str()) {
+                return Err(StoreError::Conflict(
+                    "owner_member_id does not match active MemberRun stable identity".to_string(),
+                ));
+            }
+        } else if work.owner_member_id.is_some() {
+            return Err(StoreError::Conflict(
+                "owned Work requires an active_member_run_id binding".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn initial_work_deliveries_unlocked(
+        &self,
+        work: &Work,
+        event_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<Vec<WorkDelivery>> {
+        let Some(member_run_id) = work.active_member_run_id.as_deref() else {
+            return Ok(Vec::new());
+        };
+        self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+        Ok(vec![WorkDelivery {
+            id: format!("work-delivery-{event_id}-{member_run_id}"),
+            work_event_id: event_id.to_string(),
+            team_run_id: work.team_run_id.clone(),
+            work_id: work.id.clone(),
+            work_version: work.version,
+            recipient_member_run_id: member_run_id.to_string(),
+            status: WorkDeliveryStatus::Queued,
+            attempt: 0,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            provider_receipt_id: None,
+            updated_at: updated_at.to_string(),
+        }])
+    }
+
+    fn current_work_unlocked(&self, work_id: &str, expected_version: u64) -> StoreResult<Work> {
+        let current = self
+            .latest_works_unlocked()?
+            .remove(work_id)
+            .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
+        if current.version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "VERSION_CONFLICT: work {work_id} is version {}, expected {expected_version}",
+                current.version
+            )));
+        }
+        Ok(current)
+    }
+
+    fn ensure_deliveries_reassignable_unlocked(&self, work_id: &str) -> StoreResult<()> {
+        if self
+            .latest_work_deliveries_unlocked()?
+            .values()
+            .any(|delivery| {
+                delivery.work_id == work_id
+                    && matches!(
+                        delivery.status,
+                        WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
+                    )
+            })
+        {
+            return Err(StoreError::Conflict(
+                "RECONCILIATION_REQUIRED: Work delivery was already accepted".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn operation_by_idempotency_unlocked(
+        &self,
+        team_run_id: &str,
+        idempotency_key: &str,
+    ) -> StoreResult<Option<WorkOperation>> {
+        Ok(self
+            .work_operations_unlocked()?
+            .into_iter()
+            .find(|operation| {
+                operation.work.team_run_id == team_run_id
+                    && operation.event.idempotency_key == idempotency_key
+            }))
+    }
+
+    fn operation_by_idempotency_unlocked_for_any_team(
+        &self,
+        idempotency_key: &str,
+    ) -> StoreResult<Option<WorkOperation>> {
+        Ok(self
+            .work_operations_unlocked()?
+            .into_iter()
+            .find(|operation| operation.event.idempotency_key == idempotency_key))
+    }
+
+    fn work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
+        self.read_jsonl("work_operations.jsonl")
+    }
+
+    fn latest_works_unlocked(&self) -> StoreResult<std::collections::BTreeMap<String, Work>> {
+        Ok(latest_by_id(self.work_operations_unlocked()?, |operation| {
+            operation.work.id.clone()
+        })
+        .into_iter()
+        .map(|(id, operation)| (id, operation.work))
+        .collect())
+    }
+
+    fn latest_work_deliveries_unlocked(
+        &self,
+    ) -> StoreResult<std::collections::BTreeMap<String, WorkDelivery>> {
+        let mut deliveries = std::collections::BTreeMap::new();
+        for operation in self.work_operations_unlocked()? {
+            for delivery in operation.deliveries {
+                deliveries.insert(delivery.id.clone(), delivery);
+            }
+        }
+        for update in self.read_jsonl::<WorkDeliveryUpdate>("work_delivery_updates.jsonl")? {
+            if let Some(delivery) = deliveries.get_mut(&update.delivery_id) {
+                delivery.status = update.status;
+                delivery.attempt = update.attempt;
+                delivery.claim_id = update.claim_id;
+                delivery.claimed_by_supervisor_id = update.claimed_by_supervisor_id;
+                delivery.claimed_generation = update.claimed_generation;
+                delivery.provider_receipt_id = update.provider_receipt_id;
+                delivery.updated_at = update.updated_at;
+            }
+        }
+        Ok(deliveries)
     }
 
     pub fn append_team_message(&self, value: &TeamMessage) -> StoreResult<()> {
@@ -1589,6 +2096,29 @@ impl HarnessStore {
         self.read_jsonl("team_messages.jsonl")
     }
 
+    pub fn work_operations(&self) -> StoreResult<Vec<WorkOperation>> {
+        self.work_operations_unlocked()
+    }
+
+    pub fn latest_works(&self) -> StoreResult<Vec<Work>> {
+        Ok(self.latest_works_unlocked()?.into_values().collect())
+    }
+
+    pub fn work_events(&self) -> StoreResult<Vec<WorkEvent>> {
+        Ok(self
+            .work_operations_unlocked()?
+            .into_iter()
+            .map(|operation| operation.event)
+            .collect())
+    }
+
+    pub fn latest_work_deliveries(&self) -> StoreResult<Vec<WorkDelivery>> {
+        Ok(self
+            .latest_work_deliveries_unlocked()?
+            .into_values()
+            .collect())
+    }
+
     pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {
         self.read_jsonl("team_supervisor_leases.jsonl")
     }
@@ -1852,6 +2382,42 @@ fn latest_by_id<T>(
         latest.insert(id(&value), value);
     }
     latest
+}
+
+fn stable_member_identity(member: &MemberRun) -> String {
+    member
+        .agent_member_id
+        .clone()
+        .or_else(|| member.slot_id.clone())
+        .unwrap_or_else(|| member.id.clone())
+}
+
+fn require_host_actor(actor: &harness_core::TeamActorRef) -> StoreResult<()> {
+    if matches!(
+        actor.kind,
+        harness_core::TeamActorKind::Host
+            | harness_core::TeamActorKind::Operator
+            | harness_core::TeamActorKind::Service
+    ) {
+        Ok(())
+    } else {
+        Err(StoreError::Conflict(
+            "Host authority is required for this Work command".to_string(),
+        ))
+    }
+}
+
+fn require_member_actor(
+    actor: &harness_core::TeamActorRef,
+    member_run_id: &str,
+) -> StoreResult<()> {
+    if actor.kind == harness_core::TeamActorKind::MemberRun && actor.id == member_run_id {
+        Ok(())
+    } else {
+        Err(StoreError::Conflict(format!(
+            "trusted MemberRun actor {member_run_id} is required"
+        )))
+    }
 }
 
 fn delivery_blocks_another_claim(delivery: &MessageDelivery) -> bool {
@@ -2596,6 +3162,7 @@ mod tests {
 
     fn append_sparse_row(root: &Path, file_name: &str, row: &str) {
         let mut file = OpenOptions::new()
+            .create(true)
             .append(true)
             .open(root.join(file_name))
             .expect("open jsonl for sparse row");
@@ -3502,6 +4069,268 @@ mod tests {
         assert!(sparse.member_run_id.is_none());
         assert!(sparse.delegation_run_id.is_none());
 
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    fn work_test_fixture(
+        name: &str,
+    ) -> (PathBuf, HarnessStore, AgentTeamRun, MemberRun, MemberRun) {
+        let root = team_test_root(name);
+        let store = HarnessStore::new(&root);
+        let run = AgentTeamRun {
+            id: format!("tr-{name}"),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            project_binding_id: None,
+            host_surface: "codex-app".into(),
+            host_thread_id: Some(format!("host-{name}")),
+            host_actor: None,
+            host_control_mode: Default::default(),
+            objective: "prove Works".into(),
+            execution_root: None,
+            status: TeamRunStatus::Running,
+            member_run_ids: vec![format!("mr-{name}-a"), format!("mr-{name}-b")],
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        let member = |suffix: &str| MemberRun {
+            id: format!("mr-{name}-{suffix}"),
+            team_run_id: run.id.clone(),
+            slot_id: Some(format!("slot-{suffix}")),
+            agent_member_id: Some(format!("agent-{suffix}")),
+            name: format!("Member {suffix}"),
+            role: "builder".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: None,
+            provider_capacity: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        let member_a = member("a");
+        let member_b = member("b");
+        store.append_team_run(&run).expect("append team run");
+        store.append_member_run(&member_a).expect("append member a");
+        store.append_member_run(&member_b).expect("append member b");
+        (root, store, run, member_a, member_b)
+    }
+
+    fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
+        WorkCommandContext {
+            event_id: id.into(),
+            performed_by_actor: harness_core::TeamActorRef {
+                kind: harness_core::TeamActorKind::Host,
+                id: "host".into(),
+                display_name: Some("Host".into()),
+                authn_source: Some("test".into()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: key.into(),
+            created_at: at.into(),
+        }
+    }
+
+    fn member_work_context(
+        member_run_id: &str,
+        id: &str,
+        key: &str,
+        at: &str,
+    ) -> WorkCommandContext {
+        WorkCommandContext {
+            event_id: id.into(),
+            performed_by_actor: harness_core::TeamActorRef {
+                kind: harness_core::TeamActorKind::MemberRun,
+                id: member_run_id.into(),
+                display_name: None,
+                authn_source: Some("bound-runtime:test".into()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: key.into(),
+            created_at: at.into(),
+        }
+    }
+
+    fn unassigned_test_work(run_id: &str, id: &str) -> Work {
+        Work {
+            id: id.into(),
+            team_run_id: run_id.into(),
+            parent_work_id: None,
+            source_work_item_ref: None,
+            title: "Implement Work core".into(),
+            context_markdown: "Build the smallest correct slice.".into(),
+            completion_criteria_markdown: "Tests pass and state is reconstructable.".into(),
+            status: WorkStatus::Open,
+            owner_member_id: None,
+            active_member_run_id: None,
+            claim_mode: WorkClaimMode::TeamClaim,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: harness_core::WorkPriority::High,
+            created_by_actor: host_work_context("ignored", "ignored", "unix-ms:1")
+                .performed_by_actor,
+            result_summary: None,
+            blocker_reason: None,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            version: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn work_lifecycle_is_event_authoritative_and_requires_host_acceptance() {
+        let (root, store, run, member, _) = work_test_fixture("work-lifecycle");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-1"),
+                host_work_context("we-1", "create-1", "unix-ms:2"),
+            )
+            .expect("create Work");
+        assert_eq!(work.version, 1);
+        assert_eq!(work.status, WorkStatus::Open);
+
+        let claimed = store
+            .claim_work(
+                &work.id,
+                1,
+                &member.id,
+                member_work_context(&member.id, "we-2", "claim-1", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        assert_eq!(claimed.status, WorkStatus::InProgress);
+        assert_eq!(claimed.owner_member_id.as_deref(), Some("agent-a"));
+
+        let submitted = store
+            .submit_work(
+                &work.id,
+                2,
+                &member.id,
+                "Implemented and checked",
+                vec!["artifact://patch".into()],
+                vec!["check://unit".into()],
+                member_work_context(&member.id, "we-3", "submit-1", "unix-ms:4"),
+            )
+            .expect("submit Work");
+        assert_eq!(submitted.status, WorkStatus::Review);
+
+        let accepted = store
+            .accept_work(
+                &work.id,
+                3,
+                host_work_context("we-4", "accept-1", "unix-ms:5"),
+            )
+            .expect("Host accepts Work");
+        assert_eq!(accepted.status, WorkStatus::Done);
+        assert_eq!(store.work_events().expect("events").len(), 4);
+        assert_eq!(store.latest_works().expect("works"), vec![accepted]);
+        assert!(!store
+            .latest_work_deliveries()
+            .expect("deliveries")
+            .is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_work_claim_has_exactly_one_winner_and_idempotent_retry() {
+        let (root, store, run, member_a, member_b) = work_test_fixture("work-claim-race");
+        store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-race"),
+                host_work_context("we-race-1", "create-race", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = [member_a, member_b]
+            .into_iter()
+            .enumerate()
+            .map(|(index, member)| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.claim_work(
+                        "work-race",
+                        1,
+                        &member.id,
+                        member_work_context(
+                            &member.id,
+                            &format!("we-race-{}", index + 2),
+                            &format!("claim-race-{index}"),
+                            "unix-ms:3",
+                        ),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claim thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        let winner = results.into_iter().find_map(Result::ok).expect("winner");
+        let retry_member = winner
+            .active_member_run_id
+            .as_deref()
+            .expect("active member");
+        let retried = store
+            .claim_work(
+                "work-race",
+                1,
+                retry_member,
+                member_work_context(
+                    retry_member,
+                    "ignored",
+                    if retry_member.ends_with("-a") {
+                        "claim-race-0"
+                    } else {
+                        "claim-race-1"
+                    },
+                    "unix-ms:4",
+                ),
+            )
+            .expect("idempotent retry");
+        assert_eq!(retried, winner);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_commands_fail_fast_on_legacy_assignment_store() {
+        let (root, store, run, _, _) = work_test_fixture("legacy-work-store");
+        append_sparse_row(
+            &root,
+            "team_messages.jsonl",
+            &format!(
+                r#"{{"id":"legacy-assignment","team_run_id":"{}","from_member_id":"host","kind":"assignment","body":"legacy","correlation_id":"legacy","created_at":"unix-ms:1"}}"#,
+                run.id
+            ),
+        );
+        let error = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-rejected"),
+                host_work_context("we-rejected", "create-rejected", "unix-ms:2"),
+            )
+            .expect_err("legacy store must be rejected");
+        assert!(error.to_string().contains("fresh Works space"));
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
