@@ -144,14 +144,13 @@ project_id
 mission_id? / origin_wave_id?
 team_run_id
 member_run_id
-assignment_message_id
-correlation_id
+work_id / work_version / work_delivery_id
 sender and recipient
 team roster and roles
 owned paths / worktree / permission boundary
-completion standard
-message Markdown
-exact CLI examples for Inbox, Host/peer message and Handoff
+Work context and completion criteria
+optional linked Message Markdown + correlation/reply lineage
+exact CLI examples for Work list/claim/start/block/submit and Work-linked Message
 ```
 
 The envelope provides identity and responsibility, not a copy of earlier

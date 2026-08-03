@@ -96,7 +96,7 @@ Rules:
 - a Mission owns objective, success interpretation, priority, and closeout
   standard;
 - a Mission may link zero or more independent AgentTeams;
-- a Wave records changed facts, assignments/member changes, blockers,
+- a Wave records changed facts, Work/member composition changes, blockers,
   carry-over, evidence, and the Host's advance outcome;
 - a Wave does not require or expose a legacy dependency graph as a product concept;
 - a Wave is not an executor container, task graph, session boundary, or barrier;
@@ -127,7 +127,8 @@ independent mailbox, Workspace, session, or acceptance role.
 The accepted target proof is Work responsibility:
 
 ```text
-Work assignment/claim -> WorkEvent -> WorkDelivery
+Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
+  -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
   -> linked TeamMessage / PendingInteraction where needed
@@ -171,7 +172,8 @@ It is not a standing organization and is not owned by one Wave.
 | --- | --- | --- |
 | `AgentTeamRun` | One standalone or Mission-scoped team execution. | May span Waves; every terminal run remains read-only history. |
 | `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
-| `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations; implementation is pending ADR 0050. |
+| `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
+| `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, and delivery creates/updates. | It prevents an event and its projection from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
 | `TeamMessage` | Run-scoped authored conversation envelope with delivery records and optional Work link. | Questions, answers, planning and coordination live here; it is not task state or a fake live-control protocol. |
 | `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Owns provider transports, delivery claims, reconnect, and real Steer/Interrupt/Close routing; it is not a provider transcript. |
@@ -183,13 +185,15 @@ It is not a standing organization and is not owned by one Wave.
 Relationship rules:
 
 - a Mission may link multiple independent teams and create multiple TeamRuns;
-- ownership is explained by Work owner, version and WorkEvents;
+- ownership is explained by the latest Work projection and the ordered
+  WorkOperations that preserve its WorkEvent audit;
 - every message carries typed sender and recipient provenance; UI or MCP callers
   cannot impersonate a Member unless they are explicitly bound to that
   MemberRun;
 - the current Supervisor atomically claims delivery only after its provider
-  transport is healthy, records the native receipt, and preserves recipient
-  ACK as a separate idempotent state;
+  transport is healthy and records the native receipt. TeamMessage ACK is a
+  separate idempotent intake state; WorkDelivery has no ACK state and a Work
+  claim/start records responsibility acknowledgement;
 - `Work`, `TeamMessage`, explicit outcomes, and Harness control facts may reference
   artifacts or `Evidence`; the
   Host Wave advance needs an explicit outcome but does not require
@@ -217,7 +221,7 @@ Kimi.
 
 Rules:
 
-- Harness owns assignment, interaction routing, responsibility, explicit
+- Harness owns Work responsibility, interaction routing, explicit
   outcomes, artifact/check references, and gates;
 - the provider-native store owns model execution, transcript, tool/command/file
   activity, provider turns, and resume state;
@@ -243,7 +247,7 @@ The target contract makes thinking transient live-only state.
 - It is never forwarded into another member's context.
 
 Persist only Harness-owned coordination, artifact/check references, blockers,
-handoffs, control acknowledgements, and explicit outcomes instead.
+Work submission/acceptance, control acknowledgements, and explicit outcomes instead.
 
 No provider thinking may enter a Harness ledger. Provider-derived action rows
 are excluded by the implemented ADR 0032 boundary; historical rows do not

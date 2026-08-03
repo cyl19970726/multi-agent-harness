@@ -48,13 +48,14 @@ StandingAgent.execution_agent_member_ref
 
 Company Assignment
   -> delivery_evidence_ref
-  -> delivered TeamMessage(kind=assignment, correlation_id)
+  -> WorkDelivery(work_id, resulting_version, provider receipt)
+  -> Work(active_member_run_id)
   -> exact MemberRun
 ```
 
 The Company Assignment recipient must be the same StandingAgent named by the
-grant. Its WorkItem, correlation, and delivery evidence must match the
-TeamMessage delivered to the exact MemberRun. Equal ids, names, roles,
+grant. Its WorkItem and delivery evidence must match the Work/WorkDelivery
+bound to the exact MemberRun. Equal ids, names, roles,
 providers, timestamps, process ownership, or possession of a receipt never
 create a missing edge.
 
@@ -97,7 +98,9 @@ Scope is an intersection, never a union of implied rights:
 ```text
 company
 AND StandingAgent
-AND delivered Assignment/correlation
+AND Company Assignment
+AND Agent Team Work id + version
+AND WorkDelivery to the exact MemberRun
 AND permission
 AND command name
 AND subject kind + exact subject id
@@ -160,7 +163,7 @@ CapabilityLeaseReceipt
   member_run_id
   native_session_ref
   supervisor_id / supervisor_generation
-  assignment_id / team_message_id / correlation_id
+  assignment_id / work_id / work_version / work_delivery_id
   action_command_id / command_name / subject_ref
   canonical_request_digest
   issued_at / expires_at
@@ -184,7 +187,8 @@ The broker validates in this order:
    generation/digest exactly matches its Human R3 activation decision;
 2. resolve the exact StandingAgent -> AgentMember -> unclosed MemberRun ->
    native-session chain and the current Supervisor generation;
-3. resolve the exact Company Assignment -> delivered TeamMessage chain;
+3. resolve the exact Company Assignment -> Agent Team Work -> WorkDelivery ->
+   MemberRun chain;
 4. canonicalize and hash the ActionCommand, then intersect it with every grant
    scope dimension and the server-owned Action policy;
 5. issue the short lease, revalidate grant and Supervisor generations
@@ -317,8 +321,9 @@ named by the grant.
   approval, workspace, budget, or tool controls;
 - no root token distribution, long-lived bearer token, or browser-stored
   Company capability;
-- no authority inferred from a StandingAgent/AgentMember link, Assignment,
-  TeamMessage delivery, runtime health, or provider completion alone;
+- no authority inferred from a StandingAgent/AgentMember link, Company
+  Assignment, conversation delivery, runtime health, or provider completion
+  alone;
 - no Finance, legal, credential, Organization, permission, payment, or
   external-publication authority in the first Work-transition proof;
 - no replacement for Human Approval, Action policy validation, non-broker
@@ -339,7 +344,7 @@ named by the grant.
    unrelated-Work/payload/protected-effect deny, expiry, revocation, immutable
    generation, one-use, idempotency, and crash-recovery checks.
 4. Run one real proof binding the exact StandingAgent, AgentMember, MemberRun,
-   native session, Company Assignment, and delivered TeamMessage; review the
+   native session, Company Assignment, Agent Team Work, and WorkDelivery; review the
    native and Company audit evidence before expanding scope.
 
 ## Related decisions

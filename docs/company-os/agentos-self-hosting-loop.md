@@ -145,15 +145,16 @@ assumed to run compatible code forever. Each dogfood cycle distinguishes:
   new runtime starts a new native session.
 
 The Runtime Supervisor performs that reconciliation. The Lead decides when the
-company can tolerate the handoff and which Work carries forward. Restart never
+company can tolerate the runtime transition and which Work carries forward. Restart never
 changes the Standing Agent id, silently ACKs mail, duplicates a top-level
 writable turn, or copies the provider transcript into Harness.
 
 The restart acceptance probe is not only a health check. It must prove the new
-Supervisor generation can deliver a fresh correlated message to an existing
-MemberRun, that the same provider-native session answers, and that the Host can
-ACK the resulting handoff. Reconciliation also compares Company identity,
-current Work/Assignment, permission and provider-control snapshots, and queued
+Supervisor generation can claim the latest ready WorkDelivery for an existing
+MemberRun, that the same provider-native session answers linked conversation
+and can submit Work, and that the Host can explicitly accept or request
+changes. Reconciliation also compares Company identity, Company Assignment,
+Agent Team Work/version, permission and provider-control snapshots, and queued
 mail. Any incompatibility becomes visible Work rather than a silent reset.
 
 ## Product-truth and UI acceptance
@@ -199,6 +200,11 @@ become visible and actionable inside the product, and the team no longer needs
 hidden spreadsheets, ad hoc chat memory, or manual JSON edits to operate.
 
 ## Current implementation truth
+
+> The live-run records described in this section predate the ADR 0050 breaking
+> cutover and retain historical Assignment/Handoff terminology as evidence.
+> New runs use Agent Team Work, WorkDelivery, Work submission/acceptance, and
+> ordinary Work-linked Messages; they do not create compatibility rows.
 
 The current Store contains the AgentOS Lead, Docs Governance, Work Governance,
 Org/HR Governance, and Platform Development Standing Agents. Each has an

@@ -1,10 +1,10 @@
 # Why Agent Teams Need Shared Works, Not Assignment Messages
 
 ```text
-status: research absorbed by ADR 0050; retained while implementation is pending
+status: research absorbed by ADR 0050; retained as public failure analysis
 owner_role: execution-foundation
 authority_class: research
-implementation_state: design_only
+implementation_state: accepted_contract_cutover_in_progress
 evidence_snapshot: 2026-08-02
 publication_status: draft
 ```
@@ -170,7 +170,7 @@ state transition is always explicit:
 allocate responsibility -> create/assign or claim Work
 explain or negotiate    -> send a Message linked to Work
 change scope            -> update Work; optionally explain with Message
-return result           -> submit Work with evidence
+return result           -> submit Work with a result summary and criterion-required evidence
 review                  -> accept or request changes on Work
 ```
 

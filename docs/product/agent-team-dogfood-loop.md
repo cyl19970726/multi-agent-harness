@@ -51,7 +51,7 @@ Before starting members, the Host writes one Mission and the current Wave with:
 - the user-visible scenario and why it matters;
 - the Provider versions and exact Team execution modes under test;
 - the project/Execution Space, starting workspace and permission boundary;
-- member assignments, correlations, owned paths and explicit shared-file
+- shared Works, owners/eligibility, versions, owned paths and explicit shared-file
   conflict boundaries;
 - the required Host, peer and lifecycle interactions;
 - the deterministic baseline and live evidence expected;
@@ -66,7 +66,7 @@ execution access so ordinary tool authorization cannot silently stall an
 unattended lane. That does not authorize payment, deployment, deletion,
 permission changes, legal submission, credentials or other protected effects.
 The Host does not pre-create every Git worktree. A Member may decide that its
-Assignment needs isolation, create a same-repository worktree itself, and
+Work needs isolation, create a same-repository worktree itself, and
 report the absolute path, branch, commit, checks and conflicts.
 
 ## Core Loop
@@ -97,8 +97,8 @@ Use persistent Team modes only:
 
 At minimum, a mixed-Team run exercises:
 
-- Host → Member Assignment and a later correlated follow-up;
-- Member → Host progress, question or blocker and a final handoff;
+- Host-assigned Work and one eligible Member atomic self-claim;
+- Member → Host Work-linked question or blocker and explicit Work submission;
 - Member → Peer coordination and a peer reply;
 - delivery while the recipient is idle and while it is working;
 - delivery after a runtime exit followed by provider-native resume;
@@ -115,7 +115,9 @@ not need to wait for unrelated work before advancing the Wave.
 ### 3. Preserve the right evidence
 
 Harness owns Mission, Wave, TeamRun, MemberRun/native-session binding,
-TeamMessage, PendingInteraction, ACK, outcome and artifact/check references.
+WorkOperation/Work/WorkEvent, WorkDelivery, TeamMessage, PendingInteraction,
+ACK, outcome and
+artifact/check references.
 The Provider-native session remains the sole truth for chat, tools, commands,
 files, turns, native subagents and Provider continuation.
 
@@ -130,26 +132,36 @@ Every finding records:
 Never copy a Provider transcript into Harness or edit JSONL evidence to make a
 failed run appear accepted.
 
-Adapter-generated Handoffs are an outcome boundary, not a transcript mirror.
-When a provider emits ordinary assistant narration before its terminal
-structured report, Harness stores only the final `## RESULT` report (or the
-trimmed final assistant text for legacy output). The last case-insensitive
-marker wins even if provider chunk concatenation leaves no newline before it.
-A Member-authored correlated Handoff remains authoritative and suppresses that
-fallback for the same provider round. One Handoff for each genuinely triggered
-follow-up round is valid; duplicated or narration-polluted Handoffs are
-defects.
+Provider final text is not an outcome boundary. Harness never converts
+assistant narration or a terminal provider frame into a Work submission,
+Message, or Host acceptance. The Member explicitly submits the latest Work
+version with result and evidence refs; the Host explicitly accepts or requests
+changes. Provider narration remains solely in the native session.
 
 Delivery and terminal state must be supported by the active provider cycle:
 
 - Codex uses the `turn/start` response and fences terminal notifications to
-  that turn; stale frames from an interrupted turn must not strand the next
-  MemberRun as `running`.
+  that turn. The successful `turn/start` response is also the WorkDelivery
+  provider receipt; persisting it only after `turn/completed` creates a crash
+  window that can execute the same writable Work twice. Stale frames from an
+  interrupted turn must not strand the next MemberRun as `running`.
 - Claude uses the Agent SDK delivery receipt.
 - Kimi ACP has no separate prompt-start ACK, so the first update, provider
   request, or terminal response for that prompt is the earliest honest
   delivery receipt. It must be published before a tool in that turn attempts
-  Member-to-Host or peer communication.
+  Member-to-Host or peer communication. On transport loss, a claimed delivery
+  with no receipt follows fenced claim recovery; a provider-received delivery
+  resumes the same native session without replaying the delivery. The canary
+  must distinguish and verify both cases.
+
+A Provider receipt proves only that one Work version reached the runtime. It
+does not start, block, submit, accept, cancel, or complete the Work. Those
+changes require their explicit Work commands. Conversely, every queued
+delivery created by claim, resume, request-changes, or runtime rebind remains
+eligible for the bound runtime when the delivery targets the latest Work
+version, prerequisites are satisfied, the owner still matches, and the Work is
+not terminal. The delivery consumer must not reuse the narrower
+`ready-to-claim = status open` predicate for these already-owned revisions.
 
 ### 4. Let the Host decide
 
@@ -175,11 +187,13 @@ Do not infer health from a quiet Dashboard card. Inspect in this order:
 2. queued/claimed/delivered/acknowledged Inbox state;
 3. unresolved PendingInteraction and the exact permission/answer requested;
 4. bounded provider-native session evidence using `NativeSessionRef`;
-5. the last provider turn/tool terminal event and whether a Handoff exists.
+5. the last provider turn/tool terminal event and whether the latest Work was
+   explicitly submitted.
 
 Session forensics compares the Member's narrative with tool/process evidence
 and classifies the state as still running, waiting for ordinary mail, waiting
-for a protected interaction, dead/reconnectable, completed without Handoff, or
+for a protected interaction, dead/reconnectable, completed without Work
+submission, or
 pathologically looping. It must never load an entire large JSONL into the Host
 context, use a Harness transcript mirror, or persist the Provider transcript.
 Record only the bounded diagnosis, native locator and Host action.
@@ -220,6 +234,9 @@ A dogfood Mission may close only when:
 - each claimed live Provider path resolves to its native session;
 - required Host, peer, mailbox and lifecycle scenarios are reconstructable from
   CLI and Dashboard;
+- provider receipt is recorded at native turn acceptance, survives a
+  Supervisor crash without duplicate execution, and failed claims surface as
+  recoverable delivery pressure;
 - the original scenario passes after every P0/P1 repair;
 - no P0/P1 defect remains open;
 - remaining lower-risk defects have an issue, owner, severity, reproduction and
@@ -249,6 +266,39 @@ and responsibility, while the Member page shows current Work, runtime,
 mailbox, controls and native evidence. A Standing Agent may execute repeatedly
 through new MemberRuns; closing one runtime must not delete the Organization
 identity.
+
+## Agent Team Works v1 acceptance record (2026-08-03)
+
+The bootstrap implementation was exercised by the product it introduces, not
+only by fixtures:
+
+- Mission: `mission-agent-team-works-v1-dogfood-20260803`
+- Wave: `wave-agent-team-works-v1-dogfood-20260803-1`
+- TeamRun: `team-run-1785744930478-p84652-0`
+- Claude MemberRun: `member-run-1785744930479-p84652-1`, native Session
+  `8b5f063a-0d80-4b5f-97bf-1e9eeb5ef234`
+- Kimi MemberRun: `member-run-1785744930532-p84652-2`, native Session
+  `session_c99696a3-cc71-46ee-9a37-11ff7f12900c`
+
+The run proved Host assignment, atomic team self-claim with zero pre-claim
+`WorkDelivery`, block/resume, request-changes/resubmit, explicit Host
+acceptance, terminal-Work TeamRun completion, Wave advance, and Mission close.
+A rolling Supervisor restart reached generation 6 while preserving both
+MemberRuns and both provider-native Session ids. The PendingInteraction ledger
+remained at 122 rows during the final generation rather than accumulating new
+full-access permission prompts.
+
+A bounded native-session audit found that generations 1-4 had repeatedly sent
+continuation prompts after a Work entered review. Generation 5 reproduced zero
+such deliveries; the final implementation restricts continuation to
+`in_progress` Work and carries a focused regression test covering
+`open|review|blocked|done|cancelled`. Historical records remain defect evidence,
+not evidence about the accepted generation.
+
+The audit also found that the Host still performed too much implementation
+locally. That is an orchestration-efficiency follow-up, not a Works v1 truth
+failure: future dogfood should measure Host-local patches while capable Members
+are idle and require either delegation or an explicit Lead-local justification.
 
 ## Closeout
 

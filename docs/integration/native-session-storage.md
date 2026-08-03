@@ -98,7 +98,8 @@ coordination boundary:
 | provider asks user/permission/plan question | `PendingInteraction` |
 | Lead/Human/Policy answers | interaction resolution + control acknowledgement |
 | operator steers/interrupts/resumes | control request + provider acknowledgement |
-| member explicitly hands work to another actor | `TeamMessage(kind=handoff)` |
+| member submits owned Work for review | `WorkSubmitted` with result/evidence refs |
+| member explains or coordinates with another actor | Work-linked `TeamMessage` |
 | member/Host declares an outcome | explicit outcome summary + refs |
 | file/check/result supports acceptance | artifact/check reference, optionally hash |
 | Host judges the current plan | Wave decision/update with outcome and refs |
@@ -110,7 +111,7 @@ promotes it into a coordination object. Automatic copying is prohibited.
 
 ```text
 GET Harness Team/Member projection
-  -> Mission/Wave/TeamRun/MemberRun/assignment/interactions/outcome/gate
+  -> Mission/Wave/TeamRun/MemberRun/Work/WorkDelivery/messages/interactions/outcome/gate
 
 GET native activity for NativeSessionRef
   -> provider adapter probe
@@ -197,7 +198,7 @@ resume through ordinary Team delivery.
 - `available`: read path works for the bound session;
 - `resume unsupported`: history may be readable although the mode cannot resume.
 
-Harness retains assignment, responsibility, outcome, refs, and gates in all
+Harness retains Work responsibility/state, outcome, refs, and gates in all
 states. UI must not invent native activity or resume from a Harness replay.
 
 ### Implemented Agent Team surfaces

@@ -192,7 +192,8 @@ Route Company-wide priority/capacity conflicts to the Company Lead. Route
 domain delivery to the accountable Domain Lead, which may delegate to lower
 actors only within the narrower intersection of its own authority, the child's
 authority, and the WorkItem's need. Preserve the Company Assignment separately
-from execution TeamMessages and provider-native work.
+from the linked Agent Team Work, ordinary TeamMessage conversation, and
+provider-native execution history.
 
 If no actor can own the work, create a capability-gap WorkItem. Do not silently
 create a Standing Agent, expand permissions, or infer authority from a
@@ -207,7 +208,8 @@ membership remain distinct.
 When Mission/Wave and Agent Team are used:
 
 - WorkItem remains the company commitment;
-- Assignment/TeamMessage remains execution-lane ownership;
+- Agent Team Work remains execution-lane ownership and WorkDelivery wakes the
+  selected MemberRun;
 - Mission/Wave records Host intent and judgment;
 - MemberRun/native Session remains execution continuity; and
 - Work receives an `ExecutionRef`, delivery evidence, and final result only
@@ -293,9 +295,10 @@ rolling Supervisor reconciliation of every live dogfood runtime:
    Session, retaining the old Session as history;
 6. reconcile queued/claimed mail, permissions, model controls, cwd/Skill
    roots, and the single writable-Workspace driver before resuming; and
-7. prove the new generation with an acceptance probe: a fresh correlated
-   message reaches the existing MemberRun, the same native Session answers,
-   and the Host can ACK the resulting handoff.
+7. prove the new generation with an acceptance probe: a fresh queued
+   WorkDelivery reaches the existing MemberRun, the same native Session
+   continues, ordinary Work-linked conversation still flows, and the Member
+   can submit the Work for explicit Host review.
 
 Rolling means lane by lane: reconcile one member, probe it, then move to the
 next. The reconciliation itself is Company Work — link the merge commit, the

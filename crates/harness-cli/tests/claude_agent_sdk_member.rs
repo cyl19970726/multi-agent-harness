@@ -124,6 +124,11 @@ let turns = 0;
 let sentFollowUp = false;
 
 const emit = (event, data) => process.stdout.write(JSON.stringify({{ event, data }}) + "\n");
+const harness = (args) => {{
+  const result = spawnSync(process.env.HARNESS_BIN, args, {{ encoding: "utf8" }});
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout;
+}};
 
 const rl = createInterface({{ input: process.stdin }});
 for await (const line of rl) {{
@@ -174,6 +179,24 @@ for await (const line of rl) {{
     emit("assistant_message", {{
       content: [{{ type: "text", text: `## RESULT\ndone\n\n## SUMMARY\nturn-${{turns}}` }}],
     }});
+    if (payload.kind === "work") {{
+      harness([
+        "team-run", "work", "start",
+        "--team-run-id", cfg.teamRunId,
+        "--work-id", payload.correlation_id,
+        "--member-run-id", cfg.memberRunId,
+        "--expected-version", "1",
+      ]);
+      harness([
+        "team-run", "work", "submit",
+        "--team-run-id", cfg.teamRunId,
+        "--work-id", payload.correlation_id,
+        "--member-run-id", cfg.memberRunId,
+        "--expected-version", "2",
+        "--result", `turn-${{turns}} completed`,
+        "--artifact-ref", "src/member.ts",
+      ]);
+    }}
     emit("turn_complete", {{
       subtype: "success",
       isError: false,
@@ -196,8 +219,7 @@ for await (const line of rl) {{
         "--kind", "message",
         "--response-required",
         "--body", "late follow-up",
-        "--correlation-id", payload.correlation_id,
-        "--causation-id", payload.id,
+        "--work-id", payload.correlation_id,
         "--json",
       ], {{ encoding: "utf8" }});
       if (sent.status !== 0) throw new Error(sent.stderr);
@@ -246,7 +268,7 @@ fn create_run(home: &TempHome, root: &Path) -> String {
             "--objective",
             "deterministic agent-sdk coverage",
             "--member",
-            "SdkMember:Runtime owner:claude/agent-sdk",
+            "SdkMember:Runtime owner:claude/agent-sdk#Complete deterministic Agent SDK Work",
         ],
     );
     assert!(out.status.success(), "create failed: {out:?}");
@@ -340,38 +362,6 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let out = start_with_fake_runner(&home, &root, &runner, "8000", &run_id);
     assert!(out.status.success(), "start failed: {out:?}");
 
-    let inbox = run_harness(
-        &home,
-        &root,
-        &[
-            "team-run",
-            "inbox",
-            "--id",
-            &run_id,
-            "--member-run-id",
-            "host",
-            "--all",
-            "--json",
-        ],
-    );
-    let body = String::from_utf8_lossy(&inbox.stdout);
-    let handoffs = body.matches("\"handoff\"").count();
-
-    // Two rounds means the member was still alive when the late message
-    // arrived. Under `claude_cli` this is 1: the member is gone by then.
-    assert_eq!(
-        handoffs, 2,
-        "expected the member to survive the empty queue and take a second \
-         round without duplicate Adapter handoffs, got {handoffs}.\ninbox: {body}"
-    );
-    assert!(
-        body.contains("turn-2"),
-        "second round should report turn-2.\ninbox: {body}"
-    );
-    assert!(
-        body.contains("src/member.ts"),
-        "runner evidence refs must survive into the durable handoff.\ninbox: {body}"
-    );
     let status = run_harness(
         &home,
         &root,
@@ -382,6 +372,25 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let member_id = status_json["members"][0]["member_run"]["id"]
         .as_str()
         .expect("member id");
+    let inbox = run_harness(
+        &home,
+        &root,
+        &[
+            "team-run",
+            "inbox",
+            "--id",
+            &run_id,
+            "--member-run-id",
+            member_id,
+            "--all",
+            "--json",
+        ],
+    );
+    let body = String::from_utf8_lossy(&inbox.stdout);
+    assert!(
+        body.contains("late follow-up"),
+        "the post-idle Host message must stay reconstructable in the recipient inbox.\ninbox: {body}"
+    );
     let detail = run_harness(
         &home,
         &root,
@@ -395,43 +404,34 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let member_outbox = detail_json["mailbox"]["outbox"]
         .as_array()
         .expect("member outbox");
-    let assignment = member_inbox
-        .iter()
-        .find(|message| message["kind"] == "assignment")
-        .expect("assignment");
     let follow_up = member_inbox
         .iter()
         .find(|message| message["body"] == "late follow-up")
         .expect("follow-up");
-    let first_handoff = member_outbox
-        .iter()
-        .find(|message| {
-            message["kind"] == "handoff"
-                && message["body"]
-                    .as_str()
-                    .is_some_and(|body| body.contains("turn-1"))
-        })
-        .expect("first handoff");
-    let second_handoff = member_outbox
-        .iter()
-        .find(|message| {
-            message["kind"] == "handoff"
-                && message["body"]
-                    .as_str()
-                    .is_some_and(|body| body.contains("turn-2"))
-        })
-        .expect("second handoff");
-    assert_eq!(
-        first_handoff["causation_id"], assignment["id"],
-        "round one is caused by the Assignment"
+    assert!(
+        member_outbox.is_empty(),
+        "the adapter must not fabricate outbox messages"
     );
+    let works = detail_json["works"].as_array().expect("member Works");
     assert_eq!(
-        second_handoff["causation_id"], follow_up["id"],
-        "round two is caused by the exact follow-up TeamMessage"
+        works.len(),
+        1,
+        "one durable Work owns the first round: {works:?}"
     );
+    assert_eq!(works[0]["status"], "review");
     assert_eq!(
-        second_handoff["correlation_id"], assignment["correlation_id"],
-        "all rounds remain in the Assignment correlation"
+        follow_up["work_id"], works[0]["id"],
+        "the later conversation links to Work without replacing ownership"
+    );
+    let completed_rounds = detail_json["actions"]
+        .as_array()
+        .expect("member actions")
+        .iter()
+        .filter(|action| action["action_type"] == "turn_completed")
+        .count();
+    assert_eq!(
+        completed_rounds, 2,
+        "the persistent member must execute both turns"
     );
     let status_body = String::from_utf8_lossy(&status.stdout);
     assert!(
@@ -440,7 +440,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     );
     assert!(
         status_body.contains("\"status\": \"running\""),
-        "handoff must not decide TeamRun completion: {status_body}"
+        "member activity must not decide TeamRun completion: {status_body}"
     );
 }
 
@@ -448,7 +448,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
 fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
     // Issue #293: a provider API failure (e.g. 403 from a blocked egress)
     // arrives with subtype "success". The ledger must show a failed
-    // provider_error action, not an ordinary completed round with a handoff.
+    // provider_error action, not an ordinary completed outcome or Work submit.
     let home = TempHome::new("agent-sdk-provider-error");
     init_project(&home, "proj");
     let root = home.base().join("proj");
@@ -511,7 +511,7 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
     let outbox = detail_json["mailbox"]["outbox"].as_array().expect("outbox");
     assert!(
         outbox.iter().all(|message| message["kind"] != "handoff"),
-        "a provider error is not a member handoff: {detail_json}"
+        "a provider error is not a member-authored completion message: {detail_json}"
     );
 
     assert_eq!(
@@ -524,8 +524,8 @@ fn agent_sdk_member_records_provider_errors_instead_of_successful_rounds() {
 fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
     // The unclassified half of the same defect: a terminal provider failure the
     // runner cannot label ends the turn with NO agent message. `## RESULT`
-    // parsing reads empty text as `done`, so without a guard this published an
-    // empty Handoff and a `completed` action no member ever wrote.
+    // parsing reads empty text as `done`, so without a guard this published a
+    // fabricated completion action no member ever wrote.
     let home = TempHome::new("agent-sdk-silent-turn");
     init_project(&home, "proj");
     let root = home.base().join("proj");
@@ -560,7 +560,7 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
     let detail_json: serde_json::Value =
         serde_json::from_slice(&detail.stdout).expect("member detail JSON");
 
-    // 1. No semantic completion and no fabricated handoff.
+    // 1. No semantic completion, fabricated message, or Work submit.
     let actions = detail_json["actions"].as_array().expect("actions");
     assert!(
         actions
@@ -583,7 +583,7 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
     let outbox = detail_json["mailbox"]["outbox"].as_array().expect("outbox");
     assert!(
         outbox.iter().all(|message| message["kind"] != "handoff"),
-        "silence is not a member handoff: {detail_json}"
+        "silence is not a member-authored completion message: {detail_json}"
     );
 
     // 2. Everything needed to resume instead of re-create is still on record.
@@ -604,14 +604,19 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
         member_run["workspace_snapshot"]["cwd"].is_string(),
         "the Workspace must remain reconstructable: {member_run}"
     );
-    // The Assignment and its correlation are still joinable from the member.
-    let assignment = &detail_json["assignment"];
-    assert_eq!(assignment["kind"], serde_json::json!("assignment"));
+    // The durable Work is still joinable from the member and remains open for
+    // a later retry on this same native session.
+    let works = detail_json["works"].as_array().expect("member Works");
+    assert_eq!(
+        works.len(),
+        1,
+        "one Work must remain assigned: {detail_json}"
+    );
+    let work = &works[0];
+    assert_eq!(work["status"], serde_json::json!("open"));
     assert!(
-        assignment["correlation_id"]
-            .as_str()
-            .is_some_and(|id| !id.is_empty()),
-        "the Assignment correlation must remain reconstructable: {assignment}"
+        work["id"].as_str().is_some_and(|id| !id.is_empty()),
+        "the Work identity must remain reconstructable: {work}"
     );
 }
 

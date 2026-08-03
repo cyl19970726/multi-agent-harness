@@ -19,10 +19,9 @@
  *   owned paths      ADR 0033 — a declared lane for coordination and
  *                    acceptance. **Observed, never enforced**: a cross-lane
  *                    write emits `cross_lane_write` and the write proceeds.
- *   evidence refs    Issue #232 — handoff/review `evidence_refs` are empty.
- *                    PostToolUse observes which files a member actually wrote,
- *                    so the handoff can carry refs the member did not have to
- *                    remember to declare.
+ *   evidence refs    PostToolUse observes which files a member actually wrote,
+ *                    so Work submit/Host review can cite refs the member did
+ *                    not have to remember to declare.
  *
  * Hook output contract (Agent SDK): observers always return `{}`.
  */
@@ -53,7 +52,7 @@ export function isInside(root, candidate) {
  *
  * What `owned_paths` is instead, and always was under ADR 0033: a declared lane
  * used for coordination and acceptance. Recording a cross-lane write gives the
- * Host something real to look at when reviewing a handoff — "this member edited
+ * Host something real to look at when reviewing submitted Work — "this member edited
  * outside its lane, was that intended?" — which is the question that actually
  * matters. Blocking it would only push the same edit through Bash and hide it.
  */
@@ -75,8 +74,8 @@ export function ownedPathsObserver({ ownedPaths, cwd, onCrossLane }) {
 }
 
 /**
- * Record which files the member actually changed, so a later handoff can carry
- * real `evidence_refs` instead of an empty array.
+ * Record which files the member actually changed, so a later Work submission
+ * can carry real `evidence_refs` instead of an empty array.
  *
  * Returns `{}` always — this observes, it never blocks.
  */

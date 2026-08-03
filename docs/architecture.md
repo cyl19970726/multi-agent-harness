@@ -64,8 +64,8 @@ product concept a future operator should start from.
 Mission/Wave is the only active plan vocabulary. Native ledgers, schemas,
 authoring, Mission-Team linkage, Wave history/advance, and Mission closeout are
 implemented. ADR 0050 accepts Agent Team Works as the replacement for
-Assignment-message ownership; its schemas and runtime are implementation
-pending. The superseded stack is removed from active reads,
+Assignment-message ownership; its schemas/runtime/UI cutover is in progress and
+must land without a compatibility ownership path. The superseded stack is removed from active reads,
 commands, and UI under [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md).
 Optional evaluation remains governance layered on an outcome, not a second
 closeout model.
@@ -87,7 +87,8 @@ needed.
 The accepted execution proof is Work-driven:
 
 ```text
-Work assignment/claim -> WorkEvent -> WorkDelivery
+Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
+  -> WorkDelivery
   -> MemberRun + Workspace + NativeSessionRef
   -> Work block / submission / review / acceptance
   -> linked TeamMessage / PendingInteraction where conversation or pause exists
@@ -161,8 +162,9 @@ The target contract makes thinking transient live-only state.
 - It is never execution evidence.
 - It is never forwarded into another member's context.
 
-Persist Harness-owned coordination, artifact/check references, blockers,
-handoffs, control acknowledgements, and explicit outcomes instead. Provider
+Persist Harness-owned WorkOperations (resulting Works + WorkEvents + delivery
+deltas), authored conversation,
+artifact/check references, control acknowledgements, and explicit outcomes instead. Provider
 chat/tool/command/file/turn history remains in the native session.
 
 New Kimi execution does not persist `thinking` actions, and active stores do

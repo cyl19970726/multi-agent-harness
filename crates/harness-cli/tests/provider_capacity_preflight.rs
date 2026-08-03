@@ -11,7 +11,7 @@ use std::path::Path;
 mod fake_provider;
 mod harness_env;
 
-use harness_env::{current_project_id, run_harness, TempHome};
+use harness_env::{current_project_id, run_harness, work_deliveries, TempHome};
 
 /// A rate-limit payload whose only saturated signal is the one under test.
 fn rate_limits_json(used_percent: i64, reached_type: &str, spend_control: bool) -> String {
@@ -128,6 +128,7 @@ fn create_single_member_run(
     project_id: &str,
     member_spec: &str,
 ) -> String {
+    let member_with_work = format!("{member_spec}#Run the capacity-gated provider Work");
     let create = fake.run(
         home,
         &[
@@ -136,9 +137,9 @@ fn create_single_member_run(
             "team-run",
             "create",
             "--objective",
-            "Prove the capacity preflight gates the start, not the Assignment",
+            "Prove the capacity preflight gates provider start without consuming Work",
             "--member",
-            member_spec,
+            &member_with_work,
         ],
     );
     assert!(
@@ -462,7 +463,7 @@ fn missing_proxy_is_diagnosed_as_runtime_context_not_an_account_limit() {
 }
 
 #[test]
-fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
+fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     let home = TempHome::new("capacity-start-guard-block");
     let project_id = init_project(&home, "alpha");
     let bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -528,17 +529,13 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
         );
     }
 
-    // 1. The Assignment was never claimed: it is still queued and deliverable.
-    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
-    let assignment = messages
-        .iter()
-        .find(|message| message["kind"].as_str() == Some("assignment"))
-        .expect("assignment message");
-    let delivery = &assignment["deliveries"][0];
+    // 1. WorkDelivery was never claimed: it is still queued and deliverable.
+    let deliveries = work_deliveries(&home, &project_id);
+    let delivery = deliveries.first().expect("WorkDelivery");
     assert_eq!(
         delivery["status"],
         serde_json::json!("queued"),
-        "a blocked start must not consume the Assignment: {assignment}"
+        "a blocked start must not consume the WorkDelivery: {delivery}"
     );
     assert_eq!(delivery["attempt"], serde_json::json!(0));
     assert_eq!(delivery["claim_id"], serde_json::Value::Null);
@@ -559,10 +556,12 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
 
     // 3. No handoff was fabricated and the member is blocked, not completed.
     assert!(
-        !messages
-            .iter()
-            .any(|message| message["kind"].as_str() == Some("handoff")),
-        "a blocked start must not emit a handoff: {messages:?}"
+        !home
+            .spaces_dir()
+            .join(&project_id)
+            .join("team_messages.jsonl")
+            .exists(),
+        "a blocked start must not fabricate TeamMessages"
     );
     let member = store_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()
@@ -618,14 +617,14 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
         "restart failed: {}",
         String::from_utf8_lossy(&restart.stderr)
     );
-    let assignment = store_rows(&home, &project_id, "team_messages.jsonl")
+    let delivery = work_deliveries(&home, &project_id)
         .into_iter()
-        .find(|message| message["kind"].as_str() == Some("assignment"))
-        .expect("assignment message");
+        .next()
+        .expect("WorkDelivery");
     assert_eq!(
-        assignment["deliveries"][0]["status"],
-        serde_json::json!("delivered"),
-        "the preserved Assignment must be deliverable after recovery: {assignment}"
+        delivery["status"],
+        serde_json::json!("provider_received"),
+        "the preserved Work must be deliverable after recovery: {delivery}"
     );
     let member = store_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()
@@ -640,7 +639,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_the_assignment_queued() {
 }
 
 #[test]
-fn unknown_capacity_still_starts_the_member_and_delivers_the_assignment() {
+fn unknown_capacity_still_starts_the_member_and_delivers_work() {
     let home = TempHome::new("capacity-start-guard-unknown");
     let project_id = init_project(&home, "alpha");
     let bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -691,16 +690,15 @@ fn unknown_capacity_still_starts_the_member_and_delivers_the_assignment() {
             .any(|action| action["action_type"].as_str() == Some("provider_unavailable")),
         "unknown capacity must not record provider_unavailable: {actions:?}"
     );
-    // The Assignment was consumed by a real round, proving the guard opened.
-    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
-    let assignment = messages
-        .iter()
-        .find(|message| message["kind"].as_str() == Some("assignment"))
-        .expect("assignment message");
+    // WorkDelivery was consumed by a real round, proving the guard opened.
+    let delivery = work_deliveries(&home, &project_id)
+        .into_iter()
+        .next()
+        .expect("WorkDelivery");
     assert_ne!(
-        assignment["deliveries"][0]["status"],
+        delivery["status"],
         serde_json::json!("queued"),
-        "an ungated member must claim its Assignment: {assignment}"
+        "an ungated member must claim its Work: {delivery}"
     );
 }
 
@@ -724,7 +722,7 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
             "--objective",
             "Prove the preflight can be disabled without changing semantics",
             "--member",
-            "codex-worker:implementer:codex:gpt-5.6",
+            "codex-worker:implementer:codex:gpt-5.6#Run provider Work with preflight disabled",
         ])
         .current_dir(home.base())
         .envs(home.envs())

@@ -115,7 +115,7 @@ mail to that owner. A Wave or TeamRun completing does not close a Member.
 ./target/debug/harness mission create \
   --title "Dogfood Agent Team" \
   --objective "Prove persistent multi-member collaboration" \
-  --context "## Context\nUse native provider sessions and explicit handoffs."
+  --context "## Context\nUse native provider sessions, shared Works, and explicit Host acceptance."
 ./target/debug/harness member register \
   --id builder-codex --name Builder --role builder --provider codex
 ./target/debug/harness mission create-team \
@@ -124,7 +124,7 @@ mail to that owner. A Wave or TeamRun completing does not close a Member.
 ./target/debug/harness wave create \
   --mission-id <mission-id> --title "Wave 1" \
   --objective "Run and inspect the team" \
-  --context "## Host plan\nAssign disjoint lanes and review handoffs."
+  --context "## Host plan\nCreate disjoint Works and review submitted results."
 ./target/debug/harness team-run create \
   --mission-id <mission-id> --agent-team-id <team-id> \
   --objective "Complete the current Host plan"

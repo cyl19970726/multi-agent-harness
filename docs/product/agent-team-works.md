@@ -1,7 +1,7 @@
 # Agent Team Works
 
 ```text
-status: accepted product direction; implementation pending
+status: accepted product contract; breaking cutover in progress
 owner_role: execution-foundation
 canonical_for: Agent Team Work, shared Kanban, assignment/claim, Work delivery,
   Message boundary, child delegation, and Mission/Wave relationship
@@ -24,7 +24,8 @@ Work           = durable responsibility and current state
 Kanban         = a view over Works, never a second source of truth
 TeamMessage    = authored conversation, optionally linked to Work
 WorkEvent      = append-only Work state transition
-WorkDelivery   = reliable delivery of a Work change to a Member runtime
+WorkOperation  = crash-atomic replay row: event + resulting Work + delivery deltas
+WorkDelivery   = reliable delivery of an externally assigned/changed Work version to a Member runtime
 Native Session = execution transcript, tools, commands, and turn truth
 ```
 
@@ -50,9 +51,11 @@ assign Work W-12 to Member A
   -> Supervisor injects a bounded Work envelope at a safe boundary
 ```
 
-`WorkDelivery` may reuse the mailbox's claim, lease, provider-receipt, ACK, and
-recovery machinery. It is not an authored chat message and does not duplicate
-the Work body as canonical truth.
+`WorkDelivery` may reuse the mailbox's claim, lease, provider-receipt, failure,
+and recovery machinery. It is not an authored chat message and does not
+duplicate the Work body as canonical truth. It has no semantic `acknowledged`
+state: responsibility acknowledgement is an append-only Work claim/start event,
+not a transport delivery mutation.
 
 There is no compatibility path for Assignment Messages. The implementation
 removes new and historical Assignment-message interpretation after preserving
@@ -101,19 +104,30 @@ model.
 
 ## Source Of Truth And Command Transaction
 
-`WorkEvent` is the authoritative append-only transition history. `Work` is its
-latest rebuildable projection. A successful command is one logical transaction:
+`WorkEvent` is the append-only semantic transition record. It is not, by
+itself, the physical replay unit: some event payloads are intentionally empty,
+so a bare event stream cannot reconstruct every field of the resulting Work.
+The Store persists one `WorkOperation` row containing the event, the complete
+resulting Work projection, initial deliveries, and delivery updates. That row
+is the crash-atomic replay unit; `Work` and `WorkDelivery` read models are
+latest projections rebuilt from ordered WorkOperations.
+
+A successful command is one logical transaction:
 
 ```text
 compare expected Work version
-  -> append exactly one WorkEvent
-  -> update the Work projection
-  -> enqueue zero or more WorkDelivery outbox rows
+  -> build exactly one WorkEvent
+  -> capture the complete resulting Work
+  -> capture zero or more WorkDelivery creates/updates
+  -> append exactly one WorkOperation
 ```
 
-The store must not expose an updated Work without its event, or an event without
-the matching projection. Stores without a physical transaction use one
-crash-recoverable append batch and replay the outbox idempotently.
+The Store must not expose an updated Work without its event, or an event without
+the matching resulting projection. A JSONL Store satisfies this by appending
+one WorkOperation row under its write boundary; another Store may use a
+physical transaction with the same atomic meaning. Delivery claim/receipt
+updates that occur after the command are ordered deltas folded with the
+operation rows, not a replacement source of Work state.
 
 ```text
 WorkEvent
@@ -133,14 +147,19 @@ WorkDelivery
   work_event_id
   recipient_member_run_id
   work_id / resulting_version
-  state                           # queued|claimed|provider_received|acked|failed
+  state                           # queued|claimed|provider_received|failed|invalidated
   claim / lease / receipt facts
+  failure_reason?                 # transport/runtime delivery failure only
 ```
+
+`WorkEvent` remains the durable audit vocabulary exposed to product surfaces.
+`WorkOperation` is a Store/replay contract, not another lifecycle object that a
+Host or Member schedules directly.
 
 `(team_run_id, idempotency_key)` identifies one command retry.
 `(work_event_id, recipient_member_run_id)` identifies one delivery. Readiness
-changes caused by a prerequisite append a distinct `WorkBecameReady` event on
-the dependent Work, increment its version, and create its delivery if owned.
+is derived from the latest prerequisite Works. A readiness change does not
+append a synthetic event or increment the dependent Work's version.
 
 ## Status And Readiness
 
@@ -169,21 +188,45 @@ Assigned/unassigned and ready/not-ready are independent projections:
 ```text
 assigned   = owner_member_id != null
 unassigned = owner_member_id == null
-ready      = status == open && every prerequisite Work is done
+prerequisites_satisfied = every prerequisite Work is done
+ready_to_claim = status == open && prerequisites_satisfied
+delivery_actionable = latest version
+                      && owner/runtime binding still matches
+                      && !terminal
+                      && prerequisites_satisfied
 ```
 
 Minimal `prerequisite_work_ids` answers only whether a Work is ready. It does not
 add conditions, branches, loops, retries, Wave barriers, or a universal Task
 Graph. Dynamic Workflow continues to own deterministic workflow steps.
 
-When the last blocker completes, readiness changes automatically. An assigned
-Work creates a new WorkDelivery for its owner; an unassigned Work appears in the
-ready pool. Readiness never auto-assigns a Member and never starts two active
-Works on one Member.
+An owned Work may have a queued WorkDelivery before its prerequisites are
+satisfied. The Supervisor claims that delivery only when
+`delivery_actionable` is true. When the last
+prerequisite is accepted, the latest records therefore make the delivery
+claimable without mutating the dependent Work. An unassigned ready Work appears
+in the shared pool. Claim readiness never auto-assigns a Member and never starts two
+active Works on one Member.
+
+At an idle safe boundary, the Supervisor may wake an eligible Member with a
+non-durable `SHARED WORK AVAILABLE` prompt derived from the current board. That
+prompt is discovery only: it creates neither WorkDelivery nor TeamMessage. The
+Member must refresh the Work and execute the atomic `claim`; only the winning
+`claimed` WorkEvent establishes responsibility. A Member in `review`,
+`blocked`, or a terminal state must not receive active-work continuation
+prompts for that Work.
+
+Do not reuse `ready_to_claim` for delivery consumption. Host assignment,
+resume, request-changes, and runtime rebind intentionally create a newer
+delivery after the Work is already `in_progress`; those externally initiated
+revisions must still reach the bound runtime. A Member self-claim does not
+create a loopback WorkDelivery: the atomic `claimed` WorkEvent and successful
+command result prove that the already-bound runtime took responsibility.
 
 If a prerequisite is cancelled, the dependent Work does not become ready. It
-receives `WorkPrerequisiteCancelled` and requires the Host to replace/remove
-the prerequisite, explicitly block it with a reason, or cancel it.
+does not receive a synthetic cancellation event or version change. Its queued
+delivery remains unclaimable until the Host replaces/removes the prerequisite,
+explicitly blocks the Work with a reason, or cancels it.
 
 ## Canonical Transitions
 
@@ -197,12 +240,12 @@ retrying with changed intent.
 | --- | --- | --- | --- |
 | create | Host; or active Member creating self-owned/unassigned | `open`, version 1 | owned Work queues delivery; `INVALID_OWNER` |
 | assign | Host; `open`, not provider-received by another owner | owner changes, stays `open` | invalidate unclaimed old delivery; queue new; `RECONCILIATION_REQUIRED` |
-| claim | active, eligible, idle/capacity-available Member; unowned ready `open` | owner set and `in_progress` atomically | winner receives delivery; loser `CLAIM_LOST` with latest Work |
+| claim | active, eligible, idle/capacity-available Member; unowned ready `open` | owner set and `in_progress` atomically | no loopback delivery; winner receives the command result; loser `CLAIM_LOST` with latest Work |
 | start | owner Member; ready assigned `open`; no other active Work unless configured capacity permits | `in_progress` | provider cycle may start; `MEMBER_BUSY` |
 | release | owner Member or Host; `open` and not provider-received | owner cleared, remains `open` | invalidate unclaimed delivery; `RECONCILIATION_REQUIRED` otherwise |
 | block | owner or Host; `in_progress`; non-empty reason | `blocked`, owner retained | notify Host; `BLOCKER_REASON_REQUIRED` |
 | resume work | owner or Host; `blocked`; blocker resolution recorded | `in_progress` | queue latest version if runtime idle |
-| submit | owner; `in_progress`; result summary and required evidence/check refs present | `review` | notify Host; `RESULT_REQUIRED` |
+| submit | owner; `in_progress`; non-empty result summary | `review` | notify Host; `RESULT_REQUIRED`; artifact/check refs are supplied when completion criteria or Host review require them |
 | request changes | Host; `review`; non-empty reason | `in_progress`, owner retained | notify owner |
 | accept | Host only; `review` | `done` | reviewer Member never gains accept authority |
 | cancel | Host; any non-terminal state; non-empty reason | `cancelled` | provider-received Work requires reconciliation |
@@ -229,10 +272,11 @@ shared pool:       Host or Member creates eligible unassigned Work
 Creation and assignment may be one atomic operation. A separate authored
 Message is optional explanation, never the allocation primitive. Reassignment
 increments the Work version, invalidates any `queued` delivery to the previous
-owner, and creates a WorkDelivery for the new owner. A delivery already accepted
-(`claimed` or `provider_received`) requires explicit
-interrupt/reconciliation before reassignment so
-two Members do not act on one writable responsibility.
+owner, and creates a WorkDelivery for the new owner. A `claimed` delivery makes
+provider acceptance uncertain and therefore requires explicit reconciliation;
+a `provider_received` delivery requires interrupt plus verified native-session
+recovery or explicit runtime rebind. Neither state may be silently reassigned,
+so two Members cannot act on one writable responsibility.
 
 ### Host assignment
 
@@ -248,7 +292,17 @@ interrupts an active turn.
 
 An eligible Member may atomically claim one ready unassigned Work. Claim sets
 owner and `in_progress` in one transition. Compare-and-append semantics prevent
-two Members from claiming the same version.
+two Members from claiming the same version. The claimant is already inside its
+trusted MemberRun/provider turn, so `WorkEvent(kind=claimed)` plus the exact CLI
+result is the possession boundary. Creating a WorkDelivery back to that same
+runtime would add a second, misleading receipt requirement.
+
+If that runtime later crashes, recovery does not fabricate a provider receipt.
+The Supervisor reconstructs the active responsibility from the latest
+`in_progress` Work, its `active_member_run_id`, and the MemberRun's resumable
+provider-native session. It asks the same session to inspect native history and
+workspace state and continue only unfinished work. Host-originated assignment,
+resume, request-changes, and rebind remain true WorkDelivery transitions.
 
 V1 claim policy is:
 
@@ -330,7 +384,7 @@ The practical interaction table is:
 | ask or answer | TeamMessage | link `work_id` when relevant |
 | report a blocker | block Work with structured reason | discuss alternatives in Messages |
 | discover follow-up | create self-owned or unassigned Work | notify Host/peer when useful |
-| return a result | submit Work with result/evidence refs | add a concise review note |
+| return a result | submit Work with a result summary and the artifact/check refs required by its criteria | add a concise review note |
 | request changes | Work review action | explain required changes in a linked Message |
 | accept completion | accept Work | optional acknowledgement |
 
@@ -373,6 +427,24 @@ A Member may own several open Works. V1 capacity defaults to exactly one active
 `in_progress` Work unless a concrete configured capacity says otherwise.
 Provider-native subagents remain internal to that Work's owner.
 
+## TeamRun Completion Gate
+
+Completing a `TeamRun` is an explicit Host operation, not a projection of
+Provider idleness or turn completion. The operation is valid only when every
+current Work in that TeamRun is terminal: `done` or `cancelled`. `open`,
+`in_progress`, `blocked`, and `review` all reject completion, including Work
+that has been submitted but not yet accepted.
+
+The Store evaluates this predicate and persists the TeamRun completion record
+inside the same atomic boundary. It must not read the Works projection, release
+the boundary, and then append completion: that would allow a concurrent Work
+creation or transition to make a completed TeamRun contain non-terminal Work.
+Stores without a physical database transaction must provide the equivalent
+single serialized, crash-recoverable compare-and-append boundary.
+
+TeamRun completion does not close or retire Member runtimes, advance a Wave, or
+close a Mission. Those remain separate explicit controls.
+
 ## Busy, Idle, Crash, And Resume
 
 | Runtime state | Work behavior |
@@ -387,6 +459,12 @@ Provider-native subagents remain internal to that Work's owner.
 
 Transport receipt, Member start, Provider completion, Work submission, and Host
 acceptance are separate facts.
+
+`provider_received` proves only that the selected native runtime accepted this
+Work version. The Member acknowledges responsibility semantically by appending
+the applicable Work event: a shared-pool `claimed` event or a direct-assignment
+`started` event. Neither transport receipt nor Provider completion substitutes
+for that event.
 
 When the native Session cannot resume, the Host creates a replacement
 MemberRun/session and appends `WorkRebound` to update

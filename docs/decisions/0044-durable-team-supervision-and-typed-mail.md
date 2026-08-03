@@ -18,14 +18,15 @@ Agent Team members now use persistent Codex app-server, Claude Agent SDK, and
 Kimi ACP sessions. A Member can remain addressable across many Host-plan Waves,
 ordinary provider turns, interruptions, and idle periods.
 
-The first implementation still has two unsafe boundaries:
+The first implementation exposed two unsafe boundaries:
 
 1. the Team Supervisor and live Provider controls exist only in one process;
-2. a Member loop reads a queued TeamMessage before Provider injection and
-   records delivery afterwards, without a durable cross-process claim.
+2. a Member loop could read queued authored mail or a Work notification before
+   Provider injection and record delivery afterwards, without a durable
+   cross-process claim.
 
-Two Harness processes can therefore attach the same TeamRun or observe the same
-queued message. Public message surfaces also accept a string sender id; Team
+Two Harness processes could therefore attach the same TeamRun or observe the
+same queued delivery. Public message surfaces also accepted a string sender id; Team
 membership validation does not prove that the caller is that Member.
 
 Organization and multi-client use make these gaps product-critical. A durable
@@ -75,19 +76,38 @@ release never deletes provider-native history.
 
 ### Claim before Provider side effect
 
-Each TeamMessage or WorkDelivery progresses independently:
+TeamMessage and WorkDelivery share claim fencing, but keep different terminal
+semantics.
+
+An authored TeamMessage delivery progresses as:
 
 ```text
 queued
   -> claimed(supervisor_id, generation, claim_id, expiry)
-  -> provider accepted(native receipt)
-  -> recipient acknowledged
+  -> delivered(provider-native receipt)
+  -> acknowledged?               # explicit message-intake control fact only
+  -> failed|expired               # when applicable
 ```
+
+A WorkDelivery progresses as:
+
+```text
+queued
+  -> claimed(supervisor_id, generation, claim_id, expiry)
+       -> provider_received(native receipt)
+       -> failed                  # explicit transport/reconciliation outcome
+  -> invalidated                  # stale/unclaimed revision is superseded
+```
+
+WorkDelivery has no `acknowledged` state. Responsibility acknowledgement is a
+Work `claimed` or `started` transition, and Work submission/Host acceptance are
+later semantic transitions. They are never inferred from transport.
 
 Claim is an atomic compare-and-append Store operation. It verifies:
 
 - the current TeamRun Supervisor lease;
-- the exact latest message row;
+- the exact latest TeamMessage or WorkDelivery row and, for WorkDelivery, the
+  current Work version/runtime binding;
 - the recipient and still-queued delivery;
 - no active claim by another generation.
 
@@ -107,8 +127,9 @@ A Work submission is rejected while a newer WorkDelivery for that Work is
 `queued` or `claimed`. The provider must first accept the latest version.
 Message replies preserve their own correlation and reply lineage.
 
-Acknowledgement proves recipient intake only. Correlated reply, Work submission,
-review action, Host acceptance, and Mission closeout remain separate facts.
+TeamMessage acknowledgement proves recipient intake only. Work start/claim,
+correlated reply, Work submission, review action, Host acceptance, and Mission
+closeout remain separate facts.
 
 ### Typed actors and recipients
 
@@ -228,7 +249,7 @@ to another Provider's value.
 ### Native execution truth remains Provider-owned
 
 Supervisor leases, TeamMessage/WorkDelivery claims, control acknowledgements,
-WorkEvents, and evidence references are Harness truth. Provider transcripts, tool calls,
+WorkOperations and their WorkEvents, and evidence references are Harness truth. Provider transcripts, tool calls,
 commands, file activity, subagent activity, turn history, and thinking remain
 in Provider-native storage.
 
@@ -318,7 +339,7 @@ The accepted implementation must prove:
 - lease expiry creates one higher generation;
 - two concurrent claims yield one claim;
 - an unfinished claim is not automatically replayed;
-- ACK is idempotent and does not imply semantic acceptance;
+- TeamMessage ACK is idempotent and does not imply semantic acceptance;
 - external actors are not rendered as Host or Member;
 - unbound MCP calls cannot author as `member_run` or `agent_member`;
 - exact Host binding never leaks another task's Inbox;

@@ -494,7 +494,6 @@ export interface TeamRecipientRef {
 
 /** Kind of a {@link TeamMessage} (open enum; rendered as a colored pill). */
 export type TeamMessageKind =
-  | "assignment"
   | "message"
   | "plan_request"
   | "plan_proposal"
@@ -520,7 +519,7 @@ export type TeamMessageResponseIntent = "informational" | "response_required";
 
 /**
  * Effective response intent: the explicit field wins; otherwise kind AND
- * sender decide — assignment/handoff/control always require a response round,
+ * sender decide — handoff/control always require a response round,
  * and ordinary message mail requires one unless a peer member sent it
  * (mirrors the Rust `TeamMessage::effective_response_intent` contract).
  */
@@ -530,7 +529,7 @@ export function effectiveTeamMessageResponseIntent(
   if (message.response_intent === "informational" || message.response_intent === "response_required") {
     return message.response_intent;
   }
-  if (message.kind === "assignment" || message.kind === "handoff" || message.kind === "control") {
+  if (message.kind === "handoff" || message.kind === "control") {
     return "response_required";
   }
   return sentByPeerMember(message) ? "informational" : "response_required";
@@ -560,6 +559,8 @@ function sentByPeerMember(message: Pick<TeamMessage, "sender" | "from_member_id"
 export interface TeamMessage {
   id: string;
   team_run_id?: string;
+  /** Optional conversational link. Work remains the responsibility source. */
+  work_id?: string | null;
   origin_wave_id?: string | null;
   sender?: TeamActorRef | null;
   from_member_id?: string;
@@ -573,6 +574,72 @@ export interface TeamMessage {
   evidence_refs?: string[];
   deliveries?: TeamMessageDelivery[];
   created_at?: string;
+}
+
+export type WorkStatus =
+  | "open"
+  | "in_progress"
+  | "blocked"
+  | "review"
+  | "done"
+  | "cancelled";
+
+export interface Work {
+  id: string;
+  team_run_id: string;
+  parent_work_id?: string | null;
+  source_work_item_ref?: string | null;
+  title: string;
+  context_markdown: string;
+  completion_criteria_markdown: string;
+  status: WorkStatus | string;
+  owner_member_id?: string | null;
+  active_member_run_id?: string | null;
+  claim_mode: "host_assign" | "team_claim" | string;
+  eligible_member_ids?: string[];
+  prerequisite_work_ids?: string[];
+  priority: "low" | "normal" | "high" | "urgent" | string;
+  created_by_actor: TeamActorRef;
+  result_summary?: string | null;
+  blocker_reason?: string | null;
+  artifact_refs?: string[];
+  check_refs?: string[];
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkEvent {
+  id: string;
+  team_run_id: string;
+  work_id: string;
+  sequence: number;
+  kind: string;
+  expected_version: number;
+  resulting_version: number;
+  performed_by_actor: TeamActorRef;
+  authority_actor?: TeamActorRef | null;
+  causation_ref?: { kind?: string; id?: string } | null;
+  idempotency_key: string;
+  payload?: unknown;
+  created_at: string;
+}
+
+export interface WorkDelivery {
+  id: string;
+  work_event_id: string;
+  team_run_id: string;
+  work_id: string;
+  work_version: number;
+  recipient_member_run_id: string;
+  status: "queued" | "claimed" | "provider_received" | "failed" | "invalidated";
+  attempt: number;
+  claim_id?: string | null;
+  claimed_by_supervisor_id?: string | null;
+  claimed_generation?: number | null;
+  provider_receipt_id?: string | null;
+  failure_reason?: string | null;
+  updated_at: string;
 }
 
 export interface TeamSupervisorLease {
@@ -713,6 +780,9 @@ export interface DashboardSnapshot {
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
   team_messages?: TeamMessage[];
+  works?: Work[];
+  work_events?: WorkEvent[];
+  work_deliveries?: WorkDelivery[];
   team_supervisor_leases?: TeamSupervisorLease[];
   team_member_close_requests?: TeamMemberCloseRequest[];
   agent_message_routes?: AgentMessageRoute[];

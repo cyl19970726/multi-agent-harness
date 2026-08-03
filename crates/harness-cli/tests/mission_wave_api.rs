@@ -40,6 +40,34 @@ fn run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Val
         .unwrap_or_else(|error| panic!("harness {args:?} stdout was not JSON ({error})"))
 }
 
+fn run_member_json(
+    home: &TempHome,
+    project_id: &str,
+    team_run_id: &str,
+    member_run_id: &str,
+    args: &[&str],
+) -> serde_json::Value {
+    let mut full = vec!["--project", project_id];
+    full.extend_from_slice(args);
+    let out = run_harness_with_env(
+        home,
+        home.base(),
+        &full,
+        &[
+            ("HARNESS_COMPANY_OS_TOKEN", COMPANY_OS_TEST_TOKEN),
+            ("HARNESS_TEAM_RUN_ID", team_run_id),
+            ("HARNESS_MEMBER_RUN_ID", member_run_id),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "member harness {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
+        .unwrap_or_else(|error| panic!("member harness {args:?} stdout was not JSON ({error})"))
+}
+
 fn force_team_run_reviewing(
     home: &TempHome,
     project_id: &str,
@@ -294,8 +322,9 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         created["member_runs"][0]["id"].as_str()
     );
     assert_eq!(
-        standing_assignments[0]["correlation_id"].as_str(),
-        created["assignment_messages"][0]["correlation_id"].as_str()
+        standing_assignments[0]["work_id"].as_str(),
+        created["works"][0]["id"].as_str(),
+        "standing execution projection must derive from the member's durable Work"
     );
     assert_eq!(
         standing_assignments[0]["standing_agent_id"].as_str(),
@@ -367,15 +396,17 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             team_run_id,
             "--member",
             "RepairFixer:repair specialist:codex",
-            "--assignment",
+            "--initial-work",
             "Repair any issue found by the review lane",
             "--origin-wave-id",
             "wave-plan-2",
         ],
     );
     assert_eq!(
-        joined["assignment"]["origin_wave_id"].as_str(),
-        Some("wave-plan-2")
+        joined["work"]["context_markdown"]
+            .as_str()
+            .is_some_and(|context| context.contains("wave-plan-2")),
+        true
     );
     assert_eq!(
         joined["team_run"]["member_run_ids"]
@@ -534,7 +565,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--to",
             &builder_member_id,
             "--kind",
-            "assignment",
+            "message",
             "--body",
             "invalid cross-Mission origin",
             "--origin-wave-id",
@@ -815,7 +846,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         &serde_json::json!({
             "objective": "obsolete wave index",
             "wave_index": 2,
-            "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
+            "members": [{"name": "lead", "role": "integrator", "provider": "kimi", "initial_work": "Integrate the attempt and provide evidence."}],
         }),
     );
     assert_eq!(status, 400, "body: {body}");
@@ -832,7 +863,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         serde_json::json!({
             "objective": "incomplete native linkage",
             "mission_id": "mission-alpha",
-            "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
+            "members": [{"name": "lead", "role": "integrator", "provider": "kimi", "initial_work": "Integrate the attempt and provide evidence."}],
         }),
     ] {
         let (status, body) = serve.post_json("/v1/team-runs", &invalid);
@@ -1009,7 +1040,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
             "objective": "first attempt",
             "mission_id": "mission-alpha",
             "wave_id": "wave-alpha",
-            "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
+            "members": [{"name": "lead", "role": "integrator", "provider": "kimi", "initial_work": "Integrate the first attempt and submit evidence for Host review."}],
         }),
     );
     assert_eq!(status, 200, "body: {body}");
@@ -1026,41 +1057,60 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         Some("wave-alpha")
     );
     assert!(body["result"]["team_run"].get("task_ids").is_none());
-    let assignment_id = body["result"]["assignment_messages"][0]["id"]
-        .as_str()
-        .expect("assignment id")
-        .to_string();
-    let assignment_correlation = body["result"]["assignment_messages"][0]["correlation_id"]
-        .as_str()
-        .expect("assignment correlation")
-        .to_string();
     let member_id = body["result"]["member_runs"][0]["id"]
         .as_str()
         .expect("member id")
         .to_string();
-
-    // Assignment-message correlation is the ownership path: an explicit reply
-    // preserves both references, while a causation-only reply inherits its
-    // direct cause's correlation without involving a legacy Task.
+    let work_id = body["result"]["works"][0]["id"]
+        .as_str()
+        .expect("Work id")
+        .to_string();
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_a}/messages"),
         &serde_json::json!({
-            "from_member_id": member_id,
+            "from_member_id": "host",
+            "sender_kind": "host",
+            "sender_id": "host",
+            "to_member_ids": [member_id],
+            "kind": "message",
+            "body": "Please execute the linked Work.",
+            "work_id": work_id,
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let request_id = body["result"]["id"]
+        .as_str()
+        .expect("request id")
+        .to_string();
+    let conversation_correlation = body["result"]["correlation_id"]
+        .as_str()
+        .expect("conversation correlation")
+        .to_string();
+
+    // Work is the ownership path. Conversation correlation remains useful for
+    // replies, but it does not create or transfer responsibility.
+    let (status, body) = serve.post_json(
+        &format!("/v1/team-runs/{attempt_a}/messages"),
+        &serde_json::json!({
+            "from_member_id": "operator-test",
+            "sender_kind": "operator",
+            "sender_id": "operator-test",
             "to_member_ids": ["host"],
             "kind": "handoff",
             "body": "implementation handoff",
-            "correlation_id": assignment_correlation,
-            "causation_id": assignment_id,
+            "work_id": work_id,
+            "correlation_id": conversation_correlation,
+            "causation_id": request_id,
         }),
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(
         body["result"]["correlation_id"].as_str(),
-        Some(assignment_correlation.as_str())
+        Some(conversation_correlation.as_str())
     );
     assert_eq!(
         body["result"]["causation_id"].as_str(),
-        Some(assignment_id.as_str())
+        Some(request_id.as_str())
     );
     let handoff_id = body["result"]["id"]
         .as_str()
@@ -1079,7 +1129,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(
         body["result"]["correlation_id"].as_str(),
-        Some(assignment_correlation.as_str()),
+        Some(conversation_correlation.as_str()),
         "causation-only reply inherits its cause correlation"
     );
 
@@ -1300,7 +1350,7 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
             "objective": "Complete through the Console start endpoint",
             "mission_id": "mission-console",
             "wave_id": "wave-console",
-            "members": [{"name": "worker", "role": "implementer", "provider": "kimi"}],
+            "members": [{"name": "worker", "role": "implementer", "provider": "kimi", "initial_work": "Run the fake provider and return the requested evidence."}],
         }),
     );
     assert_eq!(status, 200, "body: {body}");
@@ -1311,6 +1361,10 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
     let member_id = body["result"]["member_runs"][0]["id"]
         .as_str()
         .expect("member id")
+        .to_string();
+    let work_id = body["result"]["works"][0]["id"]
+        .as_str()
+        .expect("Work id")
         .to_string();
 
     let mut sse = serve.open_sse(&format!("?project={project_id}"));
@@ -1361,6 +1415,71 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+
+    let started = run_member_json(
+        &home,
+        &project_id,
+        &run_id,
+        &member_id,
+        &[
+            "team-run",
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &member_id,
+            "--json",
+        ],
+    );
+    let started_version = started["version"].as_u64().expect("started version");
+    let submitted = run_member_json(
+        &home,
+        &project_id,
+        &run_id,
+        &member_id,
+        &[
+            "team-run",
+            "work",
+            "submit",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            &started_version.to_string(),
+            "--member-run-id",
+            &member_id,
+            "--result",
+            "fake provider round completed; transient thinking stayed live-only",
+            "--json",
+        ],
+    );
+    let submitted_version = submitted["version"].as_u64().expect("submitted version");
+    let accepted = run_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "work",
+            "accept",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            &submitted_version.to_string(),
+            "--summary",
+            "Host accepted the explicit Work result",
+            "--json",
+        ],
+    );
+    assert_eq!(accepted["status"].as_str(), Some("done"));
+
     let (status, completed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/transition?project={project_id}"),
         &serde_json::json!({"status": "completed"}),

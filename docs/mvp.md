@@ -32,8 +32,8 @@ dependency.
 - A Mission may link multiple teams.
 - Primary TeamRun creation uses `mission_id + agent_team_id` and no Wave id.
 - MemberRuns and provider-native sessions may continue across Wave advance.
-- Accepted target ownership uses Work assignment/claim, WorkEvent and
-  WorkDelivery; implementation remains pending ADR 0050. Optional Mission/Wave
+- Agent Team ownership uses Work assignment/claim, WorkEvent and WorkDelivery
+  under ADR 0050. Optional Mission/Wave
   links are navigation and judgment context, not Work ownership.
 - One latest-wins `TeamSupervisorLease` generation owns provider transports,
   message claims, reconnect, and real live controls for the TeamRun.

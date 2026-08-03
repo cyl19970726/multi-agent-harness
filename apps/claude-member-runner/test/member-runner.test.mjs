@@ -47,7 +47,7 @@ test("member survives an empty mailbox and consumes a later message", async () =
   const { runner, of } = harness();
   const done = runner.start();
 
-  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "build it" });
+  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "build it" });
   await settled();
 
   // The queue is now empty. Under the current batch design the member would
@@ -63,13 +63,13 @@ test("member survives an empty mailbox and consumes a later message", async () =
   assert.equal(of("turn_complete").length, 2, "both messages produced a turn");
   assert.deepEqual(
     of("turn_complete").map((event) => event.data.triggerMessageId),
-    ["m1", "m2"],
-    "each provider turn identifies the exact TeamMessage it consumed",
+    ["w1", "m2"],
+    "each provider turn identifies the exact durable input it consumed",
   );
 
-  runner.close("host_accepted_handoff");
+  runner.close("host_accepted_work");
   await done;
-  assert.equal(of("member_closed")[0].data.reason, "host_accepted_handoff");
+  assert.equal(of("member_closed")[0].data.reason, "host_accepted_work");
 });
 
 test("a provider API failure is not reported as an ordinary successful turn", async () => {
@@ -85,7 +85,7 @@ test("a provider API failure is not reported as an ordinary successful turn", as
   });
   const done = runner.start();
 
-  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "build it" });
+  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "build it" });
   await settled();
 
   const turns = events.filter((e) => e.event === "turn_complete");
@@ -113,7 +113,7 @@ test("a provider API failure is not reported as an ordinary successful turn", as
 test("only the Host ends the member, and the reason is recorded", async () => {
   const { runner, of } = harness();
   const done = runner.start();
-  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "x" });
+  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "x" });
   await settled();
 
   runner.close("run_torn_down");
@@ -128,7 +128,7 @@ test("only the Host ends the member, and the reason is recorded", async () => {
 test("native session is bound once and registered under the TeamRun tag", async () => {
   const { runner, sdk, of } = harness();
   const done = runner.start();
-  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "x" });
+  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "x" });
   await settled();
   runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "y" });
   await settled();
@@ -223,15 +223,15 @@ test("the provider subprocess inherits Harness coordination identity", async () 
     project: process.env.HARNESS_PROJECT,
     team: process.env.HARNESS_TEAM_RUN_ID,
     member: process.env.HARNESS_MEMBER_RUN_ID,
-    assignment: process.env.HARNESS_ASSIGNMENT_MESSAGE_ID,
-    correlation: process.env.HARNESS_ASSIGNMENT_CORRELATION_ID,
+    work: process.env.HARNESS_WORK_ID,
+    workVersion: process.env.HARNESS_WORK_VERSION,
   };
   Object.assign(process.env, {
     HARNESS_PROJECT: "project-live",
     HARNESS_TEAM_RUN_ID: "trun-live",
     HARNESS_MEMBER_RUN_ID: "mrun-live",
-    HARNESS_ASSIGNMENT_MESSAGE_ID: "assignment-live",
-    HARNESS_ASSIGNMENT_CORRELATION_ID: "corr-live",
+    HARNESS_WORK_ID: "work-live",
+    HARNESS_WORK_VERSION: "7",
   });
   try {
     const { runner, sdk } = harness();
@@ -240,8 +240,8 @@ test("the provider subprocess inherits Harness coordination identity", async () 
     assert.equal(sdk.lastOptions.env.HARNESS_PROJECT, "project-live");
     assert.equal(sdk.lastOptions.env.HARNESS_TEAM_RUN_ID, "trun-live");
     assert.equal(sdk.lastOptions.env.HARNESS_MEMBER_RUN_ID, "mrun-live");
-    assert.equal(sdk.lastOptions.env.HARNESS_ASSIGNMENT_MESSAGE_ID, "assignment-live");
-    assert.equal(sdk.lastOptions.env.HARNESS_ASSIGNMENT_CORRELATION_ID, "corr-live");
+    assert.equal(sdk.lastOptions.env.HARNESS_WORK_ID, "work-live");
+    assert.equal(sdk.lastOptions.env.HARNESS_WORK_VERSION, "7");
     assert.equal(sdk.lastOptions.env.PATH, process.env.PATH);
     runner.close("done");
     await done;
@@ -250,8 +250,8 @@ test("the provider subprocess inherits Harness coordination identity", async () 
       HARNESS_PROJECT: previous.project,
       HARNESS_TEAM_RUN_ID: previous.team,
       HARNESS_MEMBER_RUN_ID: previous.member,
-      HARNESS_ASSIGNMENT_MESSAGE_ID: previous.assignment,
-      HARNESS_ASSIGNMENT_CORRELATION_ID: previous.correlation,
+      HARNESS_WORK_ID: previous.work,
+      HARNESS_WORK_VERSION: previous.workVersion,
     })) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -304,7 +304,7 @@ test("the member survives an interrupt and consumes the next message", async () 
   const { runner, of } = harness();
   const done = runner.start();
 
-  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "long task" });
+  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "long task" });
   await settled();
 
   await runner.interrupt();
@@ -328,7 +328,7 @@ test("the member survives an interrupt and consumes the next message", async () 
 test("the resumed query continues the same native session", async () => {
   const { runner, sdk, of } = harness();
   const done = runner.start();
-  runner.deliver({ id: "m1", kind: "assignment", from_member_id: "host", body: "x" });
+  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "x" });
   await settled();
   const bound = of("session_bound")[0].data.sessionId;
 

@@ -46,6 +46,9 @@ Finance, and governance. Execution does not require a Company.
 │       ├── teams.jsonl
 │       ├── team_runs.jsonl
 │       ├── member_runs.jsonl
+│       ├── works.jsonl
+│       ├── work_events.jsonl
+│       ├── work_deliveries.jsonl
 │       ├── team_messages.jsonl
 │       ├── team_supervisor_leases.jsonl
 │       ├── agent_message_routes.jsonl
@@ -160,13 +163,15 @@ HARNESS_PROJECT_ID
 HARNESS_PROJECT
 HARNESS_TEAM_RUN_ID
 HARNESS_MEMBER_RUN_ID
-HARNESS_ASSIGNMENT_MESSAGE_ID
-HARNESS_ASSIGNMENT_CORRELATION_ID
+HARNESS_WORK_ID
+HARNESS_WORK_VERSION
 HARNESS_BIN
 ```
 
 `HARNESS_PROJECT_ID` is the stable binding id. `HARNESS_PROJECT` is an
 executable selector, normally the canonical project root.
+Conversation correlation belongs to an actual TeamMessage envelope; it is not
+a process-wide responsibility variable.
 
 ## Selection precedence
 

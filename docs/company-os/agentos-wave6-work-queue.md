@@ -1,11 +1,16 @@
 # AgentOS Wave 6 Work Queue
 
 ```text
-status: canonical operating queue for Wave 6
+status: historical Wave 6 operating evidence; superseded by ADR 0050 shared Works
 owner_role: AgentOS Work Governance
-canonical_for: AgentOS WorkItem classification, priority, lane ownership, and collision boundaries
+canonical_for: historical AgentOS WorkItem classification and collision evidence only
 source: agent-company Company Store work list + master commit 869a870, inspected 2026-08-01
 ```
+
+> This frozen queue records the pre-ADR-0050 run and retains historical
+> Assignment/Handoff evidence labels. It is not current dispatch guidance. New
+> Agent Team execution uses Work → WorkEvent → WorkDelivery → MemberRun →
+> provider-native session, with explicit Work submission and Host acceptance.
 
 This queue classifies every AgentOS WorkItem in the `agent-company` Company
 Store exactly once: **completed** (already closed in the Store; listed only
@@ -68,7 +73,7 @@ criterion named.
 | work-agentos-store-docs-foundation-v1 | Store-verified: `document-agentos-root` in space `agentos` with 6 children; `module-agentos-project-home` and `module-agentos-software-product-sources` active; `product-doc-source-agentos-*` and `source-sync-run-1785334715161-p59475-0` records exist | agent-agentos-docs-governance |
 | work-agentos-doc-space-cleanup-v1 | Store-verified: all 4 legacy `company`-space AgentOS documents are `archived`; canonical docs live under `document-agentos-root` in space `agentos` | agent-agentos-docs-governance |
 | work-agentos-org-agent-split-v1 | Store-verified: AgentOS Standing Agents exist (`agent-agentos-lead`, `-docs-governance`, `-work-governance`, `-org-governance`, `-platform-development`) with explicit AgentMember execution links | agent-agentos-lead |
-| work-agentos-org-work-doc-loop-v1 | `50763b9`/`c4b0f73` Standing Agent execution link; `38580de`/`73ba38d` assignment→TeamMessage→MemberRun→native-session provenance chain; live evidence already attached to the item | agent-agentos-work-governance |
+| work-agentos-org-work-doc-loop-v1 | Historical pre-cutover evidence: `50763b9`/`c4b0f73` Standing Agent execution link and `38580de`/`73ba38d` message-era runtime chain. A current rerun must prove Company Assignment → WorkExecutionChain → Work → WorkDelivery → MemberRun → native session. | agent-agentos-work-governance |
 | work-agentos-organization-operability-v1 | PR #291 (`e2736e1`): Org hierarchy from Store truth, execution binding without MemberRun/identity conflation, ambiguous identity withheld (`apps/agent-dashboard/src/company-os/operations/pages.tsx`) | agent-agentos-org-governance |
 | work-agentos-external-gateway-registry-v1 | PR #273 (`e9de920`): gateway registry contract in `docs/company-os/external-gateway-and-plugins.md` | agent-agentos-platform-development |
 | work-agentos-wecom-gateway-plugin-v0 | PR #273 (`e9de920`): WeCom v0 design contract documented; implementation is a separate blocked item (see section E) | agent-agentos-platform-development |
@@ -114,8 +119,9 @@ lane merges, other live lanes reconcile per the rolling rule.
   Sequence before N2 (both touch `harness-core` and schemas)
 - Acceptance: ack-only peer mail triggers no provider round unless
   `response_required` is explicit; Host/Operator/Service mail still wakes an
-  idle Member by default so questions, blockers, reviews, Host decisions, and
-  handoffs stay durable, correlated, and reachable; deterministic two-peer
+  idle Member by default so questions, blockers, reviews, and Host decisions
+  stay durable, correlated, and reachable; Work submission remains a Work
+  transition rather than a message; deterministic two-peer
   bounded-convergence test; Dashboard distinguishes informational delivery from
   response-required
 

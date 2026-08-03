@@ -116,7 +116,7 @@ submission, and acceptance as separate facts.
 | Mission/Wave | ids, Mission status/context, ordered Wave index, Markdown context, revision, Host outcome/advance |
 | Executions | independent TeamRun/WorkflowRun ids, status, lineage, outcomes, and explicit Mission/context relations |
 | Team Works | Work id/version, owner, status, readiness, claim policy, blockers, parent/child, results, artifacts, and checks |
-| Work delivery | WorkEvent id, target MemberRun, claim, provider receipt, ACK, retry, and reconciliation |
+| Work delivery | WorkEvent id, target MemberRun, claim, provider receipt/failure, invalidation, retry, and reconciliation; Work claim/start is the semantic responsibility acknowledgement |
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
 | Supervisor | current lease generation, owner/heartbeat, routed-control health, reconnect/close latch |
 | Delivery | typed sender/recipients, claim, provider receipt, per-recipient ACK, retry/reconciliation |

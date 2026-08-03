@@ -15,7 +15,7 @@ architecture: ADR 0034 + ADR 0050
 | Wave | Versioned Host plan and judgment. | Not a task graph, executor container, barrier, or session boundary. |
 | Agent Team | Independent reusable collaborator definition. | May be standalone or linked to Missions. |
 | AgentTeamRun | One use of a team. | Mission-scoped runs may span several Waves. |
-| Work | One TeamRun-scoped responsibility and its current state. | Board is a projection; Work owner and WorkEvents are truth. |
+| Work | One TeamRun-scoped responsibility and its current state. | Board is a projection; ordered WorkOperations preserve the resulting Work plus its append-only WorkEvent audit. |
 | MemberRun | One run-scoped participant and native-session binding. | May own one active Work plus queued Works. |
 
 Standing Agents and Docs remain separate Company OS surfaces. They may share
@@ -109,9 +109,9 @@ honest attribution. The Harness does not invent lifecycle control.
 
 ## Data Boundary
 
-The Mission/Wave and runtime fields below are implemented. The Work,
-WorkEvent, and WorkDelivery contracts are accepted by ADR 0050 but remain
-implementation pending.
+Mission/Wave, runtime, Work, WorkOperation/WorkEvent, and WorkDelivery are the
+current implementation boundary. WorkOperation is the crash-atomic Store replay
+row; UI and Host actions continue to speak in Work and WorkEvent terms.
 
 - `Mission.context`, `Mission.agent_team_ids[]`
 - `Wave.context`, `Wave.revision`, `Wave.updated_by`, ordered append-only
@@ -119,7 +119,8 @@ implementation pending.
 - `AgentTeamRun.agent_team_id`, optional `mission_id`, legacy optional
   `wave_id`
 - `MemberRun.native_session`
-- target `Work`, `WorkEvent`, `WorkDelivery`, and authored `TeamMessage.work_id?`
+- `Work`, `WorkOperation` (`WorkEvent` + resulting projection + delivery
+  deltas), `WorkDelivery`, and authored `TeamMessage.work_id?`
 
 Legacy `executor_kind`, attempt-list, accepted-run, and gate fields remain
 readable for direct-Wave-executor history only.

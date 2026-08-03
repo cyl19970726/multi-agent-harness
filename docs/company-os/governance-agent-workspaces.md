@@ -64,7 +64,7 @@ variance but never grant authority or replace product Actions.
 The workspace also projects Agent Team participation when, and only when,
 `StandingAgent.execution_agent_member_ref` names the AgentMember carried by
 `MemberRun.agent_member_id`. Equal ids never bind. It shows exact TeamRun,
-MemberRun, assignment correlation, status,
+MemberRun, owned/eligible Work, Work status and version,
 native-session locator, and a deep link to execution. It does not infer a link
 from names or providers, and it does not treat runtime health as organization
 availability or authority.

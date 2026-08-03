@@ -10,7 +10,7 @@
     "team_run_id": { "type": "string", "minLength": 1 },
     "work_id": { "type": "string", "minLength": 1 },
     "sequence": { "type": "integer", "minimum": 1 },
-    "kind": { "type": "string", "enum": ["created", "assigned", "claimed", "started", "released", "blocked", "resumed", "submitted", "changes_requested", "accepted", "cancelled", "updated", "became_ready", "prerequisite_cancelled", "rebound"] },
+    "kind": { "type": "string", "enum": ["created", "assigned", "claimed", "started", "released", "blocked", "resumed", "submitted", "changes_requested", "accepted", "cancelled", "updated", "rebound"] },
     "expected_version": { "type": "integer", "minimum": 0 },
     "resulting_version": { "type": "integer", "minimum": 1 },
     "performed_by_actor": { "$ref": "#/$defs/actor" },

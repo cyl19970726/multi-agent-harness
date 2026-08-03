@@ -136,7 +136,7 @@ at least one authority or resource dimension must be strictly narrower.
 There are two child forms:
 
 - A **temporary Team Member** is execution-only and is bound to the exact
-  Assignment, delivered TeamMessage, MemberRun, native session, and
+  Company Assignment, Agent Team Work/WorkDelivery, MemberRun, native session, and
   ProjectBinding. It never becomes a Company Actor, receives no Company grant
   as grantee, cannot possess, present, or transport the parent grant, cannot
   subdelegate Company authority, and returns evidence to the accountable
@@ -232,7 +232,7 @@ digest that binds:
 Constitution version + canonical digest
 grant lineage ids + generations + canonical grant digests
 Company Actors + StandingAgent/AgentMember/MemberRun/native-session binding
-WorkItem + Assignment + delivered TeamMessage/correlation
+WorkItem + Company Assignment + Agent Team Work/WorkDelivery
 approved Standing Agent template id/version/digest + exact ProjectBinding
 reservation ids and budget/concurrency/depth amounts
 ActionCommand/request/result and AuditEvent references
@@ -367,10 +367,13 @@ The Organization UI must read the selected Company Store and show:
 - runtime/Supervisor health as a separate provenance panel, never as Company
   authority.
 
-The Work UI must show accountable Actor, Assignment, delivery TeamMessage and
-correlation, active leaf lineage, lease/ActionCommand/AuditEvent refs,
+The Work UI must show accountable Actor, Company Assignment, Agent Team
+Work/version, WorkDelivery/provider receipt, active leaf lineage,
+lease/ActionCommand/AuditEvent refs,
 reservation state, exception state, result/evidence/outcome refs, and GitHub
-DeliveryRefs. Missing Store relations stay visibly missing. The UI must not
+DeliveryRefs. Conversation remains an adjacent optional activity source, never
+responsibility or delivery proof. Missing Store relations stay visibly missing.
+The UI must not
 infer relations from matching names, ids, provider sessions, the first
 available row, or the selected Execution Space/Project Binding.
 

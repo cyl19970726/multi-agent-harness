@@ -50,7 +50,7 @@ flowchart TD
   Record --> Metric["MetricObservation"]
   Record --> Finance["FinancialRecord"]
   Finance --> Approval
-  Agent --> Standing["StandingAssignment\n(read-only projection)"]
+  Agent --> Standing["StandingExecutionAssignment\n(read-only projection)"]
   Standing --> Work
   Standing --> Exec
 ```
@@ -266,10 +266,13 @@ contains the WorkItem, recipient ActorRef, sender ActorRef, delivery state,
 delivery policy, assigned role, correlation, timestamps, and optional scope.
 
 An assignee field alone is never proof of delivery. For Agent recipients, the
-existing Message/TeamMessage delivery contract remains the execution proof and
-may materialize an Assignment. For Human and external recipients, delivery may
-be acknowledged through an approved notification or collaboration channel, but
-the resulting Assignment state must remain durable and auditable.
+Company Assignment remains the business responsibility edge; an explicit
+`WorkExecutionChain` joins it to Agent Team Work, and WorkDelivery proves that
+the selected Work version reached a Member runtime. Message/TeamMessage may
+explain the work but cannot create or materialize an Assignment. For Human and
+external recipients, delivery may be acknowledged through an approved
+notification or collaboration channel, but the resulting Assignment state must
+remain durable and auditable.
 
 ### Approval
 
@@ -324,17 +327,37 @@ and typed records. A trademark application therefore links to its fee records;
 the trademark page and finance reporting are views of the same records, not
 copies of an amount typed in two places.
 
-## StandingAssignment projection
+## Company-to-execution Work projections
 
-`StandingAssignment` is a read-only Agent-centric projection. It answers which
-explicit work contexts a durable Agent is actively serving across modules and
-execution modes. It is not another executor.
+`WorkExecutionChain` is the read-only bridge from a Company `Assignment` to
+the Agent Team `Work` that executes it. The Company Assignment remains the
+business responsibility edge; Agent Team Work is the team's shared operational
+truth. A message may discuss either object, but cannot replace the link.
+
+```text
+WorkExecutionChain
+assignment_id
+work_item_id
+work_id?
+assignment_state
+work_state?
+link_status = linked | mismatch | unavailable
+work_delivery?
+member_run?
+conversations[]
+external_observations[]
+```
+
+`StandingExecutionAssignment` is the read-only Agent-centric projection used
+by Organization and Agent detail surfaces. It answers which explicit execution
+contexts a durable Agent is serving; it is not another executor.
 
 ```text
 id
 agent_member_id
-source_kind = work_item | agent_team_assignment | workflow_participation | direct_assignment
+source_kind = agent_team_work | agent_team_participation | workflow_participation
 source_ref
+work_id?
 title
 role
 status
@@ -345,15 +368,21 @@ navigation_target
 
 Projection rules:
 
-- WorkItem assignments require an explicit Assignment addressed to that Agent.
+- A Company WorkItem requires an explicit Company Assignment. Its execution
+  appears through `WorkExecutionChain`, not by relabeling the WorkItem itself as
+  Agent Team work.
+- An owned Agent Team Work projects as `agent_team_work`; an unallocated team
+  Work creates no Agent-centric row.
+- A MemberRun without owned Work may project as `agent_team_participation` so
+  team presence remains visible without inventing responsibility.
 - Mission/Wave participation requires an explicit durable Agent link, such as
   `MemberRun.agent_member_id`; never infer it from name, role, provider, model,
   or timing.
 - Workflow participation requires an explicit recorded member/session owner.
-- Direct conversation is activity, not an Assignment.
-- Retries are execution lineage for one source assignment, not duplicate active
-  business work.
-- Missing links remain missing and produce no StandingAssignment.
+- Direct conversation is activity, not Work or a Company Assignment.
+- Retries are execution lineage for one Work, not duplicate active business
+  responsibility.
+- Missing links remain missing and produce no execution-assignment row.
 
 ## Invariants
 
@@ -365,7 +394,7 @@ Projection rules:
    require an execution reference at creation.
 4. Assignment delivery is durable; changing an assignee list is insufficient
    to claim an Agent received work.
-5. Only explicit, typed links create StandingAssignment rows.
+5. Only explicit, typed links create `StandingExecutionAssignment` rows.
 6. Document pages, reports, and views derive financial and metric facts from
    linked structured records rather than duplicated values.
 7. Financial, legal, organization, permission, and other governed actions

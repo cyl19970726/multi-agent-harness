@@ -1,5 +1,13 @@
 # Execution Workbench V3
 
+> **Historical visual baseline.** ADR 0050 supersedes this package's
+> Assignment-message/Handoff semantics. Preserve its approved images as design
+> evidence, but do not use this directory as current product or interaction
+> truth. Current Team semantics and UI live in
+> `docs/product/agent-team-works.md` and
+> `docs/dashboard/pages/team-run-war-room.md`: Work owns responsibility and
+> acceptance; TeamMessage is optional Work-linked conversation.
+
 This visual-direction package refines the Mission, Agent Team, and MemberRun
 plugin experience around one operator question: **what is happening now, what
 needs me, and what happens next?**
@@ -20,8 +28,8 @@ The expected images are design intent, not browser evidence. They must remain im
   responsibility table, but no task graph or duplicated member runtime.
 - A Mission-scoped Agent Team can span multiple Waves. A selected Wave on Team
   or Member pages is preserved navigation context, not runtime containment.
-- Assignment messages, correlations, and optional `origin_wave_id` explain
-  member ownership and handoffs.
+- Shared Works expose member responsibility and state. Work-linked Messages and
+  optional `origin_wave_id` explain conversation/navigation only.
 - The Host advances or revises Waves without waiting for every member; members
   and provider-native sessions may carry forward.
 - Raw provider thinking is never shown as durable history.

@@ -1,368 +1,262 @@
 ---
 name: collaborate-as-agent-team-member
-description: Use when an Agent Team Member receives or resumes an end-to-end correlated Assignment and must plan its own lane, work in its assigned Workspace, use provider-native subagents where useful, read its Harness Inbox, coordinate with the Host or peers, report blockers, submit evidence, and remain available until review acceptance. Do not use for Host orchestration or a one-shot internal subagent.
+description: Use when a persistent Agent Team Member receives, claims, resumes, executes, blocks, or submits shared Work; reads its WorkDelivery and message Inbox; coordinates with the Host or peers; uses provider-native subagents; or survives review and runtime restart. Do not use for Host orchestration or a one-shot internal subagent.
 ---
 
 # Collaborate As An Agent Team Member
 
-Own the Assignment end to end. You are a durable `MemberRun` with a mailbox,
-Workspace, provider-native session, permission ceiling, and acceptance
-responsibility. Your native subagents are your implementation detail.
+Own one shared-board Work end to end. You are a durable MemberRun with a
+Workspace, Provider-native session, mailbox, permission ceiling, and review
+responsibility. Your Provider-native subagents are implementation details.
 
-This is one provider-neutral collaboration contract. Codex app-server, Claude
-Agent SDK streaming, and Kimi ACP use their own native sessions and controls,
-but they receive and send the same Harness coordination envelopes. Do not fork
-team semantics into provider-specific Skills.
+Use the exact `HARNESS_BIN` and identifiers supplied by the collaboration
+envelope. Do not substitute another binary from `PATH` or infer identity from a
+display name.
 
-## Start From The Collaboration Envelope
+## Start From Work, Not Chat
 
-Confirm these values before acting:
+Confirm these facts before side effects:
 
-- Mission, TeamRun, MemberRun, Assignment message, correlation, and optional
-  origin Wave ids;
-- role, roster, owned paths, completion standard, permission ceiling, and
-  Workspace;
-- exact Host and peer addresses.
+- TeamRun, MemberRun, current Work id and version;
+- Work title, Markdown context, completion criteria, owner, readiness, and
+  allowed paths;
+- Workspace, Project Binding, permission ceiling, Team roster, and Host/peer
+  addresses; and
+- Provider execution driver and native-session binding.
 
-If an identity or boundary is missing, send a correlated `message` whose first
-line says `QUESTION:`. Do not invent it from a display name or provider chat.
-
-Read current work:
+Read the board and exact Work:
 
 ```bash
-"$HARNESS_BIN" team-run inbox --id <team-run-id> \
-  --member-run-id <member-run-id> --json
-"$HARNESS_BIN" team-run inbox --id <team-run-id> \
-  --member-run-id <member-run-id> --all --json
+"$HARNESS_BIN" team-run work list \
+  --team-run-id "$HARNESS_TEAM_RUN_ID"
+"$HARNESS_BIN" team-run work show \
+  --work-id "$HARNESS_WORK_ID"
 ```
 
-Use the exact executable supplied by the collaboration envelope. Do not replace
-`"$HARNESS_BIN"` with another `harness` found on `PATH`. Treat
-`HARNESS_PROJECT_ID` as identity and `HARNESS_PROJECT` as the executable
-Workspace selector.
+The board is the sole responsibility/status authority. TeamMessage is
+conversation only. There is no Assignment Message compatibility path and no
+Harness Goal, Plan Gate, or Task Graph.
 
-The default view is actionable coordination. `--all` returns every received
-Harness message at its latest stored state, not raw append revisions and not
-the provider transcript.
+## Claim Or Start Exactly One Work
+
+For a ready unassigned Work you are eligible to take, atomically claim it:
+
+```bash
+"$HARNESS_BIN" team-run work claim \
+  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+  --work-id <work-id> \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --expected-version <latest-version> \
+  --idempotency-key <stable-command-key>
+```
+
+For Work already assigned to you, explicitly start it:
+
+```bash
+"$HARNESS_BIN" team-run work start \
+  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+  --work-id "$HARNESS_WORK_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --expected-version "$HARNESS_WORK_VERSION" \
+  --idempotency-key <stable-command-key>
+```
+
+Refresh the Work after any `VERSION_CONFLICT`. Never retry with a guessed
+version. `CLAIM_LOST` means another Member owns the latest Work; do not perform
+its side effects.
+
+A successful self-claim is already responsibility possession inside this
+bound MemberRun/native turn. It records the `claimed` WorkEvent and returns the
+new Work version; it does not send a WorkDelivery back to yourself. After a
+runtime restart, continue the same `in_progress` Work only through the same
+MemberRun and verified provider-native session, inspect native history and the
+Workspace first, and never invent a provider receipt. Host assignment,
+resume, request-changes, and rebind are external changes and still arrive as
+WorkDelivery.
+
+V1 permits one active `in_progress` Work per Member unless a concrete capacity
+profile says otherwise. You may own several open Works but must not start two
+top-level cycles in one native session or writable Workspace.
 
 ## Own Your Internal Plan
 
-Translate the Assignment into your own design, implementation, and verification
-steps. Keep the same Assignment correlation across rounds and Host-plan Waves.
-Do not create a new Goal object or wait for the Wave to schedule you.
+Translate the current Work into your own design, implementation, and
+verification plan. When the Host asks for a plan first, reply with concise
+Markdown in a Work-linked conversation, address revisions, and execute only
+after the Host says to proceed. Provider-native plan/goal features are optional
+internal aids; they are not Harness state or Host acceptance.
 
-When Host sends an ordinary message asking for a plan first:
+Use the execution driver selected by the Host/adapter:
 
-1. Inspect enough context to form a concrete plan.
-2. Reply with concise Markdown in the same Assignment correlation.
-3. Address Host challenges in the same native session.
-4. Execute only after Host sends an ordinary message telling you to proceed.
+- `host_driven`: return control at safe boundaries and wait for the next
+  delivery; do not activate a competing native continuation loop.
+- `provider_driven`: use only the reviewed native continuation controller and
+  report its terminal reason.
 
-The Assignment is your durable responsibility. A provider-native Goal is an
-optional continuation mechanism, not its identity. Plan revision does not
-replace your MemberRun, Workspace, correlation, or native session.
+Use Provider-native subagents for bounded internal lanes. They inherit your
+Workspace and permission ceiling, return evidence to you, and never become
+Harness Members or independent reviewers.
 
-Use the execution driver selected by the Host/adapter. In `host_driven` mode,
-do not independently activate a native Goal that starts another top-level
-cycle; return control through ordinary messages or Handoff and wait for the
-next delivery. In `provider_driven` mode, keep working through the provider's
-native cycles until its condition is terminal or the Host interrupts/clears it.
-Report any material condition change or native terminal reason. Never treat
-provider Goal satisfaction as Host acceptance of your Assignment.
+## Read And Send Work-Linked Conversation
 
-Provider-native planning is optional and internal. Harness has no Plan Mode or
-Plan Gate; do not treat a provider mode or tool hook as Host approval.
-
-Use a native subagent when a bounded subtask can return to your context. Keep
-work inline when delegation overhead is larger than the task. Subagents:
-
-- inherit your Workspace, owned paths, and permission ceiling;
-- do not become Harness members or own your Assignment;
-- return evidence and conclusions to you; and
-- do not provide independent acceptance of your work.
-
-Ask the Host to create a Reviewer Member when risk needs independent review.
-
-## Collaborate Through TeamMessage
-
-Use the Assignment correlation for every work-chain message:
+Read actionable mail, or include history when needed:
 
 ```bash
-"$HARNESS_BIN" team-run send --id <team-run-id> \
-  --from <member-run-id> --to host --kind message \
-  --body "<decision-shaped question and recommendation>" \
-  --correlation-id <correlation-id>
-
-"$HARNESS_BIN" team-run send --id <team-run-id> \
-  --from <member-run-id> --to <peer-member-run-id> --kind message \
-  --body "<coordination needed by the peer>" \
-  --correlation-id <correlation-id>
-
-"$HARNESS_BIN" team-run send --id <team-run-id> \
-  --from <member-run-id> --to host --kind message \
-  --body "<Markdown execution plan>" \
-  --correlation-id <correlation-id> \
-  --causation-id <host-message-id>
+"$HARNESS_BIN" team-run inbox --id "$HARNESS_TEAM_RUN_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" --json
+"$HARNESS_BIN" team-run inbox --id "$HARNESS_TEAM_RUN_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" --all --json
 ```
 
-Keep the Assignment correlation stable, but set `causation_id` to the exact
-message you are answering. For the first result that is usually the Assignment
-id; after a Host or peer follow-up it is that follow-up's id. The persistent
-Member handoff is stricter than ordinary peer coordination: its
-`correlation_id` must identify an Assignment addressed and delivered to this
-exact MemberRun. Never reuse a peer's Assignment correlation.
-Provider adapters apply the same rule to their automatic round Handoffs. Send
-one explicit Handoff when the lane is ready; the Adapter treats it as
-authoritative and does not add a duplicate final-reply Handoff.
-
-Ordinary assistant narration and progress stay in the provider-native Session.
-If you do not send an explicit Handoff, the Adapter persists only your final
-structured `## RESULT` report as the round Handoff (or the trimmed final text
-for legacy output). A later Host or peer message may legitimately trigger
-another round and another Handoff; that is not a duplicate.
-
-Use `message` for questions, answers, progress, blockers, planning, review, and
-peer coordination. State the intent in the first sentence. Use `handoff` only
-when the lane meets its completion standard. Historical specialized message
-kinds remain readable but are read-only on new public writes.
-
-Member-to-Host is visible to the control plane immediately. Peer messages queue
-for the peer's next available round. Read the Inbox again after meaningful
-milestones and before handoff. Never assume a provider assistant reply is team
-state unless a `TeamMessage` records it.
-
-**Response intent (ADR 0046 §4).** Your mail to `host` is `response_required`
-by default, so questions, blockers, and plans always reach the Host. Ordinary
-`message` mail to a PEER member is `informational` by default: it is durable
-and correlated, but it never wakes that idle peer into a new provider round.
-That is deliberate — it lets acknowledgement-only notes converge instead of
-ping-ponging. Two explicit overrides exist:
-
-- `--response-required` on peer mail you genuinely need the peer to act on and
-  answer (`QUESTION:`, `BLOCKER:`, a review request).
-- `--informational` on Host mail that is genuinely FYI-only and should not cost
-  the Host a round.
-
-Do not add `--response-required` to a peer acknowledgement just to be sure it
-was seen; the peer will read it in its Inbox on its next round, and the delivery
-row records it either way.
-
-Sending to `host` means the durable Lead Inbox has received the envelope; it
-does not interrupt the Host's current turn or prove the Host has read it. Wait
-for a causation-linked Host reply or explicit acceptance when your work depends
-on a Host decision. If the matter blocks safe progress, say `BLOCKER:` in the
-message and stop only the affected work.
-
-Author Member mail only from this bound Provider runtime and its supplied
-MemberRun identity. Do not use an unbound MCP connection to claim another
-MemberRun or durable Agent identity; that public surface accepts only
-Host/operator/service authorship.
-
-Provider-pausing questions or approvals appear as `PendingInteraction`; the
-Host/Policy/Human resolves those through the control plane. A tool status of
-`completed` is not the answer.
-
-If your `MemberRun` explicitly links an `agent_member_id`, external callers may
-also write to that stable Agent identity Inbox. The Team Supervisor routes each
-source Message exactly once into one concrete MemberRun. Treat the routed
-TeamMessage like any other Inbox item; do not search or duplicate-deliver the
-identity ledger yourself.
-
-## Handle Controls Honestly
-
-- A live Steer changes the current turn only when the selected provider mode
-  supports and acknowledges it.
-- An unsupported Steer fails. The Host or Operator may separately choose an
-  ordinary queued Message for your next round; do not treat that as a live
-  injection.
-- Interrupt and resume require real terminal acknowledgements.
-- Resume the bound provider-native session; never reconstruct one from Harness
-  messages.
-- Dashboard, CLI, MCP, or another Harness service routes live control through
-  the current Supervisor lease locator. The owning service rechecks its
-  generation before touching the process-local Provider handle.
-
-Message delivery is also explicit: `queued` means available to the Supervisor,
-`claimed` means one Supervisor generation owns an in-flight attempt,
-`delivered` requires a provider-native receipt, and `acknowledged` means your
-working context accepted it. After a crash, never replay `claimed` mail without
-explicit reconciliation.
-
-You may send Team messages as soon as your Assignment is `delivered`, including
-while your provider turn is still running. Codex uses its started turn, Claude
-uses the Agent SDK delivery receipt, and Kimi uses the first accepted ACP prompt
-frame. If a Handoff is rejected as not owning a delivered Assignment, report
-the exact message id and delivery state rather than changing correlations.
-
-After a Steer, restate the changed constraint in progress or handoff when it
-affects acceptance.
-
-## Respect Permission And Workspace Boundaries
-
-The current trusted-development Team profile grants full execution access so
-ordinary tool prompts do not block an unattended Member. Treat that as a
-capability ceiling, not a command to touch everything. Modify only owned paths
-and coordinate shared-file changes with the Host or peer before editing.
-
-Decide for yourself whether the Assignment benefits from isolation. You may
-create an appropriate same-repository Git worktree without waiting for the Host
-to allocate it; work there and report its absolute path, branch, commit, checks,
-and shared-file conflicts. Do not wait for Harness to schedule Git steps.
-
-Do not deploy, merge protected branches, alter remote/shared state, spend
-money, submit legal actions, change permissions, expose credentials, or perform
-destructive operations without the applicable explicit approval.
-
-Send an ordinary message stating `BLOCKER` with the exact action, blast radius, options, and your
-recommendation when the permission ceiling stops you.
-
-## Hand Off Evidence
-
-Submit a correlated `handoff`:
-
-```text
-RESULT: completed | partial | blocked
-SUMMARY: what changed and why
-FILES CHANGED:
-- path — change
-COMMANDS & TESTS:
-- command -> actual result
-EVIDENCE:
-- artifact/check/path supporting the result
-BLOCKERS:
-- none | unresolved item and owner
-SUGGESTED NEXT:
-- integration, review, or follow-up
-```
-
-Remain available. Assignment acceptance does not close the runtime. Address
-review findings in the same MemberRun, Assignment correlation, Workspace, and
-native session unless the Host explicitly changes the contract.
-
-## Respect Close, Reopen, And Retire
-
-Treat provider work status and Harness coordination status as separate facts:
-
-- `active`: read/ACK mail and send correlated replies normally;
-- `closed`: stop coordination. Do not send, receive, or ACK. Mail queued before
-  Close is frozen, not cancelled;
-- `retired`: the MemberRun is permanently read-only and cannot reopen.
-
-For a managed member, Host Close releases the Harness-owned adapter process but
-retains this MemberRun, Assignment correlations, Workspace reference,
-`NativeSessionRef`, and provider-native history. Explicit Reopen increments
-`runtime_generation`, starts a new adapter process, and resumes the exact
-recorded native session. It must never rebuild history from Harness messages or
-silently start a fresh conversation. Ordinary mail cannot reopen you.
-The only fresh-session case is a Member closed before its first provider-native
-session ever existed; Harness labels that explicitly instead of claiming
-history continuity.
-
-CLI and MCP controls are:
+Ask the Host a decision-shaped question:
 
 ```bash
-"$HARNESS_BIN" team-run close-member --id <team-run-id> \
-  --member-run-id <member-run-id> --reason <reason>
-"$HARNESS_BIN" team-run reopen-member --id <team-run-id> \
-  --member-run-id <member-run-id> --reason <reason>
-"$HARNESS_BIN" team-run deactivate-member --id <team-run-id> \
-  --member-run-id <member-run-id> --reason <reason>
+"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
+  --from "$HARNESS_MEMBER_RUN_ID" --to host --kind message \
+  --work-id "$HARNESS_WORK_ID" \
+  --body "QUESTION: <decision needed, options, recommendation>" --json
 ```
 
-Use `team_run_close_member` and `team_run_reopen_member` over MCP. Close is the
-reversible runtime release; Deactivate/Retire is the permanent identity end.
-
-## Joining As An External Interactive Session
-
-Your already-open interactive provider session can join an existing
-AgentTeamRun as a declared `external_interactive` member.
-Harness never spawns or drives you: no provider process, no adapter thread, no
-native-session record. Your deliveries stay `queued` until you poll your Inbox
-yourself, and evidence claims about your work cannot resolve to a
-provider-native session — so report your own files, commands, and test results
-in correlated messages and Handoffs.
-
-The Host (or you, from the trusted loopback CLI) adds the member with the
-`provider/mode` spec spelling:
+Coordinate with a peer without transferring responsibility:
 
 ```bash
-"$HARNESS_BIN" team-run add-member --id <team-run-id> \
-  --member "<name>:<role>:<provider-label>/external_interactive" \
-  --assignment "<your brief>"
+"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
+  --from "$HARNESS_MEMBER_RUN_ID" --to <peer-member-run-id> --kind message \
+  --work-id "$HARNESS_WORK_ID" \
+  --body "COORDINATION: <bounded context or request>" --json
 ```
 
-The provider label may be Codex, Kimi, Claude, a local agent, or another
-non-empty descriptive label. It is display/provenance metadata, not an adapter
-capability claim. The response carries your `member_run.id` and the Assignment
-message with its `correlation_id`. `team-run start` skips you: the Supervisor
-spawns no adapter and never marks you Failed for being undriven.
-
-Poll your Inbox and acknowledge what you consumed:
+For a reply, preserve the conversation correlation and name the exact cause:
 
 ```bash
-"$HARNESS_BIN" team-run inbox --id <team-run-id> \
-  --member-run-id <member-run-id> --json
-
-"$HARNESS_BIN" team-run ack --id <team-run-id> \
-  --member-id <member-run-id> --message-id <message-id>[,<message-id>...]
+"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
+  --from "$HARNESS_MEMBER_RUN_ID" --to <host-or-peer> --kind message \
+  --work-id "$HARNESS_WORK_ID" \
+  --body "<reply>" \
+  --correlation-id <conversation-correlation-id> \
+  --causation-id <message-id> --json
 ```
 
-With the star-harness plugin installed, supported Codex, Claude, and Kimi hook
-surfaces can reduce polling. Export the binding before the session (or before
-the run starts); the hook verifies that the ids resolve to a non-terminal
-`external_interactive` MemberRun before it reads mail, then pushes queued mail
-as native context on `UserPromptSubmit`:
+A Message may explain scope, a blocker, a result, or a review decision, but it
+never changes Work owner/status. If conversation creates durable follow-up,
+create a self-owned or eligible unassigned Work explicitly.
+
+Ordinary mail queues until a safe boundary. Member-to-Host mail is durable in
+the Lead Inbox immediately but does not interrupt the Host's current reasoning.
+Peer informational mail does not create a Provider cycle by itself; use
+`--response-required` only when an answer or action is genuinely required.
+
+Provider-pausing questions and approvals are `PendingInteraction`, not ordinary
+mail. A tool status of `completed` is not the semantic answer.
+
+## Block Work Honestly
+
+When safe progress is impossible, preserve ownership and record the blocker:
 
 ```bash
-export HARNESS_TEAM_RUN_ID=<team-run-id>
-export HARNESS_MEMBER_RUN_ID=<member-run-id>
+"$HARNESS_BIN" team-run work block \
+  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+  --work-id "$HARNESS_WORK_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --expected-version <latest-version> \
+  --reason "<specific blocker and required decision>" \
+  --idempotency-key <stable-command-key>
 ```
 
-Stop remains under user control and is not blocked by default. If you
-explicitly want queued mail to continue the same native task at Stop, opt in
-for that session:
+Then send one concise linked Message with options and recommendation when Human,
+Host, or peer input is useful. Do not repeatedly resend or create duplicate
+Work. When the Host resolves the blocker or requests changes, refresh the Work
+and continue in the same MemberRun, Workspace, and native session.
+
+## Create Follow-Up Work Without Assigning Peers
+
+You may create self-owned or unassigned Work, and child Work beneath Work you
+own. Do not force assignment to a same-level peer.
 
 ```bash
-export HARNESS_EXTERNAL_AUTO_CONTINUE=1
+"$HARNESS_BIN" team-run work create \
+  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+  --as-member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --title "<follow-up responsibility>" \
+  --context "<why it exists and relevant evidence>" \
+  --completion-criteria "<observable completion criteria>" \
+  --claim-mode team_claim \
+  --idempotency-key <stable-command-key>
 ```
 
-That opt-in uses `decision=block` for Codex/Claude or exit 2 for Kimi at the
-provider's safe boundary. It is cooperative delivery, not Harness lifecycle
-control. Other provider labels continue to use polling or `team-run wait`.
+If you have authority to create a child Team, become that Team's Host and
+assign child Works there. You remain accountable for integrating child results
+and submitting the parent Work. Child completion never auto-completes parent
+Work.
 
-This push channel exists only for declared `external_interactive` members; a
-driven member's hook binding (`HARNESS_AGENT_MEMBER_ID`) stays telemetry-only
-because the Supervisor owns its Inbox.
+When the runtime presents `SHARED WORK AVAILABLE`, treat it as a board-derived
+discovery hint, not ownership. Refresh the Work and claim it with the bound
+MemberRun before acting. A lost claim means another Member won; do not duplicate
+effects. A continuation prompt is valid only for your current `in_progress`
+Work; never keep executing a Work already in `review`, `blocked`, `done`, or
+`cancelled`.
 
-For a blocking wait instead of polling, watch the run's event log — every new
-TeamMessage folds an event:
+## Submit Work, Not A Handoff Message
+
+When criteria are met, refresh the latest Work version and submit a durable
+result summary. Add artifact and check refs when the completion criteria or
+Host review requires them; they are not universal submission fields:
 
 ```bash
-"$HARNESS_BIN" team-run wait --id <team-run-id> --timeout-secs 600
+"$HARNESS_BIN" team-run work submit \
+  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+  --work-id "$HARNESS_WORK_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --expected-version <latest-version> \
+  --result "<concise result summary>" \
+  --idempotency-key <stable-command-key>
 ```
 
-Reply with the Assignment correlation stable and `causation-id` set to the
-exact message you are answering (the Assignment id for the first result, the
-follow-up's id afterwards). Never reuse a peer's Assignment correlation:
+When required, add one or more `--artifact-ref <artifact-or-path>` and
+`--check-ref "<command and actual result>"` arguments to that command.
 
-```bash
-"$HARNESS_BIN" team-run send --id <team-run-id> \
-  --from <member-run-id> --to host --kind message \
-  --body "<decision-shaped answer, progress, or BLOCKER: ...>" \
-  --correlation-id <correlation-id> \
-  --causation-id <message-id>
-```
+Submission moves Work to `review`; it does not imply Host acceptance. Send an
+optional linked Message only when review needs explanation. Remain available
+for `request-changes`; update the same Work and resubmit. Only Host acceptance
+moves Work to `done`.
 
-Over MCP the same loop uses `team_run_inbox`, `team_message_acknowledge`, and
-`team_run_send_message` with `sender_kind=member_run`. Unbound MCP authorship
-is rejected for driven members; it is accepted only for declared
-`external_interactive` members and recorded with
-`authn_source=mcp:external_interactive`.
+## Respect Workspace, Permissions, And Controls
 
-Closing this MemberRun closes only its Harness coordination binding. It does
-not stop, cancel, or otherwise modify your external provider process; continue
-or exit that process yourself. While closed you cannot send, receive, or ACK.
-Explicit Reopen keeps the same MemberRun and thaws mail queued before Close,
-but you remain responsible for reopening or continuing the external provider
-conversation and Harness cannot claim its history continuity. Deactivate is
-permanent and requires a new MemberRun to join again.
+The trusted-development Team profile may grant full tool access so ordinary
+authorization does not stall unattended work. It is a ceiling, not permission
+to touch unrelated paths or perform protected external effects.
+
+Choose your own same-repository worktree when isolation helps. Report the
+absolute worktree, branch, commit, checks, and conflicts. Coordinate shared-file
+changes before editing. Do not deploy, merge protected branches, spend money,
+submit legal actions, change permissions, expose credentials, or perform
+destructive external actions without the applicable authority.
+
+- Steer changes a current turn only when the Provider acknowledges it.
+- Queued Message affects the next safe boundary, not the current turn.
+- Interrupt stops one current turn; it does not close the Member.
+- Close freezes coordination and releases the managed runtime.
+- Reopen resumes the exact compatible native session under a new runtime
+  generation after delivery reconciliation.
+- Retire is permanent; unfinished Work must be reassigned or cancelled.
+
+Work ownership survives process exit. Never clear ownership, duplicate side
+effects, or reconstruct a session from Harness messages after a crash.
+
+## Before Returning Control
+
+Verify that:
+
+- the latest Work version and status match the action you actually performed;
+- questions and peer notes are Messages linked with `work_id` when relevant;
+- durable follow-up is a Work, not prose hidden in chat;
+- blockers have structured reasons;
+- submission includes a result summary, any artifact/check refs required by
+  its criteria, and no false claim of Host acceptance;
+- Provider-native records remain the only transcript/tool/turn truth; and
+- your MemberRun stays available until the Host requests changes, accepts,
+  reassigns, closes, or retires it.
+
+When developing Star Harness itself and the product contract is in question,
+read canonical repository files `docs/product/agent-team-works.md` and
+`docs/decisions/0050-agent-team-work-board-and-message-boundary.md`.

@@ -1,6 +1,6 @@
 # ADR 0045: Company-owned Standing Agent execution relation
 
-Status: active
+Status: active; Agent Team responsibility projection amended by ADR 0050
 
 ## Decision
 
@@ -62,10 +62,10 @@ participation. MemberRun start, idle, failure, Close, Supervisor recovery, or
 native-session changes never write lifecycle state back to either durable
 identity.
 
-The Company projection is read-only. It may expose assignment-less
-participation, chronological Agent Team assignments, mailbox and pending
+The Company projection is read-only. It may expose Work-less participation,
+chronological owned Agent Team Works, mailbox and pending
 interaction counts, Supervisor/Close facts, evidence references, and navigation
 without inferring business availability or authority.
 
-Wave and Mission ids are optional navigation context. Agent Team assignment
-messages, not Waves, own member work.
+Wave and Mission ids are optional navigation context. Agent Team Work and its
+WorkEvents own member responsibility/status; TeamMessage is conversation only.

@@ -48,13 +48,15 @@ parts; they do not fork the core model.
   the UI origin (`127.0.0.1:5173`), with `api=.` so API and SSE requests use the
   UI's same-origin `/v1` proxy. When project identity is available it includes
   `project=<project-binding-id>`.
-- Temporary development policy gives every Agent Team member full execution
+- Current Agent Team runtime policy gives every member full execution
   permission. Codex app-server threads launch with `danger-full-access` and
-  approval policy `never`; Kimi ACP tool approvals are resolved immediately by
-  `policy`. Questions and other provider-native interactions that cannot be
-  safely auto-resolved still pause and route to Lead. Requests and resolutions
-  remain durable coordination evidence; provider transcripts and thinking do
-  not.
+  approval policy `never`. A trusted Kimi ACP tool request that advertises an
+  exact `allow_always` or `allow_once` option is acknowledged synchronously and
+  creates only one bounded `provider_control` audit row—never a false
+  PendingInteraction or waiting state. Questions, plan reviews, unknown
+  requests, and tool requests without a safe allow option still pause and
+  route to Lead, Policy, or Human. Provider transcripts and thinking do not
+  enter Harness state.
 - Thinking is allowed only as sanitized transient live state. It is never
   persisted, replayed, forwarded to peers, or accepted as evidence.
 
@@ -120,11 +122,9 @@ path as an execution root is a routing defect.
    ownership to it.
 3. Call `team_run_create` with `mission_id + agent_team_id`, supported provider
    member identities/roles, disjoint owned paths, and workspace overrides only
-   when needed. Keep the returned execution/member roots, Assignment message
-   ids, and correlations. The current create path applies the shared TeamRun
-   objective to every initial member; first-class create-time per-member
-   assignments remain tracked by issue
-   [#231](https://github.com/cyl19970726/multi-agent-harness/issues/231).
+   when needed. Keep the returned execution/member roots. Create bounded Works
+   with explicit completion criteria, directly assign them or expose eligible
+   unassigned Works for atomic claim, and keep the returned Work ids/versions.
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
    For a Mission-scoped long-lived TeamRun, the URL includes the Mission and
    the Host's current Wave as navigation context even though the run itself has
@@ -137,9 +137,12 @@ path as an execution root is a routing defect.
    `unacked_messages` field counts only actionable deliveries: at least one
    `manual_ack` delivery in `delivered` status. Queued, injected, failed,
    expired, and acknowledged deliveries do not increase it.
-6. When a provider pauses for input, inspect its `PendingInteraction` and call
-   `team_run_resolve_interaction` with the exact option id and authorized actor.
-   Do not treat provider `completed` as proof of semantic approval or answer.
+6. When a provider genuinely pauses for input, inspect its
+   `PendingInteraction` and call `team_run_resolve_interaction` with the exact
+   option id and authorized actor. Trusted full-access Kimi tool permissions
+   with a provider-advertised safe allow option are already acknowledged and
+   do not appear in this queue. Do not treat provider `completed` as proof of
+   semantic approval or answer.
 7. For a running `codex_app_server` member, use `team_run_steer_member` to
    inject input into the same turn. Use `team_run_interrupt_member` for Codex
    app-server, Kimi ACP, or Claude Agent SDK when the current turn must stop.
@@ -148,8 +151,9 @@ path as an execution root is a routing defect.
    `team_run_reopen_member` to resume that same MemberRun/native session, and
    deactivate only for a permanent coordination end. Other messages use
    `team_run_send_message` and preserve the native session.
-8. Acknowledge delivered handoffs with `team_message_acknowledge`.
-9. Check outcomes and artifacts, update the current Wave with the Host's actual
+8. Acknowledge consumed conversation with `team_message_acknowledge`; review
+   submitted Works through the Work acceptance commands.
+9. Check Work results, artifacts, and checks; update the current Wave with the Host's actual
    judgment, then `wave advance` or record `accepted | revise | blocked`. Active
    MemberRuns may carry forward; Wave advance never completes them implicitly.
 
@@ -163,17 +167,18 @@ queued
   -> claimed by current Supervisor after provider transport preflight
   -> provider-native receipt / delivered to exact Host surface
   -> acknowledged by that recipient
-  -> causation-linked answer / review / handoff
-  -> explicit Host resolution or outcome
+  -> causation-linked answer / review conversation
+  -> explicit Work transition, Host resolution, or outcome
 ```
 
 Messages created while a Member is running are delivered at the next provider
-round boundary. An unclosed idle Member is automatically woken by new mail on
-the same MemberRun and provider-native session. Provider turn completion,
-Handoff, Wave advance, TeamRun completion, and Mission completion do not end
+round boundary. An unclosed idle Member is automatically woken by new mail or
+ready owned WorkDelivery on the same MemberRun and provider-native session.
+Provider turn completion, Work submission, Wave advance, TeamRun completion,
+and Mission completion do not end
 that lifetime. After a Host process restart, starting the TeamRun reattaches
-unclosed Members to their recorded native sessions; it does not replay already
-delivered Assignments.
+unclosed Members to their recorded native sessions; it reconciles the latest
+Work versions and never replays acknowledged conversation.
 
 If the transport is dead before claim, mail stays queued. If a crash occurs
 after claim but before provider receipt, the message remains explicitly
@@ -214,11 +219,11 @@ TeamMessage. This is an explicit transport relation, not evidence that the
 AgentMember, StandingAgent, and MemberRun are one object.
 
 An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
-and not “the Host accepts the work.” A reviewer must receive the actual
-handoffs in its native session before the Host claims cross-lane review.
-Member-to-Member replies retain Host visibility and use `causation_id` plus the
-originating assignment correlation; direct communication never transfers Host
-decision authority.
+and not “the Host accepts the work.” A reviewer must inspect the submitted Work,
+its evidence, and the relevant native session before the Host claims cross-lane review.
+Member-to-Member replies retain Host visibility and use `work_id`,
+`correlation_id`, and `causation_id` where relevant; direct communication never
+transfers Work ownership or Host decision authority.
 
 ## Host Acceptance Checklist
 
@@ -228,16 +233,17 @@ result as accepted:
 
 1. **Intent:** shared objective, decision boundary, non-goals, permissions,
    budget, workspace, and provider/version are explicit.
-2. **Responsibility:** each actual Member has one correlation-backed assignment
-   whose scope and deliverable are distinguishable from the other lanes.
+2. **Responsibility:** every required lane is a Work with distinguishable scope,
+   completion criteria, owner/eligibility, version, and status.
 3. **Execution truth:** every provider claim resolves to the expected
    provider-native session; missing, fresh, resumed, or incompatible state is
    labelled honestly.
 4. **Receipt:** required Host/Member and Member/Member messages reached their
    intended native sessions or Host inbox; no queued message is stranded behind
    a terminal MemberRun.
-5. **Lane outcome:** every required lane has a handoff, blocker, or explicit
-   non-result with useful evidence/artifact/check references.
+5. **Lane outcome:** every required Work has a submitted result, structured
+   blocker, explicit cancellation, or documented carry-over with useful
+   evidence/artifact/check references.
 6. **Cross-review:** a reviewer receives the completed claims it is supposed to
    review and separates agreement from independent reproduction.
 7. **Contradictions:** the Host records accepted claims, mandatory corrections,
@@ -249,8 +255,8 @@ result as accepted:
 9. **Reproducibility:** cited paths, revisions, session locators, checks, and
    external product/version facts can be reconstructed without copied provider
    transcripts or persisted thinking.
-10. **Next action:** accept, revise, block, or issue a new assignment against
-    the same persistent Member session; never overwrite the rejected attempt.
+10. **Next action:** accept, request changes, block, cancel, or create/reassign
+    Work against the persistent Member session; never overwrite history.
 
 ## Experience Acceptance
 
@@ -259,12 +265,13 @@ reconstruct the result from native state:
 
 - Mission and ordered Host-plan Wave exist;
 - the TeamRun is linked to the Mission and stable AgentTeam; the Wave may cite
-  its assignments/outcome through context or optional origin metadata without
+  important Work ids/outcome through context or optional origin metadata without
   owning the run;
-- actual MemberRuns have Assignment messages and correlations;
+- actual MemberRuns have owned or claimed Works, WorkEvents, and WorkDelivery;
 - start returns without blocking the Host conversation;
 - the exact URL opens the correct Workspace and selected TeamRun;
-- handoffs and ACKs appear in the event stream;
+- Work submissions/Host acceptance and conversational ACKs appear in their
+  respective event streams;
 - provider interactions preserve route, resolution actor, exact option id, and
   distinct transport/semantic status;
 - outcome, useful artifacts/checks, and explicit Host Wave advance explain the

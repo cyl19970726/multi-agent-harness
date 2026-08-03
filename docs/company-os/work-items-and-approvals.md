@@ -317,8 +317,10 @@ Docs are the principal entry and return surface for WorkItems:
   execution substrate, approval, actor, and related records.
 
 Execution consoles may link back to a WorkItem but must retain their own native
-lifecycles: a Wave gate is not an approval, a WorkflowStep is not a company
-task, and a TeamMessage assignment is not automatically a business WorkItem.
+lifecycles: a Wave advance is not an Approval, a WorkflowStep is not a company
+WorkItem, and an Agent Team Work is not automatically a business WorkItem.
+An explicit `WorkExecutionChain` links the Company Assignment to the execution
+Work when that relation exists.
 
 ## Development WorkItems and Git delivery
 

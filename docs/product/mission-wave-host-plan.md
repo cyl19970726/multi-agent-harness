@@ -1,7 +1,7 @@
 # Mission, Host Plan Waves, And Agent Teams
 
 ```text
-status: canonical; Work implementation pending
+status: canonical; Works cutover in progress
 owner_role: product
 architecture: ADR 0034 + ADR 0037 + ADR 0050
 ```
@@ -116,11 +116,14 @@ The existing Work, Member identity, and provider session continue.
 
 ### Works and messaging
 
-- Work ownership uses the Agent Team Works store and its append-only
-  WorkEvents. It is not inferred from a Message or correlation id.
-- Host assignment and Member self-claim create WorkDelivery records that use
-  the Supervisor's durable delivery substrate without becoming authored
-  TeamMessages.
+- Work ownership uses the latest Work projection rebuilt from ordered
+  WorkOperations; each operation preserves its append-only WorkEvent audit and
+  delivery deltas. It is not inferred from a Message or correlation id.
+- Host assignment and later Host-originated resume/request-changes/rebind
+  create WorkDelivery records that use the Supervisor's durable delivery
+  substrate without becoming authored TeamMessages. Member self-claim is an
+  atomic pull inside the bound runtime and therefore creates no loopback
+  delivery; its Claimed WorkEvent and command result are the possession proof.
 - Ready unassigned Works may be atomically claimed by eligible Members. Host
   assignment remains available for constrained or high-risk work.
 - Team messages carry typed Host, Member, stable Agent, Operator, or Service
@@ -192,8 +195,8 @@ The Host gives two durable collaborators independent end-to-end lanes:
 ```markdown
 | Member | Role | Responsibility | Deliverable |
 | --- | --- | --- | --- |
-| RuntimeBuilder | Runtime owner | Design, implement, and validate Inbox/delivery; use internal subagents as useful | Patch, tests, handoff |
-| DashboardBuilder | UX owner | Design, implement, and validate Lead Inbox/Member Goal; use internal subagents as useful | UI patch, checks, handoff |
+| RuntimeBuilder | Runtime owner | Design, implement, and validate Inbox/delivery; use internal subagents as useful | Submitted Work with patch/tests |
+| DashboardBuilder | UX owner | Design, implement, and validate Works/Member Focus; use internal subagents as useful | Submitted Work with UI checks |
 ```
 
 Each member plans its own lane and may delegate bounded design, coding, or test

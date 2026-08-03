@@ -123,9 +123,9 @@ prompt artifact, not inline chat text**. The contract:
 harness base system prompt          (Mission/Wave, honest execution records, decisions)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
-  -> execution context               (Mission, current Host-plan Wave, run and assignments)
+  -> execution context               (Mission, current Host-plan Wave, run and Works)
   -> optional company context        (WorkItem, source Document, Actors, approval policy)
-  -> delivery envelope               (current executor-owned assignment or host request)
+  -> delivery envelope               (current Work version or Host/peer conversation)
   -> permission and evidence policy   (allowed tools, approval, report format)
 ```
 
@@ -398,7 +398,7 @@ coordination. Generalized:
 
 | Generic harness owns | Adapter / platform owns |
 | --- | --- |
-| Mission/Wave joins, agent messages, role assignment | domain tool descriptors |
+| Mission/Wave joins, Agent Team Works/messages, role routing | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
 | member identity, prompt/skill refs, permissions | domain logic, live execution, secrets |
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |
@@ -448,7 +448,7 @@ platforms.
 | `skill_refs` | skills to inject (Pillar 1 contract) | explicit skill input item | system-prompt injection / SDK | adapter-provided |
 | `session` / `resume` | resume an existing session | `--session <id>` | `--resume <id>` / SDK `resume` | adapter-provided |
 | `execution_driver` | who may start the next persistent Member cycle | app-server Host loop or reviewed native Goal controller | SDK mailbox loop or reviewed `/goal` controller | adapter-provided |
-| `completion_policy` | provider stop condition versus Host acceptance requirements | provider evaluator/check + correlated Handoff | provider evaluator/check + correlated Handoff | adapter-provided |
+| `completion_policy` | provider stop condition versus Host acceptance requirements | provider evaluator/check + submitted Work/Host acceptance | provider evaluator/check + submitted Work/Host acceptance | adapter-provided |
 | `output` | provider-native session + ephemeral projection | `--json` / native rollout | stream-json / native session | adapter-provided |
 
 ### The Codex-vocabulary leak this spec abstracts

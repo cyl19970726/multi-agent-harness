@@ -21,7 +21,7 @@ Live Wave 2 evidence proved adapter compatibility is not runtime availability:
   (`apps/claude-member-runner/FINDINGS.md` §F).
 
 Both members were "compatible" and neither could work. A member that consumes
-its Assignment and then cannot execute burns the Assignment, not just the turn.
+a WorkDelivery and then cannot execute strands responsibility, not just the turn.
 
 ## The Two Axes Must Not Merge
 
@@ -157,7 +157,7 @@ evidence rather than causation.
 
 ## Start Guard
 
-Before an Agent Member claims its Assignment, `team-run start` observes capacity
+Before an Agent Member claims its next WorkDelivery, `team-run start` observes capacity
 and decides:
 
 ```text
@@ -176,37 +176,34 @@ start the member on the very account the gate just refused.
 
 A blocked member:
 
-- runs the guard **before** the adapter claims anything, so its Assignment stays
+- runs the guard **before** the adapter claims anything, so its WorkDelivery stays
   `queued`, `attempt: 0`, with no `claim_id` and no `provider_receipt_id`, and
   is still deliverable after the provider recovers;
 - records a failed `provider_unavailable` MemberAction naming the execution
   mode, state, evidence source, confidence, and any diagnosis;
 - folds `provider_unavailable` onto the MemberRun and TeamRun event log;
-- becomes `blocked`, never `completed`, and emits no Handoff;
+- becomes `blocked`, never submits or completes Work;
 - never opens a native session.
 
 `HARNESS_CAPACITY_PREFLIGHT=off` disables only the probe. That produces no
 snapshot, and no snapshot never blocks — the honest-unknown semantics are
 unchanged.
 
-## No Empty Completed Handoff
+## No Fabricated Work Submission
 
-A round that ends without an agent message is a provider failure wearing a
-different mask. `parse_round_result("")` reads as `Done`, so an unclassified
-terminal provider error would otherwise publish an empty Handoff and a
-`completed` action no member ever wrote.
+A round that ends without an agent result is a provider failure wearing a
+different mask. An unclassified terminal provider error must never publish a
+Work submission or `completed` action no Member authored.
 
-Both a classified provider error and an empty final report now record a failed
-`provider_error` MemberAction and no Handoff. The MemberRun stays `idle` and
-reconstructable: MemberRun id, Standing Agent link, correlation, Workspace
+Both a classified provider error and an empty final report record a failed
+`provider_error` MemberAction and no Work submission. The MemberRun stays
+reconstructable: MemberRun id, Standing Agent link, Work owner/version, Workspace
 snapshot, and the resumable `NativeSessionRef` are all preserved, so the Host
 can re-deliver rather than re-create.
 
-The silence rule fires at the ONE place Harness would mint a handoff, so it
-cannot mislabel the two legitimate text-less rounds: a round deferred behind
-newer inbound mail still records `continued`, and a member that published its
-own Handoff through `team-run send` still records `completed` and keeps its
-evidence refs.
+The adapter never mints a submission from Provider text. A round deferred behind
+newer inbound mail remains pending, while the Member must explicitly use the
+Work submit operation with result/evidence refs.
 
 ## CLI
 
@@ -244,7 +241,7 @@ unknown rather than as healthy.
 | Snapshot/state/freshness/decision rules | `crates/harness-core/src/lib.rs` (`capacity_*`, `fresh_known_unavailable_capacity_blocks_start`, `unknown_absent_and_stale_capacity_never_block_and_never_claim_available`) |
 | Codex payload parsing, thresholds, signed-out, no invented numbers | `crates/harness-cli/src/codex_app_server.rs` tests |
 | Claude proxy diagnosis, Kimi/Codex never fabricating capacity, structured-only classification, member text never classifying, URL redaction, TTL expiry, silence | `crates/harness-cli/src/main.rs` tests |
-| End-to-end preflight, start guard, queued-Assignment preservation, capacity-vs-compatibility separation | `crates/harness-cli/tests/provider_capacity_preflight.rs` |
+| End-to-end preflight, start guard, queued-WorkDelivery preservation, capacity-vs-compatibility separation | `crates/harness-cli/tests/provider_capacity_preflight.rs` |
 
 ## Known Limits
 

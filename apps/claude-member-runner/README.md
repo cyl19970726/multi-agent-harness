@@ -2,7 +2,8 @@
 
 A persistent Agent Team member backed by the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk).
 One process per `MemberRun`, one provider-native Claude session that stays alive
-until the Host accepts the handoff.
+until the Host explicitly closes it. Work submission or acceptance does not
+implicitly terminate the member.
 
 > Status: **default Claude execution mode, `review_required`.** Lifecycle, gates, and the stdio
 > protocol are covered by deterministic tests against a fake SDK. Nothing here
@@ -25,8 +26,8 @@ if queued.is_empty() { break; }   // member terminates on a momentarily empty qu
 
 A message arriving after that instant has no recipient. It stays `queued`
 forever. This is the runtime half of ADR 0037's continuity requirement: a
-Member owns its Assignment, Workspace, and native session until the Team Lead
-explicitly accepts its handoff. The deterministic runner tests now cover the
+Member owns its active Work, Workspace, and native session until the Team Lead
+explicitly closes the runtime. The deterministic runner tests now cover the
 previously missing continuity cases.
 
 ## Mapping to the model
@@ -34,7 +35,7 @@ previously missing continuity cases.
 | Contract | Agent SDK primitive |
 | --- | --- |
 | Member persists across turns and Waves | `query({ prompt: AsyncIterable })` streaming input |
-| Mailbox delivery into a live member | `Mailbox.push()` feeding that iterable |
+| Work/Message delivery into a live member | `Mailbox.push()` feeding that iterable |
 | Interrupt with a real acknowledgement | `query.interrupt()` → `still_queued` |
 | Steer | `query.setPermissionMode()` / `setModel()` |
 | `native_session_id` binding | `system/init` → `session_id` |
@@ -63,18 +64,17 @@ Events: `member_started`, `session_bound`, `assistant_message`, `turn_complete`,
 
 **`turn_complete` is not a lifecycle event.** Only an explicit `close` produces
 `member_closed`. Collapsing those two is the bug this runner exists to remove.
-Every `turn_complete` also carries `triggerMessageId`, the exact TeamMessage
-consumed for that turn, so Harness can preserve Assignment correlation while
-recording truthful round causation. When the Member already submitted an
-explicit correlated Handoff during the turn, Harness keeps that record and
-uses the final provider reply only as an Adapter fallback, not a duplicate.
+Every `turn_complete` also carries `triggerMessageId`, the exact Work or
+TeamMessage input consumed for that turn. Harness uses that receipt for
+truthful delivery and turn causation. Work lifecycle remains in the Harness
+store: the runner neither submits nor accepts Work from provider completion.
 
 **`turn_complete.subtype` is not the success signal.** A provider API failure
 (HTTP 401/403/5xx, region-blocked egress, expired token) arrives with
 `subtype: "success"` and `is_error: true` (live probe, issue #293). The event
 therefore also carries `isError`, `terminalReason`, and `apiErrorStatus`;
 Harness records rounds with `isError` as failed `provider_error` actions, never
-as ordinary completed rounds or member handoffs.
+as ordinary completed rounds or Work submissions.
 
 `start` payload:
 
@@ -93,6 +93,18 @@ as ordinary completed rounds or member handoffs.
 }
 ```
 
+The runner receives two deliberately small input kinds:
+
+- `work`: the current durable Work contract, delivered by Harness when the
+  member should begin or resume it;
+- `message`: ordinary Host/peer conversation, associated with Work when useful.
+
+The runner is a persistent provider input stream, not a second Work engine.
+Claim/start/block/submit/accept remain Harness operations. Rust injects the
+current non-secret identity as `HARNESS_TEAM_RUN_ID`,
+`HARNESS_MEMBER_RUN_ID`, `HARNESS_WORK_ID`, and `HARNESS_WORK_VERSION` (plus
+project/space/mission context when available).
+
 ## Run it
 
 ```bash
@@ -102,8 +114,9 @@ node --test "apps/claude-member-runner/test/*.test.mjs"
 # Dry run of the whole protocol against the fake SDK
 printf '%s\n' \
   '{"command":"start","payload":{"teamRunId":"t","memberRunId":"m","memberName":"Demo","cwd":"/tmp/p"}}' \
-  '{"command":"deliver","payload":{"id":"m1","kind":"assignment","from_member_id":"host","body":"hi"}}' \
-  '{"command":"close","payload":{"reason":"host_accepted_handoff"}}' \
+  '{"command":"deliver","payload":{"id":"work-1","kind":"work","from_member_id":"host","body":"Create the requested artifact and submit the Work."}}' \
+  '{"command":"deliver","payload":{"id":"message-1","kind":"message","from_member_id":"host","work_id":"work-1","body":"Please include verification output."}}' \
+  '{"command":"close","payload":{"reason":"closed_by_host"}}' \
   | node apps/claude-member-runner/bin/claude-member-runner.mjs --fake
 ```
 

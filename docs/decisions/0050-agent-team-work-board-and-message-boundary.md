@@ -1,7 +1,7 @@
 # ADR 0050: Agent Team Works And Message Boundary
 
 ```text
-status: accepted; implementation pending
+status: accepted; breaking cutover in progress
 owner_role: architecture
 canonical_for: Work as the Agent Team scheduling primitive, no Assignment
   Message ownership, shared Kanban, claim authority, and Mission boundary
@@ -43,15 +43,24 @@ Assignment appends a `WorkAssigned` event and creates a `WorkDelivery` for the
 target Member. WorkDelivery reuses durable mailbox delivery machinery but is
 not an authored Message and does not own Work content.
 
+Atomic Member self-claim is different: it is a pull performed from a trusted,
+bound MemberRun/provider turn. Its `WorkClaimed` event and exact command result
+are the responsibility/runtime-possession proof, so it does not create a
+loopback WorkDelivery. On crash, the same active Work and provider-native
+session are resumed without inventing a provider receipt. Host-originated
+assignment, resume, request-changes, and rebind continue to create deliveries.
+
 Historical dogfood evidence is retained in governed research or verified native
 exports. Active stores are reset or explicitly migrated; product code does not
 maintain two ownership projections.
 
-`WorkEvent` is authoritative append-only transition history. `Work` is a
-rebuildable latest projection. A command atomically compares the expected Work
-version, appends one idempotent event, updates the projection, and enqueues
-deterministically identified WorkDelivery outbox rows. Runtime/member authority
-is derived from its trusted binding; client-provided actor strings are never
+`WorkEvent` is the append-only semantic transition record, but a bare event is
+not the physical replay unit because its payload may intentionally be empty.
+One command atomically compares the expected Work version and appends one
+`WorkOperation` containing the event, the complete resulting Work projection,
+and deterministic WorkDelivery creates/updates. Store read models rebuild Work
+and delivery state from ordered WorkOperations. Runtime/member authority is
+derived from its trusted binding; client-provided actor strings are never
 sufficient authorization.
 
 ### Messages are authored conversation
@@ -70,6 +79,21 @@ is the reliable transport for a Work transition that a Member must consume.
 Work statuses are `open`, `in_progress`, `blocked`, `review`, `done`, and
 `cancelled`. Assigned/unassigned and ready/not-ready are derived dimensions.
 Dependencies only compute readiness and do not form a general Task Graph.
+
+### TeamRun completion is gated by terminal Works
+
+A Host may complete a TeamRun only when every current Work in that run is
+`done` or `cancelled`. Submitted `review` Work is not complete until the Host
+accepts it. The Store checks this predicate and persists TeamRun completion in
+one atomic boundary so a concurrent Work mutation cannot race between the
+check and completion write. TeamRun completion remains independent of Member
+Close/Retire, Wave advance, and Mission closeout.
+
+Work submission always requires a non-empty result summary. Artifact and check
+references are required only when the Work's completion criteria or Host review
+requires them; their arrays may otherwise be empty. This keeps acceptance
+evidence proportional to the Work instead of inventing a universal attachment
+gate.
 
 ### Creation authority follows Team structure
 
@@ -139,14 +163,15 @@ deterministic flow.
 
 ### Breaking cutover contract
 
-Until all gates below land together, `TeamMessage(kind=assignment)` remains the
-implemented legacy ownership truth and this ADR is target-only. The cutover is
-atomic across root operating instructions, schemas, store projections,
-CLI/API/MCP, Supervisor/providers, Dashboard, Company OS joins, Skills, Plugin,
-fixtures, and active data. The new binary refuses active Execution Spaces that
-contain legacy Agent Team Assignment messages; dogfood uses a fresh space after
-a manifested historical export. No merged release may expose two ownership
-authorities.
+The cutover is atomic at the release boundary across root operating
+instructions, schemas, store projections, CLI/API/MCP, Supervisor/providers,
+Dashboard, Company OS joins, Skills, Plugin, fixtures, and active data. New code
+does not read or write Agent Team Assignment Messages as responsibility.
+Execution Spaces containing legacy Assignment-message rows are refused and
+must be archived/reset or passed through a future explicit offline converter;
+there is no dual-read, dual-write, or silent inference path. Dogfood starts in
+a fresh space after a manifested historical export. No merged release may
+expose two ownership authorities.
 
 At cutover, Mission/Wave remain the only native durable intent and Host
 plan/judgment objects. Work is executor-specific responsibility state, not a
@@ -162,4 +187,5 @@ The decision becomes operational only after:
 5. busy, idle, crash, Reopen, Close, and Retire behavior pass;
 6. Team Workbench proves assigned, unassigned, ready, blocked, review, child,
    and Message-linked states; and
-7. mixed-provider dogfood proves standalone and Mission-scoped Teams.
+7. TeamRun completion atomically rejects every non-terminal Work state; and
+8. mixed-provider dogfood proves standalone and Mission-scoped Teams.

@@ -464,6 +464,8 @@ pub struct AgentTeam {
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
     Message,
+    /// Standing-agent inbox ownership. Agent Team ownership uses `Work` and
+    /// never maps this variant into `TeamMessageKind`.
     Assignment,
     Report,
 }
@@ -2618,7 +2620,6 @@ pub enum PendingInteractionStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamMessageKind {
-    Assignment,
     /// Ordinary correlated conversation. Planning requests and responses use
     /// this kind; providers may use native planning internally, but Harness
     /// does not create a Plan lifecycle or gate.
@@ -2756,6 +2757,11 @@ pub struct TeamMessageDelivery {
 pub struct TeamMessage {
     pub id: String,
     pub team_run_id: String,
+    /// Optional Work discussed by this message. The relation is navigational
+    /// and conversational only: ownership and lifecycle remain authoritative
+    /// on `Work`/`WorkEvent`, never on the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_id: Option<String>,
     /// Optional Host-plan Wave that explains why this message was authored.
     /// It is navigation metadata only and never controls message or member
     /// lifecycle.
@@ -2793,8 +2799,9 @@ impl TeamMessage {
     /// Effective response intent: the explicit field always wins; otherwise
     /// kind **and sender** decide (ADR 0046 §4).
     ///
-    /// Assignments, Handoffs, and Control records carry real work or runtime
-    /// semantics and always require a response round regardless of sender.
+    /// Handoffs and Control records carry real review or runtime semantics and
+    /// always require a response round regardless of sender. Durable work
+    /// ownership lives in `Work`; messages never impersonate assignments.
     ///
     /// Ordinary `message` mail is sender-aware, because `message` is the only
     /// legal carrier for every remaining semantic category after ADR 0039
@@ -2810,7 +2817,7 @@ impl TeamMessage {
             return intent;
         }
         match self.kind {
-            TeamMessageKind::Assignment | TeamMessageKind::Handoff | TeamMessageKind::Control => {
+            TeamMessageKind::Handoff | TeamMessageKind::Control => {
                 TeamMessageResponseIntent::ResponseRequired
             }
             _ if self.sent_by_peer_member() => TeamMessageResponseIntent::Informational,
@@ -2937,10 +2944,13 @@ impl Work {
         matches!(self.status, WorkStatus::Done | WorkStatus::Cancelled)
     }
 
-    pub fn is_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
-        if self.status != WorkStatus::Open {
-            return false;
-        }
+    /// Whether every declared prerequisite has reached Host-accepted `Done`.
+    ///
+    /// This intentionally says nothing about the Work's own lifecycle state.
+    /// A delivery for a revision can be actionable while the Work is already
+    /// `in_progress`, `blocked`, or `review`; only a *new claim* is restricted
+    /// to an open Work.
+    pub fn prerequisites_satisfied<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
         let by_id = works
             .into_iter()
             .map(|work| (work.id.as_str(), work.status))
@@ -2948,6 +2958,17 @@ impl Work {
         self.prerequisite_work_ids
             .iter()
             .all(|id| by_id.get(id.as_str()) == Some(&WorkStatus::Done))
+    }
+
+    /// Whether this Work can be newly claimed from the shared Works board.
+    pub fn is_claim_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
+        self.status == WorkStatus::Open && self.prerequisites_satisfied(works)
+    }
+
+    /// Compatibility spelling retained for existing callers. Readiness here
+    /// means *claim* readiness, not delivery readiness.
+    pub fn is_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
+        self.is_claim_ready(works)
     }
 }
 
@@ -2966,8 +2987,6 @@ pub enum WorkEventKind {
     Accepted,
     Cancelled,
     Updated,
-    BecameReady,
-    PrerequisiteCancelled,
     Rebound,
 }
 
@@ -2997,7 +3016,6 @@ pub enum WorkDeliveryStatus {
     Queued,
     Claimed,
     ProviderReceived,
-    Acknowledged,
     Failed,
     Invalidated,
 }
@@ -3020,6 +3038,8 @@ pub struct WorkDelivery {
     pub claimed_generation: Option<u64>,
     #[serde(default)]
     pub provider_receipt_id: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
     pub updated_at: String,
 }
 
@@ -3031,11 +3051,17 @@ pub struct WorkOperation {
     pub work: Work,
     #[serde(default)]
     pub deliveries: Vec<WorkDelivery>,
+    #[serde(default)]
+    pub delivery_updates: Vec<WorkDeliveryUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkDeliveryUpdate {
     pub delivery_id: String,
+    /// Store-global ordering for delivery projection updates. Legacy rows
+    /// deserialize as zero and are folded before sequenced writes.
+    #[serde(default)]
+    pub update_sequence: u64,
     pub status: WorkDeliveryStatus,
     pub attempt: u32,
     #[serde(default)]
@@ -3046,6 +3072,8 @@ pub struct WorkDeliveryUpdate {
     pub claimed_generation: Option<u64>,
     #[serde(default)]
     pub provider_receipt_id: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
     pub updated_at: String,
 }
 
@@ -3217,6 +3245,7 @@ mod tests {
         TeamMessage {
             id: "tmsg-1".to_string(),
             team_run_id: "run-1".to_string(),
+            work_id: None,
             origin_wave_id: None,
             sender: None,
             from_member_id: "host".to_string(),
@@ -3247,12 +3276,8 @@ mod tests {
 
     #[test]
     fn team_message_response_intent_defaults_from_kind() {
-        // Work-carrying kinds require a response round from every sender.
-        for kind in [
-            TeamMessageKind::Assignment,
-            TeamMessageKind::Handoff,
-            TeamMessageKind::Control,
-        ] {
+        // Review and runtime-control kinds require a response round from every sender.
+        for kind in [TeamMessageKind::Handoff, TeamMessageKind::Control] {
             assert!(bare_team_message(kind).requires_response(), "{kind:?}");
             assert!(peer_team_message(kind).requires_response(), "{kind:?}");
         }
@@ -4426,6 +4451,65 @@ mod tests {
         // schema is describing the shape the runtime actually persists.
         let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
         assert_eq!(decoded.provider_capacity, Some(snapshot));
+    }
+
+    #[test]
+    fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
+        fn work(id: &str, status: WorkStatus, prerequisites: Vec<&str>) -> Work {
+            Work {
+                id: id.into(),
+                team_run_id: "team-1".into(),
+                parent_work_id: None,
+                source_work_item_ref: None,
+                title: id.into(),
+                context_markdown: String::new(),
+                completion_criteria_markdown: "done".into(),
+                status,
+                owner_member_id: None,
+                active_member_run_id: None,
+                claim_mode: WorkClaimMode::TeamClaim,
+                eligible_member_ids: Vec::new(),
+                prerequisite_work_ids: prerequisites.into_iter().map(str::to_string).collect(),
+                priority: WorkPriority::Normal,
+                created_by_actor: TeamActorRef {
+                    kind: TeamActorKind::Host,
+                    id: "host".into(),
+                    display_name: None,
+                    authn_source: None,
+                },
+                result_summary: None,
+                blocker_reason: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                version: 1,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            }
+        }
+
+        let prerequisite = work("prerequisite", WorkStatus::Done, vec![]);
+        let in_progress = work("dependent", WorkStatus::InProgress, vec!["prerequisite"]);
+        assert!(in_progress.prerequisites_satisfied([&prerequisite]));
+        assert!(!in_progress.is_claim_ready([&prerequisite]));
+
+        let open = work("dependent-open", WorkStatus::Open, vec!["prerequisite"]);
+        assert!(open.is_claim_ready([&prerequisite]));
+
+        let unfinished = work("prerequisite", WorkStatus::Review, vec![]);
+        assert!(!open.prerequisites_satisfied([&unfinished]));
+        assert!(!open.is_claim_ready([&unfinished]));
+    }
+
+    #[test]
+    fn legacy_work_delivery_update_defaults_to_unsequenced() {
+        let update: WorkDeliveryUpdate = serde_json::from_value(serde_json::json!({
+            "delivery_id": "delivery-legacy",
+            "status": "queued",
+            "attempt": 1,
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("legacy delivery update remains readable");
+        assert_eq!(update.update_sequence, 0);
     }
 }
 

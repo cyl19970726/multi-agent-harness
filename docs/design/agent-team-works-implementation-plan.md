@@ -1,7 +1,7 @@
 # Agent Team Works Implementation And Acceptance Plan
 
 ```text
-status: accepted implementation plan; code pending
+status: accepted implementation plan; cutover implementation in progress
 owner_role: execution-foundation
 decision: ADR 0050
 ```
@@ -70,12 +70,25 @@ comparisons. Pre-Works images are legacy baselines only.
 - host assignment without Assignment Message;
 - one winner from concurrent eligible claims; loser receives latest owner;
 - assigned busy Member is not interrupted and cannot start a second Work;
-- prerequisite completion emits readiness event/delivery; prerequisite cancel
-  requires explicit Host resolution;
-- block, submit, request changes, resubmit, Host accept with required reasons
-  and evidence;
+- readiness is derived from current prerequisite Works; an owned queued
+  delivery becomes claimable only when ready, while prerequisite cancellation
+  remains not-ready until explicit Host resolution;
+- block, submit with a required result summary, request changes, resubmit, and
+  Host accept; artifact/check refs are enforced by the Work's completion
+  criteria and Host review rather than a universal attachment requirement;
+- TeamRun completion rejects `open`, `in_progress`, `blocked`, and `review`
+  Works, and evaluates that terminal-Works gate in the same Store atomic
+  boundary that persists completion;
 - message-to-Work causation and idempotent retry;
 - queued versus claimed/provider-received reassignment reconciliation;
+- every claim/resume/request-changes/rebind delivery remains consumable after
+  the Work leaves `open`, while prerequisite readiness and latest-version
+  ownership are still enforced;
+- Codex records provider receipt at successful `turn/start`, Kimi clears the
+  consumed active Work before a later Message round, and a crash after native
+  acceptance never replays the same writable Work;
+- Provider `RESULT done|blocked|failed` produces only a provider
+  `turn_completed`/`provider_error` action; it never changes Work state;
 - compatible Reopen preserves MemberRun/session; incompatible resume appends
   WorkRebound to a replacement binding while preserving ownership/evidence;
 - child Team delegation uses typed cross-run refs and never auto-accepts parent;
@@ -95,11 +108,10 @@ Mission-scoped mixed-provider Team. At least one Member must create follow-up
 unassigned Work, one must claim it, one must block/question and resume, and one
 must delegate to a child Team. Preserve TeamRun, Work/Event/Delivery,
 MemberRun/native-session, build SHA, timestamp, browser captures, artifacts,
-checks, explicit submissions, Host acceptance, Wave judgment, and Mission
-closeout.
+checks when required by the corresponding completion criteria, explicit
+submissions, Host acceptance, Wave judgment, and Mission closeout.
 
 The Host must reconstruct current responsibility without reading Message bodies.
 Messages must still reconstruct why Agents coordinated. Provider-native records
 must remain the only truth for transcript, tools, turns, files, and internal
 subagents.
-

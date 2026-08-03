@@ -83,7 +83,7 @@ Do not replace this with the superficially similar `{type, content}` shape.
 
 The Host is the Team Lead and owns the Member runtime lifecycle:
 
-1. Create or add a Claude MemberRun with an Assignment.
+1. Create or add a Claude MemberRun and create/assign its initial Work.
 2. Start the TeamRun in the Host server process.
 3. Deliver ordinary Host or peer messages through the Member mailbox.
 4. Interrupt only the current SDK query when needed.
@@ -159,12 +159,12 @@ Without that connection, it uses the same exact native binding and
 safe-boundary pull contract as [ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
 
 Provider-paused questions and approvals use `PendingInteraction`. A provider
-`completed` status alone is not proof that an answer, approval, or semantic
-handoff occurred.
+`completed` status alone is not proof that an answer, approval, Work
+submission, or Host acceptance occurred.
 
 A provider API failure mid-turn (HTTP 401/403/5xx, blocked egress, expired
 token) is recorded as a failed `provider_error` action naming the terminal
-reason and HTTP status — never as a completed round, and no handoff is
+reason and HTTP status — never as a completed Work, and no submission is
 fabricated for it. The SDK's `result.subtype` stays `"success"` on such turns
 (issue #293), so the runner forwards `is_error`, `terminal_reason`, and
 `api_error_status` explicitly. The persistent member usually survives and stays
@@ -186,13 +186,13 @@ goal is restored when that session resumes. `/goal` can inspect status and
 This is a provider-native capability, not yet an adapter-wired Team contract.
 The current `claude_agent_sdk` integration therefore remains `host_driven`.
 Harness must not activate `/goal` and also feed the AsyncIterable mailbox as a
-competing top-level driver for the same Assignment. Before promotion to
+competing top-level driver for the same Work. Before promotion to
 `provider_driven`, a mode/version canary must prove exclusive cycle ownership,
 mail injection or queuing, interruption, resume, terminal reason, and
 permission continuity.
 
-The durable Assignment, correlation, Workspace, Handoff, and Host acceptance
-remain Harness-owned regardless of the selected driver. See
+The durable Work, WorkEvent/WorkDelivery, Workspace, submission, and Host
+acceptance remain Harness-owned regardless of the selected driver. See
 [Member Continuation Model](../member-continuation-model.md) and
 [Claude Code goal docs](https://code.claude.com/docs/en/goal).
 
@@ -291,7 +291,8 @@ delivery, interrupt/resume, explicit close, execution-environment propagation,
 session binding, and SDK-reported version capture. The 2026-07-28 canary proved
 two Host rounds on native session
 `ec91628d-a514-4d40-ae9c-7f73ecf3c40f`, correct project/store selection,
-Member-to-Host handoff, same-session continuation, and explicit Host close.
+Member-to-Host conversation, Work submission, same-session continuation, and
+explicit Host close.
 That session is enumerable by SDK `listSessions`; Desktop visibility requires
 the explicit provider-owned import described above.
 

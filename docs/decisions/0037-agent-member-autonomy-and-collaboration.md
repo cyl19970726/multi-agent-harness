@@ -1,7 +1,7 @@
 # ADR 0037: Agent Member Autonomy And Collaboration
 
 ```text
-status: active; Assignment ownership amended by ADR 0050
+status: active; responsibility semantics amended by ADR 0050
 date: 2026-07-24
 extends: ADR 0032 provider-native execution truth; ADR 0034 Host-plan Waves
 ```
@@ -156,8 +156,8 @@ approved changes.
 - Peer collaboration is direct but reconstructable.
 - A member's own subagent tree can be visible through provider-native activity
   without multiplying Harness identities.
-- Lead Inbox and Member Focus can derive useful work state from assignments,
-  messages, controls, and native-session references.
+- Lead Inbox and Member Focus derive useful work state from Works,
+  WorkDeliveries, messages, controls, and native-session references.
 - Deferred dependency scheduling remains intentionally manual and explicit.
 
 ## Standard Two-Module Example
@@ -165,16 +165,16 @@ approved changes.
 ```markdown
 | Member | Role | Responsibility | Deliverable |
 | --- | --- | --- | --- |
-| RuntimeBuilder | Runtime owner | Design, implement, and validate Inbox + delivery semantics; may use internal design/test subagents | Patch, checks, handoff |
-| DashboardBuilder | UX owner | Design, implement, and validate Lead Inbox + Member Goal; may use internal UI/test subagents | UI patch, checks, handoff |
+| RuntimeBuilder | Runtime owner | Design, implement, and validate Inbox + delivery semantics; may use internal design/test subagents | Submitted Work with patch and checks |
+| DashboardBuilder | UX owner | Design, implement, and validate Lead Inbox + Member Goal; may use internal UI/test subagents | Submitted Work with UI patch and checks |
 | RiskReviewer | Independent reviewer | Review cross-module semantics after both handoffs | review_result |
 ```
 
-The Lead assigns the first two lanes concurrently. If RuntimeBuilder asks a
+The Lead assigns the first two Works concurrently. If RuntimeBuilder asks a
 decision-shaped question, the Lead answers with the same correlation. When one
-member hands off early, the Lead can integrate it immediately. The reviewer is
-assigned only after the relevant handoffs exist. No conditional delivery edge
-is stored.
+member submits early, the Lead can review and integrate it immediately. The
+reviewer receives a separate Work only after the relevant submissions exist.
+No conditional delivery edge is stored.
 
 ## Acceptance
 
@@ -186,7 +186,7 @@ The vertical scenario must prove:
 3. one member-to-Host question/answer and one peer message preserve lineage;
 4. member-to-Host delivery is immediately visible while peer delivery queues
    and is consumed only once;
-5. one handoff is reviewed explicitly;
+5. one submitted Work is reviewed explicitly;
 6. the Host revises or advances while another member continues on the same
    `MemberRun` and native session; and
 7. Mission closeout, Wave history, messages, acknowledgements, evidence, and

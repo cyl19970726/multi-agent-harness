@@ -26,9 +26,9 @@ const runner = createMemberRunner({
 const done = runner.start();
 const waitTurns = (n) => new Promise(r => { const i=setInterval(()=>{ if(turns.length>=n){clearInterval(i);r();} },200); });
 
-console.log("→ 投递 assignment");
-runner.deliver({ id:"m1", kind:"assignment", from_member_id:"host", correlation_id:"corr-1",
-                 body:"You are RuntimeBuilder. Reply with exactly: ASSIGNMENT-ACK" });
+console.log("→ 投递 durable Work");
+runner.deliver({ id:"work-1", kind:"work", from_member_id:"host",
+                 body:"You are RuntimeBuilder. Reply with exactly: WORK-ACK" });
 await waitTurns(1);
 
 console.log("→ 空档 3 秒（旧设计在这里 member 就死了）");
@@ -36,11 +36,11 @@ await new Promise(r=>setTimeout(r,3000));
 console.log(`   mailbox.pending=${runner.mailbox.pending} closed=${runner.mailbox.closed}`);
 
 console.log("→ 空档后再投一条 peer 消息");
-runner.deliver({ id:"m2", kind:"message", from_member_id:"peer-Dashboard", correlation_id:"corr-1",
+runner.deliver({ id:"m2", kind:"message", from_member_id:"peer-Dashboard", work_id:"work-1", correlation_id:"corr-1",
                  body:"Peer here. Reply with exactly: SECOND-TURN-OK" });
 await waitTurns(2);
 
-runner.close("host_accepted_handoff");
+runner.close("closed_by_host");
 await done;
 console.log(`\nSESSION_ID=${sessionId}`);
 console.log(`turns=${turns.length}`);

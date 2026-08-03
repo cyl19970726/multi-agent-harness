@@ -1,7 +1,7 @@
 # Provider Runtime Contract
 
 ```text
-status: implementation reference; Work/WorkDelivery target pending ADR 0050
+status: implementation reference; ADR 0050 Work/WorkDelivery cutover in progress
 ```
 
 This implementation reference defines the provider-neutral runtime substrate
@@ -176,7 +176,7 @@ Delivery
 NativeActivityProjector
   provider-native record -> ephemeral sanitized projection
   provider interaction boundary -> PendingInteraction / control acknowledgement
-  explicit promotion -> handoff / outcome / artifact or check ref
+  explicit promotion -> Work submission / outcome / artifact or check ref
 
 WorkspaceProvider
   prepare_workspace(execution)
@@ -241,10 +241,27 @@ Crash recovery depends on the last durable boundary:
   claiming it;
 - `claimed` means provider acceptance is uncertain; reconcile explicitly and
   never blindly replay it;
-- `delivered` without a Work submission or required reply means the provider
+- `provider_received` without a Work submission or required reply means the provider
   accepted the input but semantic completion is missing. Resume the same native
   session and ask the Member to inspect its native state, latest Work version,
   and Workspace before continuing.
+
+For Kimi ACP specifically, a disconnected transport is disposable beneath the
+native session. If no provider receipt exists, the same Supervisor may reuse
+its fenced claim and a successor generation must reconcile then reclaim it. If
+the receipt already exists, Harness resumes the same Kimi session without
+replaying or completing the WorkDelivery again. In both cases the recovery
+prompt names the durable boundary and tells the Member to inspect the native
+session and Workspace before continuing, so crash recovery does not guess
+whether a writable effect already occurred.
+
+The provider receipt is written at the earliest native acceptance boundary:
+Codex `turn/start`, Claude Agent SDK consumed/delivery receipt, or Kimi ACP's
+first accepted update/request/terminal frame. Waiting for a terminal response
+before recording receipt creates a duplicate-execution window after a
+Supervisor crash. A failed claimed delivery must become durable `failed`
+pressure or be explicitly reconciled by a successor generation; it must not
+remain indefinitely ambiguous in the current generation.
 
 A Member cannot submit a Work while a newer WorkDelivery for that Work, or a
 newer linked **response-required** Message, is `queued` or `claimed`. This fence

@@ -31,8 +31,9 @@ Required data:
   worktree, and native-session binding;
 - current `TeamSupervisorLease` generation, heartbeat, owner locator,
   provider-transport/reconnect state, and Close latch;
-- `Work`, `WorkEvent`, Work owner/readiness/claim/review/parent-child state and
-  `WorkDelivery` claim/provider receipt/ACK;
+- `Work`, `WorkOperation`/`WorkEvent`, Work
+  owner/readiness/claim/review/parent-child state and `WorkDelivery`
+  claim/provider receipt/failure/invalidation;
 - typed Message sender and recipients, optional Work relation, conversational
   correlation, pending interactions, controls, artifacts, and checks;
 - `AgentMessageRoute` when stable Agent Inbox mail was explicitly routed to a
@@ -151,8 +152,8 @@ changes, accepted, released, or cancelled Work.
   MemberRun/native session; Deactivate retires permanently.
 - Roll up pending `TeamMemberCloseRequest` rows in the Team header so a lost
   Supervisor connection cannot make an accepted Close disappear from view.
-- Inspect WorkDelivery and Message delivery/ACK lineage and answer
-  PendingInteractions.
+- Inspect WorkDelivery claim/receipt/failure lineage, authored Message
+  delivery/ACK lineage, and answer PendingInteractions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.
 - Open Mission, current Wave context, Member Focus, artifact, or native-session

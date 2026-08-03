@@ -30,9 +30,10 @@ member, and its completion does not mutate or retire the Standing Agent.
 
 The two records remain in their native stores. Company snapshots build this
 read-only relation by joining the Company Store's explicit execution ref with
-the selected Execution Space's `MemberRun.agent_member_id`, assignment
-correlation, and TeamRun. They do not copy MemberRuns or provider sessions into
-Company storage.
+the selected Execution Space's `MemberRun.agent_member_id`, owned Agent Team
+Work/`work_id`, WorkEvent/WorkDelivery lineage, and TeamRun. TeamMessage is
+optional linked conversation only. The projection does not copy MemberRuns or
+provider sessions into Company storage.
 
 External messages to a Standing Agent use its stable Agent Inbox. When that
 Agent is participating in a live TeamRun, an explicit idempotent
@@ -49,7 +50,7 @@ context. Collaboration is attached to a durable subject:
 ```text
 CollaborationSubject = Document | BusinessModule | Milestone | WorkItem |
                        Approval | OrganizationRelationship | Mission |
-                       Wave | AgentTeamRun | WorkflowRun
+                       Wave | AgentTeamRun | AgentTeamWork | WorkflowRun
 ```
 
 Shared primitives are deliberately small:
@@ -57,33 +58,36 @@ Shared primitives are deliberately small:
 - `Conversation`: ordered, subject-linked communication context;
 - `Message`: readable communication from a typed ActorRef or MemberRunRef;
 - `ActivityEvent`: a source-labelled durable change or delivery event;
-- `Handoff`: explicit sender, recipient, scope, context, and expected result;
+- `Handoff`: explicit context transfer between collaborators; it never submits
+  Agent Team Work, changes ownership, or proves Host acceptance;
 - `ArtifactRef`: a Document, Evidence, record, file, diff, page, or external
   resource referenced by collaboration;
 - `Presence`: transient availability or live execution signal;
 - `Promotion`: deliberate movement of a useful execution summary, evidence,
   deliverable, or decision request into Work, Docs, Approval, or Finance.
 
-Messages communicate context. They do not establish responsibility, approval,
-or payment. Responsibility requires WorkItem and Assignment; authority requires
-Approval; financial truth requires FinancialRecord.
+Messages communicate context. They do not establish responsibility, submit
+Agent Team Work, approve a result, or authorize payment. Company responsibility
+requires WorkItem and Company Assignment; team responsibility requires Work;
+authority requires Approval; financial truth requires FinancialRecord.
 
-Agent Team delivery adds transport facts without changing those rules:
-Supervisor claim, provider receipt, recipient ACK, semantic reply, and Host
-acceptance are distinct. An Operator or Host cannot impersonate a Member merely
-by choosing its name in a composer.
+Agent Team delivery adds transport facts without changing those rules. A
+WorkDelivery claim/provider receipt, a Work claim/start, Member submission, and
+Host acceptance are distinct. Authored TeamMessage delivery may additionally
+record recipient ACK, but WorkDelivery has no ACK state. An Operator or Host
+cannot impersonate a Member merely by choosing its name in a composer.
 
 ## Where collaboration appears
 
 | Surface | Primary collaboration question | Durable content |
 | --- | --- | --- |
 | Document | What changed, why, and what work follows? | comments, suggestions, linked WorkItems, accepted result updates |
-| WorkItem | Who owns delivery, what is blocked, and what is the result? | assignments, handoffs, progress reports, evidence, review |
+| WorkItem | Who owns delivery, what is blocked, and what is the result? | Company Assignments, progress reports, evidence, review, result links |
 | BusinessModule | How does a recurring business function coordinate? | role roster, active Milestones, WorkItems, decisions, operating changes |
 | Approval | What evidence and impact inform this controlled decision? | questions, recommendations, evidence, formal decision link |
 | Organization overview | Who reports to whom, what capability is missing, and which changes are pending? | reporting relations, configuration, explicit WorkItems, capability gaps, org proposals |
 | Agent configuration/profile | What responsibility, prompt, tools/Skills, permissions, and records are assigned? | declared configuration and stable linked records; rich standalone workspace deferred |
-| Mission/Team console | How is one bounded execution progressing? | execution messages, member handoffs, artifacts, review requests, live state |
+| Mission/Team console | How is one bounded execution progressing? | shared Agent Team Works, WorkEvents/Delivery, linked messages, artifacts, live state |
 
 ## Lead and direct-report flow
 
@@ -200,7 +204,7 @@ artifacts, evidence, and decisions.
 ## UI reuse rule
 
 Organization and execution may reuse Actor cards, Conversation, Message,
-Activity, Handoff, Artifact, Composer, Presence, compact Team/Wave controls,
+Activity, Work summaries, Artifact, Composer, Presence, compact Team/Wave controls,
 and Context Rail modules. They do not reuse the same complete page template:
 
 - Organization profiles emphasize declared responsibility, prompt,

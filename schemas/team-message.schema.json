@@ -8,6 +8,7 @@
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "team_run_id": { "type": "string", "minLength": 1 },
+    "work_id": { "type": ["string", "null"], "minLength": 1 },
     "origin_wave_id": { "type": ["string", "null"], "minLength": 1 },
     "sender": {
       "type": ["object", "null"],
@@ -45,15 +46,15 @@
     },
     "kind": {
       "type": "string",
-      "description": "New public writes use assignment, message, handoff, or control. Other enum values remain readable only for historical JSONL compatibility.",
-      "enum": ["assignment", "message", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]
+      "description": "New public writes use message, handoff, or control. Durable responsibility is a Work, never a message.",
+      "enum": ["message", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]
     },
     "body": { "type": "string" },
     "correlation_id": { "type": "string", "minLength": 1 },
     "causation_id": { "type": ["string", "null"], "minLength": 1 },
     "response_intent": {
       "type": "string",
-      "description": "Explicit response intent (ADR 0046 §4). Absent on historical rows, where the effective intent derives from kind AND sender: assignment/handoff/control always require a response round; ordinary message mail requires one when the sender is the coordination plane (host/operator/service) and stays informational when a peer member sent it. Informational mail never starts a provider round on its own and does not fence a same-correlation handoff.",
+      "description": "Explicit response intent (ADR 0046 §4). Handoff/control always require a response round; ordinary message mail requires one when the sender is the coordination plane (host/operator/service) and stays informational when a peer member sent it.",
       "enum": ["informational", "response_required"]
     },
     "evidence_refs": {

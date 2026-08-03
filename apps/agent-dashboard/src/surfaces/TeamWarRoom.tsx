@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowRight,
@@ -8,7 +8,7 @@ import {
   ChevronLeft,
   CircleCheckBig,
   CircleHelp,
-  ClipboardCheck,
+  Columns3,
   ExternalLink,
   FileCheck2,
   Handshake,
@@ -48,13 +48,17 @@ import { EmptyState, StatusDot, type StatusTone } from "@/components/workbench/a
 import { Select, TextArea } from "@/components/workbench/OperatorForms";
 
 import {
-  selectMemberAssignmentCorrelations,
+  canMemberAcceptWork,
+  selectFilteredTeamWorks,
   selectTeamRunContext,
+  selectWorkOwnerMember,
+  type TeamWorksAttentionFilter,
+  type TeamWorksOwnerFilter,
   type StableTeamActivity,
 } from "../model/teamSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun } from "../api/actions";
-import type { MemberRun, PendingInteraction, TeamMessage, Wave } from "../types";
+import { acknowledgeTeamMessage, assignTeamWork, createTeamWork, resolvePendingInteraction, reviewTeamWork, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
+import type { MemberRun, PendingInteraction, TeamMessage, Wave, Work, WorkDelivery, WorkEvent } from "../types";
 import { effectiveTeamMessageResponseIntent } from "../types";
 import type { SelectionState } from "../app/selection";
 
@@ -71,6 +75,7 @@ export interface TeamWarRoomProps {
 
 type StreamFilter = "all" | "messages" | "actions" | "decisions" | "evidence";
 type ComposerTarget = "team" | string;
+type TeamActivityItem = WorkbenchActivityItem & { workId?: string };
 
 const FILTERS: Array<{ id: StreamFilter; label: string }> = [
   { id: "all", label: "All" },
@@ -81,7 +86,6 @@ const FILTERS: Array<{ id: StreamFilter; label: string }> = [
 ];
 
 const KEY_ACTIVITY_MESSAGE_KINDS = new Set([
-  "assignment",
   "message",
   "plan_request",
   "plan_proposal",
@@ -116,8 +120,11 @@ export function TeamWarRoom({
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("message");
   const [replyAnchor, setReplyAnchor] = useState<TeamMessage>();
+  const [composerWorkId, setComposerWorkId] = useState("");
   const [showAllMembers, setShowAllMembers] = useState(false);
   const [showFullActivity, setShowFullActivity] = useState(false);
+  const [teamView, setTeamView] = useState<"works" | "activity" | "members">("works");
+  const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>();
   const [starting, setStarting] = useState(false);
   const runStatus = context?.run.status;
 
@@ -142,7 +149,7 @@ export function TeamWarRoom({
     );
   }
 
-  const { run, mission, wave, attempts, members, memberById, messages, actions, delegations, events, liveActivityByMember, needsYou } = context;
+  const { run, mission, wave, attempts, members, memberById, messages, actions, delegations, events, works, workEvents, workDeliveries, liveActivityByMember, needsYou } = context;
   const navigationMission = mission ?? model.snapshot.missions?.find((item) => item.id === missionId);
   const navigationWave = wave ?? model.snapshot.waves?.find(
     (item) =>
@@ -246,8 +253,8 @@ export function TeamWarRoom({
     ? [...primaryActivity, latestPressure]
     : primaryActivity;
   const shownActivity = filter === "all" && !showFullActivity ? keyActivity : filteredActivity;
-  const selectedAssignment = selectedMember
-    ? selectMemberAssignmentCorrelations(messages, selectedMember.id)[0]?.assignment
+  const selectedMemberWork = selectedMember
+    ? works.find((work) => work.active_member_run_id === selectedMember.id && !["done", "cancelled"].includes(work.status))
     : undefined;
   const explicitRecipients = composerTarget === "team" ? members.map((member) => member.id) : [composerTarget];
   const canSend = actionsEnabled
@@ -278,9 +285,20 @@ export function TeamWarRoom({
     if (member) {
       setSelectedMemberId(member.id);
       setComposerTarget(member.id);
+      const memberWork = works.find((work) => work.active_member_run_id === member.id && !["done", "cancelled"].includes(work.status));
+      setComposerWorkId(memberWork?.id ?? "");
     } else {
       setComposerTarget("team");
+      setComposerWorkId("");
     }
+    document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function discussWork(work: Work): void {
+    setSelectedWorkId(undefined);
+    setReplyAnchor(undefined);
+    setComposerWorkId(work.id);
+    setKind("message");
     document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
@@ -298,6 +316,7 @@ export function TeamWarRoom({
       toMemberIds: explicitRecipients,
       kind,
       body: draft.trim(),
+      workId: (replyAnchor?.work_id ?? composerWorkId) || undefined,
       correlationId: replyAnchor?.correlation_id ?? undefined,
       causationId: replyAnchor?.id,
       originWaveId: navigationWave?.id,
@@ -334,7 +353,7 @@ export function TeamWarRoom({
               {navigationMission?.title ?? "Agent Teams"} <span className="text-border">/</span> {navigationWave ? `Wave ${navigationWave.index}` : "Team"}
             </button>
           }
-          title="Team Activity"
+          title={stableTeam?.name ?? "Agent Team"}
           description={stableTeam?.name ?? "Agent Team attempt"}
           meta={
             <>
@@ -379,12 +398,19 @@ export function TeamWarRoom({
         <section id="team-war-room-composer" className="space-y-1.5">
           {replyAnchor && (
             <div className="flex min-w-0 items-center gap-2 text-[10px]">
-              <Badge tone="decision">Reply in work chain</Badge>
+              <Badge tone="decision">Reply in conversation</Badge>
               <span className="truncate text-muted-foreground">{memberLabel(memberById, replyAnchor.from_member_id ?? "")} · {shortId(replyAnchor.correlation_id ?? "")}</span>
               <button type="button" onClick={() => setReplyAnchor(undefined)} className="text-primary hover:underline">New message</button>
             </div>
           )}
-          <div className="grid min-w-0 gap-2 sm:grid-cols-[10.5rem_8rem_minmax(12rem,1fr)_auto]">
+          {!replyAnchor && composerWorkId && (
+            <div className="flex min-w-0 items-center gap-2 text-[10px]">
+              <Badge tone="info">Discussing Work</Badge>
+              <span className="truncate text-muted-foreground">{works.find((work) => work.id === composerWorkId)?.title ?? shortId(composerWorkId)}</span>
+              <button type="button" onClick={() => setComposerWorkId("")} className="text-primary hover:underline">Detach</button>
+            </div>
+          )}
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-[9rem_7rem_11rem_minmax(12rem,1fr)_auto]">
             <Select
               aria-label="Message recipient"
               value={composerTarget}
@@ -397,14 +423,24 @@ export function TeamWarRoom({
             </Select>
             <Select aria-label="Message kind" value={kind} onChange={(event) => setKind(event.target.value)} className="h-9 w-full" disabled={Boolean(replyAnchor)}>
               <option value="message">Message</option>
-              <option value="assignment">Assignment</option>
+              <option value="handoff">Handoff</option>
+            </Select>
+            <Select
+              aria-label="Related Work"
+              value={replyAnchor?.work_id ?? composerWorkId}
+              onChange={(event) => setComposerWorkId(event.target.value)}
+              className="h-9 w-full"
+              disabled={Boolean(replyAnchor)}
+            >
+              <option value="">No related Work</option>
+              {works.map((work) => <option key={work.id} value={work.id}>{work.title}</option>)}
             </Select>
             <TextArea
               aria-label="Team message"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               placeholder={replyAnchor
-                ? `Answer ${memberLabel(memberById, replyAnchor.from_member_id ?? "")} in this Assignment chain…`
+                ? `Reply to ${memberLabel(memberById, replyAnchor.from_member_id ?? "")} in this conversation…`
                 : composerTarget === "team" ? "Message team or @member…" : `Message ${memberById.get(composerTarget)?.name ?? "member"}…`}
               className="min-h-9 resize-none py-2"
               rows={1}
@@ -437,7 +473,7 @@ export function TeamWarRoom({
           <AttemptModule runId={run.id} status={status} attempt={attemptNumber(attempts, run.id)} previousRunId={run.previous_run_id} hostSurface={run.host_surface} hostThreadId={run.host_thread_id} executionRoot={run.execution_root} createdAt={run.created_at} completedAt={run.completed_at} />
           <SelectedMemberModule
             member={selectedMember}
-            assignment={selectedAssignment?.body}
+            work={selectedMemberWork?.title}
             currentAction={latestActionTitle(actions, selectedMember?.id)}
             onMessage={() => messageMember(selectedMember)}
             onOpen={() => selectedMember && openMember(selectedMember)}
@@ -451,37 +487,108 @@ export function TeamWarRoom({
       }
     >
       <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-2 sm:px-5">
-        <TeamMailboxStrip
-          members={orderedMembers}
-          messages={messages}
-          selectedId={participantFilter}
-          selectedMemberId={selectedMember?.id}
-          showAllMembers={showAllMembers}
-          onToggleAllMembers={() => setShowAllMembers((value) => !value)}
-          onSelect={(id) => {
-            setParticipantFilter(id);
-            if (id !== "all" && id !== "host") {
-              const member = memberById.get(id);
-              if (member) selectMember(member);
-            }
-          }}
-          onOpenMember={openMember}
-        />
-        <LeadInbox
-          messages={leadInboxMessages}
-          members={memberById}
-          actionsEnabled={actionsEnabled}
-          onAnswer={(message) => {
-            if (!message.from_member_id || message.from_member_id === "host") return;
-            setReplyAnchor(message);
-            setComposerTarget(message.from_member_id);
-            setKind("message");
-            document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-          }}
-          onAcknowledge={(message) => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
-        />
+        {teamView === "activity" ? (
+          <>
+            <TeamMailboxStrip
+              members={orderedMembers}
+              messages={messages}
+              selectedId={participantFilter}
+              selectedMemberId={selectedMember?.id}
+              showAllMembers={showAllMembers}
+              onToggleAllMembers={() => setShowAllMembers((value) => !value)}
+              onSelect={(id) => {
+                setParticipantFilter(id);
+                if (id !== "all" && id !== "host") {
+                  const member = memberById.get(id);
+                  if (member) selectMember(member);
+                }
+              }}
+              onOpenMember={openMember}
+            />
+            <LeadInbox
+              messages={leadInboxMessages}
+              members={memberById}
+              actionsEnabled={actionsEnabled}
+              onAnswer={(message) => {
+                if (!message.from_member_id || message.from_member_id === "host") return;
+                setReplyAnchor(message);
+                setComposerWorkId(message.work_id ?? "");
+                setComposerTarget(message.from_member_id);
+                setKind("message");
+                document.getElementById("team-war-room-composer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              }}
+              onAcknowledge={(message) => dispatch(onAction, acknowledgeTeamMessage(run.id, message.id, "host"))}
+            />
+          </>
+        ) : (
+          <TeamCoordinationPressure
+            members={members}
+            messages={leadInboxMessages}
+            pendingInteractions={pendingInteractions.length}
+            onOpenActivity={() => setTeamView("activity")}
+          />
+        )}
 
-        <section className="min-h-[28rem] overflow-hidden bg-background" data-testid="team-conversation">
+        {["completed", "cancelled"].includes(status ?? "") && needsYou.unfinishedWorks.length > 0 && (
+          <section
+            role="alert"
+            data-testid="terminal-work-integrity-anomaly"
+            className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-1 rounded-xl border border-status-bad/30 bg-status-bad/[0.045] px-3 py-2"
+          >
+            <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-status-bad" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold text-status-bad">Integrity anomaly · terminal TeamRun has unfinished Work</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
+                {needsYou.unfinishedWorks.length} Work{needsYou.unfinishedWorks.length === 1 ? "" : "s"} remain non-terminal. Historical state is shown honestly; reconcile or cancel each Work before treating this attempt as clean.
+              </p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setTeamView("works")}>Inspect Works</Button>
+          </section>
+        )}
+
+        <nav aria-label="Team workspace" className="mt-2 flex items-center gap-1 border-b border-border/70">
+          {([
+            { id: "works", label: "Works", count: works.filter((item) => !["done", "cancelled"].includes(item.status)).length, icon: Columns3 },
+            { id: "activity", label: "Activity", count: activityItems.length, icon: MessageSquare },
+            { id: "members", label: "Members", count: members.length, icon: Users },
+          ] as const).map((entry) => {
+            const Icon = entry.icon;
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                aria-current={teamView === entry.id ? "page" : undefined}
+                onClick={() => setTeamView(entry.id)}
+                className={cn(
+                  "relative flex h-10 items-center gap-2 px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
+                  teamView === entry.id && "text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary",
+                )}
+              >
+                <Icon className="size-3.5" />
+                {entry.label}
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] tabular-nums">{entry.count}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {teamView === "works" && (
+          <TeamWorksBoard
+            works={works}
+            members={orderedMembers}
+            selectedWorkId={selectedWorkId}
+            actionsEnabled={actionsEnabled}
+            onSelectWork={setSelectedWorkId}
+            onOpenMember={openMember}
+            onAction={(descriptor) => dispatch(onAction, descriptor)}
+            teamRunId={run.id}
+            workEvents={workEvents}
+            workDeliveries={workDeliveries}
+            onDiscuss={discussWork}
+          />
+        )}
+
+        {teamView === "activity" && <section className="min-h-[28rem] overflow-hidden bg-background" data-testid="team-conversation">
           <header className="sticky top-0 z-10 border-b border-border/70 bg-background/95 py-2 backdrop-blur">
             <div className="flex min-w-max items-center gap-1 overflow-x-auto pb-0.5" role="group" aria-label="Activity filters">
               <label className="flex h-8 min-w-[13rem] items-center gap-2 rounded-lg border border-border/75 bg-card px-2.5 text-muted-foreground focus-within:border-primary/45">
@@ -553,6 +660,10 @@ export function TeamWarRoom({
           </header>
           <TeamConversationStream
             items={shownActivity}
+            onOpenWork={(workId) => {
+              setSelectedWorkId(workId);
+              setTeamView("works");
+            }}
             empty={
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">No activity matches these filters</p>
@@ -564,70 +675,357 @@ export function TeamWarRoom({
           {events.length === 0 && context.activity.length === 0 && (
             <p className="border-t border-border/60 px-4 py-2 text-[11px] text-muted-foreground">Live provider previews remain transient and are not added to this record.</p>
           )}
-        </section>
+        </section>}
+
+        {teamView === "members" && (
+          <section className="grid gap-3 py-4 sm:grid-cols-2 xl:grid-cols-3" aria-label="Team members">
+            {orderedMembers.map((member) => (
+              <MemberControl
+                key={member.id}
+                member={member}
+                selected={selectedMember?.id === member.id}
+                work={works.find((work) => work.active_member_run_id === member.id && !["done", "cancelled"].includes(work.status))?.title}
+                currentAction={latestActionTitle(actions, member.id)}
+                livePreview={liveActivityByMember.get(member.id)?.preview}
+                terminal={["failed", "stopped"].includes(member.status ?? "")}
+                onSelect={() => selectMember(member)}
+                onOpen={() => openMember(member)}
+              />
+            ))}
+          </section>
+        )}
       </div>
     </FocusShell>
   );
 }
 
-function TeamConversationStream({ items, empty }: { items: WorkbenchActivityItem[]; empty: ReactNode }) {
+type WorkLane = "open" | "assigned" | "doing" | "review" | "done";
+
+const WORK_LANES: Array<{ id: WorkLane; label: string; statuses: string[]; tone: StatusTone }> = [
+  { id: "open", label: "Open", statuses: ["open"], tone: "idle" },
+  { id: "assigned", label: "Assigned", statuses: ["open"], tone: "info" },
+  { id: "doing", label: "In progress", statuses: ["in_progress", "blocked"], tone: "running" },
+  { id: "review", label: "Review", statuses: ["review"], tone: "warn" },
+  { id: "done", label: "Done", statuses: ["done", "cancelled"], tone: "good" },
+];
+
+function TeamWorksBoard({
+  works,
+  workEvents,
+  workDeliveries,
+  members,
+  selectedWorkId,
+  actionsEnabled,
+  teamRunId,
+  onSelectWork,
+  onOpenMember,
+  onDiscuss,
+  onAction,
+}: {
+  works: Work[];
+  workEvents: WorkEvent[];
+  workDeliveries: WorkDelivery[];
+  members: MemberRun[];
+  selectedWorkId?: string;
+  actionsEnabled: boolean;
+  teamRunId: string;
+  onSelectWork: (id: string | undefined) => void;
+  onOpenMember: (member: MemberRun) => void;
+  onDiscuss: (work: Work) => void;
+  onAction: (descriptor: ActionDescriptor) => void;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [title, setTitle] = useState("");
+  const [criteria, setCriteria] = useState("");
+  const [ownerId, setOwnerId] = useState("");
+  const [reviewNote, setReviewNote] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState<TeamWorksOwnerFilter>("all");
+  const [attentionFilter, setAttentionFilter] = useState<TeamWorksAttentionFilter>("all");
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const selected = works.find((work) => work.id === selectedWorkId);
+  const active = works.filter((work) => !["done", "cancelled"].includes(work.status)).length;
+  const assignableMembers = members.filter(canMemberAcceptWork);
+  const ownerFor = (work: Work) => selectWorkOwnerMember(work, members);
+  const visibleWorks = selectFilteredTeamWorks(works, members, ownerFilter, attentionFilter);
+  const ownerCount = (filter: TeamWorksOwnerFilter) =>
+    selectFilteredTeamWorks(works, members, filter, attentionFilter).length;
+  const attentionCount = (filter: TeamWorksAttentionFilter) =>
+    selectFilteredTeamWorks(works, members, ownerFilter, filter).length;
+  useEffect(() => {
+    if (!selected) return undefined;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onSelectWork(undefined);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [selected?.id, onSelectWork]);
+  const create = () => {
+    if (!title.trim() || !criteria.trim()) return;
+    onAction(createTeamWork(teamRunId, {
+      title: title.trim(),
+      contextMarkdown: "Created from the Team Works board.",
+      completionCriteriaMarkdown: criteria.trim(),
+      activeMemberRunId: ownerId || undefined,
+      claimMode: ownerId ? "host_assign" : "team_claim",
+    }));
+    setTitle("");
+    setCriteria("");
+    setOwnerId("");
+    setCreating(false);
+  };
+  const laneWorksFor = (lane: (typeof WORK_LANES)[number]) => visibleWorks.filter((work) =>
+    lane.statuses.includes(work.status)
+    && (lane.id === "open"
+      ? !work.owner_member_id && !work.active_member_run_id
+      : lane.id === "assigned"
+        ? Boolean(work.owner_member_id || work.active_member_run_id)
+        : true),
+  );
+  const workCard = (work: Work) => {
+    const owner = ownerFor(work);
+    return (
+      <button key={work.id} type="button" onClick={() => onSelectWork(work.id)} className={cn("w-full rounded-lg border bg-card p-2.5 text-left shadow-[0_12px_26px_-26px_rgba(15,23,42,.75)] transition hover:-translate-y-px hover:border-primary/30 hover:shadow-md", selectedWorkId === work.id ? "border-primary/40 ring-1 ring-primary/15" : "border-border/75")}>
+        <div className="flex items-start justify-between gap-2"><Badge tone={workTone(work.status)}>{work.status.replace(/_/g, " ")}</Badge><span className="text-[9px] uppercase tracking-wider text-muted-foreground">{work.priority}</span></div>
+        <h3 className="mt-2 line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">{work.title}</h3>
+        <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">{work.completion_criteria_markdown || "No completion criteria"}</p>
+        <div className="mt-2 flex items-center gap-1.5 border-t border-border/55 pt-2">{owner ? <><Avatar name={owner.name ?? owner.id} tone={memberTone(owner.status)} /><span className="min-w-0 flex-1 truncate text-[10px] text-foreground">{owner.name ?? owner.id}</span></> : <><span className="grid size-6 place-items-center rounded-full border border-dashed border-border text-muted-foreground"><Users className="size-3" /></span><span className="text-[10px] text-muted-foreground">Unassigned</span></>}<span className="ml-auto font-mono text-[9px] text-muted-foreground">v{work.version}</span></div>
+      </button>
+    );
+  };
+  return (
+    <section className="min-h-[30rem] py-3" aria-label="Shared team Works board" data-testid="team-works-board">
+      <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2"><ListTodo className="size-4 text-primary" /><h2 className="text-sm font-semibold text-foreground">Shared Works</h2><Badge tone="info">{active} active</Badge></div>
+          <p className="mt-1 text-[11px] text-muted-foreground">Durable ownership lives here. Messages discuss Work; they never create ownership.</p>
+        </div>
+        <Button size="sm" disabled={!actionsEnabled} onClick={() => setCreating((value) => !value)}>
+          <ListTodo className="size-3.5" /> New Work
+        </Button>
+      </header>
+
+      {creating && (
+        <div className="mb-3 grid gap-2 rounded-xl border border-primary/20 bg-primary/[0.025] p-3 sm:grid-cols-[1.2fr_1.2fr_.8fr_auto] sm:items-end">
+          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Title<input className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2.5 text-[12px] font-normal normal-case tracking-normal text-foreground outline-none focus:border-primary/50" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What outcome is needed?" /></label>
+          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Completion criteria<input className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2.5 text-[12px] font-normal normal-case tracking-normal text-foreground outline-none focus:border-primary/50" value={criteria} onChange={(event) => setCriteria(event.target.value)} placeholder="Evidence required for acceptance" /></label>
+          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Owner<Select className="mt-1 text-[12px] font-normal normal-case tracking-normal" value={ownerId} onChange={(event) => setOwnerId(event.target.value)}><option value="">Unassigned pool</option>{assignableMembers.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}</Select></label>
+          <div className="flex gap-1"><Button size="sm" onClick={create} disabled={!title.trim() || !criteria.trim()}>Create</Button><Button size="sm" variant="secondary" onClick={() => setCreating(false)}>Cancel</Button></div>
+        </div>
+      )}
+
+      <div className="mb-3 space-y-2 rounded-xl border border-border/65 bg-muted/[0.12] p-2.5" aria-label="Filter Works board">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by owner">
+          <span className="mr-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Owner</span>
+          <WorkFilterChip
+            active={ownerFilter === "all"}
+            count={ownerCount("all")}
+            label="All"
+            onClick={() => setOwnerFilter("all")}
+          />
+          <WorkFilterChip
+            active={ownerFilter === "unassigned"}
+            count={ownerCount("unassigned")}
+            label="Unassigned"
+            icon={<Users className="size-3" />}
+            onClick={() => setOwnerFilter("unassigned")}
+          />
+          {members.map((member) => {
+            const filter: TeamWorksOwnerFilter = `member:${member.id}`;
+            return (
+              <WorkFilterChip
+                key={member.id}
+                active={ownerFilter === filter}
+                count={ownerCount(filter)}
+                label={member.name ?? member.id}
+                icon={<Avatar name={member.name ?? member.id} tone={memberTone(member.status)} size="xs" />}
+                onClick={() => setOwnerFilter(filter)}
+              />
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by attention state">
+          <span className="mr-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Attention</span>
+          <WorkFilterChip active={attentionFilter === "all"} count={attentionCount("all")} label="All statuses" onClick={() => setAttentionFilter("all")} />
+          <WorkFilterChip active={attentionFilter === "review"} count={attentionCount("review")} label="Needs review" onClick={() => setAttentionFilter("review")} />
+          <WorkFilterChip active={attentionFilter === "blocked"} count={attentionCount("blocked")} label="Blocked" onClick={() => setAttentionFilter("blocked")} />
+        </div>
+        <p className="text-[10px] leading-relaxed text-muted-foreground" aria-live="polite">
+          Showing {visibleWorks.length} of {works.length} Works. Responsibility comes from Work ownership; activity messages do not assign it.
+        </p>
+      </div>
+
+      <div className="hidden grid-cols-5 gap-2 pb-2 lg:grid">
+        {WORK_LANES.map((lane) => {
+          const laneWorks = laneWorksFor(lane);
+          return (
+            <section key={lane.id} className="min-h-[23rem] rounded-xl border border-border/70 bg-muted/[0.18] p-2" aria-label={`${lane.label} Works`}>
+              <header className="mb-2 flex items-center justify-between px-1"><span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"><StatusDot tone={lane.tone} />{lane.label}</span><span className="text-[10px] tabular-nums text-muted-foreground">{laneWorks.length}</span></header>
+              <div className="space-y-2">
+                {laneWorks.map(workCard)}
+                {laneWorks.length === 0 && <div className="grid min-h-20 place-items-center rounded-lg border border-dashed border-border/75 px-2 text-center text-[10px] text-muted-foreground">No Works</div>}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+
+      <div className="space-y-3 lg:hidden" aria-label="Works grouped by status">
+        {WORK_LANES.map((lane) => {
+          const laneWorks = laneWorksFor(lane);
+          return (
+            <section key={lane.id} className="rounded-xl border border-border/70 bg-muted/[0.16] p-2.5" aria-label={`${lane.label} Works`}>
+              <header className="mb-2 flex items-center justify-between px-0.5">
+                <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"><StatusDot tone={lane.tone} />{lane.label}</span>
+                <Badge tone="muted">{laneWorks.length}</Badge>
+              </header>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {laneWorks.map(workCard)}
+                {laneWorks.length === 0 && <p className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-center text-[10px] text-muted-foreground sm:col-span-2">No Works</p>}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <div className="fixed inset-0 z-50 bg-foreground/15 backdrop-blur-[1px]" onMouseDown={(event) => { if (event.target === event.currentTarget) onSelectWork(undefined); }}>
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="selected-work-title"
+            className="absolute inset-x-0 bottom-0 max-h-[86vh] overflow-y-auto rounded-t-2xl border border-border bg-background p-4 shadow-2xl lg:inset-y-0 lg:left-auto lg:right-0 lg:max-h-none lg:w-[34rem] lg:rounded-none lg:border-y-0 lg:border-r-0 lg:p-5"
+          >
+            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border lg:hidden" />
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2"><Badge tone={workTone(selected.status)}>{selected.status.replace(/_/g, " ")}</Badge><span className="font-mono text-[9px] text-muted-foreground">{selected.id}</span></div>
+                <h3 id="selected-work-title" className="mt-2 text-lg font-semibold text-foreground">{selected.title}</h3>
+              </div>
+              <button ref={closeButtonRef} type="button" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => onSelectWork(undefined)} aria-label="Close Work details"><X className="size-4" /></button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Context</p>{selected.context_markdown ? <Markdown source={selected.context_markdown} compact /> : <p className="text-[11px] text-muted-foreground">No context recorded.</p>}</section>
+              <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Completion criteria</p><Markdown source={selected.completion_criteria_markdown || "Not declared"} compact /></section>
+              {selected.blocker_reason && <section className="rounded-lg border border-status-bad/25 bg-status-bad/[0.045] p-3"><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-status-bad">Blocker</p><Markdown source={selected.blocker_reason} compact /></section>}
+              {selected.result_summary && <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Result</p><Markdown source={selected.result_summary} compact /></section>}
+
+              <div className="grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-3">
+                <WorkFact label="Owner" value={ownerFor(selected)?.name ?? "Unassigned"} />
+                <WorkFact label="Claim mode" value={selected.claim_mode} />
+                <WorkFact label="Priority" value={selected.priority} />
+                <WorkFact label="Parent" value={selected.parent_work_id ? shortId(selected.parent_work_id) : "None"} />
+                <WorkFact label="Source" value={selected.source_work_item_ref ? shortId(selected.source_work_item_ref) : "None"} />
+                <WorkFact label="Prerequisites" value={selected.prerequisite_work_ids?.length ? String(selected.prerequisite_work_ids.length) : "None"} />
+                <WorkFact label="Artifacts" value={String(selected.artifact_refs?.length ?? 0)} />
+                <WorkFact label="Checks" value={String(selected.check_refs?.length ?? 0)} />
+                <WorkFact label="Version" value={`v${selected.version}`} />
+              </div>
+
+              {(selected.prerequisite_work_ids?.length ?? 0) > 0 && (
+                <section><p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Prerequisite Works</p><div className="flex flex-wrap gap-1.5">{selected.prerequisite_work_ids?.map((id) => <button type="button" key={id} onClick={() => onSelectWork(id)} className="rounded-md border border-border px-2 py-1 font-mono text-[9px] text-primary hover:bg-accent">{shortId(id)}</button>)}</div></section>
+              )}
+
+              <section className="space-y-2 rounded-xl border border-border/70 bg-muted/[0.16] p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Lead controls</p>
+                {selected.status === "open" && !selected.owner_member_id && !selected.active_member_run_id && <label className="block text-[10px] text-muted-foreground">Assign owner<Select className="mt-1" value="" disabled={!actionsEnabled || assignableMembers.length === 0} onChange={(event) => { if (event.target.value) onAction(assignTeamWork(teamRunId, selected.id, event.target.value, selected.version)); }}><option value="">{assignableMembers.length ? "Choose member…" : "No active members available"}</option>{assignableMembers.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}</Select></label>}
+                {selected.status === "review" && <><TextArea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="Optional review note" className="min-h-16" /><div className="flex flex-wrap gap-2"><Button size="sm" disabled={!actionsEnabled} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "accept", reviewNote))}><CheckCircle2 className="size-3.5" />Accept</Button><Button size="sm" variant="secondary" disabled={!actionsEnabled || !reviewNote.trim()} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "request-changes", reviewNote))}>Request changes</Button></div></>}
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => onDiscuss(selected)}><MessageSquare className="size-3.5" /> Discuss Work</Button>
+                  {ownerFor(selected) && <Button size="sm" variant="secondary" onClick={() => onOpenMember(ownerFor(selected)!)}>Open member</Button>}
+                  {!['done', 'cancelled'].includes(selected.status) && <Button size="sm" variant="secondary" disabled={!actionsEnabled} onClick={() => onAction({ method: "POST", path: `/v1/team-runs/${encodeURIComponent(teamRunId)}/works/${encodeURIComponent(selected.id)}/cancel`, body: { expected_version: selected.version, reason: "Cancelled by Host" } })}>Cancel Work</Button>}
+                </div>
+              </section>
+
+              <WorkRecordHistory
+                events={workEvents.filter((event) => event.work_id === selected.id)}
+                deliveries={workDeliveries.filter((delivery) => delivery.work_id === selected.id)}
+              />
+            </div>
+          </aside>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WorkFilterChip({
+  active,
+  count,
+  label,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  count: number;
+  label: string;
+  icon?: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "flex max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-medium transition-colors",
+        active
+          ? "border-primary/35 bg-primary/[0.08] text-primary"
+          : "border-border/70 bg-background text-muted-foreground hover:border-primary/25 hover:text-foreground",
+      )}
+    >
+      {icon}
+      <span className="max-w-36 truncate" title={label}>{label}</span>
+      <span className="tabular-nums opacity-70">{count}</span>
+    </button>
+  );
+}
+
+function WorkFact({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-md bg-muted/45 px-2 py-1.5"><span className="block text-[8px] uppercase tracking-wider text-muted-foreground">{label}</span><span className="mt-0.5 block truncate text-foreground">{value}</span></div>;
+}
+
+function WorkRecordHistory({ events, deliveries }: { events: WorkEvent[]; deliveries: WorkDelivery[] }) {
+  const orderedEvents = [...events].sort((left, right) => left.sequence - right.sequence);
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Durable history</p>
+        <span className="text-[9px] text-muted-foreground">{events.length} events · {deliveries.length} deliveries</span>
+      </div>
+      {orderedEvents.length === 0 && deliveries.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-border px-3 py-3 text-[10px] text-muted-foreground">No Work events or deliveries are present in this snapshot.</p>
+      ) : (
+        <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/70 bg-card">
+          {orderedEvents.slice(-8).map((event) => (
+            <div key={event.id} className="flex items-start gap-2 px-3 py-2 text-[10px]">
+              <StatusDot tone={event.kind.includes("block") || event.kind.includes("cancel") ? "bad" : event.kind.includes("accept") || event.kind.includes("complete") ? "good" : "info"} />
+              <div className="min-w-0 flex-1"><p className="font-medium text-foreground">{event.kind.replace(/_/g, " ")}</p><p className="mt-0.5 text-muted-foreground">sequence {event.sequence} · v{event.expected_version} → v{event.resulting_version} · {formatTime(event.created_at)}</p></div>
+            </div>
+          ))}
+          {deliveries.slice(-6).map((delivery) => (
+            <div key={delivery.id} className="flex items-start gap-2 px-3 py-2 text-[10px]">
+              <SendHorizontal className="mt-0.5 size-3 shrink-0 text-primary" />
+              <div className="min-w-0 flex-1"><p className="font-medium text-foreground">Delivery · {delivery.status.replace(/_/g, " ")}</p><p className="mt-0.5 truncate text-muted-foreground">to {shortId(delivery.recipient_member_run_id)} · Work v{delivery.work_version} · attempt {delivery.attempt}</p></div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TeamConversationStream({ items, empty, onOpenWork }: { items: TeamActivityItem[]; empty: ReactNode; onOpenWork: (workId: string) => void }) {
   if (!items.length) return <div className="grid min-h-48 place-items-center px-6 py-10 text-center">{empty}</div>;
-  const units: Array<{ id: string; kind: "assignment-group"; items: WorkbenchActivityItem[] } | { id: string; kind: "single"; item: WorkbenchActivityItem }> = [];
-  for (const item of items) {
-    if (item.messageKind === "assignment") {
-      const previous = units[units.length - 1];
-      if (previous?.kind === "assignment-group") {
-        previous.items.push(item);
-      } else {
-        units.push({ id: `assignment-group:${item.id}`, kind: "assignment-group", items: [item] });
-      }
-    } else {
-      units.push({ id: item.id, kind: "single", item });
-    }
-  }
   return (
     <ol className="relative py-1 before:absolute before:bottom-5 before:left-[1.05rem] before:top-5 before:w-px before:bg-border/80">
-      {units.map((unit) => (
-        <li key={unit.id}>
-          {unit.kind === "assignment-group"
-            ? <AssignmentConversationGroup items={unit.items} />
-            : <TeamConversationRow item={unit.item} />}
-        </li>
-      ))}
+      {items.map((item) => <li key={item.id}><TeamConversationRow item={item} onOpenWork={onOpenWork} /></li>)}
     </ol>
   );
 }
 
-function AssignmentConversationGroup({ items }: { items: WorkbenchActivityItem[] }) {
-  const first = items[0];
-  return (
-    <article className="relative grid grid-cols-[2.25rem_4.25rem_minmax(0,1fr)] gap-x-2.5 py-1.5">
-      <ConversationNode kind="assignment" tone="info" avatarName={first.actorAvatarName} avatarTone={first.actorTone} onActorClick={first.onActorClick} />
-      <time className="pt-1 text-right text-[10px] font-medium text-muted-foreground">{first.timestamp}</time>
-      <div className="min-w-0">
-        <ConversationMeta item={first} label="Assignment briefing" />
-        <div className="mt-1 grid overflow-hidden rounded-lg border border-status-info/25 bg-[linear-gradient(145deg,hsl(var(--card)),hsl(var(--status-info)/.035))] shadow-[0_18px_40px_-36px_rgba(14,116,180,.7)] sm:grid-cols-2">
-          {items.map((item, index) => (
-            <div key={item.id} className={cn(
-              "grid gap-1.5 px-2.5 py-1.5 sm:grid-cols-[minmax(0,1fr)_auto]",
-              index > 0 && "border-t border-border/60",
-              index === 1 && "sm:border-t-0",
-              index % 2 === 1 && "sm:border-l sm:border-border/60",
-            )}>
-              <div className="min-w-0">
-                <ConversationRoute item={item} />
-                <div className="mt-0.5 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">{item.body}</div>
-              </div>
-              <span className="self-start rounded-full bg-status-good/8 px-2 py-0.5 text-[9px] font-semibold text-status-good">{item.statusLabel ?? "queued"}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </article>
-  );
-}
-
-function TeamConversationRow({ item }: { item: WorkbenchActivityItem }) {
+function TeamConversationRow({ item, onOpenWork }: { item: TeamActivityItem; onOpenWork: (workId: string) => void }) {
   const kind = item.messageKind ?? item.kind;
   const tone = item.tone ?? "idle";
   const plan = kind === "plan_proposal";
@@ -653,6 +1051,7 @@ function TeamConversationRow({ item }: { item: WorkbenchActivityItem }) {
             <div className="min-w-0 flex-1">
               {item.messageKind ? <ConversationRoute item={item} /> : <div className="text-[11px] font-semibold text-foreground">{item.title}</div>}
             </div>
+            {item.workId && <button type="button" onClick={() => onOpenWork(item.workId!)} className="shrink-0 rounded-full border border-primary/20 bg-primary/[0.055] px-2 py-1 font-mono text-[9px] text-primary hover:bg-primary/10">Work · {shortId(item.workId)}</button>}
             {item.action && <div className="shrink-0">{item.action}</div>}
           </div>
           <div className="px-2.5 py-2">
@@ -742,8 +1141,7 @@ function ConversationNode({ kind, tone, avatarName, avatarTone, onActorClick }: 
       </button>
     );
   }
-  const Icon = kind === "assignment" ? ClipboardCheck
-    : kind === "plan_proposal" ? BrainCircuit
+  const Icon = kind === "plan_proposal" ? BrainCircuit
       : kind === "plan_feedback" || kind === "blocker" ? ShieldAlert
         : kind === "plan_approval" || kind === "review_result" ? CheckCircle2
           : kind === "handoff" ? ArrowRight
@@ -804,7 +1202,6 @@ function messagePresentation(kind?: string | null): {
 } {
   const normalized = kind ?? "message";
   if (normalized === "message") return { label: "Message", icon: MessageSquare, iconClass: "bg-[#64748b]", dotClass: "bg-[#64748b]" };
-  if (normalized === "assignment") return { label: "Assignment", icon: ClipboardCheck, iconClass: "bg-[#ff725e]", dotClass: "bg-[#ff725e]" };
   if (normalized === "broadcast") return { label: "Broadcast", icon: Megaphone, iconClass: "bg-status-info", dotClass: "bg-status-info" };
   if (normalized === "question") return { label: "Question", icon: CircleHelp, iconClass: "bg-[#7c5bd6]", dotClass: "bg-[#7c5bd6]" };
   if (normalized === "answer") return { label: "Answer", icon: MessageSquareReply, iconClass: "bg-status-good", dotClass: "bg-status-good" };
@@ -865,6 +1262,35 @@ function toInteractionActivity(
       </div>
     ),
   };
+}
+
+function TeamCoordinationPressure({
+  members,
+  messages,
+  pendingInteractions,
+  onOpenActivity,
+}: {
+  members: MemberRun[];
+  messages: TeamMessage[];
+  pendingInteractions: number;
+  onOpenActivity: () => void;
+}) {
+  const unread = messages.filter((message) => hostDeliveryStatus(message) === "delivered").length;
+  const blocked = members.filter((member) => member.status === "blocked").length;
+  return (
+    <button
+      type="button"
+      onClick={onOpenActivity}
+      className="mt-1 flex w-full flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border/70 bg-card/70 px-3 py-2 text-left transition-colors hover:border-primary/25 hover:bg-primary/[0.025]"
+      aria-label="Open complete Team mailboxes and Lead Inbox"
+    >
+      <span className="inline-flex items-center gap-2 text-[11px] font-semibold text-foreground"><Inbox className="size-3.5 text-primary" /> Coordination pressure</span>
+      <span className={cn("text-[10px]", unread ? "text-status-warn" : "text-muted-foreground")}>{unread} unread for Lead</span>
+      <span className={cn("text-[10px]", pendingInteractions ? "text-status-warn" : "text-muted-foreground")}>{pendingInteractions} pending interaction{pendingInteractions === 1 ? "" : "s"}</span>
+      <span className={cn("text-[10px]", blocked ? "text-status-bad" : "text-muted-foreground")}>{blocked} blocked member{blocked === 1 ? "" : "s"}</span>
+      <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-medium text-primary">Open Activity <ArrowRight className="size-3" /></span>
+    </button>
+  );
 }
 
 function TeamMailboxStrip({
@@ -996,7 +1422,7 @@ function LeadInbox({
           </span>
           <div>
             <h2 className="text-[12px] font-semibold text-foreground">Lead Inbox</h2>
-            <p className="text-[10px] text-muted-foreground">Every Member message addressed to the Host, with its Assignment work chain.</p>
+            <p className="text-[10px] text-muted-foreground">Every Member message addressed to the Host, preserving its conversation thread and delivery state.</p>
           </div>
         </div>
         <Badge tone={messages.some((message) => hostDeliveryStatus(message) === "delivered") ? "warn" : "muted"}>
@@ -1039,7 +1465,7 @@ function LeadInbox({
                   <Button
                     size="sm"
                     disabled={!actionsEnabled || !canAnswer}
-                    title={canAnswer ? "Reply using this Assignment correlation" : "Cannot answer until this message has an Assignment correlation"}
+                    title={canAnswer ? "Reply in this correlated conversation" : "Cannot answer until this message has a conversation correlation"}
                     onClick={() => onAnswer(message)}
                   >
                     <MessageSquare className="size-3.5" /> Answer
@@ -1076,10 +1502,10 @@ function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, o
   return null;
 }
 
-function MemberControl({ member, selected, assignment, currentAction, livePreview, terminal, className, onSelect, onOpen }: {
+function MemberControl({ member, selected, work, currentAction, livePreview, terminal, className, onSelect, onOpen }: {
   member: MemberRun;
   selected: boolean;
-  assignment?: string;
+  work?: string;
   currentAction?: string;
   livePreview?: string;
   terminal: boolean;
@@ -1117,7 +1543,7 @@ function MemberControl({ member, selected, assignment, currentAction, livePrevie
         </button>
       )}
       <div className="mt-1.5 hidden space-y-1 border-t border-border/60 pt-1.5 text-[10px] sm:block">
-        <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction ?? assignment ?? "No durable action yet"}</p>
+        <p className="truncate text-foreground"><span className="text-muted-foreground">Now · </span>{currentAction ?? work ?? "No durable action yet"}</p>
         {livePreview && <p className="truncate text-status-info"><span className="font-semibold">Live · </span>{livePreview}</p>}
         {!blocked && <p className="truncate text-muted-foreground">{pressureLabel(member.status)} · {relativeTime(member.last_event_at ?? member.finished_at ?? member.started_at)}</p>}
       </div>
@@ -1196,7 +1622,7 @@ function WaveModule({ wave, directExecutor, onOpen }: { wave?: Wave; directExecu
     <ContextModule title={`Wave ${wave.index} · ${wave.title}`} kicker={directExecutor ? "Legacy direct executor" : "Current Host plan"} tone={waveTone(wave.status)} action={<button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open</button>}>
       <p className="text-[12px] leading-relaxed text-foreground">{wave.objective}</p>
       <div className="mt-2 flex flex-wrap gap-1"><Badge tone={gateTone(wave.gate_status)}>decision {wave.gate_status ?? "pending"}</Badge><Badge tone="muted">revision {wave.revision ?? 1}</Badge></div>
-      {!directExecutor && <p className="mt-2 text-[11px] text-muted-foreground">Navigation context only: assignments and messages tell this long-lived Team what to do; the Wave does not own its runtime.</p>}
+      {!directExecutor && <p className="mt-2 text-[11px] text-muted-foreground">Navigation context only: Works own execution and messages carry coordination; the Wave does not own this long-lived runtime.</p>}
       {wave.exit_criteria && <p className="mt-2 text-[11px] text-muted-foreground">Exit: {wave.exit_criteria}</p>}
     </ContextModule>
   );
@@ -1239,12 +1665,12 @@ function AttemptModule({ runId, status, attempt, previousRunId, hostSurface, hos
   return <ContextModule title={`Attempt ${attempt}`} kicker="Attempt" tone={teamTone(status)}><div className="space-y-1.5 text-[11px]"><Fact label="Status" value={status} /><Fact label="Run" value={shortId(runId)} mono /><Fact label="Host binding" value={hostBinding} mono /><Fact label="Execution root" value={executionRoot ?? "Not recorded (legacy run)"} mono /><Fact label="Started" value={formatDate(createdAt)} />{previousRunId && <Fact label="Retry of" value={shortId(previousRunId)} mono />}{completedAt && <Fact label="Completed" value={formatDate(completedAt)} />}</div></ContextModule>;
 }
 
-function SelectedMemberModule({ member, assignment, currentAction, onMessage, onOpen }: { member?: MemberRun; assignment?: string; currentAction?: string; onMessage: () => void; onOpen: () => void }) {
+function SelectedMemberModule({ member, work, currentAction, onMessage, onOpen }: { member?: MemberRun; work?: string; currentAction?: string; onMessage: () => void; onOpen: () => void }) {
   if (!member) return <ContextModule title="No member selected" kicker="Selected member"><p className="text-[11px] text-muted-foreground">Choose a member control to inspect its attempt-scoped context.</p></ContextModule>;
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
       <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Assignment" value={assignment ?? "No assignment recorded"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Current Work" value={work ?? "No Work owned"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
@@ -1264,7 +1690,7 @@ function toActivityItems(
   items: StableTeamActivity[],
   members: Map<string, MemberRun>,
   onOpenMember: (member: MemberRun) => void,
-): WorkbenchActivityItem[] {
+): TeamActivityItem[] {
   return items.map((item) => {
     const actor = item.sourceMemberRunId ? memberLabel(members, item.sourceMemberRunId) : "Host";
     if (item.kind === "message") {
@@ -1307,6 +1733,7 @@ function toActivityItems(
         messageKind: message.kind ?? "message",
         bodySource: message.body ?? undefined,
         recipientLabels: (message.to_member_ids ?? []).map((id) => memberLabel(members, id)),
+        workId: message.work_id ?? undefined,
         prominence: KEY_ACTIVITY_MESSAGE_KINDS.has(message.kind ?? "")
           ? "primary"
           : ["blocker", "review_request", "review_result"].includes(message.kind ?? "")
@@ -1319,6 +1746,51 @@ function toActivityItems(
       const evidenceRefs = action.evidence_refs ?? [];
       const status = [action.provider_status, action.semantic_status].filter(Boolean).join(" · ");
       return { id: item.id, kind: evidenceRefs.length ? "evidence" : "action", glyph: evidenceRefs.length ? "artifact" : "runtime", title: action.title ?? action.action_type ?? "Member action", body: status ? <><span>{action.summary}</span><span className="mt-1 block text-[10px] text-muted-foreground">Harness action · provider {action.provider_status ?? "unknown"} · semantic {action.semantic_status ?? "not classified"}</span></> : action.summary, actor, timestamp: formatTime(action.started_at ?? action.completed_at), evidenceRefs, tone: action.status === "failed" ? "bad" : action.status === "succeeded" ? "good" : "running", prominence: "detail", relatedMemberIds: item.sourceMemberRunId ? [item.sourceMemberRunId] : [], rawText: `${action.title ?? ""} ${action.summary ?? ""} ${actor}`, actorLabel: actor };
+    }
+    if (item.kind === "work_event") {
+      const event = item.workEvent;
+      const pressure = event.kind.includes("block")
+        || event.kind.includes("cancel")
+        || event.kind === "changes_requested";
+      const accepted = event.kind.includes("accept") || event.kind.includes("complete");
+      return {
+        id: item.id,
+        kind: pressure ? "blocker" : accepted ? "decision" : "action",
+        glyph: accepted ? "complete" : pressure ? "review" : "runtime",
+        title: `Work ${event.kind.replace(/_/g, " ")}`,
+        body: `Version ${event.expected_version} → ${event.resulting_version}`,
+        actor,
+        actorLabel: actor,
+        timestamp: formatTime(event.created_at),
+        tone: pressure ? "bad" : accepted ? "good" : "info",
+        prominence: pressure ? "pressure" : "detail",
+        relatedMemberIds: item.sourceMemberRunId ? [item.sourceMemberRunId] : [],
+        rawText: `${event.kind} ${event.work_id} ${actor}`,
+        workId: event.work_id,
+      };
+    }
+    if (item.kind === "work_delivery") {
+      const delivery = item.workDelivery;
+      const recipient = memberLabel(members, delivery.recipient_member_run_id);
+      const pressure = delivery.status === "failed";
+      const deliveryBody = pressure && delivery.failure_reason
+        ? `Work v${delivery.work_version} · attempt ${delivery.attempt} · ${delivery.failure_reason}`
+        : `Work v${delivery.work_version} · attempt ${delivery.attempt}`;
+      return {
+        id: item.id,
+        kind: pressure ? "blocker" : "action",
+        glyph: pressure ? "review" : delivery.status === "provider_received" ? "complete" : "queued",
+        title: `Work delivery ${delivery.status.replace(/_/g, " ")}`,
+        body: deliveryBody,
+        actor: `to ${recipient}`,
+        actorLabel: recipient,
+        timestamp: formatTime(delivery.updated_at),
+        tone: pressure ? "bad" : delivery.status === "provider_received" ? "good" : "info",
+        prominence: pressure ? "pressure" : "detail",
+        relatedMemberIds: [delivery.recipient_member_run_id],
+        rawText: `${delivery.status} ${delivery.work_id} ${recipient} ${delivery.failure_reason ?? ""}`,
+        workId: delivery.work_id,
+      };
     }
     const event = item.event;
     const decision = event.entity_type === "wave" || event.operation === "completed" || /gate|decision/i.test(event.summary ?? "");
@@ -1360,7 +1832,6 @@ function summarizeDeliveries(message: TeamMessage, members: Map<string, MemberRu
 function teamMessageGlyph(kind?: string | null, hasEvidence = false): WorkbenchActivityItem["glyph"] {
   if (hasEvidence) return "artifact";
   switch (kind) {
-    case "assignment": return "assignment";
     case "handoff": return "handoff";
     case "review_request": return "review";
     case "review_result": return "decision";
@@ -1406,6 +1877,7 @@ function relativeTime(value?: string | null): string { const ms = timestamp(valu
 function pressureLabel(status?: string | null): string { if (["blocked", "failed"].includes(status ?? "")) return "blocked"; if (["waiting", "reviewing"].includes(status ?? "")) return "waiting"; if (status === "running") return "active"; return status ?? "idle"; }
 function teamTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing"].includes(status ?? "")) return "warn"; if (status === "planning") return "info"; return "idle"; }
 function memberTone(status?: string | null): StatusTone { if (status === "running") return "running"; if (status === "completed") return "good"; if (["blocked", "failed", "stopped"].includes(status ?? "")) return "bad"; if (["waiting", "reviewing", "disconnected"].includes(status ?? "")) return "warn"; if (["queued", "starting"].includes(status ?? "")) return "info"; return "idle"; }
+function workTone(status?: string | null): StatusTone { if (status === "done") return "good"; if (status === "cancelled") return "bad"; if (status === "blocked") return "warn"; if (status === "in_progress") return "running"; if (status === "review") return "info"; return "idle"; }
 function waveTone(status?: string | null): StatusTone { if (status === "completed") return "good"; if (["blocked", "failed", "cancelled"].includes(status ?? "")) return "bad"; if (["waiting"].includes(status ?? "")) return "warn"; if (status === "running") return "running"; return "info"; }
 function gateTone(status?: string | null): StatusTone { if (status === "accepted") return "good"; if (status === "blocked") return "bad"; if (status === "revise") return "warn"; return "decision"; }
-function messageTone(kind?: string | null): StatusTone { if (kind === "blocker") return "bad"; if (["review_request", "plan_feedback"].includes(kind ?? "")) return "warn"; if (["review_result", "answer", "plan_approval"].includes(kind ?? "")) return "good"; if (["handoff", "question", "plan_proposal"].includes(kind ?? "")) return "decision"; if (kind === "progress") return "running"; if (["assignment", "broadcast", "plan_request"].includes(kind ?? "")) return "info"; return "idle"; }
+function messageTone(kind?: string | null): StatusTone { if (kind === "blocker") return "bad"; if (["review_request", "plan_feedback"].includes(kind ?? "")) return "warn"; if (["review_result", "answer", "plan_approval"].includes(kind ?? "")) return "good"; if (["handoff", "question", "plan_proposal"].includes(kind ?? "")) return "decision"; if (kind === "progress") return "running"; if (["broadcast", "plan_request"].includes(kind ?? "")) return "info"; return "idle"; }

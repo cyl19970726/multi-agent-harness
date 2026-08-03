@@ -331,11 +331,12 @@ PendingInteraction, Close truth, and native-session reconstruction.
 Acceptance: concurrent Dashboard and native-client observation never creates a
 second driver, and every control reaches the owning Supervisor.
 
-### Wave 6 — Dogfood and Organization handoff
+### Wave 6 — Dogfood and Organization integration
 
 - run a real self-host Mission with persistent Members;
 - exercise Host, peer, and external messages plus restart recovery;
-- record handoff, checks, native Session refs, Wave advances, and closeout;
+- record Work submissions/acceptance, checks, native Session refs, Wave
+  advances, and closeout;
 - provide the stable runtime contract to the Organization identity branch.
 
 Acceptance: a future Host can reconstruct why the work existed, who controlled

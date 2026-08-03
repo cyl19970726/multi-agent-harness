@@ -1,228 +1,156 @@
 # ADR 0025: Agent Team Run Control Plane
 
-## Status
+```text
+status: accepted historical substrate; current semantics amended by ADRs 0032,
+  0034, 0044, and 0050
+owner_role: architecture
+canonical_for: origin of the AgentTeamRun/MemberRun control-plane boundary;
+  current responsibility, lifecycle, and delivery rules live in the amending ADRs
+```
 
-Accepted as the v0 Agent Team substrate.
+## Status And Reading Rule
 
-Superseded in part by ADR
-[0034](0034-host-plan-waves-and-mission-teams.md): AgentTeamRun is no longer
-owned by one Wave on the primary path, and a Mission-scoped run may span Waves.
-This ADR remains historical context and canonical only for retained MemberRun,
-TeamMessage, PendingInteraction, correlation, and control-plane boundaries.
-ADR [0050](0050-agent-team-work-board-and-message-boundary.md) removes the
-Assignment-message ownership model below rather than preserving a compatibility
-reader.
+This ADR introduced the first real Agent Team control-plane substrate. Its old
+Wave-owned run and Assignment-message proof chains are no longer product
+contracts and are deliberately not reproduced here. Git history preserves the
+v0 proposal; the governed failure reconstruction is in
+[Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
 
-Superseded in part by ADR
-[0044](0044-durable-team-supervision-and-typed-mail.md): typed actor
-provenance, latest-wins Team Supervisor generations, delivery
-claim/provider-receipt/ACK, stable Agent routing, cross-process live controls,
-reconnect, and explicit Close replace the v0 lifecycle and delivery details
-below. The remainder of this document must be read as historical design
-context, not current operational guidance.
+Read the current contracts instead:
 
-Superseded in part by ADR
-[0026](0026-mission-wave-architecture.md) for top-level product hierarchy,
-Mission/Wave terminology, and thinking policy. This ADR remains canonical for
-the v0 Agent Team object set, delegation guardrails, and host/tooling split.
-ADR [0032](0032-provider-native-session-is-execution-truth.md) supersedes its
-durable provider-activity mirroring: provider transcript/tool/command/file
-events stay in the native session, while Harness keeps coordination facts.
+- [ADR 0032](0032-provider-native-session-is-execution-truth.md): the Provider
+  native session is execution truth; Harness does not mirror transcript, tool,
+  command, file, subagent, or thinking streams.
+- [ADR 0034](0034-host-plan-waves-and-mission-teams.md): Mission is durable
+  intent, Wave is versioned Host plan/judgment, and an independent AgentTeamRun
+  may span several Waves.
+- [ADR 0044](0044-durable-team-supervision-and-typed-mail.md): one durable
+  Supervisor generation owns runtime control and delivery claims.
+- [ADR 0050](0050-agent-team-work-board-and-message-boundary.md): Work owns
+  responsibility and state; WorkDelivery notifies a runtime; TeamMessage is
+  authored conversation only.
+
+If this ADR conflicts with one of those documents, the amending ADR wins.
 
 ## Context
 
-Agent Team exists for work that cannot be reduced to a one-shot function call.
-A sub-agent returns a result and disappears. An Agent Team member is a living
-collaborator with its own mailbox, runtime state, and responsibility lane until
-its attempt completes or is cancelled. The separate Wave gate then decides
-whether a completed attempt is accepted, revised, or blocked.
+Agent Team exists for work that cannot be reduced to one function call. A
+Member is an addressable, multi-turn collaborator with a durable MemberRun,
+mailbox route, Workspace, provider-native session, and explicit lifecycle.
+Provider-native subagents remain implementation details of the Member that
+invoked them unless Harness actually creates a separate MemberRun.
 
-The v0 implementation goal is not to solve the whole Mission/Wave product. It
-is to prove the first real `agent_team` executor substrate:
+The v0 milestone proved that several Provider members could be coordinated
+through one Store and inspected through CLI and Dashboard. It also exposed two
+modeling errors:
 
-- wave-scoped collaboration across providers;
-- explicit assignment, handoff, blocker, and review messages;
-- observable member actions and delegation;
-- shared dashboard, CLI, and host-tool read model.
+1. binding each run to one Wave confused Host planning with execution
+   lifetime; and
+2. treating an Assignment Message correlation as responsibility forced the
+   Host to reconstruct a task board from conversation history.
 
-The native Mission-first Console is now implemented for this branch: it creates
-Missions and ordered Waves, creates/retries linked AgentTeamRun attempts, and
-shows the selected project's durable updates over SSE. This does not make
-Dynamic Workflow or Host a routed Agent Team control plane.
+Those errors motivated ADRs 0034 and 0050 rather than compatibility layers.
 
-## Decision
+## Retained Decision
 
-### Layering
+### Agent Team control-plane boundary
 
-Within the canonical Mission/Wave model, this ADR owns the `agent_team`
-executor branch:
+The current retained object boundary is:
 
 ```text
-Mission
-  -> Wave(executor_kind=agent_team)
-    -> AgentTeamRun
-      -> MemberRun
-        -> DelegationRun
-```
-
-Other executor kinds (`dynamic_workflow`, `host`) are defined by ADR 0026 and
-reuse shared runtime infrastructure without adopting Agent Team semantics.
-
-### v0 object model
-
-```text
-AgentTeamRun    id, mission_id?, wave_id?, objective, status, budget_limit_usd?,
-                host{surface, thread_id}, member_run_ids[],
-                created_at / started_at / ended_at
-
-MemberRun       id, team_run_id, name, role, provider, model?,
-                status(starting|idle|queued|running|waiting|reviewing|
-                       blocked|completed|failed|stopped),
-                native_session?, current_task_id?,
-                worktree_ref?, owned_paths[], created_at / ended_at
-
-TeamMessage     id, team_run_id, task_id?, from, to[], kind,
-                correlation_id, causation_id?, evidence_refs[],
-                deliveries[{ member_id, policy, status, attempt, updated_at }]
-
-MemberAction    id, seq, team_run_id, member_run_id, task_id?,
-                action_type(free-form Harness coordination/control/outcome fact),
-                status(started|progress|succeeded|failed|cancelled),
-                provider_status?, semantic_status?, title, summary, evidence_refs[],
-                started_at / ended_at
-
-DelegationRun   id, team_run_id, parent_member_run_id, parent_task_id?,
-                mode(provider_native|harness_worker|dynamic_workflow),
-                provider, provider_child_thread_id?, workflow_run_id?,
-                objective, status, evidence_ids[]
-
-TeamRunEvent    id, seq, team_run_id,
-                source{kind(host|member|delegation), member_run_id?,
-                       delegation_run_id?},
-                entity_type, entity_id, operation(created|updated|completed),
-                summary, occurred_at
+AgentTeam                         reusable team identity
+AgentTeamRun                      one supervised execution space
+  -> MemberRun                    addressable runtime/session binding
+  -> Work                         durable responsibility and state
+       -> WorkOperation           crash-atomic replay row
+            -> WorkEvent          append-only semantic transition
+            -> WorkDelivery       runtime notification/outbox delta
+  -> TeamMessage                  authored conversation
+  -> PendingInteraction           Provider turn actually paused for input
+  -> control acknowledgements, explicit outcome, artifact/check references
 ```
 
 Rules:
 
-- `AgentTeamRun` is one execution attempt for one Wave and becomes read-only
-  history when the attempt terminates. A Wave may retry with a new run and its
-  gate identifies the accepted attempt.
-- `MemberRun` is an execution instance, not a standing durable employee record.
-- `TeamMessage` separates message semantics from per-recipient delivery state.
-- `MemberAction` and `TeamRunEvent` are transitional ordered rows for
-  Harness-owned coordination, control requests/acknowledgements, explicit
-  outcomes, and lifecycle facts. They never mirror provider-native work
-  activity.
-- A native attempt links both `mission_id` and `wave_id`. Optional identifiers
-  remain at the Store/API boundary only for reading imported records; unlinked
-  runs are excluded from active Agent Team product navigation and authoring.
-- Attempt completion (`reviewing -> completed`) is separate from the Wave gate;
-  only a completed attempt can be accepted by that parent Wave.
+- An AgentTeamRun may be standalone or related to a Mission. It is not owned by
+  one Wave, and Wave advance does not close the run or its members.
+- A MemberRun is one Harness execution binding, not a Standing Agent or company
+  employee identity. Its provider-native session remains the execution record.
+- Work plus its WorkOperation/WorkEvent history is responsibility truth.
+  WorkDelivery is transport for a Work version; neither a delivery receipt nor
+  Provider completion changes Work state.
+- TeamMessage carries question, answer, planning, explanation, review
+  discussion, or peer coordination. `work_id` is an optional conversational
+  link. Correlation and causation preserve reply lineage, not ownership.
+- PendingInteraction exists only when a real Provider turn is paused for an
+  answer or authorization. Ordinary Host/Member discussion remains Message.
+- Harness lifecycle/activity rows record only Harness-owned coordination,
+  control, outcome, and evidence facts. They never impersonate provider-native
+  execution history.
 
-### Historical Assignment-message correlation
-
-V0 explained ownership through message correlation. This proof chain is
-superseded by Work/WorkEvent/WorkDelivery and must not be used for new design,
-implementation, fixtures, or active data:
-
-```text
-TeamMessage(kind=assignment)
-  -> correlation_id
-  -> Harness blocker / handoff / review / PendingInteraction
-  -> explicit outcome + artifacts/check refs
-  -> NativeSessionRef for member execution detail
-```
-
-This was the v0 proof chain for lane ownership inside the run.
-
-Automatic handoff reuses its assignment's `correlation_id` and names the exact
-TeamMessage consumed by that provider round as `causation_id`. Manual CLI,
-HTTP, and MCP sends accept `correlation_id` and `causation_id`: explicit
-correlation must identify an Assignment in the same run, causation must identify
-a message in the same run, and a causation-only reply inherits its cause's
-correlation. Invalid or cross-run lineage is rejected before a message append.
-Messages that omit both fields retain an opaque generated correlation and make
-no claim of assignment ownership.
+There is no Assignment Message reader or ownership fallback. An Execution
+Space containing the removed Agent Team Assignment rows must be archived/reset
+or passed through an explicit future offline converter before current Works
+commands run.
 
 ### Delegation guardrails
 
-Two delegation modes are valid:
+Two implementation classes remain distinct:
 
-- `provider_native`: the member invokes its provider's native subagent
-  capability. The harness captures attribution when hooks or artifacts expose
-  it, but does not pretend to control the child lifecycle.
-- `harness_worker` / `dynamic_workflow`: the harness launches the child itself,
-  so it enforces delegation depth, path subset, permission ceiling, and budget
-  limits.
+- `provider_native`: a Member invokes its Provider's native subagent. Harness
+  may project honest attribution when the Provider exposes it, but does not
+  claim child lifecycle control.
+- Harness-created Member/child Team or Dynamic Workflow: Harness owns the
+  created runtime or step and therefore enforces identity, Workspace/path,
+  permission, budget, delivery, and lifecycle boundaries.
 
-If a provider capability exists but the adapter has not verified or wired the
-observation path, the harness degrades honestly to `dynamic_workflow` or
-documents the observation gap instead of pretending unified control.
+A provider capability without a verified adapter path is reported as
+unsupported or unobserved. It is never promoted into a synthetic MemberRun.
 
-### Packaging And Call Surfaces
+### Packaging and call surfaces
 
-The resident `harness serve` process owns store, event stream, read model, and
-MCP server. Provider-specific plugins are thin host-native packages over it.
+The resident Harness service owns Store, read models, event stream, and MCP.
+Provider plugins remain thin distribution packages.
 
-The call surface split remains:
+| Layer | Role |
+| --- | --- |
+| Plugin | install and Provider-native packaging |
+| MCP | machine-readable Host call surface |
+| Skill | optional operating method, never architecture authority |
+| CLI | complete plumbing, debugging, automation, and fallback |
+| Hook | bounded observation/injection, never canonical state ownership |
 
-| Layer | Role | Why |
-| --- | --- | --- |
-| Plugin | distribution | packaging and install only |
-| MCP | primary call surface | machine-readable tool schema and native host approval UX |
-| Skill | teaches method | when to form a team, how to split waves, delivery contracts |
-| CLI | plumbing and fallback | executable body for debug, monitors, CI |
-| Hook | observation nerves | event-triggered injection and light interception, never the primary call surface |
+CLI, HTTP, MCP, Dashboard, and Plugin must call the same application/store
+semantics rather than each inventing a responsibility projection.
 
-### Thinking Policy
+### Thinking and native execution policy
 
-The accepted target is that thinking is not part of the durable Agent Team
-object model.
+Thinking is not a durable Agent Team object. A sanitized, expiring live preview
+may be shown when a Provider exposes one, but it is never persisted, replayed,
+forwarded to peers, or treated as evidence. Provider transcript, tools,
+commands, files, native subagents, and turn history stay in Provider-native
+storage. Harness persists only its own coordination, Work state, controls,
+outcomes, and evidence references.
 
-- A provider may expose transient live reasoning to the host UI.
-- The harness may surface that live-only signal when available.
-- It is never persisted as `MemberAction`, `TeamRunEvent`, or canonical
-  evidence.
-- It is never replayed or forwarded to other members.
-
-Persist Harness-owned control and coordination facts, artifact/check
-references, blockers, handoffs, and explicit outcomes instead. Provider-native
-activity remains readable through the member's native session binding.
-
-New Kimi adapter writes do not append provider reasoning as durable
-`MemberAction(type=thinking)` rows. Active stores are cleaned rather than
-retaining those rows as a compatibility contract. The Console receives a sanitized `member_activity` preview
-only through project-scoped SSE: it carries an expiry, is never tailed from a
-ledger, never appears in a snapshot, and is not replayed after reconnect.
-
-Provider adapters may normalize native events in memory for live display, but
-must not persist a second event stream. A member handoff is durable only when
-it is explicitly promoted into a Harness `TeamMessage`/outcome; ordinary final
-assistant text remains part of the native session.
-
-Provider model names are execution constraints, not cosmetic metadata. Codex
-maps a requested member model to `codex exec -m`; Kimi maps it after
-`session/new` through ACP `session/set_config_option(configId=model)`. An
-unavailable Kimi alias must fail before prompting rather than silently falling
-back to the user's default model.
+Provider model/effort selection is an execution constraint with a real native
+receipt, not display metadata. Version-specific support remains governed by the
+reviewed Provider integration profile.
 
 ## Consequences
 
-- ADR 0025 remains the canonical v0 substrate for the `agent_team` executor.
-- Mission/Wave product hierarchy is owned by ADR 0026; retirement of the old
-  coordination stack is owned by ADR 0028.
-- A future dashboard or host surface should explain Agent Team ownership through
-  assignment-message correlation and wave context rather than through a
-  first-class legacy dependency graph concept.
-- Residual internal fields such as `current_task_id` are removal debt, not an
-  active product contract, ownership model, or reason to retain old UI.
+- Agent Team has a stable multi-Provider execution boundary without making
+  Mission/Wave an executor container.
+- The shared Works board replaces reconstruction of responsibility from mail.
+- Conversation remains durable and correlated without becoming a scheduler.
+- Member runtime/session lifetime remains independent from Wave advance,
+  TeamRun completion, Mission closeout, or a single Provider turn.
+- Dynamic Workflow and Host-native subagents remain separate executor models.
 
 ## Non-goals
 
-- Standing agent organizations, long-lived employee directories, or cross-Mission
-  inboxes.
-- Treating private reasoning as durable execution history or evidence.
-- Claiming full observability for provider-native subagents when hooks are
-  missing.
-- Replacing `dynamic_workflow` or `host` with Agent Team semantics.
+- no universal Goal, Plan Gate, Task Graph, or Wave executor ownership;
+- no Assignment Message compatibility path;
+- no Provider transcript or thinking copy;
+- no automatic semantic acceptance from Provider completion or transport
+  receipt; and
+- no claim of Harness lifecycle control over provider-native subagents.

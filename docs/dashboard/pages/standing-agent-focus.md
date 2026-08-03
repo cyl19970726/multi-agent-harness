@@ -65,10 +65,11 @@ never fail the whole snapshot.
 flowchart LR
   A["AgentMember\ndurable identity"] --> R["AgentRuntime"]
   A --> S["NativeSessionRef"]
-  A --> X["StandingAssignment\nread-only projection"]
-  X --> M["Mission / Wave"]
+  A --> X["StandingExecutionAssignment\nread-only projection"]
+  X --> TW["Agent Team Work"]
   X --> W["WorkflowRun / Step"]
-  X --> D["Direct message"]
+  X --> P["Team participation"]
+  TW --> M["Mission-linked TeamRun"]
   M --> MR["MemberRun\none TeamRun participation"]
   MR -. "explicit agent_member_id only" .-> A
 ```
@@ -93,16 +94,17 @@ Missing values render as `Availability not reported`. `Available` means the
 Agent can accept work under its capacity and permission policy; it does not
 mean the Agent has no history or no active non-exclusive assignments.
 
-### StandingAssignment projection
+### StandingExecutionAssignment projection
 
-`StandingAssignment` is a read-only cross-executor projection, not a legacy dependency graph
-and not a new universal executor:
+`StandingExecutionAssignment` is a read-only cross-executor projection, not a
+legacy dependency graph and not a new universal executor:
 
 ```text
 id
 agent_member_id
-source_kind = agent_team_assignment | agent_team_participation
+source_kind = agent_team_work | agent_team_participation
 source_ref
+work_id?
 mission_id? / wave_id?
 team_run_id? / member_run_id?
 workflow_run_id? / workflow_step_id?
@@ -116,19 +118,21 @@ navigation_target
 
 Projection rules:
 
-- Mission/Wave participation requires an explicit `MemberRun.agent_member_id`
-  or equivalent stable source link.
-- The current implementation projects Agent Team assignments only. It includes
-  a Mission reference when the TeamRun is Mission-scoped; a Wave reference is
-  shown only when an existing compatibility record supplies one. A Wave does
-  not own the MemberRun.
+- An owned Agent Team Work projects as `agent_team_work`; `source_ref` and
+  `work_id` both identify that durable Work. Work status, not a message kind,
+  supplies the execution status.
+- A MemberRun with no owned Work may project as `agent_team_participation`, so
+  the page can show honest team presence without inventing responsibility.
+- Mission/Wave context comes from the TeamRun's explicit links. A Wave does not
+  own the Work or MemberRun.
 - Workflow participation uses an explicit step owner and the step's
   `NativeSessionRef` when provider-native activity is available.
-- A direct assignment must be an explicit assignment/task message addressed to
-  the durable AgentMember; ordinary conversation is activity, not assignment.
+- TeamMessage is conversation only. A direct message may appear in activity,
+  but never creates a responsibility row.
 - Missing links remain missing. The UI must not fall back to legacy
-  `current_task_id` to invent a cross-executor assignment.
-- Retries are lineage of one source assignment, not duplicate active work.
+  `current_task_id` or an old assignment message to invent a Work relation.
+- Retries and runtime generations remain execution lineage for one Work, not
+  duplicate active responsibility.
 
 ## Layout contract
 
@@ -143,8 +147,8 @@ Center reading order:
 1. durable identity header: name, availability, `Standing Agent`, provider and
    model;
 2. availability banner, including exclusive-assignment truth;
-3. chronological cross-context activity: direct messages, explicit assignment
-   entries, workflow participation, delivered artifacts, provider-native
+3. chronological cross-context activity: direct messages, owned Works,
+   workflow participation, delivered artifacts, provider-native
    activity projections, and agent replies;
 4. composer addressed to the AgentMember, with queue/busy behavior stated
    honestly.
@@ -178,8 +182,8 @@ The Store-live Organization chart routes Human and Standing Agent cards to
 their profile. A Standing Agent profile now shows:
 
 - WorkItems linked through Company OS Actor references;
-- Agent Team assignments linked through `MemberRun.agent_member_id`;
-- the exact TeamRun, MemberRun, assignment correlation, status, and optional
+- Agent Team Works linked through `MemberRun.agent_member_id`;
+- the exact TeamRun, MemberRun, Work id/version/status, and optional
   provider-native session locator;
 - a deep link to the Team/Member execution surface; and
 - an explicit empty state when no MemberRun is linked.
@@ -190,10 +194,10 @@ an offline runtime does not retire a Standing Agent.
 
 ## Remaining representative state
 
-`available-multi-assignment` proves:
+`available-multi-work` proves:
 
 - one healthy durable AgentMember with explicit `available` state;
-- multiple non-exclusive assignments from at least two source kinds;
+- multiple non-exclusive Works or WorkItems from at least two source kinds;
 - capacity remains available;
 - provider-native session history reached through explicit native-session refs;
 - a delivered artifact and durable message history;

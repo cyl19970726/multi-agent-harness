@@ -12,9 +12,9 @@
  * A member therefore stops existing at the instant its queue is momentarily
  * empty. A TeamMessage that arrives one millisecond later has no recipient:
  * it stays `queued` forever and nobody ever consumes it. That is the runtime
- * half of ADR 0037's unmet clause — a Member owns its Assignment, Workspace,
- * and native session until the Team Lead explicitly accepts its handoff — and
- * it is why acceptance items 5 and 6 originally had no test.
+ * half of ADR 0037's unmet clause — a Member owns its active Work, Workspace,
+ * and native session until the Team Lead explicitly closes it — and it is why
+ * acceptance items 5 and 6 originally had no test.
  *
  * A Mailbox is an async message stream that does NOT end when it is empty.
  * `next()` parks until either `push()` delivers a message or `close()` is
@@ -49,7 +49,7 @@ export class Mailbox {
    * Hand a message to the member. If the member is parked waiting, it wakes
    * immediately; otherwise the message queues for the next round.
    *
-   * @param {object} message a TeamMessage-shaped envelope
+   * @param {object} message a Work or TeamMessage delivery envelope
    */
   push(message) {
     if (this.#closed) {
@@ -124,11 +124,12 @@ export class Mailbox {
 }
 
 /**
- * Render a Harness TeamMessage as an SDK user message.
+ * Render a Harness Work or TeamMessage input as an SDK user message.
  *
  * Kept deliberately dumb: the envelope stays readable in the provider-native
- * transcript so a human opening the session in Claude sees who sent what and
- * under which correlation, without Harness having to mirror the transcript.
+ * transcript so a human opening the session in Claude sees who sent what and,
+ * for conversation, under which correlation. Harness still owns Work state;
+ * this runner does not copy or advance that state machine.
  */
 export function renderTeamMessage(message) {
   const header = `--- ${message.from_member_id} (${message.kind}) ---`;

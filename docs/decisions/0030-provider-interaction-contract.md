@@ -33,10 +33,21 @@ Every Agent Team `MemberRun` snapshots a `ProviderIntegrationProfile` naming the
 provider, concrete execution mode, interaction mode, event fidelity, lifecycle
 support, native-subagent observation, and transient-thinking policy.
 
-Provider-originated questions, tool approvals, and plan reviews are durable
-`PendingInteraction` objects. They record exact provider option ids, routing,
-resolution actor, and semantic outcome. The adapter returns the exact selected
-option to the provider; it never fabricates an answer.
+Provider-originated questions, plan reviews, and tool approvals that require a
+real external decision are durable `PendingInteraction` objects. They record
+exact provider option ids, routing, resolution actor, and semantic outcome. The
+adapter returns the exact selected option to the provider; it never fabricates
+an answer.
+
+A trusted full-access adapter may synchronously acknowledge an ordinary tool
+permission only when the provider itself advertises an exact safe intent
+(`allow_always` or `allow_once`). That acknowledgement is not a product pause:
+it creates no `PendingInteraction`, no temporary Member waiting state, and no
+created/resolved interaction pair. Harness keeps one bounded
+`provider_control` acknowledgement without command or prompt content; the tool
+lifecycle remains exclusively in the provider-native session. Unknown option
+spelling, a reject-only option set, or an unregistered adapter always fails
+closed through a real `PendingInteraction`.
 
 Routing defaults are:
 
@@ -62,9 +73,11 @@ Thinking remains sanitized transient live state only. It is never a
 
 ## Execution-mode behavior
 
-- `kimi_acp`: `session/request_permission` pauses the same turn. Harness writes
-  a PendingInteraction, marks the member waiting, and resumes the same ACP
-  request after an authorized response.
+- `kimi_acp`: a trusted full-access tool request with an exact ACP safe-allow
+  option is acknowledged synchronously without a false pause. Every question,
+  plan review, unknown request, and tool request without a safe allow option
+  writes a PendingInteraction, marks the member waiting, and resumes the same
+  ACP request only after an authorized response.
 - `codex_app_server`: the default and only new Codex Agent Team mode. Native
   reverse requests become PendingInteractions, while `turn/steer` and
   `turn/interrupt` back the corresponding controls.
@@ -89,8 +102,12 @@ Thinking remains sanitized transient live state only. It is never a
 
 - Kimi deterministic ACP test: question -> PendingInteraction -> Lead option ->
   same-turn resume -> semantic `answered`.
-- Kimi deterministic ACP policy test: tool permission -> Policy route -> Lead
-  rejection -> exact Policy option -> same-turn resume -> semantic `approved`.
+- Kimi deterministic ACP full-access test: repeated tool permissions with exact
+  safe-allow options -> synchronous acknowledgements -> zero
+  PendingInteractions and zero waiting projections.
+- Kimi deterministic ACP fail-closed tests: reject-only tool permission ->
+  Policy PendingInteraction, and unknown reverse request -> Human
+  PendingInteraction; each resumes the same turn only after resolution.
 - Mixed Codex/Kimi boundary test: Codex command events and Kimi tool events are
   readable from their native sessions but absent from Harness ledgers;
   provider thinking is absent from all Harness persistence.

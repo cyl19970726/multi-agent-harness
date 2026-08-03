@@ -1,0 +1,11 @@
+{
+  "id": "work-delivery-acknowledged-1",
+  "work_event_id": "work-event-2",
+  "team_run_id": "team-run-1",
+  "work_id": "work-1",
+  "work_version": 2,
+  "recipient_member_run_id": "member-run-1",
+  "status": "acknowledged",
+  "attempt": 1,
+  "updated_at": "unix-ms:2"
+}
