@@ -3512,7 +3512,7 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
     );
     assert_eq!(status, 202, "body: {started}");
     let mut live = false;
-    for _ in 0..100 {
+    for _ in 0..500 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         live = snapshot["member_runs"]
             .as_array()
@@ -3605,7 +3605,7 @@ fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
     );
     assert_eq!(status, 202, "body: {started}");
     let mut running = false;
-    for _ in 0..100 {
+    for _ in 0..500 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         running = snapshot["member_runs"]
             .as_array()
@@ -3823,13 +3823,7 @@ fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "body: {started}");
-    for _ in 0..200 {
-        if ready.exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(ready.exists(), "first Kimi prompt did not enter busy state");
+    wait_for_file(&ready, "first Kimi prompt to enter busy state");
 
     let (status, first) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),

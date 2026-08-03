@@ -10810,6 +10810,7 @@ const PROVIDER_TERMINAL_STATUS_PREFIX: &str = "provider_terminal";
 
 impl ProviderTerminalFailure {
     /// `provider_terminal:<reason>:<http status or ->`.
+    #[cfg(test)]
     fn to_provider_status(&self) -> String {
         let status = self
             .http_status
@@ -12218,6 +12219,7 @@ enum TeamMessageDeliveryMode {
 /// does not drive the member state machine: a handoff/blocker from a member is
 /// only recorded as an event — the member's MemberRun row is left untouched.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn send_team_message(
     store: &HarnessStore,
     team_run_id: &str,
@@ -12252,6 +12254,7 @@ fn send_team_message(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn send_team_message_as(
     store: &HarnessStore,
     team_run_id: &str,
@@ -14545,11 +14548,6 @@ fn member_run_detail_json(
 /// Default cap on concurrently-running member ACP sessions.
 const TEAM_RUN_START_DEFAULT_CONCURRENCY: usize = 4;
 
-/// Hard cap on prompt rounds per member (round 1 = the assignment; later
-/// rounds deliver messages queued while the member worked). Prevents a
-/// message ping-pong from looping the orchestrator forever.
-const TEAM_RUN_START_MAX_ROUNDS: u32 = 5;
-
 struct ActiveTurnLeasePool {
     active: Mutex<usize>,
     available: Condvar,
@@ -14704,8 +14702,8 @@ enum MemberControlCommand {
 }
 
 enum IdleMemberWake {
-    Work(ClaimedWork),
-    ActiveWorkContinuation(Work),
+    Work(Box<ClaimedWork>),
+    ActiveWorkContinuation(Box<Work>),
     Messages(Vec<TeamMessage>),
     Closed,
     TestRetired,
@@ -15471,11 +15469,6 @@ impl TeamRunLedger {
         Ok(self.store.append_member_run(member)?)
     }
 
-    fn save_message(&self, message: &TeamMessage) -> CliResult<()> {
-        let _guard = self.write_lock();
-        Ok(self.store.append_team_message(message)?)
-    }
-
     fn save_pending_interaction(&self, interaction: &PendingInteraction) -> CliResult<()> {
         let _guard = self.write_lock();
         Ok(self.store.append_pending_interaction(interaction)?)
@@ -15544,7 +15537,10 @@ impl TeamRunLedger {
                 &now_string(),
             ))? {
                 WorkDeliveryClaimResult::Claimed(delivery) => {
-                    return Ok(Some(ClaimedWork { work, delivery }));
+                    return Ok(Some(ClaimedWork {
+                        work,
+                        delivery: *delivery,
+                    }));
                 }
                 WorkDeliveryClaimResult::NotQueued => continue,
             }
@@ -15758,34 +15754,6 @@ impl TeamRunLedger {
             .collect())
     }
 
-    /// Inbound response-required mail that the provider has not accepted yet.
-    /// `claimed` remains uncertain until a provider receipt or explicit
-    /// reconciliation, so it fences semantic Handoff just like `queued`.
-    /// Informational mail never starts a round on its own, so it does not
-    /// fence either (ADR 0046 §4).
-    fn pending_messages_for_correlation(
-        &self,
-        member_id: &str,
-        correlation_id: &str,
-    ) -> CliResult<Vec<TeamMessage>> {
-        Ok(self
-            .team_messages()?
-            .into_iter()
-            .filter(|message| {
-                message.from_member_id != member_id
-                    && message.correlation_id == correlation_id
-                    && message.requires_response()
-                    && message.deliveries.iter().any(|delivery| {
-                        delivery.member_id == member_id
-                            && matches!(
-                                delivery.status,
-                                TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed
-                            )
-                    })
-            })
-            .collect())
-    }
-
     fn claim_message(&self, message_id: &str, member_id: &str) -> CliResult<Option<TeamMessage>> {
         self.require_supervisor_lease()?;
         let claim_id = generated_id("delivery-claim");
@@ -15803,17 +15771,6 @@ impl TeamRunLedger {
             TeamMessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
             TeamMessageDeliveryClaimResult::NotQueued => Ok(None),
         }
-    }
-
-    fn claim_queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
-        let queued = self.queued_messages_for(member_id)?;
-        let mut claimed = Vec::with_capacity(queued.len());
-        for message in queued {
-            if let Some(message) = self.claim_message(&message.id, member_id)? {
-                claimed.push(message);
-            }
-        }
-        Ok(claimed)
     }
 
     /// Claim queued mail for an idle member only when at least one queued
@@ -15977,7 +15934,7 @@ fn wait_for_idle_member_wake(
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
             ledger.save_member_run(member_row)?;
-            return Ok(IdleMemberWake::Work(claimed));
+            return Ok(IdleMemberWake::Work(Box::new(claimed)));
         }
         // The deterministic idle-grace harness intentionally retires fake
         // providers after one turn. Production runtimes have no such grace
@@ -15988,7 +15945,7 @@ fn wait_for_idle_member_wake(
                 member_row.finished_at = None;
                 member_row.last_event_at = Some(now_string());
                 ledger.save_member_run(member_row)?;
-                return Ok(IdleMemberWake::ActiveWorkContinuation(work));
+                return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
             }
         }
         // Response-intent gate (ADR 0046 §4): informational or
@@ -16742,7 +16699,7 @@ fn run_codex_member(
             )?;
             prompt_text =
                 work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
-            active_work = Some(claimed);
+            active_work = Some(*claimed);
         }
         IdleMemberWake::ActiveWorkContinuation(work) => {
             let work_envelope = member_work_collaboration_envelope(
@@ -16942,7 +16899,7 @@ fn run_codex_member(
                 )?;
                 prompt_text =
                     work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
-                active_work = Some(claimed);
+                active_work = Some(*claimed);
                 active_assignment = None;
                 accepted_messages.clear();
             }
@@ -18361,28 +18318,6 @@ fn run_claude_agent_sdk_team_member(
     Ok(MemberOutcome::new(&member_row, final_status, final_summary))
 }
 
-/// Resolve the durable assignment chain and the exact TeamMessage that caused
-/// one provider round.
-///
-/// Correlation remains anchored to the member's Assignment. Causation points
-/// at the message actually consumed for this round (the Assignment on round
-/// one, a Host/peer follow-up later). This keeps the model simple while making
-/// multi-round work reconstructable without a task graph.
-fn member_round_lineage(
-    assignment: Option<&TeamMessage>,
-    trigger: Option<&TeamMessage>,
-) -> (Option<String>, String, Option<String>) {
-    let origin_wave_id = trigger
-        .and_then(|message| message.origin_wave_id.clone())
-        .or_else(|| assignment.and_then(|message| message.origin_wave_id.clone()));
-    let correlation_id = assignment
-        .map(|message| message.correlation_id.clone())
-        .or_else(|| trigger.map(|message| message.correlation_id.clone()))
-        .unwrap_or_else(|| generated_id("corr"));
-    let causation_id = trigger.or(assignment).map(|message| message.id.clone());
-    (origin_wave_id, correlation_id, causation_id)
-}
-
 fn active_assignment_for_round(
     current: Option<&TeamMessage>,
     accepted_messages: &[TeamMessage],
@@ -18480,6 +18415,7 @@ fn latest_member_handoff_for_turn(
         .cloned())
 }
 
+#[cfg(any())] // retired with Assignment Message
 struct MemberRoundRecord<'a> {
     assignment: Option<&'a TeamMessage>,
     trigger: Option<&'a TeamMessage>,
@@ -18496,6 +18432,7 @@ struct MemberRoundRecord<'a> {
     provider_terminal: Option<&'a ProviderTerminalFailure>,
 }
 
+#[cfg(any())] // retired with Assignment Message
 enum RoundHandoffRecord {
     Recorded(Box<TeamMessage>),
     Deferred {
@@ -18508,6 +18445,7 @@ enum RoundHandoffRecord {
     EmptyProviderRound,
 }
 
+#[cfg(any())] // retired with Assignment Message
 fn record_round_handoff(
     ledger: &TeamRunLedger,
     member_row: &MemberRun,
@@ -18618,6 +18556,7 @@ fn record_round_handoff(
 
 /// Record a round the provider failed: a failed `provider_error` action, no
 /// handoff, and a member that stays `idle` and re-deliverable.
+#[cfg(any())] // retired with Assignment Message
 fn record_provider_error_round(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
@@ -18658,6 +18597,7 @@ fn record_provider_error_round(
 
 /// Ledger writes for one completed member round: handoff to Host, action row,
 /// and member status.
+#[cfg(any())] // retired with Assignment Message
 fn record_member_round(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
@@ -19038,7 +18978,7 @@ fn run_kimi_member(
     let initial_wake = if resumed_native_session {
         ledger
             .interrupted_active_work_for(&member_row.id)?
-            .map(IdleMemberWake::ActiveWorkContinuation)
+            .map(|work| IdleMemberWake::ActiveWorkContinuation(Box::new(work)))
     } else {
         None
     };
@@ -19088,7 +19028,7 @@ fn run_kimi_member(
             prompt_text =
                 work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
             active_work =
-                (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(claimed);
+                (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
             active_assignment = None;
         }
         IdleMemberWake::ActiveWorkContinuation(work) => {
@@ -19361,7 +19301,7 @@ fn run_kimi_member(
                 prompt_text =
                     work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
                 active_work =
-                    (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(claimed);
+                    (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
                 active_assignment = None;
                 accepted_messages.clear();
             }
@@ -19500,39 +19440,6 @@ fn latest_queued_assignment(
     }
 }
 
-/// Return the newest provider-accepted inbound message that has not produced a
-/// Host-facing Handoff yet.
-///
-/// This is deliberately narrower than "latest delivered message". It is used
-/// only when a durable MemberRun says its provider generation disappeared
-/// while work may still have been in flight. A `claimed` delivery is excluded:
-/// Harness cannot know whether the provider accepted it and requires explicit
-/// reconciliation instead of guessing or replaying side effects.
-fn latest_unhanded_delivered_trigger(
-    ledger: &TeamRunLedger,
-    member_id: &str,
-) -> CliResult<Option<TeamMessage>> {
-    let messages = ledger.team_messages()?;
-    let handed_off_causes = messages
-        .iter()
-        .filter(|message| {
-            message.from_member_id == member_id && message.kind == TeamMessageKind::Handoff
-        })
-        .filter_map(|message| message.causation_id.clone())
-        .collect::<HashSet<_>>();
-    Ok(messages.into_iter().rfind(|message| {
-        message.from_member_id != member_id
-            && !handed_off_causes.contains(&message.id)
-            && message.deliveries.iter().any(|delivery| {
-                delivery.member_id == member_id
-                    && matches!(
-                        delivery.status,
-                        TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged
-                    )
-            })
-    }))
-}
-
 #[cfg(any())] // retired with Assignment Message
 fn assignment_for_correlation(
     ledger: &TeamRunLedger,
@@ -19541,26 +19448,6 @@ fn assignment_for_correlation(
     Ok(ledger.team_messages()?.into_iter().rfind(|message| {
         message.kind == TeamMessageKind::Assignment && message.correlation_id == correlation_id
     }))
-}
-
-fn member_runtime_recovery_prompt(member: &MemberRun, trigger: &TeamMessage) -> String {
-    format!(
-        "RUNTIME RECOVERY for your existing Agent Team assignment.\n\
-The previous provider transport generation ended after Harness recorded that \
-you accepted the coordination message below, but before a Host-facing Handoff \
-was durably recorded.\n\n\
-Do NOT blindly repeat irreversible or externally visible side effects. Inspect \
-your provider-native session and current Workspace first. Continue only the \
-unfinished work, or report the already-completed result with evidence. Then \
-respond in the normal ## RESULT / ## SUMMARY / ## FILES / ## CHECKS format.\n\n\
-MemberRun: {}\nMessage: {}\nCorrelation: {}\nKind: {}\nFrom: {}\n\n{}",
-        member.id,
-        trigger.id,
-        trigger.correlation_id,
-        team_message_kind_label(&trigger.kind),
-        trigger.from_member_id,
-        trigger.body
-    )
 }
 
 /// Flip every queued delivery of `message` addressed to `member_id` to

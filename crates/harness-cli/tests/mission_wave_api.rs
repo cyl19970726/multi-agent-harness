@@ -402,12 +402,9 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "wave-plan-2",
         ],
     );
-    assert_eq!(
-        joined["work"]["context_markdown"]
-            .as_str()
-            .is_some_and(|context| context.contains("wave-plan-2")),
-        true
-    );
+    assert!(joined["work"]["context_markdown"]
+        .as_str()
+        .is_some_and(|context| context.contains("wave-plan-2")));
     assert_eq!(
         joined["team_run"]["member_run_ids"]
             .as_array()

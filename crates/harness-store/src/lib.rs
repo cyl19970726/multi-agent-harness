@@ -66,7 +66,7 @@ pub enum TeamMessageDeliveryClaimResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkDeliveryClaimResult {
-    Claimed(WorkDelivery),
+    Claimed(Box<WorkDelivery>),
     NotQueued,
 }
 
@@ -1198,6 +1198,7 @@ impl HarnessStore {
         self.release_work_with_authority(work_id, expected_version, None, context)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_work(
         &self,
         work_id: &str,
@@ -1362,6 +1363,7 @@ impl HarnessStore {
         self.append_work_transition_unlocked(current, next, WorkEventKind::Cancelled, context)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transition_owned_work(
         &self,
         work_id: &str,
@@ -2922,7 +2924,7 @@ impl HarnessStore {
                 updated_at: delivery.updated_at.clone(),
             },
         )?;
-        Ok(WorkDeliveryClaimResult::Claimed(delivery))
+        Ok(WorkDeliveryClaimResult::Claimed(Box::new(delivery)))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -389,6 +389,7 @@ fn record_text<'a>(value: &'a Value, key: &str) -> &'a str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_work_execution_chains(
     assignments: Vec<Value>,
     agents: Vec<Value>,
