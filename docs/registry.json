@@ -4048,10 +4048,10 @@
    ],
    "reviewAfter": "2026-08-18",
    "lastVerifiedWith": [
-    "origin/master da76a7b",
+    "origin/master 52c0864",
     "official upstream repositories reviewed 2026-08-04"
    ],
-   "reorgTrigger": "Independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050.",
+   "reorgTrigger": "Root-model ADR for durable AgentMember/nested Teams/unified Work, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050.",
    "authorityClass": "research",
    "implementationState": "design_only",
    "truthRefs": [
