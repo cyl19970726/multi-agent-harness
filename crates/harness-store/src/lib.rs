@@ -1441,6 +1441,18 @@ impl HarnessStore {
                 "MemberRun {member_run_id} does not own active work {work_id} in required state"
             )));
         }
+        // A Closed or Retired MemberRun no longer mutates its owned Work:
+        // unfinished Work moves only via Host reassign/cancel or after an
+        // explicit Reopen (docs/product/agent-team-works.md). This aligns
+        // member-side transitions with insert/claim/start/receive, which
+        // already require active coordination.
+        let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
+        if !member.coordination_is_active() {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_UNAVAILABLE: MemberRun {member_run_id} coordination is {:?}; Reopen before mutating owned Work",
+                member.coordination_status
+            )));
+        }
         let mut next = current.clone();
         mutate(&mut next);
         next.status = resulting_status;
@@ -6521,6 +6533,103 @@ mod tests {
             )
             .expect_err("closed member cannot be assigned");
         assert!(closed.to_string().contains("MEMBER_UNAVAILABLE"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn closed_member_cannot_mutate_owned_work_until_reopen() {
+        let (root, store, run, member, _) = work_test_fixture("closed-member-owned-work");
+        let created = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-owned-closed"),
+                host_work_context("we-closed-1", "create-owned", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let assigned = store
+            .assign_work(
+                &created.id,
+                created.version,
+                &member.id,
+                host_work_context("we-closed-2", "assign-owned", "unix-ms:3"),
+            )
+            .expect("assign Work");
+        let started = store
+            .start_work(
+                &assigned.id,
+                assigned.version,
+                &member.id,
+                member_work_context(&member.id, "we-closed-3", "start-owned", "unix-ms:4"),
+            )
+            .expect("start Work");
+
+        // Close lands mid-execution: coordination flips Closed while the Work
+        // stays owned and InProgress.
+        let mut closed_member = member.clone();
+        closed_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
+        closed_member.status = MemberRunStatus::Stopped;
+        store
+            .append_member_run(&closed_member)
+            .expect("record closed coordination");
+
+        let blocked = store
+            .block_work(
+                &started.id,
+                started.version,
+                &member.id,
+                "still blocked",
+                member_work_context(&member.id, "we-closed-4", "block-owned", "unix-ms:5"),
+            )
+            .expect_err("closed member cannot block owned Work");
+        assert!(
+            blocked.to_string().contains("MEMBER_UNAVAILABLE"),
+            "unexpected error: {blocked}"
+        );
+        let submitted = store
+            .submit_work(
+                &started.id,
+                started.version,
+                &member.id,
+                "result from a closed runtime",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-closed-5", "submit-owned", "unix-ms:6"),
+            )
+            .expect_err("closed member cannot submit owned Work");
+        assert!(
+            submitted.to_string().contains("MEMBER_UNAVAILABLE"),
+            "unexpected error: {submitted}"
+        );
+        // The Work projection is untouched by both rejections.
+        let current = store
+            .latest_works()
+            .expect("latest works")
+            .into_iter()
+            .find(|work| work.id == started.id)
+            .expect("owned Work");
+        assert_eq!(current.status, WorkStatus::InProgress);
+        assert_eq!(current.version, started.version);
+
+        // Reopen (coordination Active, next runtime generation) restores the
+        // member-side transition path for the same durable Work.
+        let mut reopened_member = closed_member.clone();
+        reopened_member.coordination_status = harness_core::MemberCoordinationStatus::Active;
+        reopened_member.status = MemberRunStatus::Idle;
+        reopened_member.runtime_generation += 1;
+        store
+            .append_member_run(&reopened_member)
+            .expect("record reopened member");
+        let submitted = store
+            .submit_work(
+                &started.id,
+                started.version,
+                &member.id,
+                "result after reopen",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-closed-6", "submit-reopened", "unix-ms:7"),
+            )
+            .expect("reopened member submits owned Work");
+        assert_eq!(submitted.status, WorkStatus::Review);
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

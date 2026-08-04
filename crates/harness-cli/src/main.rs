@@ -15890,6 +15890,20 @@ fn stop_member_for_latched_close(
             member_row.id, close.team_run_id, ledger.run_id
         )));
     }
+    // Close ends this runtime generation: a delivery claimed by this member
+    // and Supervisor generation but never provider-received can never be
+    // received now. Fail those claims (same rule as the transport-disconnect
+    // path) so the Work is not stranded while this generation lives; the
+    // provider-native session remains execution truth and no receipt is
+    // fabricated. Runs before the member row mutates so a lost lease aborts
+    // the whole close application.
+    ledger.fail_unreceived_work_claims_for(
+        &member_row.id,
+        &format!(
+            "member closed before provider acceptance: {}: {}",
+            close.requested_by, close.reason
+        ),
+    )?;
     member_row.coordination_status = MemberCoordinationStatus::Closed;
     member_row.status = MemberRunStatus::Stopped;
     member_row.finished_at = Some(now_string());
@@ -16601,12 +16615,29 @@ fn run_member_orchestration(
             Ok(outcome) => {
                 if outcome.status == MemberRunStatus::Stopped {
                     if let Ok(Some(close)) = pending_member_close(&ledger.store, &current.id) {
-                        let _ = ledger.store.complete_team_member_close(
-                            &ledger.run_id,
-                            &current.id,
-                            &close.id,
-                            &now_string(),
-                        );
+                        // Same stranded-claim rule as stop_member_for_latched_close:
+                        // a claim this member never got provider-accepted must
+                        // become re-claimable instead of wedging the Work. If the
+                        // claims cannot be failed safely (for example the lease
+                        // just moved), leave the Close latch pending so the next
+                        // Supervisor generation applies it with the same rule.
+                        if ledger
+                            .fail_unreceived_work_claims_for(
+                                &current.id,
+                                &format!(
+                                    "member closed before provider acceptance: {}: {}",
+                                    close.requested_by, close.reason
+                                ),
+                            )
+                            .is_ok()
+                        {
+                            let _ = ledger.store.complete_team_member_close(
+                                &ledger.run_id,
+                                &current.id,
+                                &close.id,
+                                &now_string(),
+                            );
+                        }
                     }
                 }
                 return outcome;
@@ -16760,10 +16791,53 @@ fn run_codex_member(
     let mut active_work: Option<ClaimedWork> = None;
     let mut active_assignment: Option<TeamMessage> = None;
     let mut final_summary = String::new();
-    match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-        ledger.require_supervisor_lease()?;
-        app_server.ensure_transport_alive()
-    })? {
+    // Same recovery contract as the Kimi driver: when this drive resumes a
+    // recorded native session after a disconnect, continue the receipted or
+    // in-progress Work on that session instead of replaying its delivery.
+    // The test idle-grace knob disables continuation turns just like in
+    // wait_for_idle_member_wake, so deterministic fake providers that retire
+    // after one turn cannot be driven into a resume-crash loop.
+    let initial_wake =
+        if member.native_session.is_some() && member_supervisor_test_idle_grace().is_none() {
+            ledger
+                .interrupted_active_work_for(&member_row.id)?
+                .map(|work| IdleMemberWake::ActiveWorkContinuation(Box::new(work)))
+        } else {
+            None
+        };
+    if let Some(IdleMemberWake::ActiveWorkContinuation(work)) = initial_wake.as_ref() {
+        let action = ledger.append_action(
+            &member_row.id,
+            "runtime_recovery",
+            MemberActionStatus::Progress,
+            "Codex runtime resumed active Work",
+            &format!(
+                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                work.id,
+                member_row
+                    .native_session
+                    .as_ref()
+                    .map(|session| session.native_session_id.as_str())
+                    .unwrap_or("unknown")
+            ),
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member_row.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("member {} resumed active Work {}", member_row.name, work.id),
+        )?;
+    }
+    let wake = match initial_wake {
+        Some(wake) => wake,
+        None => wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            ledger.require_supervisor_lease()?;
+            app_server.ensure_transport_alive()
+        })?,
+    };
+    match wake {
         IdleMemberWake::Work(claimed) => {
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
@@ -16839,6 +16913,7 @@ fn run_codex_member(
                     ledger,
                     controls: &live_control,
                     accepted_messages: &accepted_messages,
+                    active_work: active_work.as_ref(),
                     lineage: MemberTurnLineage {
                         assignment_correlation_id: active_assignment
                             .as_ref()
@@ -16867,10 +16942,8 @@ fn run_codex_member(
                 Some(native_session_ref(&member_row, thread_id, "codex_rollout"));
             ledger.save_member_run(&member_row)?;
         }
-        if let Some(claimed) = active_work.as_ref() {
-            let receipt = format!("codex:{}:round-{round}", app_server.thread_id());
-            ledger.complete_work_delivery(claimed, &receipt)?;
-        }
+        // The Work receipt was already recorded at turn/start acceptance
+        // inside run_codex_app_server_turn; nothing to complete here.
         if turn.interrupted {
             let interruption_summary = if turn.close_requested_by_harness {
                 "The Host explicitly closed the Codex member runtime."
@@ -17044,6 +17117,10 @@ struct CodexTeamTurnContext<'a> {
     ledger: &'a TeamRunLedger,
     controls: &'a ControlReceiver<MemberControlCommand>,
     accepted_messages: &'a [TeamMessage],
+    /// Work claim carried by this turn, when the turn exists to deliver one.
+    /// Its provider receipt is recorded at turn/start acceptance (the earliest
+    /// honest evidence), never at end of turn.
+    active_work: Option<&'a ClaimedWork>,
     lineage: MemberTurnLineage<'a>,
 }
 
@@ -17153,10 +17230,20 @@ fn run_codex_app_server_turn(
         ledger,
         controls,
         accepted_messages,
+        active_work,
         lineage,
     } = context;
     ledger.require_supervisor_lease()?;
     let mut turn_id = client.start_turn(prompt)?;
+    // The turn/start response is the earliest honest evidence that the
+    // provider accepted this turn, so the Work receipt lands here — beside
+    // the message receipts — not after the whole turn. A mid-turn crash then
+    // leaves a ProviderReceived row that recovery can resume, instead of an
+    // unreceipted Claimed row that only a fail-and-replay could recover.
+    if let Some(claimed) = active_work {
+        let receipt = format!("codex:{}:{turn_id}", client.thread_id());
+        ledger.complete_work_delivery(claimed, &receipt)?;
+    }
     for message in accepted_messages {
         mark_message_delivered(ledger, message, &member.id, &member.name, &turn_id)?;
     }
@@ -17828,7 +17915,63 @@ fn run_claude_agent_sdk_team_member(
     }))?;
     let mut turn_lease = None;
     let mut active_work_continuation_inflight = false;
-    if let Some(claimed) = ledger.claim_next_work_for(&member.id)? {
+    // Same recovery contract as the Kimi driver: when this drive resumes a
+    // recorded native session after a disconnect, continue the receipted or
+    // in-progress Work on that session instead of replaying its delivery.
+    // The test idle-grace knob disables continuation turns just like in
+    // wait_for_idle_member_wake, so deterministic fake providers that retire
+    // after one turn cannot be driven into a resume-crash loop.
+    let interrupted_wake =
+        if member.native_session.is_some() && member_supervisor_test_idle_grace().is_none() {
+            ledger.interrupted_active_work_for(&member.id)?
+        } else {
+            None
+        };
+    if let Some(work) = interrupted_wake {
+        let action = ledger.append_action(
+            &member_row.id,
+            "runtime_recovery",
+            MemberActionStatus::Progress,
+            "Claude runtime resumed active Work",
+            &format!(
+                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                work.id,
+                member_row
+                    .native_session
+                    .as_ref()
+                    .map(|session| session.native_session_id.as_str())
+                    .unwrap_or("unknown")
+            ),
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member_row.id.clone()),
+            "action",
+            &action.id,
+            "created",
+            &format!("member {} resumed active Work {}", member_row.name, work.id),
+        )?;
+        let work_envelope = member_work_collaboration_envelope(
+            ledger,
+            context.execution_space_id.as_deref(),
+            project_id,
+            project_selector,
+            &member_row,
+            Some(&work),
+        )?;
+        turn_lease = Some(turn_leases.acquire());
+        send(serde_json::json!({
+            "command": "deliver",
+            "payload": {
+                "id": generated_id("active-work-continuation"),
+                "kind": "work_continuation",
+                "from_member_id": "host",
+                "correlation_id": work.id,
+                "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+            }
+        }))?;
+        active_work_continuation_inflight = true;
+    } else if let Some(claimed) = ledger.claim_next_work_for(&member.id)? {
         let work_envelope = member_work_collaboration_envelope(
             ledger,
             context.execution_space_id.as_deref(),
@@ -22891,17 +23034,17 @@ fn close_team_member_value(
 
     let close = latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?;
     let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
-    if matches!(
+    // Past this point no live Supervisor lease exists (the live case was
+    // dispatched above) and the durable lease is the sole cross-process
+    // control authority, revalidated before every drive. A Starting/Running
+    // row here is therefore a crashed driver's leftover, not a live runtime:
+    // reap it like every other non-terminal status so the Close completes
+    // and Reopen stays possible, instead of wedging on a latch no Supervisor
+    // generation will ever apply (closed members are filtered from rosters).
+    let reaped_stale_runtime = matches!(
         member.status,
         MemberRunStatus::Starting | MemberRunStatus::Running
-    ) {
-        return Ok(serde_json::json!({
-            "member_run_id": member.id,
-            "status": "close_requested",
-            "provider_ack": "durable_close_pending_supervisor",
-            "close_request_id": close.id,
-        }));
-    }
+    );
     let mut member = member;
     member.status = MemberRunStatus::Stopped;
     member.finished_at = Some(now_string());
@@ -22920,6 +23063,8 @@ fn close_team_member_value(
         MemberActionStatus::Succeeded,
         if external_interactive {
             "external member coordination closed"
+        } else if reaped_stale_runtime {
+            "member coordination closed; stale runtime reaped without a live Supervisor lease"
         } else {
             "member coordination closed before runtime start"
         },
@@ -22937,8 +23082,8 @@ fn close_team_member_value(
         "member_run_id": member.id,
         "status": "stopped",
         "coordination_status": "closed",
-        "runtime": if external_interactive { "external_unmanaged" } else { "not_started" },
-        "runtime_effect": if external_interactive { "none" } else { "not_started" },
+        "runtime": if external_interactive { "external_unmanaged" } else if reaped_stale_runtime { "stale_runtime_reaped" } else { "not_started" },
+        "runtime_effect": if external_interactive { "none" } else if reaped_stale_runtime { "stale_runtime_reaped" } else { "not_started" },
         "coordination_effect": "member_closed",
         "idempotent": false,
     }))
@@ -38752,8 +38897,12 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn close_without_live_supervisor_is_applied_after_store_reopen() {
-        let (store, root) = temp_store("durable-close-restart");
+    fn close_without_live_supervisor_reaps_stale_running_row_and_allows_reopen() {
+        // Wedge regression: a crashed Supervisor leaves a Running MemberRun
+        // behind and its lease expires. Close must reap the stale row
+        // immediately (no live Supervisor can ever apply a latch), and Reopen
+        // must stay possible afterwards.
+        let (store, root) = temp_store("durable-close-reap");
         let created = create_two_member_team_run(&store);
         let mut run = created.team_run;
         run.status = TeamRunStatus::Running;
@@ -38775,35 +38924,156 @@ package:com.tencent.mm
                 "reason": "lane accepted"
             }),
         )
-        .expect("durably request Close");
-        assert_eq!(result["status"].as_str(), Some("close_requested"));
+        .expect("close reaps the stale runtime");
+        assert_eq!(result["status"].as_str(), Some("stopped"));
         assert_eq!(
-            result["provider_ack"].as_str(),
-            Some("durable_close_pending_supervisor")
+            result["runtime_effect"].as_str(),
+            Some("stale_runtime_reaped")
         );
-        drop(store);
-
-        let reopened = HarnessStore::new(&root);
-        let close = pending_member_close(&reopened, &member.id)
-            .expect("read pending Close")
-            .expect("Close survived reopen");
-        let ledger = TeamRunLedger::without_supervisor(&reopened, &run.id);
-        stop_member_for_latched_close(&ledger, &mut member, &close)
-            .expect("restarted Supervisor applies Close");
-        let stopped = latest_member_runs_in_append_order(&reopened)
+        let stopped = latest_member_runs_in_append_order(&store)
             .expect("read MemberRun")
             .into_iter()
             .find(|row| row.id == member.id)
             .expect("MemberRun");
         assert_eq!(stopped.status, MemberRunStatus::Stopped);
+        assert!(stopped.coordination_is_closed());
         assert_eq!(
-            reopened
+            store
                 .latest_team_member_close_request(&member.id)
                 .expect("read Close")
                 .expect("Close row")
                 .status,
             TeamMemberCloseStatus::Applied
         );
+
+        // The wedge would reject this Reopen with "close is not complete".
+        let reopened = reopen_team_member_value(
+            &store,
+            &run.id,
+            &member.id,
+            &serde_json::json!({
+                "reopened_by": "host",
+                "reason": "resume the same member identity"
+            }),
+        )
+        .expect("reopen after reap succeeds");
+        assert_eq!(
+            reopened["member_run"]["coordination_status"].as_str(),
+            Some("active"),
+            "reopen response: {reopened}"
+        );
+        assert_eq!(
+            reopened["member_run"]["runtime_generation"].as_u64(),
+            Some(member.runtime_generation + 1)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn latched_close_fails_unreceived_same_generation_work_claims() {
+        // Gap regression: a delivery Claimed by this member and Supervisor
+        // generation but never provider-received used to stay Claimed forever
+        // after Close. Applying the latched Close must fail it with an honest
+        // reason so the Work becomes reassignable; no receipt is fabricated.
+        let (store, root) = temp_store("close-fails-unreceived-claims");
+        let created = create_two_member_team_run(&store);
+        let run = created.team_run;
+        let member = created.member_runs[0].clone();
+        create_team_work_value(
+            &store,
+            &run.id,
+            &serde_json::json!({
+                "id": "work-close-mid-claim",
+                "title": "Close lands mid-claim",
+                "completion_criteria_markdown": "Delivery becomes re-claimable",
+                "owner_member_run_id": member.id,
+            }),
+        )
+        .expect("create owned Work");
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &run.id,
+                "supervisor-close-test",
+                std::process::id(),
+                "loopback:test",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let claimed = ledger
+            .claim_next_work_for(&member.id)
+            .expect("claim scan")
+            .expect("queued delivery for the member");
+        assert_eq!(claimed.delivery.status, WorkDeliveryStatus::Claimed);
+        assert!(claimed.delivery.provider_receipt_id.is_none());
+
+        let close = latch_member_close(&store, &run.id, &member.id, "host", "lane accepted")
+            .expect("latch Close");
+        let mut member_row = member.clone();
+        stop_member_for_latched_close(&ledger, &mut member_row, &close)
+            .expect("apply latched Close");
+
+        let delivery = store
+            .latest_work_deliveries()
+            .expect("latest deliveries")
+            .into_iter()
+            .find(|delivery| delivery.id == claimed.delivery.id)
+            .expect("delivery row");
+        assert_eq!(delivery.status, WorkDeliveryStatus::Failed);
+        assert!(delivery.provider_receipt_id.is_none());
+        assert!(
+            delivery
+                .failure_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("member closed before provider acceptance"),
+            "failure reason: {:?}",
+            delivery.failure_reason
+        );
+        // A failed delivery no longer blocks Host reassignment: release the
+        // Work and assign it to the second member.
+        let work = store
+            .latest_works()
+            .expect("latest works")
+            .into_iter()
+            .find(|work| work.id == claimed.work.id)
+            .expect("work row");
+        let host_context = |event_id: &str, key: &str| WorkCommandContext {
+            event_id: event_id.into(),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: "host".into(),
+                display_name: None,
+                authn_source: Some("test".into()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: key.into(),
+            created_at: "unix-ms:9".into(),
+        };
+        let released = store
+            .release_work_as_host(
+                &work.id,
+                work.version,
+                host_context("we-release", "release-after-close"),
+            )
+            .expect("failed claim no longer fences release");
+        let other_member = created.member_runs[1].clone();
+        store
+            .assign_work(
+                &work.id,
+                released.version,
+                &other_member.id,
+                host_context("we-reassign", "reassign-after-close"),
+            )
+            .expect("failed claim no longer fences reassignment");
         let _ = std::fs::remove_dir_all(root);
     }
 

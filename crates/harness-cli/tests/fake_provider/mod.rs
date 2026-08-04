@@ -444,7 +444,15 @@ if [ "$1" = "app-server" ]; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
-            exit 0
+            # FAKE_CODEX_EXIT_ONCE_MARKER (optional): only the first spawned
+            # process exits, so a test can model a single transport loss and
+            # then let the resumed process keep running turns.
+            if [ -z "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ] || [ ! -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; then
+              if [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
+                : > "${FAKE_CODEX_EXIT_ONCE_MARKER}"
+              fi
+              exit 0
+            fi
           fi
         elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"

@@ -454,7 +454,7 @@ close a Mission. Those remain separate explicit controls.
 | waiting interaction | ownership remains; resolve the matching interaction first |
 | crashed/disconnected | ownership remains; no automatic peer claim |
 | resumed | same Member identity and a compatible native Session reconcile Work version and deliveries before continuing |
-| closed | unfinished Works require explicit reassign, cancel, or Reopen |
+| closed | unfinished Works require explicit reassign, cancel, or Reopen; the Member itself cannot start, block, resume, or submit owned Work while Closed |
 | retired | Works require explicit reassign or cancel; ordinary delivery cannot revive the Member |
 
 Transport receipt, Member start, Provider completion, Work submission, and Host
@@ -471,7 +471,10 @@ MemberRun/session and appends `WorkRebound` to update
 `active_member_run_id`. Stable `owner_member_id` remains unchanged; the prior
 binding remains evidence. Existing queued deliveries freeze while a Member is
 closed, but new deliveries to a closed Member are rejected. Reopen or reassign
-must reconcile any claimed/provider-received delivery first.
+must reconcile any claimed/provider-received delivery first. Member-side Work
+transitions (`start`, `block`, `resume`, `submit`) require active coordination:
+the store rejects them for a Closed or Retired MemberRun until an explicit
+Reopen, so a frozen mailbox cannot be paired with a live-looking Work board.
 
 ## Child Delegation And Organization
 
