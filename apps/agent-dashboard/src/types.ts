@@ -383,6 +383,12 @@ export interface MemberRun {
   model?: string | null;
   provider_controls?: ProviderExecutionControls | null;
   provider_profile?: ProviderIntegrationProfile | null;
+  /**
+   * Last observed runtime availability of this member's provider account.
+   * Absent or null means nothing was observed; it never means available, and
+   * it is independent of provider_profile.compatibility_status.
+   */
+  provider_capacity?: ProviderCapacitySnapshot | null;
   coordination_status?: MemberCoordinationStatus | string;
   runtime_generation?: number;
   status?: MemberRunStatus | string;
@@ -394,6 +400,63 @@ export interface MemberRun {
   started_at?: string;
   last_event_at?: string | null;
   finished_at?: string | null;
+}
+
+/**
+ * Provider-account capacity as last observed by the Harness capacity probe.
+ *
+ * Read this honestly: `state: "unknown"` with `evidence_source: "not_exposed"`
+ * is the correct, expected answer for providers that expose no quota surface,
+ * and an absent snapshot means "not observed" rather than "available". The
+ * snapshot is taken once per MemberRun activation and is not refreshed while a
+ * member keeps running, so `observed_at` is part of the fact.
+ */
+export interface ProviderCapacitySnapshot {
+  provider: string;
+  execution_mode: string;
+  account: ProviderAccountRef;
+  state: "available" | "limited" | "exhausted" | "unauthorized" | "unknown" | string;
+  observed_at: string;
+  observed_unix_ms: number;
+  reset_at?: string | null;
+  evidence_source:
+    | "provider_quota_api"
+    | "auth_metadata"
+    | "execution_canary"
+    | "provider_error"
+    | "not_exposed"
+    | "probe_failed"
+    | "none"
+    | string;
+  confidence: "observed" | "inferred" | "unknown" | string;
+  windows?: ProviderCapacityWindow[];
+  diagnosis?: string | null;
+  runtime_context?: ProviderRuntimeContextFact[];
+  detail?: string | null;
+}
+
+export interface ProviderAccountRef {
+  source: string;
+  identifier?: string | null;
+  plan?: string | null;
+}
+
+/**
+ * A provider-reported usage window. `used_percent` is present only when the
+ * provider itself reported it; the Workbench never derives or estimates one.
+ */
+export interface ProviderCapacityWindow {
+  label: string;
+  limit_id?: string | null;
+  used_percent?: number | null;
+  window_duration_mins?: number | null;
+  resets_at?: string | null;
+}
+
+export interface ProviderRuntimeContextFact {
+  key: string;
+  present: boolean;
+  note?: string | null;
 }
 
 export interface NativeSessionRef {
@@ -435,6 +498,9 @@ export interface ProviderIntegrationProfile {
   compatibility_status?: "current" | "review_required" | "incompatible" | "unavailable" | "unknown" | string;
   adapter_reviewed_at?: string | null;
   compatibility_note?: string | null;
+  /** Who drives the member's rounds. `user_driven` means Harness never starts a
+   * provider cycle for a declared external interactive member. */
+  execution_driver?: "host_driven" | "provider_driven" | "user_driven" | string;
   interaction_mode: "pause_and_resume" | "end_round_and_follow_up" | "unsupported" | string;
   ordinary_message_boundary?: "in_turn" | "next_round" | "next_round_batched" | "unknown" | string;
   plan_mode?: "native" | "emulated" | "unsupported" | "unknown" | string;

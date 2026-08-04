@@ -394,10 +394,16 @@ export function selectTeamRunNeedsYou(
     : [];
   const blockedWorks = sortWorks(works.filter((work) => work.status === "blocked"));
   const reviewWorks = sortWorks(works.filter((work) => work.status === "review"));
+  // A member can be blocked without owning any Work: the provider-capacity
+  // start gate runs before the adapter claims anything, so such a member never
+  // appears in `blockedWorks`. Deriving blocked members from Work alone made
+  // that member invisible, so the durable MemberRun status is unioned in.
   const blockedMemberIds = new Set(
     blockedWorks.flatMap((work) => work.active_member_run_id ? [work.active_member_run_id] : []),
   );
-  const blockedMembers = members.filter((member) => blockedMemberIds.has(member.id));
+  const blockedMembers = members.filter(
+    (member) => blockedMemberIds.has(member.id) || member.status === "blocked",
+  );
   // Terminal attempts are historical for conversation/interaction pressure,
   // but never erase contradictory Work truth. A failed delivery remains
   // pressure there only while its Work is still unfinished.
@@ -572,6 +578,59 @@ function stableMemberIdentity(member: MemberRun): string {
 export function canMemberAcceptWork(member: MemberRun): boolean {
   if (member.coordination_status !== "active") return false;
   return !new Set(["stopped", "failed", "closed"]).has((member.status ?? "").toLowerCase());
+}
+
+/**
+ * One factual capacity tile.
+ *
+ * `total` is optional on purpose. A ratio is rendered only where a real
+ * denominator exists in the store; there is no synthetic utilisation figure and
+ * no invented limit. See `selectTeamCapacity`.
+ */
+export interface TeamCapacityTile {
+  id: "active-turns" | "ready-members" | "queued-works" | "needs-review" | "blocked";
+  label: string;
+  value: number;
+  total?: number;
+  detail?: string;
+  tone: "running" | "info" | "warn" | "bad" | "idle";
+}
+
+/**
+ * Factual Team capacity derived only from durable MemberRun and Work rows.
+ *
+ * Deliberately absent: an `Active turns` denominator. The concurrency ceiling
+ * is a runtime-only start parameter and is not persisted on AgentTeamRun, so
+ * rendering "3 of N" would invent a runtime fact. `Ready members` does carry a
+ * denominator because the roster size is durable.
+ */
+export function selectTeamCapacity(members: MemberRun[], works: Work[]): TeamCapacityTile[] {
+  const activeTurns = members.filter((member) => member.status === "running").length;
+  const readyMembers = members.filter(canMemberAcceptWork).length;
+  const queuedWorks = works.filter((work) => work.status === "open").length;
+  const reviewWorks = works.filter((work) => work.status === "review").length;
+  const blockedWorks = works.filter((work) => work.status === "blocked");
+  const blockedWorkMemberIds = new Set(
+    blockedWorks.flatMap((work) => work.active_member_run_id ? [work.active_member_run_id] : []),
+  );
+  const blockedMembersWithoutWork = members.filter(
+    (member) => member.status === "blocked" && !blockedWorkMemberIds.has(member.id),
+  ).length;
+  return [
+    { id: "active-turns", label: "Active turns", value: activeTurns, tone: activeTurns ? "running" : "idle" },
+    { id: "ready-members", label: "Ready members", value: readyMembers, total: members.length, tone: readyMembers ? "info" : "warn" },
+    { id: "queued-works", label: "Queued Works", value: queuedWorks, tone: queuedWorks ? "info" : "idle" },
+    { id: "needs-review", label: "Needs review", value: reviewWorks, tone: reviewWorks ? "warn" : "idle" },
+    {
+      id: "blocked",
+      label: "Blocked",
+      value: blockedWorks.length,
+      detail: blockedMembersWithoutWork
+        ? `${blockedMembersWithoutWork} member${blockedMembersWithoutWork === 1 ? "" : "s"} without Work`
+        : undefined,
+      tone: blockedWorks.length || blockedMembersWithoutWork ? "bad" : "idle",
+    },
+  ];
 }
 
 function isWorkReady(work: Work, works: Work[]): boolean {

@@ -20,6 +20,7 @@ export function FocusShell({
   headerClassName,
   composerClassName,
   responsiveContextVariant = "inline",
+  splitMobileToolbar = false,
   mainLabel,
 }: {
   header?: ReactNode;
@@ -31,6 +32,12 @@ export function FocusShell({
   headerClassName?: string;
   composerClassName?: string;
   responsiveContextVariant?: "inline" | "sheet";
+  /**
+   * Opt-in: below `sm`, put the composer and the context disclosure side by
+   * side in one toolbar row instead of stacking two full-width bands. Off by
+   * default so surfaces that did not ask for it keep their exact layout.
+   */
+  splitMobileToolbar?: boolean;
   mainLabel?: string;
 }) {
   return (
@@ -48,22 +55,44 @@ export function FocusShell({
           aria-label={mainLabel}
           tabIndex={mainLabel ? 0 : undefined}
         >{children}</main>
-        {context && (
-          <details className={cn(
-            "group shrink-0 border-t border-border bg-card xl:hidden",
-            responsiveContextVariant === "sheet" && "responsive-context-sheet",
-          )}>
-            <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[12px] font-semibold text-foreground marker:content-none sm:px-5">
-              <PanelsTopLeft className="size-3.5 text-primary" />
-              Context & controls
-              <ChevronDown className="ml-auto size-3.5 text-muted-foreground transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="max-h-[55vh] overflow-y-auto border-t border-border">{context}</div>
-          </details>
-        )}
-        {composer && (
-          <footer className={cn("border-t border-border bg-card px-4 py-3 sm:px-5", composerClassName)}>{composer}</footer>
-        )}
+        {/* `display: contents` by default, so this wrapper never becomes a flex
+            item of the shell column and every surface that did not opt in keeps
+            its exact previous layout. It only materialises as a real flex row
+            below `sm`, and only for callers that asked for the split toolbar. */}
+        <div className={cn("contents", splitMobileToolbar && "max-sm:flex max-sm:items-stretch max-sm:border-t max-sm:border-border")}>
+          {context && (
+            <details
+              data-shell-context-disclosure="true"
+              className={cn(
+                "group shrink-0 border-t border-border bg-card xl:hidden",
+                responsiveContextVariant === "sheet" && "responsive-context-sheet",
+                // Visual order is composer-then-context; DOM order stays
+                // context-then-composer so no other surface's reading order moves.
+                splitMobileToolbar && "max-sm:order-2 max-sm:min-w-0 max-sm:flex-1 max-sm:border-l max-sm:border-t-0",
+              )}
+            >
+              <summary className={cn(
+                "flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[12px] font-semibold text-foreground marker:content-none sm:px-5",
+                splitMobileToolbar && "max-sm:h-11 max-sm:justify-center max-sm:gap-1.5 max-sm:px-2 max-sm:py-0",
+              )}>
+                <PanelsTopLeft className="size-3.5 shrink-0 text-primary" />
+                <span className="truncate">Context &amp; controls</span>
+                <ChevronDown className={cn(
+                  "ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-180",
+                  splitMobileToolbar && "max-sm:ml-0",
+                )} />
+              </summary>
+              <div className="max-h-[55vh] overflow-y-auto border-t border-border">{context}</div>
+            </details>
+          )}
+          {composer && (
+            <footer className={cn(
+              "border-t border-border bg-card px-4 py-3 sm:px-5",
+              splitMobileToolbar && "max-sm:order-1 max-sm:min-w-0 max-sm:flex-1 max-sm:border-t-0",
+              composerClassName,
+            )}>{composer}</footer>
+          )}
+        </div>
       </section>
       {context && (
         <div className="hidden min-h-0 xl:block">{context}</div>

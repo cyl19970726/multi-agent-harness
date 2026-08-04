@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 
+import { teamWarRoomJourney } from "../apps/agent-dashboard/tests/team-war-room-journey.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureRoot = join(repoRoot, "apps/agent-dashboard/fixtures/workbench-layout-v2-native-v1");
 const defaultOutput = join(repoRoot, ".visual-evidence/workbench-layout-v2/implemented");
@@ -275,9 +277,9 @@ async function main() {
         }
 
         if (width === desktopWidth && pageName === "team-war-room") {
-          await page.getByRole("button", { name: /Works/, exact: false }).first().waitFor({ state: "visible" });
-          await page.getByRole("region", { name: "Shared team Works board", exact: true }).waitFor({ state: "visible" });
-          await page.getByTestId("team-works-board").getByText("Validate responsive Team UX", { exact: true }).first().click();
+          await teamWarRoomJourney.tab(page, "Works").first().waitFor({ state: "visible" });
+          await teamWarRoomJourney.worksBoardRegion(page).waitFor({ state: "visible" });
+          await teamWarRoomJourney.worksBoard(page).getByText("Validate responsive Team UX", { exact: true }).first().click();
           await page.getByText("Waiting for pressure fixture and screenshots.", { exact: true }).waitFor({ state: "visible" });
           interactionChecks.push({
             page: pageName,
@@ -286,11 +288,12 @@ async function main() {
             result: "passed",
           });
 
-          await page.getByRole("button", { name: "Close Work details", exact: true }).click();
-          await page.getByRole("button", { name: /Activity/, exact: false }).first().click();
-          const conversationRows = page.locator('[data-testid="team-conversation"] ol > li');
+          await teamWarRoomJourney.closeWorkDetails(page).click();
+          await teamWarRoomJourney.tab(page, "Activity").first().click();
+          const conversationRows = teamWarRoomJourney.conversationRows(page);
+          await conversationRows.first().waitFor({ state: "visible", timeout: 5_000 });
           const initialCount = await conversationRows.count();
-          await page.getByTestId("mailbox-member-wave2-qa").click();
+          await teamWarRoomJourney.mailbox(page, "member-wave2-qa").click();
           const memberCount = await conversationRows.count();
           if (memberCount <= 0 || memberCount >= initialCount) {
             throw new Error(`Team mailbox filter did not narrow activity: ${JSON.stringify({ initialCount, memberCount })}`);
@@ -304,11 +307,11 @@ async function main() {
             result: "passed",
           });
 
-          await page.getByRole("button", { name: "All activity", exact: true }).click();
-          await page.getByTestId("activity-filter-messages").click();
+          await teamWarRoomJourney.allActivity(page).click();
+          await teamWarRoomJourney.activityFilter(page, "messages").click();
           const messageCount = await conversationRows.count();
           if (messageCount <= 0) throw new Error("Team message-kind filter returned no fixture messages");
-          await page.getByLabel("Search team activity").fill("approved");
+          await teamWarRoomJourney.activitySearch(page).fill("approved");
           const searchCount = await conversationRows.count();
           if (searchCount <= 0 || searchCount > messageCount) {
             throw new Error(`Team search did not retain a matching plan message: ${JSON.stringify({ messageCount, searchCount })}`);
@@ -321,7 +324,7 @@ async function main() {
             result: "passed",
           });
 
-          await page.getByTestId("mailbox-open-member-wave2-qa").click();
+          await teamWarRoomJourney.mailboxOpen(page, "member-wave2-qa").click();
           await page.locator("h1").filter({ hasText: "QA Engineer" }).waitFor({ state: "visible", timeout: 5_000 });
           const selected = new URL(page.url()).searchParams;
           if (

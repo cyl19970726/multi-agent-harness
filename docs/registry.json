@@ -554,9 +554,9 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-30",
    "lastVerifiedWith": [
-    "npx pnpm@9.15.4 check",
+    "npx pnpm@9.15.4 check:dashboard",
     "harness governance check"
    ],
    "reorgTrigger": "Provider-neutral runtime, execution-driver selection, native continuation, message delivery, queue policy, or provider interface changes.",
@@ -2827,7 +2827,7 @@
     "docs/decisions/0026-mission-wave-architecture.md",
     "docs/product/agent-team-works.md",
     "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-    "docs/design/execution-workbench-v3/README.md"
+    "docs/design/execution-workbench-v4/README.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -2991,6 +2991,58 @@
    "reorgTrigger": "Expected, implemented, comparison, overlay, fixture, or route evidence changes.",
    "authorityClass": "design_intent",
    "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/design/execution-workbench-v4/README.md",
+   "ownerRole": "product-design",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "targeted post-Works Execution Workbench visual closure",
+    "current Team War Room Works visual evidence entrypoint"
+   ],
+   "dependsOn": [
+    "docs/dashboard/pages/team-run-war-room.md",
+    "docs/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "visual acceptance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:dashboard"
+   ],
+   "reorgTrigger": "A targeted Workbench closure becomes accepted, superseded, or expands to another page.",
+   "authorityClass": "design_intent",
+   "implementationState": "partial",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json",
+   "ownerRole": "frontend-quality",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "machine-readable Team War Room Works desktop, tablet, and mobile visual contract"
+   ],
+   "dependsOn": [
+    "docs/design/execution-workbench-v4/README.md",
+    "docs/dashboard/pages/team-run-war-room.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "visual acceptance"
+   ],
+   "reviewAfter": "2026-09-30",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:dashboard"
+   ],
+   "reorgTrigger": "Expected, actual, comparison, overlay, fixture, route, interaction, or review evidence changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "partial",
    "truthRefs": []
   },
   {

@@ -244,11 +244,15 @@ export function MemberRunFocus({
     setDraft("");
   };
 
+  // The 152px hero and its 44px side padding are a desktop composition: at
+  // 390px they left roughly 300px to hold a 130px portrait, the identity block
+  // and four controls, so the controls overlapped the title. Both relax below
+  // `sm` only; the desktop and tablet composition is unchanged.
   return (
     <FocusShell
       className="member-focus-theme min-h-0 bg-[#fdfcf9]"
-      headerClassName="h-[152px] bg-[#fdfcf9] px-11 py-0 sm:px-11"
-      composerClassName="bg-background px-8 py-2.5 shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)]"
+      headerClassName="bg-[#fdfcf9] px-4 py-3 sm:h-[152px] sm:px-11 sm:py-0"
+      composerClassName="bg-background px-3 py-2 shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)] sm:py-2.5"
       responsiveContextVariant="sheet"
       mainLabel="Member work history"
       header={
@@ -340,11 +344,11 @@ export function MemberRunFocus({
         )}
         <MemberGoalPanel context={context} />
         <section className="min-h-[18rem] overflow-hidden bg-background" data-native-activity-state={nativeActivityState}>
-          <header className="flex h-[58px] items-center justify-between gap-3 border-b border-border/70">
-            <h2 className="text-[20px] font-semibold tracking-[-0.025em] text-foreground">Work history</h2>
-            <div className="flex items-center gap-2">
-              <span className="rounded-lg border border-[#e5dfd9] bg-[#fffefa] px-3 py-2 text-[11px] font-medium text-foreground">Complete history · {activityItems.length}</span>
-              <button type="button" aria-pressed={!showFullActivity} onClick={() => setShowFullActivity((value) => !value)} className="rounded-lg border border-[#e5dfd9] bg-[#fffefa] px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:border-[#f08068] hover:text-foreground">
+          <header className="flex min-h-[58px] flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-border/70 py-2 sm:h-[58px] sm:flex-nowrap sm:py-0">
+            <h2 className="text-[17px] font-semibold tracking-[-0.025em] text-foreground sm:text-[20px]">Work history</h2>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate rounded-lg border border-[#e5dfd9] bg-[#fffefa] px-3 py-2 text-[11px] font-medium text-foreground">Complete history · {activityItems.length}</span>
+              <button type="button" aria-pressed={!showFullActivity} onClick={() => setShowFullActivity((value) => !value)} className="min-h-11 shrink-0 rounded-lg border border-[#e5dfd9] bg-[#fffefa] px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:border-[#f08068] hover:text-foreground sm:min-h-0">
                 {showFullActivity ? "Focus" : "Return to complete"}
               </button>
             </div>
@@ -384,17 +388,24 @@ function MemberHeroHeader({
   const name = context.member.name ?? context.member.id;
   const desktopUri = claudeDesktopSessionUri(context.member);
   return (
-    <header className="flex h-full min-w-0 items-center justify-between gap-6">
-      <div className="flex min-w-0 items-end gap-9 self-stretch">
-        <div className="relative flex h-full w-[130px] shrink-0 items-end justify-center overflow-hidden">
+    <header className="flex h-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+      <div className="flex min-w-0 items-center gap-3 sm:items-end sm:gap-9 sm:self-stretch">
+        {/* Compact identity below `sm`. The sculpted arch portrait is a
+            desktop composition and keeps its exact markup at `sm` and up. */}
+        <span className="grid size-11 shrink-0 place-items-center sm:hidden">
+          <Avatar name={name} identity={context.member.role ?? context.member.id} tone={memberTone(context.member.status)} />
+        </span>
+        <div className="relative hidden h-full w-[130px] shrink-0 items-end justify-center overflow-hidden sm:flex">
           <span className="absolute inset-x-1 bottom-0 h-[118px] overflow-hidden rounded-t-[64px] border border-b-0 border-[#eadfd7] bg-[linear-gradient(180deg,#fff8f3,#f6ede6)] shadow-[0_22px_44px_-34px_rgba(91,57,36,.7)] [&>span]:size-[116px] [&>span]:rounded-none [&>span]:border-0 [&>span]:ring-0">
             <Avatar name={name} identity={context.member.role ?? context.member.id} tone={memberTone(context.member.status)} size="xl" />
           </span>
         </div>
-        <div className="min-w-0 self-center pb-1">
-          <h1 className="truncate text-[29px] font-semibold tracking-[-0.035em] text-foreground">{name}</h1>
-          <p className="mt-1 text-[12px] text-muted-foreground">{context.member.role ?? "Team member"}</p>
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px]">
+        <div className="min-w-0 self-center sm:pb-1">
+          <h1 className="truncate text-[19px] font-semibold tracking-[-0.035em] text-foreground sm:text-[29px]">{name}</h1>
+          <p className="mt-0.5 text-[12px] text-muted-foreground max-sm:truncate sm:mt-1">{context.member.role ?? "Team member"}</p>
+          {/* The nowrap/shrink-0 scroll behaviour is mobile-only: applying it at
+              every width forced this row to wrap on desktop. */}
+          <div className="mt-1.5 flex items-center gap-2 overflow-x-auto text-[11px] max-sm:[&>*]:shrink-0 max-sm:[&>*]:whitespace-nowrap sm:mt-4 sm:flex-wrap sm:gap-3 sm:overflow-visible">
             <span className="inline-flex items-center gap-1.5 font-medium text-status-good"><StatusDot tone={memberStatusTone(context.member.status)} /> {context.member.status ?? "unknown"}</span>
             <span className="h-4 w-px bg-border" />
             <span className="text-muted-foreground">Coordination</span>
@@ -405,12 +416,12 @@ function MemberHeroHeader({
           </div>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto pb-0.5 [&>*]:shrink-0 sm:overflow-visible sm:pb-0">
         {closeRequest?.status === "pending" && (
           <Badge tone="warn" title={closeRequest.reason}>Close pending</Badge>
         )}
         {desktopUri && (
-          <Button asChild size="sm" variant="outline">
+          <Button asChild size="sm" variant="outline" className="min-h-11 sm:min-h-0">
             <a
               href={desktopUri}
               title="Import this provider-native session into Claude Desktop. Observe only while Harness drives the member."
@@ -423,6 +434,7 @@ function MemberHeroHeader({
           <Button
             size="sm"
             variant="outline"
+            className="min-h-11 sm:min-h-0"
             disabled={!actionsEnabled || !context.member.provider_profile?.supports_cancel}
             title={context.member.provider_profile?.supports_cancel
               ? "Interrupt the active provider turn"
@@ -436,6 +448,7 @@ function MemberHeroHeader({
           <Button
             size="sm"
             variant="outline"
+            className="min-h-11 sm:min-h-0"
             disabled={!actionsEnabled || closeRequest?.status === "pending"}
             onClick={() => dispatch(onAction, closeTeamMember(context.run.id, context.member.id))}
           >
@@ -446,6 +459,7 @@ function MemberHeroHeader({
           <Button
             size="sm"
             variant="outline"
+            className="min-h-11 sm:min-h-0"
             disabled={!actionsEnabled || !["stopped", "completed", "failed"].includes(context.member.status ?? "")}
             title={["stopped", "completed", "failed"].includes(context.member.status ?? "")
               ? "Start a new adapter process and resume this member's existing native session"
@@ -455,7 +469,7 @@ function MemberHeroHeader({
             <RotateCcw className="size-3.5" /> Reopen
           </Button>
         )}
-        <Button size="sm" variant="outline" onClick={onBack}><ArrowLeft className="size-3.5" /> Back to team</Button>
+        <Button size="sm" variant="outline" className="min-h-11 sm:min-h-0" onClick={onBack}><ArrowLeft className="size-3.5" /> Back to team</Button>
       </div>
     </header>
   );
@@ -549,8 +563,11 @@ function MemberGoalPanel({ context }: { context: MemberRunContext }) {
   const nextAction = memberWorkNextAction(context);
   return (
     <section aria-label="Current Work (Member Goal)" className="mb-2 rounded-xl border border-primary/20 bg-[linear-gradient(135deg,hsl(var(--primary)/.055),hsl(var(--background))_52%)] px-4 py-3 shadow-[0_14px_34px_-30px_rgba(15,23,42,.55)]">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
+      {/* The fact grid holds a 15rem minimum, so on a phone the flex-1 summary
+          beside it collapsed to roughly 60px and clipped its own text. Below
+          `sm` the two stack instead of competing for one row. */}
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1" data-goal-summary="true">
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="size-4 text-primary" />
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Current Work · Member Goal</p>
@@ -561,7 +578,7 @@ function MemberGoalPanel({ context }: { context: MemberRunContext }) {
             {work?.context_markdown ? <Markdown source={work.context_markdown} compact /> : "This member has no durable Work ownership yet."}
           </div>
         </div>
-        <div className="grid min-w-[15rem] gap-1.5 text-[10px] sm:max-w-[22rem]">
+        <div className="grid gap-1.5 text-[10px] sm:min-w-[15rem] sm:max-w-[22rem]">
           <GoalFact label="Completion" value={work?.completion_criteria_markdown || "Not declared"} />
           <GoalFact label="Owned paths" value={context.member.owned_paths?.join(", ") || "No path ownership recorded"} mono />
           <GoalFact label="Latest steer" value={latestSteer ?? "No durable steer recorded"} />
@@ -1044,7 +1061,7 @@ function MemberComposer({
 }) {
   if (disabled) {
     return (
-      <div className="mx-auto flex h-10 w-full max-w-4xl items-center gap-3 rounded-xl border border-border/70 bg-muted/20 px-3.5 text-[11px] text-muted-foreground">
+      <div className="mx-auto flex min-h-11 w-full max-w-4xl items-center gap-3 rounded-xl border border-border/70 bg-muted/20 px-3.5 py-2 text-[11px] text-muted-foreground sm:h-10 sm:py-0">
         <MessageSquare className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{disabledReason}</span>
         <Badge tone="muted">read only</Badge>
@@ -1053,7 +1070,7 @@ function MemberComposer({
   }
   return (
     <form
-      className="mx-auto flex w-full max-w-4xl items-end gap-2"
+      className="mx-auto flex w-full max-w-4xl flex-col items-stretch gap-2 sm:flex-row sm:items-end"
       onSubmit={(event) => {
         event.preventDefault();
         onSend();
@@ -1077,12 +1094,13 @@ function MemberComposer({
         />
         <p className="mt-1 text-[10px] text-muted-foreground">{disabled ? disabledReason : `${deliveryHint} ⌘/Ctrl + Enter to send.`}</p>
       </div>
+      <div className="flex items-end gap-2 sm:contents">
       <select
         aria-label="Delivery mode"
         value={mode}
         disabled={disabled}
         onChange={(event) => onModeChange(event.target.value)}
-        className="h-8 max-w-28 rounded-md border border-border bg-background px-2 text-[11px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        className="h-11 max-w-28 flex-1 rounded-md border border-border bg-background px-2 text-[11px] sm:h-8 sm:flex-none text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
       >
         <option value="message">Message</option>
         <option value="steer" disabled={!supportsLiveSteer}>
@@ -1095,7 +1113,7 @@ function MemberComposer({
           value={responseIntent}
           disabled={disabled}
           onChange={(event) => onResponseIntentChange(event.target.value)}
-          className="h-8 max-w-32 rounded-md border border-border bg-background px-2 text-[11px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="h-11 max-w-32 flex-1 rounded-md border border-border bg-background px-2 text-[11px] sm:h-8 sm:flex-none text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
           <option value="response_required">Needs reply</option>
           <option value="informational">Informational</option>
@@ -1104,9 +1122,10 @@ function MemberComposer({
       {!supportsLiveSteer && steerUnavailableReason && (
         <span className="sr-only" aria-live="polite">{steerUnavailableReason}</span>
       )}
-      <Button type="submit" size="icon" disabled={disabled || !value.trim()} aria-label="Send message">
+      <Button type="submit" size="icon" className="size-11 sm:size-8" disabled={disabled || !value.trim()} aria-label="Send message">
         <Send className="size-3.5" />
       </Button>
+      </div>
     </form>
   );
 }

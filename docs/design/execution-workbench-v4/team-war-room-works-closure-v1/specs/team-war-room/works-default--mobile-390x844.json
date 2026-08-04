@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "page": "team-war-room",
+  "expected": "/Users/hhh0x/.codex/worktrees/ui-plugin-closure.kmUpOt/multi-agent-harness/docs/design/execution-workbench-v4/team-war-room-works-closure-v1/expected/team-war-room/works-default--mobile-390x844-v1.png",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": [
+      { "id": "team-main", "x": 0, "y": 0, "width": 390, "height": 844 },
+      { "id": "identity", "x": 16, "y": 12, "width": 358, "height": 118 },
+      { "id": "compact-capacity", "x": 16, "y": 138, "width": 358, "height": 54 },
+      { "id": "works-list", "x": 16, "y": 300, "width": 358, "height": 452 }
+    ],
+    "grid": { "columns": 1, "lane_gap": 10, "lane_min_width": 0 },
+    "gutters": { "page": 16, "section": 12, "card": 12 },
+    "max_content_width": 390,
+    "scroll_owner": "team-main",
+    "sticky_regions": ["collapsed-team-toolbar", "native-bottom-nav"]
+  },
+  "vertical_landmarks": [
+    { "id": "identity-end", "y": 130 },
+    { "id": "capacity-end", "y": 192 },
+    { "id": "tabs-end", "y": 250 },
+    { "id": "first-work", "y_max": 390 },
+    { "id": "collapsed-toolbar-start", "y": 752 }
+  ],
+  "typography": [
+    { "role": "page-title", "size": 22, "weight": 650, "line_height": 1.15 },
+    { "role": "section-title", "size": 16, "weight": 650, "line_height": 1.25 },
+    { "role": "body", "size": 14, "weight": 400, "line_height": 1.45 },
+    { "role": "metadata", "size": 12, "weight": 500, "line_height": 1.35 }
+  ],
+  "spacing_scale": [4, 8, 12, 16],
+  "surfaces": ["warm-white-canvas", "hairline-dividers", "status-tinted-work-card"],
+  "colors": ["coral-primary", "ink-900", "gray-500", "blue-running", "amber-review", "red-blocked", "green-done"],
+  "icons_and_assets": ["lucide-navigation-icons", "project-avatar-set", "status-dots"],
+  "component_strategy": {
+    "reuse": ["FocusShell", "TeamAvatar", "Button", "Badge", "Drawer"],
+    "page_specific": ["TeamCapacityStrip", "TeamWorksBoard", "CompactTeamToolbar"],
+    "replace_or_split": ["expanded composer becomes disclosure", "filter cloud becomes summary button", "context rail becomes sheet"]
+  },
+  "responsive_transformations": ["one real Work card must remain visible in first viewport", "all primary targets are at least 44px", "Work detail is a focus-trapped sheet"],
+  "design_risks": ["persistent composer can erase the Work surface", "wrapped metadata can make the first Work unreachable", "native bottom nav must not occlude the last card"],
+  "unresolved_decisions": []
+}

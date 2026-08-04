@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readWarRoomSource } from "./read-war-room-source.mjs";
+
 const fixtureRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../fixtures/workbench-layout-v2-native-v1",
@@ -67,7 +69,7 @@ async function main() {
     readFile(join(dashboardRoot, "src/api/actions.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/types.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
-    readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
+    readWarRoomSource(dashboardRoot),
     readFile(join(dashboardRoot, "src/surfaces/MemberRuns.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/components/workbench/member/MemberHistoryNarrative.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/app/WorkbenchShell.tsx"), "utf8"),
@@ -303,10 +305,21 @@ async function main() {
   check(
     warRoomSource.includes('className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by owner"')
       && warRoomSource.includes('className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter Works by attention state"')
-      && warRoomSource.includes('className="max-w-36 truncate"')
-      && warRoomSource.includes('className="hidden grid-cols-5 gap-2 pb-2 lg:grid"')
-      && warRoomSource.includes('className="space-y-3 lg:hidden"'),
-    "Works filters wrap without horizontal overflow while preserving five desktop lanes and stacked mobile lanes",
+      && warRoomSource.includes('className="max-w-36 truncate"'),
+    "Works filters wrap without horizontal overflow",
+  );
+  // The five desktop lanes and the stacked mobile status list used to be
+  // asserted as two literal Tailwind class strings on two sibling containers.
+  // That pinned the exact markup AND encoded the duplicate-render defect: every
+  // Work card existed twice in the DOM, once per container. The board now
+  // renders one set of lane sections that reflows, so lane behaviour is
+  // asserted against the real rendered DOM at each viewport in
+  // tests/team-war-room-first-viewport-check.mjs instead of against source text.
+  check(
+    warRoomSource.includes('data-testid="team-works-lanes"')
+      && warRoomSource.includes("lg:grid-cols-5")
+      && !warRoomSource.includes('className="space-y-3 lg:hidden"'),
+    "Works lanes render once and reflow rather than duplicating into a hidden mobile container",
   );
   check(
     executionSource.includes('role="progressbar"')

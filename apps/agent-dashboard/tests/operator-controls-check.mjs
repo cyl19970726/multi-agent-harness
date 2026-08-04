@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { readWarRoomSource } from "./read-war-room-source.mjs";
+
 const dashboardRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 let passed = 0;
 let failed = 0;
@@ -135,7 +137,7 @@ async function main() {
   );
 
   const [teamSource, missionSource, memberSource, appSource, apiSource] = await Promise.all([
-    readFile(join(dashboardRoot, "src/surfaces/TeamWarRoom.tsx"), "utf8"),
+    readWarRoomSource(dashboardRoot),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/MemberRuns.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/app/App.tsx"), "utf8"),
