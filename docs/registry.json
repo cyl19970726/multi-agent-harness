@@ -4004,6 +4004,7 @@
    ],
    "dependsOn": [
     "docs/documentation-governance.md",
+    "docs/research/ai-first-multi-device-docs-infrastructure.md",
     "docs/research/agent-team-shared-task-list.md"
    ],
    "machineConsumers": [
@@ -4021,6 +4022,53 @@
     {
      "kind": "decision",
      "ref": "docs/documentation-governance.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/research/ai-first-multi-device-docs-infrastructure.md",
+   "ownerRole": "docs-governance",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "bounded research proposal for Agent-first multi-device Docs service, revision, remote access, and infrastructure boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/docs-operating-surface-matrix.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/product/agent-team-works.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md",
+    "docs/decisions/0035-company-os-sql-read-model.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md",
+    "specs/nested-agent-team-organization/design.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "PR #302 b23b7ac over origin/master 52c0864",
+    "official upstream repositories reviewed 2026-08-04"
+   ],
+   "reorgTrigger": "ADR 0051 AgentMember/AgentTeam/Work fields, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050/0051.",
+   "authorityClass": "research",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0035-company-os-sql-read-model.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
     }
    ]
   },
