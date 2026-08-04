@@ -228,6 +228,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_message_acknowledge",
             "team_run_list",
             "team_run_status",
+            "team_run_board_summary",
             "team_run_host_inbox",
             "team_run_inbox",
             "team_run_send_message",
@@ -1594,4 +1595,169 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     assert!(reconciled["claim_id"].is_null());
     assert!(reconciled["claimed_by_supervisor_id"].is_null());
     assert!(reconciled["claimed_generation"].is_null());
+}
+
+/// Decision-shaped board reads over MCP (issue #305): `team_run_work_list`'s
+/// `brief`/`since` params and the new `team_run_board_summary` tool mirror
+/// the CLI behavior exercised in depth by `tests/team_run_api.rs`; this test
+/// only proves the MCP wiring itself -- argument parsing, dispatch, and
+/// response shape -- for each of the three projections.
+#[test]
+fn mcp_stdio_work_list_brief_since_and_board_summary() {
+    let home = TempHome::new("mcp-board-reads");
+    let project_id = init_project(&home, "mcp-board-reads-proj");
+    let project_root = std::fs::canonicalize(home.base().join("mcp-board-reads-proj"))
+        .expect("canonical project root");
+
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Exercise decision-shaped board reads over MCP",
+                "execution_root": project_root,
+                "members": [{
+                    "name": "alice",
+                    "role": "implementer",
+                    "provider": "codex",
+                    "initial_work": "Ship the assigned slice."
+                }]
+            }
+        }),
+    );
+    let created = call_payload(&response);
+    let team_run_id = created["team_run_id"]
+        .as_str()
+        .expect("team run id")
+        .to_string();
+    let alice_id = created["member_run_ids"][0]
+        .as_str()
+        .expect("alice member run id")
+        .to_string();
+    let assigned_work_id = created["works"][0]["id"]
+        .as_str()
+        .expect("assigned Work id")
+        .to_string();
+
+    // A second, unassigned Work so board-summary/brief have something on
+    // both sides of assigned/unassigned, and the delta cursor has more than
+    // one Work's operations to distinguish.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_create",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "title": "Unassigned MCP Work",
+                "completion_criteria_markdown": "Claimed and finished by any eligible member."
+            }
+        }),
+    );
+    let unassigned = call_payload(&response);
+    let unassigned_work_id = unassigned["id"]
+        .as_str()
+        .expect("unassigned Work id")
+        .to_string();
+
+    // Full JSON list stays available and unwrapped when neither brief nor
+    // since is passed -- the additive contract from issue #305.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "team_run_work_list", "arguments": {"team_run_id": team_run_id}}),
+    );
+    let full = call_payload(&response);
+    assert_eq!(
+        full["works"].as_array().map(Vec::len),
+        Some(2),
+        "full list: {full}"
+    );
+
+    // brief=true swaps in compact text lines instead of full Work JSON.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_list",
+            "arguments": {"team_run_id": team_run_id, "brief": true}
+        }),
+    );
+    let brief = call_payload(&response);
+    let lines: Vec<&str> = brief["works_brief"]
+        .as_array()
+        .expect("works_brief array")
+        .iter()
+        .map(|line| line.as_str().expect("brief line is a string"))
+        .collect();
+    assert_eq!(lines.len(), 2, "one brief line per Work: {lines:?}");
+    let assigned_line = lines
+        .iter()
+        .find(|line| line.starts_with(&assigned_work_id))
+        .unwrap_or_else(|| panic!("assigned Work brief line: {lines:?}"));
+    assert!(
+        assigned_line.contains(&alice_id),
+        "assigned brief line must carry its owner member-run id: {assigned_line}"
+    );
+    let unassigned_line = lines
+        .iter()
+        .find(|line| line.starts_with(&unassigned_work_id))
+        .unwrap_or_else(|| panic!("unassigned Work brief line: {lines:?}"));
+    assert!(
+        unassigned_line.contains("unassigned"),
+        "unassigned brief line: {unassigned_line}"
+    );
+
+    // since=0 is a delta read from the beginning: every Work comes back, plus
+    // a next_since watermark to chain future calls.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_list",
+            "arguments": {"team_run_id": team_run_id, "since": 0}
+        }),
+    );
+    let since = call_payload(&response);
+    assert_eq!(since["since"].as_u64(), Some(0));
+    assert_eq!(
+        since["works"].as_array().map(Vec::len),
+        Some(2),
+        "since=0: {since}"
+    );
+    let next_since = since["next_since"].as_u64().expect("next_since");
+    assert!(next_since >= 2, "next_since: {since}");
+
+    // A second delta read from the fresh cursor sees nothing new.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_list",
+            "arguments": {"team_run_id": team_run_id, "since": next_since}
+        }),
+    );
+    let empty = call_payload(&response);
+    assert_eq!(
+        empty["works"].as_array().map(Vec::len),
+        Some(0),
+        "no-op delta: {empty}"
+    );
+
+    // team_run_board_summary is a single bounded plain-text digest, not the
+    // full board. Neither Work has been started, so both are still `open`
+    // (is_claim_ready does not care whether an open Work already has an
+    // owner -- start_work gates on the same readiness check) and alice's
+    // MemberRunStatus never left idle.
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({"name": "team_run_board_summary", "arguments": {"team_run_id": team_run_id}}),
+    );
+    let summary_payload = call_payload(&response);
+    let summary = summary_payload["summary"].as_str().expect("summary string");
+    assert!(
+        summary.chars().count() <= 500,
+        "summary must stay <=500 chars: {summary}"
+    );
+    assert!(summary.contains("open=2"), "summary: {summary}");
+    assert!(summary.contains("assigned=1"), "summary: {summary}");
+    assert!(summary.contains("unassigned=1"), "summary: {summary}");
+    assert!(summary.contains("ready=2"), "summary: {summary}");
+    assert!(summary.contains("alice: idle"), "summary: {summary}");
 }
