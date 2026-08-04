@@ -82,29 +82,72 @@ preserving the complete import union and both Runtime and identity test blocks.
 - schema fixtures: 40 valid and 40 invalid
 - `pnpm check:dashboard`, including type checks, browser/a11y checks, four
   responsive viewports, and production build
-- `cargo test --workspace`: all suites passed except one parallel-only Kimi
-  prompt timing timeout in `team_run_api`; the complete file then passed 36/36
-  with `--test-threads=1`
+- `cargo test --workspace -- --test-threads=1`: all suites passed
 - `pnpm acceptance:mission-wave`: passed, including MCP 3/3, Mission/Wave 4/4,
-  TeamRun API 36/36, TeamRun start 10 passed with 2 documented historical
+  TeamRun API 39/39, TeamRun start 10 passed with 2 documented historical
   ignores, and the Dashboard gate
 
-## Remaining work and explicit risks
+## Wave 2 Host-native completion
 
-The following recovered Works were not implemented by this takeover slice and
-must remain visible for a later Wave or successor TeamRun:
+The four carried-forward control-plane Works were implemented by new
+Host-native workers after session-forensics handoff. Their commits are separate
+from the closed Kimi MemberRuns and retain replacement-worker provenance:
 
-- external Work and Company Store live invalidation/SSE coverage
-- bounded Dashboard resync after missed events, reconnect, visibility regain,
-  or a stale-open stream
-- independent live-projection coverage audit
-- provider zero-output/quota circuit breaking and model-control validation
+- runtime invalidation and scoped live convergence: `e7b3c19`
+- Dashboard bounded self-healing and stale-response exclusion: `2b6666a`
+- Kimi empty-round circuit breaking and model-control validation: `a4317f9`
+
+The Runtime now emits scoped invalidation for snapshot-visible execution
+ledgers and selected Company Store ledgers, including append, torn-write,
+truncate, and atomic-replace cases. Company invalidation fans out only to
+Execution Spaces bound to the same Company; an unknown explicit Space fails
+closed. The subscription is established before the initial marker so the
+marker-to-GET window does not lose invalidation.
+
+The Dashboard treats invalidation as a GET hint rather than source truth. It
+coalesces dirty scopes, prevents delayed bounded Team responses from
+overwriting a newer full Company view, recovers stale Space and Company
+selectors independently, and resynchronizes on reconnect, visibility regain,
+online regain, quiet-open streams, and generation changes.
+
+The provider loop stops after three consecutive rounds with no durable output.
+An empty terminal action is recorded as `empty_provider_round`, capacity stays
+unknown, active Work remains in progress, and already received delivery
+evidence is retained rather than replayed. A real durable output resets the
+circuit. A model change accepts only controls valid for the new model and does
+not silently inherit stale effective settings.
+
+Independent audit found no remaining P0 or P1 live-convergence gap. The full
+integration gate passed after one existing persistent-Codex timing test first
+observed one provider round instead of two; the exact isolated rerun passed,
+and a subsequent complete `acceptance:mission-wave` run passed all gates.
+
+During the read-only audit, one helper omitted the intended temporary selector
+and accidentally created empty TeamRun `team-run-1785865864775-p42963-0` with
+MemberRun `member-run-1785865864775-p42963-1`. It has no Work, assignment,
+native session, or execution claim. The Host cancelled it and retained the
+ledger row as honest audit evidence.
+
+## Remaining explicit risks
 
 The persistent Work cutover currently validates an independently read Company
 Store while holding the execution-store lock. That staged design has a
 cross-store time-of-check/time-of-use window. A production cutover needs an
 external migration fence or transaction protocol plus a concurrency test; the
 current validator must not be represented as cross-store atomicity.
+
+The accepted live-convergence slice intentionally leaves these P2 boundaries:
+
+- externally creating a new Company does not live-refresh the Company picker;
+- selecting a Company changes the global active Company and can affect other
+  tabs or CLI clients;
+- SSE has no durable cursor or `Last-Event-ID`; a scoped full snapshot is the
+  safety strategy after reconnect;
+- same-size typed-delta atomic replacement still depends on the older tailer;
+- direct ledger deletion does not immediately emit invalidation;
+- a single combined real-runtime SSE plus real-browser in-process test is still
+  absent;
+- freshness is shown globally rather than per projection domain.
 
 The original Kimi-owned Work rows remain evidence of their original
 assignments. Host takeover commits and checks are recorded here and in the Wave
