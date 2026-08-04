@@ -127,6 +127,19 @@ Team topology supplies the minimum authority boundary. Product modules may add
 sensitive-effect policies, but they must not make ordinary task delegation wait
 for layered Company approvals.
 
+### Continuous Work discovery
+
+Every AgentMember—not only the Lead—continuously turns observations from its
+current Work, Docs, code, runtime, reviews, or external facts into explicit
+Work. It may assign suitable Work to itself, leave uncertain ownership
+unassigned for its current Host, or assign it to a direct child when it Hosts a
+child Team. Source provenance explains why the Work exists.
+
+This is how the company evolves from its own operation. Topology still limits
+placement, and Hosts still control priority, capacity, duplication, and
+acceptance; discovery does not grant cross-Team assignment or automatic
+permission to execute every idea.
+
 ## Delegation preserves accountability
 
 Delegation creates child Work; it does not transfer the parent's promise.

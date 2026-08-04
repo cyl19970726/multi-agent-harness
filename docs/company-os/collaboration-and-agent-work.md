@@ -96,6 +96,23 @@ This is how hierarchy reduces communication: decisions stay at the lowest Team
 that has enough context and authority. Accountability still rolls upward
 through parent Work.
 
+## Self-evolution through Work discovery
+
+Every Lead, lower Host, and ordinary Member is expected to discover new Work
+while operating. A result may reveal a defect, a review may reveal a missing
+check, a Document may reveal an absent policy, and a runtime failure may reveal
+recovery work. These observations must not disappear into chat.
+
+The Member creates a provenance-backed Work row and chooses the narrowest legal
+placement: self-owned, unassigned in its current Team, or assigned to a direct
+child in a Team it Hosts. Anything requiring a peer, ancestor, sibling, or
+broader Team remains unassigned or is raised to the appropriate Host by a
+Work-linked Message.
+
+This recursive loop gives the company self-evolution without creating a free
+assignment graph. Work makes demand durable; topology contains authority;
+Messages explain ambiguity; Hosts prioritize and accept.
+
 ## Docs, Work, and Organization
 
 Docs, Work, and Organization are related views of one operating loop, not a

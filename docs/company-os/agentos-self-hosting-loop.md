@@ -105,6 +105,12 @@ Each Team Host repeats the same local loop:
    integrates child results and submits parent Work upward.
 7. **Re-observe.** New gaps become the next Work, not hidden chat memory.
 
+This loop runs at every level, not only at the root Lead. Every Member may
+create self-owned or unassigned follow-up Work. A Member that Hosts a child
+Team may assign discovered Work to direct children. The root Lead therefore
+receives integrated outcomes and material escalation instead of becoming the
+only source of new tasks.
+
 Mission/Wave is optional. Use it when the Lead needs durable long-horizon
 intent, material re-plan history, multi-Team context, or closeout. The Works
 board remains the scheduling surface.
@@ -183,6 +189,8 @@ The next dogfood acceptance must therefore use a fresh explicit slice:
 6. Docs and the global Works view receive the result; and
 7. Organization reconstructs the exact Team tree without compatibility
    identity inference.
+8. Child execution and review create new self-owned and unassigned/delegated
+   follow-up Works, proving that the next cycle arises from actual operation.
 
 Until that path passes Store, CLI/API, Dashboard, recovery, and provider-live
 checks, [ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md)

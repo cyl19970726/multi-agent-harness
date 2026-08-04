@@ -69,6 +69,18 @@ This topology is the V1 scheduling permission model. Business modules still
 govern sensitive effects and child execution cannot exceed its parent's
 workspace, provider-budget, or business-access ceiling.
 
+### Work discovery is recursive
+
+Every active AgentMember, including the Lead and lower Hosts, may create Work
+from observations made while executing, reviewing, reading Docs, inspecting
+runtime/code, or consuming external facts. It may keep that Work unassigned,
+assign it to itself, or—when it Hosts a child Team—assign it to a direct child.
+
+New Work preserves its source observation. Same-level, sibling, ancestor, and
+unrelated assignment remain forbidden. The result is a self-evolving company
+whose next demand is generated throughout the organization but remains visible
+to local Hosts and the global Works projection.
+
 ### Supervising Operator is global read and intake
 
 The Supervising Operator may inspect every Team and active Work, create
@@ -114,6 +126,8 @@ owns task assignment.
   Focus components without inventing a second scheduling surface.
 - Parent accountability and direct-child authority remain visible at every
   level.
+- Leads and lower Members can continuously create provenance-backed follow-up
+  demand without routing every discovery through the Human or root Lead.
 - Current schemas, stores, CLI/API, Company projections, Skills, fixtures, and
   active data need a breaking, verified migration; the ADR itself changes no
   live Store or authority.
@@ -163,3 +177,5 @@ The decision becomes implemented only when:
    relations without inference; and
 8. a real AgentOS dogfood run uses Lead -> CTO -> child Team to implement and
    review a repository change, then promotes the accepted result to Docs.
+9. execution and review create at least one self-owned and one
+   unassigned/direct-child follow-up Work with reconstructable provenance.

@@ -35,7 +35,16 @@ owner_role: product-architecture
   - Reject cross-subtree parent refs and sibling administration.
   - _Requirements: R3, R6_
 
-- [ ] 6. Converge Company WorkItem onto the Work kernel
+- [ ] 6. Implement continuous Work discovery
+  - Let every active Member create provenance-backed unassigned or self-owned
+    Work from Docs, execution, review, runtime, code, or external observations.
+  - Let a Member acting as child Team Host assign discovered Work to direct
+    children without granting same-level or cross-subtree assignment.
+  - Add duplicate/related-Work hints and Host-visible intake without silently
+    discarding or automatically executing observations.
+  - _Requirements: R2, R6, R10_
+
+- [ ] 7. Converge Company WorkItem onto the Work kernel
   - Model Document, Milestone, Module, Approval, Finance, Mission, and external
     refs as Work relations/extensions.
   - Produce an explicit migration/export validator for current Company WorkItem
@@ -43,44 +52,46 @@ owner_role: product-architecture
   - Cut over without dual-read or dual-write owner/status authority.
   - _Requirements: R4_
 
-- [ ] 7. Preserve the Message and delivery boundary
+- [ ] 8. Preserve the Message and delivery boundary
   - Keep authored Message optional and Work-linked.
   - Trigger provider delivery from versioned WorkDelivery, never assignee field
     alone and never Assignment Message.
   - Prove busy/idle/offline/closed/retired behavior.
   - _Requirements: R5_
 
-- [ ] 8. Add the Supervising Operator application service
+- [ ] 9. Add the Supervising Operator application service
   - Global tree/Work reads.
   - Unassigned Work creation in an explicit Team scope.
   - Durable Lead messaging without Member impersonation.
   - Deny direct peer assignment, acceptance, and topology mutation.
   - _Requirements: R7_
 
-- [ ] 9. Build the recursive Organization and global Works UX
+- [ ] 10. Build the recursive Organization and global Works UX
   - Generate the visual contract before implementation.
   - Reuse Team War Room, Member Focus, mailbox, and Work components.
   - Add Team breadcrumbs, subtree drilldown, global filters, and lineage.
   - Verify desktop, tablet, 390px, and 320px states plus error/empty/loading.
   - _Requirements: R8_
 
-- [ ] 10. Keep Mission/Wave optional
+- [ ] 11. Keep Mission/Wave optional
   - Link Work to Mission only when requested by the Host.
   - Prove ordinary nested Team work without Mission/Wave.
   - Prove a multi-Team Mission without changing Work ownership.
   - _Requirements: R9_
 
-- [ ] 11. Run provider and recovery acceptance
+- [ ] 12. Run provider and recovery acceptance
   - Real persistent Codex, Claude, and Kimi Members across two Team depths.
   - Work question, blocker/resume, submit/review, and parent integration.
   - Same-contract Supervisor restart and compatible native-session resume.
   - Exactly one WorkDelivery per accepted version.
   - _Requirements: R1, R3, R5_
 
-- [ ] 12. Dogfood the model on AgentOS development
+- [ ] 13. Dogfood the model on AgentOS development
   - Supervising Operator creates an unassigned root Work.
   - Lead assigns CTO; CTO creates a child Team and three child Works.
   - Child Agents implement/review in isolated worktrees.
   - CTO integrates; Lead accepts; source/result Docs update.
+  - Lower Members create at least one self-owned and one unassigned or
+    direct-child follow-up Work from execution/review observations.
   - Organization and global Works reconstruct the complete tree and lineage.
   - _Requirements: all_

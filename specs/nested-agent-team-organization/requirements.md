@@ -41,6 +41,9 @@ a second task system or a second agent identity.
 9. Give the Supervising Operator global read, unassigned-Work creation, and
    Lead communication without Member impersonation.
 10. Provide truthful multi-level Organization and Works views.
+11. Make every Lead, Host, and Member an active Work-discovery node so the
+    organization continuously turns observations into owned or allocatable
+    Work at the lowest useful level.
 
 ## Non-goals
 
@@ -206,6 +209,34 @@ Acceptance:
 - A Work may link a Mission when durable intent spans multiple Teams or Waves.
 - Mission/Wave shall not own Work assignment or replace the shared board.
 
+### R10 — Continuous Work discovery and self-evolution
+
+As a company Agent, I want to turn gaps discovered during my own work into
+explicit next Work, so that the organization improves without waiting for the
+Human or root Lead to enumerate every task.
+
+Acceptance:
+
+- While observing Docs, current Work, code, runtime state, external signals, or
+  completed results, every active Member shall be able to create new Work in
+  its current Team.
+- When the newly discovered Work belongs to the creating Member, it may assign
+  the Work to itself and continue within its capacity and execution ceiling.
+- When ownership is not yet clear, the Member shall create unassigned Work for
+  its Team Host to triage rather than hiding the observation in chat.
+- When the Member Hosts a child Team and the new Work belongs to that Team, it
+  may assign the Work to itself or a direct child Member.
+- When the new Work requires a same-level peer, ancestor, sibling Team, or
+  broader scope, the Member shall leave it unassigned in an allowed Team or
+  notify the appropriate Host; it shall not bypass topology.
+- Every discovered Work shall preserve source context explaining which Work,
+  Document, result, runtime fact, external signal, or review produced it.
+- Completion and review shall be able to create follow-up Work; accepting one
+  Work shall not imply that all newly observed demand is complete.
+- The global Works and Organization views shall expose newly discovered,
+  unassigned, self-owned, and delegated Work so that self-evolution remains
+  inspectable rather than becoming uncontrolled autonomous activity.
+
 ## End-to-end acceptance scenario
 
 1. The Supervising Operator creates an unassigned root Work: “Implement the
@@ -222,3 +253,6 @@ Acceptance:
 8. The Lead accepts the root Work and its Document source/result relations.
 9. The Organization and global Works pages reconstruct the full tree and Work
    lineage from native Store records.
+10. At least two Members create follow-up Work from execution or review: one
+    self-owned and one unassigned or delegated to a direct child, proving that
+    the company can generate its next operating cycle from actual results.

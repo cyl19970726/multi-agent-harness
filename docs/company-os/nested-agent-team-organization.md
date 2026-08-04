@@ -106,6 +106,29 @@ Lead assigns W0 to CTO
   -> CTO submits W0 to Lead
 ```
 
+## Every Agent continuously discovers the next Work
+
+Lead, every lower Host, and every ordinary Member are active Work-discovery
+nodes. While performing or reviewing Work, reading Docs, observing runtime and
+code, or receiving external facts, they continuously ask what new demand has
+appeared.
+
+Each observation becomes one of three permitted Work placements:
+
+1. **self-owned** — the Member owns it and can execute within its ceiling;
+2. **unassigned** — the current Team Host must prioritize or allocate it; or
+3. **direct-child assignment** — the Member Hosts a child Team and assigns it
+   to one of that Team's direct Members.
+
+A Member cannot use this loop to assign a same-level peer or unrelated Team.
+When the right owner is outside its authority, it preserves the observation as
+unassigned Work with source provenance and notifies the appropriate Host.
+
+This is the company's self-evolution mechanism: accepted results, defects,
+reviews, document gaps, and operating signals continuously produce the next
+inspectable Work cycle. It is not uncontrolled auto-execution. Hosts still
+prioritize, deduplicate, limit capacity, and accept results.
+
 ## Message is conversation
 
 Message carries questions, answers, progress, blocker explanation, steer,
@@ -149,6 +172,10 @@ Organization renders the recursive Team tree. Global Works aggregates the same
 Work rows across that tree. Member Focus reuses the Agent Team member workspace
 and adds created Work, child Team, and delegation controls. Team War Room keeps
 Works, Activity, Members, mailbox, and truthful runtime capacity.
+
+Views distinguish discovered-unassigned, self-owned, delegated, and follow-up
+Work and show the source observation that created each row. This makes
+self-evolution visible and governable instead of hiding it in Message history.
 
 Every relationship is explicit. UI must not infer ancestry, responsibility, or
 runtime health from matching names, provider sessions, document authorship, or
