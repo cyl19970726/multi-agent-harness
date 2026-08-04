@@ -7,7 +7,7 @@ authority_class: research
 canonical_for: nothing
 decision_target: a future Docs service and multi-device storage ADR
 review_trigger: Agent review, CLI/API PoC results, or a canonical Store migration proposal
-based_on: origin/master 52c0864; reviewed 2026-08-04
+based_on: PR #302 commit b01df88 over origin/master 52c0864; reviewed 2026-08-04
 execution_context: docs-collaboration-spec-20260804 / mission-docs-collaboration-spec / wave-docs-collaboration-spec-v1
 ```
 
@@ -58,8 +58,9 @@ This document does not change the canonical contracts in
 [ADR 0050](../decisions/0050-agent-team-work-board-and-message-boundary.md).
 It proposes an implementation direction for later review.
 
-It also records the Docs-facing consequences of a companion root-model
-proposal that is not canonical yet:
+It consumes the accepted target contract from
+[ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md)
+and [Nested Agent Team Organization](../company-os/nested-agent-team-organization.md):
 
 ```text
 AgentMember = one durable Agent identity across Teams, machines, runtimes, and providers
@@ -68,14 +69,14 @@ Work        = one responsibility kernel used by Team and Organization views
 Message     = communication around Work, never responsibility state
 ```
 
-That proposal would supersede the current `StandingAgent -> AgentMember` join
-and the current Company `WorkItem` -> Agent Team `Work` split. This research
-uses the simpler target when describing the future Docs interface, but no
-schema, Store, API, or migration may implement it until a root-model ADR updates
-the canonical Agent Team, Organization, Work, and identity contracts. Until
-then, the current master contracts remain authoritative. This is a decision
-dependency, not a compatibility layer and not permission to maintain both root
-models indefinitely.
+ADR 0051 supersedes the two-identity and two-responsibility target while keeping
+the current `StandingAgent -> AgentMember` join and Company `WorkItem` -> Agent
+Team `Work` rows as compatibility implementation truth until verified cutover.
+This Docs research must use ADR 0051's exact objects and cannot introduce an
+additional Team-membership, Agent, Work, Session, or Lease authority. It is
+stacked on PR #302 because the target links and terminology do not exist on
+master independently; merge PR #302 first, then retarget this research PR to
+master.
 
 This study is intentionally kept as one review document even though it exceeds
 the normal 500-line maintenance signal. Remote access, identity, revision
@@ -92,7 +93,7 @@ simplified root model it is a small set of truth-owning systems that Agents
 coordinate:
 
 ```text
-Organization  = nested Agent Teams, Team memberships, Hosts, and delegated authority
+Organization  = AgentTeams with parent_team_id, host_member_id, and direct member_ids
 Work          = one durable responsibility kernel and its optional company relations
 Docs          = company memory, context, structured records, revisions, and relations
 Execution     = MemberRuns, native sessions, WorkDelivery, Missions, and Waves
@@ -138,13 +139,13 @@ replaceable.
 
 ## Target ownership map
 
-This table describes the proposed simplified root model. It becomes canonical
-only after the root-model ADR named above lands.
+This table consumes ADR 0051's accepted target. Its schemas and cutover remain
+implementation pending.
 
 | System | Owns | Docs may store |
 | --- | --- | --- |
 | Docs | `Document`, current Blocks/content, `DocumentRevision`, Comment, Mention, semantic references, Docs Relations/Views/indexes | Stable references and Docs-owned display configuration |
-| Agent identity and Organization | durable `AgentMember`, Human/External/Service actors, `AgentTeam`, `AgentTeamMembership`, Host role, nested Team lineage, permission ceiling | `ActorRef`, `AgentMemberRef`, or `AgentTeamRef`; no copied permission, membership, runtime, or availability |
+| Agent identity and Organization | durable `AgentMember`, Human/External/Service actors, `AgentTeam.parent_team_id`, `host_member_id`, direct `member_ids`, nested Team lineage, permission ceiling | `ActorRef`, `AgentMemberRef`, or `AgentTeamRef`; no copied permission, Team relation, runtime, or availability |
 | Work | one `Work` kernel, parent/child lineage, Team scope, owner, status, criteria, result, source/result/artifact refs, and optional company relations such as Milestone/module/approval policy | Stable `WorkRef`; no copied owner/status |
 | Execution | `MemberRun`, provider-native session binding, WorkDelivery, runtime/supervisor/lease state, Mission, Wave, and Artifact | Stable execution or artifact reference used for provenance |
 
@@ -153,7 +154,6 @@ The following objects are explicitly rejected from the Docs model:
 ```text
 Docs.AgentMember          # duplicates the durable Agent identity
 Docs.AgentTeam            # duplicates Organization / Agent Team structure
-Docs.TeamMembership       # duplicates Team role and permission truth
 Docs.Work                 # duplicates responsibility, ownership, and status
 Docs.AgentSession         # duplicates MemberRun / NativeSessionRef
 Docs.WorkExecutionLease   # duplicates Supervisor and WorkDelivery/runtime leases
@@ -166,7 +166,7 @@ Docs.WorkDelivery         # duplicates delivery, queue, and recovery truth
 flowchart LR
   ACT["ActorRef\nhuman · AgentMember · external · service"]
   AM["AgentMember\ndurable Agent identity"]
-  TEAM["AgentTeam + Membership\nHost · Member · nested Team"]
+  TEAM["AgentTeam\nparent · Host · direct Members"]
   MR["MemberRun\ncurrent execution binding"]
   NS["Provider-native session\nexecution transcript"]
   W["Work\none responsibility kernel"]
@@ -188,10 +188,11 @@ The dotted edges are references, not ownership. A Work transition does not
 rewrite a Document embed. A provider session ending does not change the durable
 AgentMember author. A document change does not assign Work.
 
-`AgentMember` must be global and durable rather than a Team-membership row. The
-separate membership records explain how the same AgentMember can be a Member of
-one Team, Host another Team, keep one company identity across machines, and
-change runtime/provider without losing history.
+`AgentMember` is global and durable. Explicit AgentTeam `host_member_id` and
+direct `member_ids` explain how the same AgentMember can be a Member of one
+Team, Host another Team, keep one company identity across machines, and change
+runtime/provider without losing history. Docs must not create a separate
+`AgentTeamMembership` object that disagrees with those canonical Team refs.
 
 ### Multi-level Organization and child Teams
 
@@ -286,14 +287,14 @@ This proposal does not pre-authorize that migration.
 
 The durable Agent author is an `AgentMember` represented through `ActorRef`;
 Human, External, and Service actors remain valid ActorRef kinds. A machine,
-Team membership, Host role, process, MemberRun, or provider session is not the
+Team Host/Member relation, process, MemberRun, or provider session is not the
 author identity.
 
 Each authenticated request should resolve server-side to:
 
 ```text
 principal_actor_ref          # Human, AgentMember, External, or Service
-team_membership_ref?         # current Host/Member role used for this action
+agent_team_ref?              # Team scope whose Host/direct-Member refs authorize this action
 delegation_lineage[]         # optional, bounded by parent permission ceilings
 credential_id                # device/service credential used; audit only
 execution_ref?               # Mission/TeamRun/MemberRun/NativeSession reference
@@ -309,7 +310,7 @@ useful evidence, but its absence must not be filled by inference from names,
 timestamps, or the current device.
 
 Multi-machine identity does not authorize duplicate execution. Work ownership,
-`active_member_run_id`, WorkDelivery claim/lease, and the one-top-level-driver
+its execution binding, WorkDelivery claim/lease, and the one-top-level-driver
 rule still decide which runtime may advance one Work. Distinct MemberRuns of the
 same AgentMember may execute distinct Works; they must not concurrently drive
 the same Work or writable Workspace.
@@ -494,9 +495,10 @@ must not be presented as current.
 
 ## Work and workflow document references
 
-The unified Work kernel owns explicit input and output references. Docs owns
-the target Document/Revision and may expose a derived backlink; it does not own
-the Work-to-Document relation or synchronize a copied Work status.
+The unified Work kernel and its `WorkRelation` records own explicit input and
+output references. Docs owns the target Document/Revision and may expose a
+derived backlink; it does not own the Work-to-Document relation or synchronize
+a copied Work status.
 
 ```text
 Work.source_refs[] -> DocumentInputRef
@@ -505,7 +507,8 @@ Work.source_refs[] -> DocumentInputRef
   revision_selector = exact_revision | latest_at_start
   purpose
 
-Work.result_refs[] -> DocumentResultRef
+WorkRelation(kind=result_document) -> DocumentResultRef
+  work_id
   document_id
   revision_id
   result_role
@@ -517,9 +520,9 @@ resolved once and recorded with the execution. An Agent may write a newer
 revision only through Docs permission and command checks; owning a Work does
 not grant implicit write access to every referenced document.
 
-Optional company fields such as `milestone_ref`, `module_ref`,
-`approval_policy_ref`, or organization path extend the same Work record or its
-typed business relations; they do not create another `WorkItem` lifecycle.
+Optional company links such as Milestone, BusinessModule, Approval, Finance,
+Mission, or external delivery use ADR 0051 `WorkRelation` kinds; they do not
+create another `WorkItem` lifecycle.
 Deterministic Workflow steps may carry their own typed Document input/output
 refs, but neither Workflow nor Docs creates a second Work responsibility.
 
@@ -553,9 +556,9 @@ and permission ceiling in the Work/Team service before Docs displays the
 resulting stable WorkRef.
 
 An Agent completing the Work may update the source Document, create a result
-Document, or return only artifacts. The resulting exact revision is attached to
-`Work.result_refs`; a Host review changes Work state. Neither Docs nor a
-provider final message performs that transition.
+Document, or return only artifacts. The resulting exact revision is attached
+through `WorkRelation(kind=result_document)`; a Host review changes Work state.
+Neither Docs nor a provider final message performs that transition.
 
 ### Required Docs operator surfaces
 
@@ -799,8 +802,8 @@ durable, while search/index freshness is reported separately.
 
 ### Phase 0 — contract and gap audit
 
-- land the root-model ADR for durable AgentMember identity, nested Agent Teams,
-  and one Work kernel before changing Docs cross-system schemas;
+- merge ADR 0051 and freeze its target AgentMember, AgentTeam, Work, and
+  WorkRelation fields before changing Docs cross-system schemas;
 - inventory current Document/Block/Action append semantics and atomicity;
 - define normalized snapshot serialization and digest rules;
 - define `DocumentRevision`, change command, conflict, and error envelopes;
@@ -865,8 +868,9 @@ durable, while search/index freshness is reported separately.
 
 The proposal may become canonical only after separate review answers:
 
-1. Has one root-model ADR made durable AgentMember identity, nested Agent Teams,
-   and the unified Work kernel canonical and removed the superseded dual models?
+1. Has ADR 0051 merged, and does the Docs design consume its exact AgentMember,
+   AgentTeam, Work, and WorkRelation fields without another membership or Work
+   authority?
 2. Is `DocumentRevision` the right product object, and is the snapshot format
    reconstructable and migration-safe?
 3. Should the physical atomic boundary be a Docs operation row, another Store
