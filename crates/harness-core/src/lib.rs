@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 pub mod company_os;
@@ -456,8 +457,171 @@ pub struct AgentTeam {
     #[serde(default = "default_agent_team_status")]
     pub status: AgentTeamStatus,
     pub member_ids: Vec<String>,
+    /// Recursive Organization relation (ADR 0051): parent AgentTeam id.
+    /// `None` means a root team. Rows written before the recursive-topology
+    /// slice predate this field and read as roots.
+    #[serde(default)]
+    pub parent_team_id: Option<String>,
+    /// Recursive Organization relation (ADR 0051): durable AgentMember that
+    /// Hosts this team. A non-root team must name one and it must be a direct
+    /// member of the parent team; a member hosts at most one team in V1.
+    /// Optional only so compatibility rows carrying `owner_agent_id` alone
+    /// remain readable.
+    #[serde(default)]
+    pub host_member_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Recursive AgentTeam topology (ADR 0051, target contract slice).
+//
+// Organization is the persistent recursive projection of Agent Teams: every
+// non-root team names its `parent_team_id` and the durable `host_member_id`
+// that created and coordinates it. These pure functions validate the graph
+// invariants and answer recursive reads; they perform no I/O so the store,
+// CLI, and future API/UI surfaces share one authority.
+// ---------------------------------------------------------------------------
+
+/// Graph invariant violation in the recursive AgentTeam topology.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TeamTopologyError {
+    #[error("AgentTeam {team_id} references missing parent AgentTeam: {parent_team_id}")]
+    UnknownParent {
+        team_id: String,
+        parent_team_id: String,
+    },
+    #[error("non-root AgentTeam {team_id} must name a durable host_member_id")]
+    MissingHost { team_id: String },
+    #[error(
+        "AgentTeam {team_id} host {host_member_id} is not a direct member of parent AgentTeam {parent_team_id}"
+    )]
+    HostNotParentMember {
+        team_id: String,
+        host_member_id: String,
+        parent_team_id: String,
+    },
+    #[error("AgentMember {host_member_id} hosts more than one AgentTeam: {first_team_id}, {second_team_id}")]
+    MultipleHostedTeams {
+        host_member_id: String,
+        first_team_id: String,
+        second_team_id: String,
+    },
+    #[error("AgentTeam topology cycle detected at AgentTeam {team_id}")]
+    Cycle { team_id: String },
+}
+
+/// Validate the recursive AgentTeam graph invariants over the latest-row-wins
+/// team projection (ADR 0051):
+///
+/// 1. every `parent_team_id` resolves to an existing team;
+/// 2. every non-root team names a durable `host_member_id` that is a direct
+///    member of its parent team;
+/// 3. a member hosts at most one team (V1 primary-child-team rule, enforced
+///    across teams of any status);
+/// 4. the parent graph is acyclic.
+///
+/// Teams predating the topology slice carry neither field, read as roots, and
+/// never trip an invariant.
+pub fn validate_agent_team_topology(
+    teams: &BTreeMap<String, AgentTeam>,
+) -> Result<(), TeamTopologyError> {
+    for team in teams.values() {
+        let Some(parent_team_id) = team.parent_team_id.as_deref() else {
+            continue;
+        };
+        let parent = teams
+            .get(parent_team_id)
+            .ok_or_else(|| TeamTopologyError::UnknownParent {
+                team_id: team.id.clone(),
+                parent_team_id: parent_team_id.to_string(),
+            })?;
+        let host_member_id =
+            team.host_member_id
+                .as_deref()
+                .ok_or_else(|| TeamTopologyError::MissingHost {
+                    team_id: team.id.clone(),
+                })?;
+        if !parent.member_ids.iter().any(|id| id == host_member_id) {
+            return Err(TeamTopologyError::HostNotParentMember {
+                team_id: team.id.clone(),
+                host_member_id: host_member_id.to_string(),
+                parent_team_id: parent_team_id.to_string(),
+            });
+        }
+    }
+    let mut host_claims: BTreeMap<&str, &str> = BTreeMap::new();
+    for team in teams.values() {
+        let Some(host_member_id) = team.host_member_id.as_deref() else {
+            continue;
+        };
+        if let Some(first_team_id) = host_claims.insert(host_member_id, team.id.as_str()) {
+            return Err(TeamTopologyError::MultipleHostedTeams {
+                host_member_id: host_member_id.to_string(),
+                first_team_id: first_team_id.to_string(),
+                second_team_id: team.id.clone(),
+            });
+        }
+    }
+    for team in teams.values() {
+        let mut visited = BTreeSet::new();
+        let mut cursor = team.id.as_str();
+        while let Some(parent_team_id) = teams
+            .get(cursor)
+            .and_then(|current| current.parent_team_id.as_deref())
+        {
+            if !visited.insert(cursor) {
+                return Err(TeamTopologyError::Cycle {
+                    team_id: cursor.to_string(),
+                });
+            }
+            cursor = parent_team_id;
+        }
+    }
+    Ok(())
+}
+
+/// Direct child AgentTeam ids of `team_id`, sorted for deterministic reads.
+pub fn child_team_ids(teams: &BTreeMap<String, AgentTeam>, team_id: &str) -> Vec<String> {
+    teams
+        .values()
+        .filter(|team| team.parent_team_id.as_deref() == Some(team_id))
+        .map(|team| team.id.clone())
+        .collect()
+}
+
+/// `root_team_id` plus every descendant team id, depth-first with sorted
+/// children, so Organization tree renders share one deterministic order.
+/// Returns an empty vec when `root_team_id` does not resolve.
+pub fn team_subtree_ids(teams: &BTreeMap<String, AgentTeam>, root_team_id: &str) -> Vec<String> {
+    if !teams.contains_key(root_team_id) {
+        return Vec::new();
+    }
+    let mut ordered = Vec::new();
+    let mut stack = vec![root_team_id.to_string()];
+    while let Some(team_id) = stack.pop() {
+        ordered.push(team_id.clone());
+        let mut children = child_team_ids(teams, &team_id);
+        children.reverse();
+        stack.extend(children);
+    }
+    ordered
+}
+
+/// Ancestor chain of `team_id`, parent first up to the root. Stops before an
+/// unresolved parent so partial compatibility graphs still read; cycle-free
+/// input is guaranteed by [`validate_agent_team_topology`].
+pub fn team_ancestor_ids(teams: &BTreeMap<String, AgentTeam>, team_id: &str) -> Vec<String> {
+    let mut ancestors = Vec::new();
+    let mut cursor = team_id;
+    while let Some(parent_team_id) = teams
+        .get(cursor)
+        .and_then(|current| current.parent_team_id.as_deref())
+    {
+        ancestors.push(parent_team_id.to_string());
+        cursor = parent_team_id;
+    }
+    ancestors
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4510,6 +4674,179 @@ mod tests {
         }))
         .expect("legacy delivery update remains readable");
         assert_eq!(update.update_sequence, 0);
+    }
+
+    fn topology_team(
+        id: &str,
+        member_ids: &[&str],
+        parent_team_id: Option<&str>,
+        host_member_id: Option<&str>,
+    ) -> AgentTeam {
+        AgentTeam {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            description: format!("{id} description"),
+            owner_agent_id: "host".to_string(),
+            status: AgentTeamStatus::Active,
+            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
+            parent_team_id: parent_team_id.map(str::to_string),
+            host_member_id: host_member_id.map(str::to_string),
+            created_at: "unix-ms:1".to_string(),
+            updated_at: "unix-ms:1".to_string(),
+        }
+    }
+
+    fn topology_map(teams: Vec<AgentTeam>) -> BTreeMap<String, AgentTeam> {
+        teams
+            .into_iter()
+            .map(|team| (team.id.clone(), team))
+            .collect()
+    }
+
+    #[test]
+    fn agent_team_topology_fields_default_to_root_for_legacy_rows() {
+        let team: AgentTeam = serde_json::from_value(serde_json::json!({
+            "id": "team-legacy",
+            "name": "Legacy",
+            "description": "Row written before the topology slice.",
+            "owner_agent_id": "host",
+            "member_ids": [],
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("legacy team row without topology fields remains readable");
+        assert_eq!(team.parent_team_id, None);
+        assert_eq!(team.host_member_id, None);
+        let teams = topology_map(vec![team]);
+        assert_eq!(validate_agent_team_topology(&teams), Ok(()));
+    }
+
+    #[test]
+    fn agent_team_topology_accepts_valid_recursive_forest() {
+        let teams = topology_map(vec![
+            topology_team("root", &["lead", "cto"], None, Some("lead")),
+            topology_team("child", &["worker"], Some("root"), Some("cto")),
+            topology_team("grandchild", &["leaf"], Some("child"), Some("worker")),
+            topology_team("legacy-flat", &[], None, None),
+        ]);
+        assert_eq!(validate_agent_team_topology(&teams), Ok(()));
+        assert_eq!(child_team_ids(&teams, "root"), vec!["child".to_string()]);
+        assert_eq!(child_team_ids(&teams, "grandchild"), Vec::<String>::new());
+        assert_eq!(
+            team_subtree_ids(&teams, "root"),
+            vec![
+                "root".to_string(),
+                "child".to_string(),
+                "grandchild".to_string()
+            ]
+        );
+        assert_eq!(
+            team_ancestor_ids(&teams, "grandchild"),
+            vec!["child".to_string(), "root".to_string()]
+        );
+        assert_eq!(team_ancestor_ids(&teams, "root"), Vec::<String>::new());
+        assert_eq!(team_subtree_ids(&teams, "missing"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_missing_parent() {
+        let teams = topology_map(vec![topology_team(
+            "child",
+            &[],
+            Some("missing"),
+            Some("cto"),
+        )]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::UnknownParent {
+                team_id: "child".to_string(),
+                parent_team_id: "missing".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_non_root_without_host() {
+        let teams = topology_map(vec![
+            topology_team("root", &["cto"], None, None),
+            topology_team("child", &[], Some("root"), None),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::MissingHost {
+                team_id: "child".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_host_outside_parent_membership() {
+        let teams = topology_map(vec![
+            topology_team("root", &["lead"], None, Some("lead")),
+            topology_team("child", &[], Some("root"), Some("outsider")),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::HostNotParentMember {
+                team_id: "child".to_string(),
+                host_member_id: "outsider".to_string(),
+                parent_team_id: "root".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_member_hosting_two_teams() {
+        let teams = topology_map(vec![
+            topology_team("root", &["cto"], None, None),
+            topology_team("child-a", &[], Some("root"), Some("cto")),
+            topology_team("child-b", &[], Some("root"), Some("cto")),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::MultipleHostedTeams {
+                host_member_id: "cto".to_string(),
+                first_team_id: "child-a".to_string(),
+                second_team_id: "child-b".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_cycles() {
+        let self_parent = topology_map(vec![topology_team(
+            "loop",
+            &["lead"],
+            Some("loop"),
+            Some("lead"),
+        )]);
+        assert_eq!(
+            validate_agent_team_topology(&self_parent),
+            Err(TeamTopologyError::Cycle {
+                team_id: "loop".to_string(),
+            })
+        );
+
+        let mut cycle = topology_map(vec![
+            // a's host ha is a direct member of parent b; b's host hb is a
+            // direct member of parent a — direct-host passes, so the acyclic
+            // invariant is what must reject the pair.
+            topology_team("a", &["hb"], Some("b"), Some("ha")),
+            topology_team("b", &["ha"], Some("a"), Some("hb")),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&cycle),
+            Err(TeamTopologyError::Cycle {
+                team_id: "a".to_string(),
+            })
+        );
+        // Breaking one parent link restores a valid two-level tree.
+        cycle.get_mut("b").expect("team b").parent_team_id = None;
+        assert_eq!(validate_agent_team_topology(&cycle), Ok(()));
+        assert_eq!(
+            team_subtree_ids(&cycle, "b"),
+            vec!["b".to_string(), "a".to_string()]
+        );
     }
 }
 

@@ -13,27 +13,28 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, content_hash_hex16, AgentEvent, AgentMember, AgentMemberStatus,
-    AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus,
-    AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionSpace,
-    HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
-    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
-    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
-    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
-    ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    build_launch_spec, content_hash_hex16, validate_agent_team_topology, AgentEvent, AgentMember,
+    AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
+    AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence,
+    ExecutionSpace, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
+    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
+    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability,
+    NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind,
+    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
+    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
+    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
+    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    TeamSupervisorLease, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
+    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -8970,6 +8971,8 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 owner_agent_id: required(args, "--lead").or_else(|_| required(args, "--owner"))?,
                 status: AgentTeamStatus::Active,
                 member_ids: many(args, "--member"),
+                parent_team_id: value(args, "--parent-team"),
+                host_member_id: value(args, "--host-member"),
                 created_at: now_string(),
                 updated_at: now_string(),
             };
@@ -9022,6 +9025,12 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 team.member_ids.retain(|id| id != &member_id);
             }
             team.updated_at = now_string();
+            // Removing a member must not strand a child Team whose durable
+            // host is that member (ADR 0051 direct-host invariant).
+            let mut projected = latest_teams(store)?;
+            projected.insert(team.id.clone(), team.clone());
+            validate_agent_team_topology(&projected)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
             store.append_team(&team)?;
             print_json(&team)?;
         }
@@ -9107,6 +9116,8 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     .unwrap_or_else(|| "host".to_string()),
                 status: AgentTeamStatus::Active,
                 member_ids: many(args, "--member"),
+                parent_team_id: value(args, "--parent-team"),
+                host_member_id: value(args, "--host-member"),
                 created_at: now_string(),
                 updated_at: now_string(),
             };
@@ -23543,7 +23554,16 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
             )));
         }
     }
-    store.append_team(team)?;
+    if let Some(host_member_id) = team.host_member_id.as_deref() {
+        if !members.contains_key(host_member_id) {
+            return Err(CliError::Usage(format!(
+                "AgentTeam references missing host AgentMember: {host_member_id}"
+            )));
+        }
+    }
+    // The store guard re-checks the duplicate id under the write lock and
+    // enforces the recursive topology invariants (ADR 0051).
+    store.insert_agent_team(team)?;
     Ok(())
 }
 
@@ -23726,6 +23746,8 @@ fn create_team_value(
             .or_else(|_| required_json_string(body, "owner_agent_id"))?,
         status: AgentTeamStatus::Active,
         member_ids: json_string_array(body, "member"),
+        parent_team_id: optional_json_string(body, "parent_team_id")?,
+        host_member_id: optional_json_string(body, "host_member_id")?,
         created_at: now_string(),
         updated_at: now_string(),
     };

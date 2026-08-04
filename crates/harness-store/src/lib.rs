@@ -6,16 +6,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
-    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
-    WorkflowStep,
+    validate_agent_team_topology, AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime,
+    AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, Gap, MemberAction, MemberRun,
+    Message, MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus,
+    PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus, Review,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work,
+    WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
+    WorkEvent, WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
+    WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -321,6 +321,29 @@ impl HarnessStore {
 
     pub fn append_team(&self, value: &AgentTeam) -> StoreResult<()> {
         self.append_jsonl("teams.jsonl", value)
+    }
+
+    /// Insert a new AgentTeam under the store lock. Rejects a
+    /// concurrently-created duplicate id and enforces the recursive topology
+    /// invariants (ADR 0051) against the latest projection plus the candidate
+    /// before appending. Member-existence checks stay with the caller; this
+    /// guard owns graph integrity only.
+    pub fn insert_agent_team(&self, value: &AgentTeam) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+            team.id.clone()
+        });
+        if teams.contains_key(&value.id) {
+            return Err(StoreError::Conflict(format!(
+                "agent team already exists: {}",
+                value.id
+            )));
+        }
+        teams.insert(value.id.clone(), value.clone());
+        validate_agent_team_topology(&teams)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("teams.jsonl", value)
     }
 
     pub fn append_runtime(&self, value: &AgentRuntime) -> StoreResult<()> {
@@ -2709,6 +2732,12 @@ impl HarnessStore {
 
     pub fn teams(&self) -> StoreResult<Vec<AgentTeam>> {
         self.read_jsonl("teams.jsonl")
+    }
+
+    /// Latest-row-wins AgentTeam projection keyed by team id. This is the
+    /// input for recursive topology validation and queries (ADR 0051).
+    pub fn latest_teams(&self) -> StoreResult<std::collections::BTreeMap<String, AgentTeam>> {
+        Ok(latest_by_id(self.teams()?, |team| team.id.clone()))
     }
 
     pub fn runtimes(&self) -> StoreResult<Vec<AgentRuntime>> {
@@ -6738,5 +6767,174 @@ mod tests {
             delivered_at: None,
             last_error: None,
         }
+    }
+
+    fn test_agent_team(
+        id: &str,
+        member_ids: &[&str],
+        parent_team_id: Option<&str>,
+        host_member_id: Option<&str>,
+    ) -> AgentTeam {
+        AgentTeam {
+            id: id.into(),
+            name: format!("{id} name"),
+            description: format!("{id} description"),
+            owner_agent_id: "host".into(),
+            status: harness_core::AgentTeamStatus::Active,
+            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
+            parent_team_id: parent_team_id.map(str::to_string),
+            host_member_id: host_member_id.map(str::to_string),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        }
+    }
+
+    fn temp_store(label: &str) -> (PathBuf, HarnessStore) {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let store = HarnessStore::new(&root);
+        (root, store)
+    }
+
+    #[test]
+    fn insert_agent_team_persists_and_folds_latest_projection() {
+        let (root, store) = temp_store("team-topology-insert");
+        let root_team = test_agent_team("root", &["lead", "cto"], None, Some("lead"));
+        let child = test_agent_team("child", &["worker"], Some("root"), Some("cto"));
+        store.insert_agent_team(&root_team).expect("insert root");
+        store.insert_agent_team(&child).expect("insert child");
+
+        let teams = store.latest_teams().expect("latest teams");
+        assert_eq!(teams.len(), 2);
+        assert_eq!(
+            harness_core::team_subtree_ids(&teams, "root"),
+            vec!["root".to_string(), "child".to_string()]
+        );
+        assert_eq!(
+            harness_core::child_team_ids(&teams, "root"),
+            vec!["child".to_string()]
+        );
+        assert_eq!(
+            harness_core::team_ancestor_ids(&teams, "child"),
+            vec!["root".to_string()]
+        );
+
+        // A later revision of the same id folds into one latest row.
+        let mut renamed = root_team.clone();
+        renamed.name = "Root Renamed".into();
+        renamed.updated_at = "unix-ms:2".into();
+        store.append_team(&renamed).expect("append rename revision");
+        let teams = store.latest_teams().expect("latest teams after rename");
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams["root"].name, "Root Renamed");
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn insert_agent_team_rejects_duplicate_id_under_lock() {
+        let (root, store) = temp_store("team-topology-duplicate");
+        let team = test_agent_team("root", &[], None, None);
+        store.insert_agent_team(&team).expect("insert first");
+        let error = store
+            .insert_agent_team(&team)
+            .expect_err("duplicate id must be rejected");
+        assert!(matches!(error, StoreError::Conflict(_)));
+        assert!(error.to_string().contains("already exists"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn insert_agent_team_enforces_topology_invariants() {
+        let (root, store) = temp_store("team-topology-guard");
+        store
+            .insert_agent_team(&test_agent_team(
+                "root",
+                &["lead", "cto"],
+                None,
+                Some("lead"),
+            ))
+            .expect("insert root");
+
+        // Unknown parent.
+        let error = store
+            .insert_agent_team(&test_agent_team(
+                "orphan",
+                &[],
+                Some("missing"),
+                Some("cto"),
+            ))
+            .expect_err("unknown parent must be rejected");
+        assert!(error.to_string().contains("missing parent AgentTeam"));
+
+        // Non-root without a durable host.
+        let error = store
+            .insert_agent_team(&test_agent_team("hostless", &[], Some("root"), None))
+            .expect_err("non-root without host must be rejected");
+        assert!(error.to_string().contains("host_member_id"));
+
+        // Host that is not a direct member of the parent team.
+        let error = store
+            .insert_agent_team(&test_agent_team(
+                "stranger-hosted",
+                &[],
+                Some("root"),
+                Some("outsider"),
+            ))
+            .expect_err("host outside parent membership must be rejected");
+        assert!(error.to_string().contains("not a direct member"));
+
+        // One member hosting a second team.
+        let error = store
+            .insert_agent_team(&test_agent_team(
+                "second-child",
+                &[],
+                Some("root"),
+                Some("lead"),
+            ))
+            .expect_err("member hosting two teams must be rejected");
+        assert!(error.to_string().contains("more than one AgentTeam"));
+
+        // A valid child still inserts after all rejections, proving the failed
+        // candidates were never appended.
+        store
+            .insert_agent_team(&test_agent_team(
+                "child",
+                &["worker"],
+                Some("root"),
+                Some("cto"),
+            ))
+            .expect("valid child inserts");
+        assert_eq!(store.latest_teams().expect("latest teams").len(), 2);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn insert_agent_team_rejects_cycle_candidates() {
+        let (root, store) = temp_store("team-topology-cycle");
+        store
+            .insert_agent_team(&test_agent_team("root", &["lead"], None, Some("lead")))
+            .expect("insert root");
+        // Self-parent candidate with its own distinct host: parent resolution,
+        // host presence, direct-host, and host-uniqueness all pass, so the
+        // acyclic invariant is the one that must reject it.
+        let error = store
+            .insert_agent_team(&test_agent_team(
+                "loop",
+                &["loopy"],
+                Some("loop"),
+                Some("loopy"),
+            ))
+            .expect_err("self-parent must be rejected");
+        assert!(
+            error.to_string().contains("cycle"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(store.latest_teams().expect("latest teams").len(), 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 }
