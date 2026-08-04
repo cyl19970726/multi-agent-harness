@@ -13249,6 +13249,179 @@ fn member_work_context(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Decision-shaped board reads (issue #305).
+//
+// The full `work list`/`work show` JSON dump is the right shape for a member
+// picking up its own Work, but it is the wrong shape for a Host that only
+// needs to decide what to do next: measured on the first live work-board run,
+// those two reads averaged 12.6K chars each across 22 calls (277K chars,
+// 19.4% of the Host's entire tool output) to answer questions that need only
+// a handful of numbers -- how many Works are unassigned/ready, how many
+// members are idle, how many submissions are waiting on review. `--brief`,
+// `--since`, and `board-summary` below are additive projections over the same
+// authoritative store reads; the full JSON array remains the default.
+// ---------------------------------------------------------------------------
+
+/// One `--brief` line: `<work-id>  <status>  <owner-member-run-id|unassigned>
+/// v<version>  <title>`, title hard-truncated to 60 chars (by `char`, not
+/// byte, so multibyte titles never split mid-character). Plain text, no JSON
+/// wrapper -- this is the compact projection `work list --brief` prints one
+/// of per Work.
+fn format_work_brief_line(work: &Work) -> String {
+    let owner = work.active_member_run_id.as_deref().unwrap_or("unassigned");
+    let title: String = work.title.chars().take(60).collect();
+    format!(
+        "{}  {}  {}  v{}  {}",
+        work.id,
+        serde_snake_label(&work.status),
+        owner,
+        work.version,
+        title
+    )
+}
+
+/// Per-run monotonic cursor for `work list --since`: each Work id mapped to
+/// the 1-based position of its most recent [`WorkOperation`] within this team
+/// run's operations, numbered in store append (causal) order.
+///
+/// `work_operations.jsonl` is the sole mutation path for every Work row and
+/// every append is serialized under the store's write lock, so this order is
+/// a genuine per-run total order -- the "monotonic per-run operation
+/// sequence" a delta cursor needs. Two alternatives were considered and
+/// rejected: `Work::version` restarts at 1 for every Work, so it is not
+/// comparable across Works in one run; `updated_at` is millisecond-resolution
+/// and can tie under fast scripted mutation (concurrent or same-millisecond
+/// writes), which would make "changed after" ambiguous. `--since <cursor>`
+/// therefore means "Works whose latest WorkOperation sorts after `cursor` in
+/// this run's append order", and a `list` call made with `--since` reports
+/// the new `next_since` watermark so a Host wake->decide->act loop can chain
+/// calls without redundantly re-reading unchanged Works.
+fn work_operation_cursors(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<BTreeMap<String, u64>> {
+    let mut cursors = BTreeMap::new();
+    for (index, operation) in store
+        .work_operations()?
+        .into_iter()
+        .filter(|operation| operation.event.team_run_id == team_run_id)
+        .enumerate()
+    {
+        cursors.insert(operation.work.id, (index + 1) as u64);
+    }
+    Ok(cursors)
+}
+
+/// Bucket one member into the `board-summary` per-member line. Reads BOTH
+/// signals the summary promises: owned Work content and MemberRun process
+/// state.
+///
+/// A member owning any Work in `review` is `awaiting-review` -- a submission
+/// is waiting on the Host's accept/request-changes decision -- regardless of
+/// process state; that decision is the whole reason this bucket exists.
+/// Otherwise a member owning an `in_progress` Work, or whose MemberRunStatus
+/// is `Running`/`Starting`, is `working`. Everything else (idle, queued,
+/// waiting on a provider interaction, disconnected, blocked, or terminal) is
+/// `idle`: none of those states are "a Host decision is pending on this
+/// member" and the summary has only three buckets to spend.
+fn member_board_state<'a>(
+    member: &MemberRun,
+    owned_works: impl Iterator<Item = &'a Work>,
+) -> &'static str {
+    let mut awaiting_review = false;
+    let mut owns_in_progress = false;
+    for work in owned_works {
+        match work.status {
+            WorkStatus::Review => awaiting_review = true,
+            WorkStatus::InProgress => owns_in_progress = true,
+            _ => {}
+        }
+    }
+    if awaiting_review {
+        "awaiting-review"
+    } else if owns_in_progress
+        || matches!(
+            member.status,
+            MemberRunStatus::Running | MemberRunStatus::Starting
+        )
+    {
+        "working"
+    } else {
+        "idle"
+    }
+}
+
+/// `team-run board-summary` -- a single plain-text projection built from one
+/// `latest_works` read and one `latest_member_runs_in_append_order` read:
+/// counts by status, assigned vs unassigned, claim-ready count (reusing
+/// [`Work::is_claim_ready`], the same readiness rule the claim path
+/// enforces), and one `member_board_state` line per active member. Contract:
+/// the whole string stays under 500 chars for an ordinary run so a Host can
+/// afford it on every wake (see the module-level comment above for the
+/// measured cost this replaces). There is no `--json` form: the entire point
+/// is a bounded plain-text read, and a JSON wrapper would tax the same
+/// budget it exists to protect.
+fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliResult<String> {
+    latest_team_run(store, team_run_id)?;
+    let works: Vec<Work> = store
+        .latest_works()?
+        .into_iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .collect();
+
+    let mut open = 0u64;
+    let mut in_progress = 0u64;
+    let mut blocked = 0u64;
+    let mut review = 0u64;
+    let mut done = 0u64;
+    let mut cancelled = 0u64;
+    let mut assigned = 0u64;
+    let mut unassigned = 0u64;
+    for work in &works {
+        match work.status {
+            WorkStatus::Open => open += 1,
+            WorkStatus::InProgress => in_progress += 1,
+            WorkStatus::Blocked => blocked += 1,
+            WorkStatus::Review => review += 1,
+            WorkStatus::Done => done += 1,
+            WorkStatus::Cancelled => cancelled += 1,
+        }
+        if work.active_member_run_id.is_some() {
+            assigned += 1;
+        } else {
+            unassigned += 1;
+        }
+    }
+    let ready = works
+        .iter()
+        .filter(|work| work.is_claim_ready(&works))
+        .count();
+
+    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id && member.coordination_is_active())
+        .collect();
+
+    let mut lines = vec![
+        format!(
+            "open={open} in_progress={in_progress} blocked={blocked} review={review} done={done} cancelled={cancelled}"
+        ),
+        format!("assigned={assigned} unassigned={unassigned} ready={ready}"),
+    ];
+    for member in &members {
+        let owned = works
+            .iter()
+            .filter(|work| work.active_member_run_id.as_deref() == Some(member.id.as_str()));
+        lines.push(format!(
+            "{}: {}",
+            member.name,
+            member_board_state(member, owned)
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
@@ -13261,6 +13434,27 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 .map(|raw| parse_work_status(&raw))
                 .transpose()?;
             let member_run_id = value(args, "--member-run-id");
+            // `--since <cursor>`: delta read against the WorkOperation append
+            // order (see `work_operation_cursors` for why that order, and not
+            // Work::version or updated_at, is the cursor). Independent of the
+            // --status/--member-run-id value filters below: a Work can match
+            // both, either, or neither.
+            let since = value(args, "--since")
+                .map(|raw| {
+                    raw.parse::<u64>().map_err(|_| {
+                        CliError::Usage(
+                            "--since must be an integer WorkOperation-order cursor (pass the \
+                             next_since a previous `work list --since` call returned)"
+                                .to_string(),
+                        )
+                    })
+                })
+                .transpose()?;
+            let brief = has_flag(args, "--brief");
+            let cursors = since
+                .is_some()
+                .then(|| work_operation_cursors(store, &team_run_id))
+                .transpose()?;
             let mut works = store
                 .latest_works()?
                 .into_iter()
@@ -13271,6 +13465,14 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                         work.active_member_run_id.as_deref() == Some(member)
                     })
                 })
+                .filter(|work| {
+                    since.is_none_or(|cursor| {
+                        cursors
+                            .as_ref()
+                            .and_then(|cursors| cursors.get(&work.id))
+                            .is_some_and(|sequence| *sequence > cursor)
+                    })
+                })
                 .collect::<Vec<_>>();
             works.sort_by(|left, right| {
                 work_priority_rank(right.priority)
@@ -13278,7 +13480,29 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     .then_with(|| left.created_at.cmp(&right.created_at))
                     .then_with(|| left.id.cmp(&right.id))
             });
-            print_json(&works)
+            if brief {
+                // Plain text, one Work per line, no JSON wrapper: --since
+                // still filters this list, but the next_since watermark below
+                // is JSON-only (there is no room for a 6th field in the fixed
+                // brief line shape without breaking its stable format).
+                for work in &works {
+                    println!("{}", format_work_brief_line(work));
+                }
+                Ok(())
+            } else if let Some(since) = since {
+                let next_since = cursors
+                    .as_ref()
+                    .and_then(|cursors| cursors.values().copied().max())
+                    .unwrap_or(0)
+                    .max(since);
+                print_json(&serde_json::json!({
+                    "since": since,
+                    "next_since": next_since,
+                    "works": works,
+                }))
+            } else {
+                print_json(&works)
+            }
         }
         "show" => {
             let work_id = required(args, "--work-id")?;
@@ -13493,7 +13717,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|work|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14265,6 +14489,10 @@ fn team_run_command(
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 std::thread::sleep(remaining.min(Duration::from_millis(poll_ms)));
             }
+        }
+        "board-summary" => {
+            let id = required(args, "--id")?;
+            println!("{}", team_run_board_summary_text(store, &id)?);
         }
         other => {
             return Err(CliError::Usage(format!(
@@ -32948,7 +33176,15 @@ fn print_help() {
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
   team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run board-summary --id <team-run-id>
+      <=500-char plain-text board digest: counts by status, assigned/unassigned,
+      ready, and one idle|working|awaiting-review line per active member.
   team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reconcile-delivery
+  team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
+      --brief: one plain-text line per Work, no JSON wrapper.
+      --since <cursor>: only Works whose latest WorkOperation postdates the
+      cursor (a JSON `list` response's next_since); wraps JSON output as an
+      object with since/next_since/works so a Host loop can chain calls.
   member-run show --id <member-run-id> [--json]
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
