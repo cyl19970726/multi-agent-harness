@@ -7,16 +7,17 @@ use std::time::{Duration, Instant};
 
 use harness_core::{
     validate_agent_team_topology, validate_work_cutover, AgentEvent, AgentMember,
-    AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence,
-    Gap, HostAttention, HostAttentionInbox, HostAttentionStatus, MemberAction, MemberRun, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus,
-    PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus, Review,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
-    Work, WorkClaimMode, WorkCommandContext, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
-    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItemStatus, WorkOperation, WorkStatus,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
+    DelegationRun, DurableAgentMember, Evidence, Gap, HostAttention, HostAttentionInbox,
+    HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageTerminalSource, Mission, MissionStatus, PendingInteraction, Proposal,
+    ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
+    WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
+    WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -351,6 +352,169 @@ impl HarnessStore {
         validate_agent_team_topology(&teams)
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.append_jsonl_unlocked("teams.jsonl", value)
+    }
+
+    /// Insert one slim, durable Organization identity under the store lock.
+    /// Provider/runtime/session state belongs to MemberRun and native sessions,
+    /// never to this ledger (ADR 0051).
+    pub fn insert_durable_member(&self, value: &DurableAgentMember) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let members = latest_by_id(
+            self.read_jsonl::<DurableAgentMember>("durable_agent_members.jsonl")?,
+            |member| member.id.clone(),
+        );
+        if members.contains_key(&value.id) {
+            return Err(StoreError::Conflict(format!(
+                "durable AgentMember already exists: {}",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("durable_agent_members.jsonl", value)
+    }
+
+    /// Explicitly converge one row from the legacy runtime-heavy AgentMember
+    /// registry into the durable identity ledger. Existing identical results
+    /// are idempotent; divergent re-projections are refused.
+    pub fn converge_registry_member(
+        &self,
+        value: &DurableAgentMember,
+    ) -> StoreResult<DurableAgentMember> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let registry = latest_by_id(self.read_jsonl::<AgentMember>("members.jsonl")?, |member| {
+            member.id.clone()
+        });
+        let source = registry.get(&value.id).ok_or_else(|| {
+            StoreError::Conflict(format!("compatibility AgentMember not found: {}", value.id))
+        })?;
+        let expected_status = match source.status {
+            AgentMemberStatus::Retired => harness_core::DurableAgentMemberStatus::Retired,
+            AgentMemberStatus::Paused
+            | AgentMemberStatus::Stale
+            | AgentMemberStatus::Closed
+            | AgentMemberStatus::Closing => harness_core::DurableAgentMemberStatus::Paused,
+            _ => harness_core::DurableAgentMemberStatus::Active,
+        };
+        let expected_profile = source
+            .profile
+            .clone()
+            .or_else(|| Some(source.provider.clone()));
+        if value.name != source.name
+            || value.description != source.description
+            || value.role != source.role
+            || value.provider_profile != expected_profile
+            || value.model != source.model
+            || value.workspace_policy != source.workspace_policy
+            || value.status != expected_status
+            || value.created_at != source.created_at
+            || value.updated_at != source.created_at
+        {
+            return Err(StoreError::Conflict(format!(
+                "durable AgentMember {} does not match its deterministic compatibility projection",
+                value.id
+            )));
+        }
+        let durable = latest_by_id(
+            self.read_jsonl::<DurableAgentMember>("durable_agent_members.jsonl")?,
+            |member| member.id.clone(),
+        );
+        if let Some(existing) = durable.get(&value.id) {
+            if existing == value {
+                return Ok(existing.clone());
+            }
+            return Err(StoreError::Conflict(format!(
+                "durable AgentMember {} already exists with different identity fields",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("durable_agent_members.jsonl", value)?;
+        Ok(value.clone())
+    }
+
+    /// Bootstrap the durable Lead for an existing root Team and converge the
+    /// compatibility `owner_agent_id` alias to the same identity. The operation
+    /// refuses non-root Teams, conflicting owners, and divergent duplicate
+    /// identities; it never manufactures a second Host authority.
+    pub fn bootstrap_root_lead_member(
+        &self,
+        root_team_id: &str,
+        member: &DurableAgentMember,
+    ) -> StoreResult<AgentTeam> {
+        member
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+            team.id.clone()
+        });
+        let mut root = teams.remove(root_team_id).ok_or_else(|| {
+            StoreError::Conflict(format!("root AgentTeam not found: {root_team_id}"))
+        })?;
+        if root.parent_team_id.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "AgentTeam {root_team_id} is not a root Team"
+            )));
+        }
+        if root.owner_agent_id != "host" && root.owner_agent_id != member.id {
+            return Err(StoreError::Conflict(format!(
+                "AgentTeam {root_team_id} has conflicting compatibility owner {}",
+                root.owner_agent_id
+            )));
+        }
+        if root
+            .host_member_id
+            .as_deref()
+            .is_some_and(|id| id != member.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "AgentTeam {root_team_id} already has a different durable Host"
+            )));
+        }
+
+        let durable = latest_by_id(
+            self.read_jsonl::<DurableAgentMember>("durable_agent_members.jsonl")?,
+            |row| row.id.clone(),
+        );
+        let should_append_member = match durable.get(&member.id) {
+            Some(existing) if existing == member => false,
+            Some(_) => {
+                return Err(StoreError::Conflict(format!(
+                    "durable AgentMember {} already exists with different identity fields",
+                    member.id
+                )))
+            }
+            None => true,
+        };
+
+        let team_already_converged = root.owner_agent_id == member.id
+            && root.host_member_id.as_deref() == Some(member.id.as_str())
+            && root.member_ids.iter().any(|id| id == &member.id)
+            && root.updated_at == member.updated_at;
+        root.owner_agent_id = member.id.clone();
+        root.host_member_id = Some(member.id.clone());
+        if !root.member_ids.iter().any(|id| id == &member.id) {
+            root.member_ids.push(member.id.clone());
+        }
+        root.updated_at = member.updated_at.clone();
+        teams.insert(root.id.clone(), root.clone());
+        validate_agent_team_topology(&teams)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+
+        if should_append_member {
+            self.append_jsonl_unlocked("durable_agent_members.jsonl", member)?;
+        }
+        if !team_already_converged {
+            self.append_jsonl_unlocked("teams.jsonl", &root)?;
+        }
+        Ok(root)
     }
 
     pub fn append_runtime(&self, value: &AgentRuntime) -> StoreResult<()> {
@@ -3333,6 +3497,19 @@ impl HarnessStore {
 
     pub fn members(&self) -> StoreResult<Vec<AgentMember>> {
         self.read_jsonl("members.jsonl")
+    }
+
+    pub fn durable_members(&self) -> StoreResult<Vec<DurableAgentMember>> {
+        self.read_jsonl("durable_agent_members.jsonl")
+    }
+
+    /// Latest-row-wins durable AgentMember projection, ordered by id.
+    pub fn latest_durable_members(
+        &self,
+    ) -> StoreResult<std::collections::BTreeMap<String, DurableAgentMember>> {
+        Ok(latest_by_id(self.durable_members()?, |member| {
+            member.id.clone()
+        }))
     }
 
     pub fn teams(&self) -> StoreResult<Vec<AgentTeam>> {
@@ -7768,6 +7945,24 @@ mod tests {
         }
     }
 
+    fn test_durable_member(id: &str) -> DurableAgentMember {
+        DurableAgentMember {
+            id: id.into(),
+            name: id.into(),
+            description: format!("Durable identity for {id}"),
+            role: "lead".into(),
+            provider_profile: Some("kimi/qwen3.8-max".into()),
+            model: Some("qwen/qwen3.8-max".into()),
+            workspace_policy: Some("project_binding".into()),
+            project_binding_id: Some("project-harness".into()),
+            business_access_ceiling_refs: vec!["company_os.read".into()],
+            status: harness_core::DurableAgentMemberStatus::Active,
+            created_by_member_id: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:2".into(),
+        }
+    }
+
     fn temp_store(label: &str) -> (PathBuf, HarnessStore) {
         let root = std::env::temp_dir().join(format!(
             "harness-store-{label}-{}",
@@ -8085,5 +8280,59 @@ mod tests {
 
         std::fs::remove_dir_all(root).expect("remove temp store");
         std::fs::remove_dir_all(company_root).expect("remove company temp store");
+    }
+
+    #[test]
+    fn durable_member_insert_and_registry_convergence_refuse_ambiguous_identity() {
+        let (root, store) = temp_store("durable-agent-member");
+        let durable = test_durable_member("lead");
+        store
+            .insert_durable_member(&durable)
+            .expect("insert durable member");
+        assert_eq!(
+            store.latest_durable_members().expect("durable projection")["lead"],
+            durable
+        );
+        let duplicate = store
+            .insert_durable_member(&durable)
+            .expect_err("duplicate durable id must be refused");
+        assert!(duplicate.to_string().contains("already exists"));
+
+        let missing_registry = store
+            .converge_registry_member(&test_durable_member("compat-missing"))
+            .expect_err("convergence requires a compatibility source row");
+        assert!(missing_registry
+            .to_string()
+            .contains("compatibility AgentMember not found"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn root_lead_bootstrap_writes_one_identity_and_one_host_authority() {
+        let (root, store) = temp_store("root-lead-bootstrap");
+        store
+            .insert_agent_team(&test_agent_team("root", &["worker"], None, None))
+            .expect("insert compatibility root");
+        let lead = test_durable_member("lead");
+        let team = store
+            .bootstrap_root_lead_member("root", &lead)
+            .expect("bootstrap root Lead");
+        assert_eq!(team.owner_agent_id, "lead");
+        assert_eq!(team.host_member_id.as_deref(), Some("lead"));
+        assert!(team.member_ids.iter().any(|id| id == "lead"));
+        assert_eq!(store.latest_durable_members().unwrap().len(), 1);
+
+        // Same exact bootstrap is idempotent; a different identity is refused.
+        let same = store
+            .bootstrap_root_lead_member("root", &lead)
+            .expect("repeat bootstrap");
+        assert_eq!(same, team);
+        assert_eq!(store.latest_durable_members().unwrap().len(), 1);
+        assert_eq!(store.teams().unwrap().len(), 2);
+        let conflict = store
+            .bootstrap_root_lead_member("root", &test_durable_member("other-lead"))
+            .expect_err("second root Host must be refused");
+        assert!(conflict.to_string().contains("conflicting"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 }

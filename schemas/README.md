@@ -6,6 +6,7 @@
 | Wave | [wave.schema.json](wave.schema.json) |
 | Agent team | [agent-team.schema.json](agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](agent-member.schema.json) |
+| Durable Organization Agent member | [durable-agent-member.schema.json](durable-agent-member.schema.json) |
 | Agent team run | [agent-team-run.schema.json](agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](member-run.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](native-session-ref.schema.json) |

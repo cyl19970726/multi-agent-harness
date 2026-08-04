@@ -1,0 +1,15 @@
+{
+  "id": "agent-lead",
+  "name": "Lead",
+  "description": "Durable root Lead identity.",
+  "role": "lead",
+  "provider_profile": "kimi/qwen3.8-max",
+  "model": "qwen/qwen3.8-max",
+  "workspace_policy": "project_binding",
+  "project_binding_id": "project-harness",
+  "business_access_ceiling_refs": ["company_os.read", "repository.write"],
+  "status": "active",
+  "created_by_member_id": null,
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1"
+}

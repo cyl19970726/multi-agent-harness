@@ -10,9 +10,13 @@ canonical_for: Docs, Organization, Work, Finance, and Company authority contract
 > agent identity, recursive AgentTeams as Organization, and one shared Work
 > responsibility kernel. The Organization and Work rows below intentionally
 > describe the currently shipped `StandingAgent` / Company `WorkItem`
-> compatibility implementation. They do not prove the ADR 0051 target. That
-> target remains design-only until the explicit migration and Lead -> CTO ->
-> child Team dogfood acceptance pass.
+> compatibility implementation. They do not prove the ADR 0051 target. The
+> target now has an additive identity/topology foundation: a slim
+> `DurableAgentMember` ledger, explicit root Lead bootstrap, deterministic
+> compatibility mapping, and a refusal-first Host cutover audit. The shipped
+> Organization and Work product still uses the compatibility rows below;
+> HTTP/MCP/UI, Work-kernel convergence, full migration, and the Lead -> CTO ->
+> child Team dogfood acceptance remain pending.
 
 This matrix answers one question: what can the product prove today from native
 records and executable code? A design image, fixture, seed script or stable

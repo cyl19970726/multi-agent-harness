@@ -53,6 +53,12 @@ pub struct AgentProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Compatibility execution registry row.
+///
+/// This pre-ADR-0051 shape mixes organization identity with mutable provider,
+/// runtime, session, and task state. New Organization writes use
+/// [`DurableAgentMember`]; this row remains readable for explicit convergence
+/// and for the existing runtime surfaces until their cutover is complete.
 pub struct AgentMember {
     pub id: String,
     pub name: String,
@@ -471,6 +477,134 @@ pub struct AgentTeam {
     pub host_member_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Durable Company/Organization identity of one Agent (ADR 0051).
+///
+/// Mutable execution state deliberately does not live here. A durable member
+/// binds to zero or more replaceable [`MemberRun`] generations, and each run
+/// may bind to a provider-native session owned by that provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableAgentMember {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub role: String,
+    #[serde(default)]
+    pub provider_profile: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub workspace_policy: Option<String>,
+    #[serde(default)]
+    pub project_binding_id: Option<String>,
+    #[serde(default)]
+    pub business_access_ceiling_refs: Vec<String>,
+    pub status: DurableAgentMemberStatus,
+    #[serde(default)]
+    pub created_by_member_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurableAgentMemberStatus {
+    Active,
+    Paused,
+    Retired,
+}
+
+/// A compatibility or target Team row does not resolve to one durable Host.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum HostAuthorityError {
+    #[error("AgentTeam {team_id} has no durable Host identity; set host_member_id explicitly")]
+    Missing { team_id: String },
+    #[error(
+        "AgentTeam {team_id} has conflicting Host authorities: owner_agent_id={owner_agent_id}, host_member_id={host_member_id}"
+    )]
+    Conflicting {
+        team_id: String,
+        owner_agent_id: String,
+        host_member_id: String,
+    },
+    #[error("AgentTeam {team_id} Host references missing durable AgentMember: {host_member_id}")]
+    UnknownMember {
+        team_id: String,
+        host_member_id: String,
+    },
+    #[error(
+        "AgentTeam {team_id} has not completed Host cutover: owner_agent_id must equal host_member_id {host_member_id}"
+    )]
+    CompatibilityAuthorityStillActive {
+        team_id: String,
+        host_member_id: String,
+    },
+}
+
+/// Deterministically map the legacy `owner_agent_id` wire field onto the
+/// target durable Host identity.
+///
+/// An explicit `host_member_id` wins only when the legacy field is the neutral
+/// `host` placeholder or the same identity. Two different concrete identities
+/// are refused instead of choosing one silently. A compatibility-only row can
+/// map a concrete legacy owner; the neutral placeholder cannot manufacture an
+/// identity and therefore maps to `None`.
+pub fn compat_host_member_id(team: &AgentTeam) -> Result<Option<&str>, HostAuthorityError> {
+    let owner = team.owner_agent_id.trim();
+    match team.host_member_id.as_deref().map(str::trim) {
+        Some(host) if host.is_empty() => Err(HostAuthorityError::Missing {
+            team_id: team.id.clone(),
+        }),
+        Some(host) if owner == "host" || owner == host => Ok(Some(host)),
+        Some(host) => Err(HostAuthorityError::Conflicting {
+            team_id: team.id.clone(),
+            owner_agent_id: owner.to_string(),
+            host_member_id: host.to_string(),
+        }),
+        None if !owner.is_empty() && owner != "host" => Ok(Some(owner)),
+        None => Ok(None),
+    }
+}
+
+/// Resolve exactly one Host identity for a Team, including deterministic
+/// compatibility mapping. Use [`validate_host_authority_cutover`] before
+/// switching product authority to ensure every row is explicitly migrated.
+pub fn resolve_team_host_authority(team: &AgentTeam) -> Result<&str, HostAuthorityError> {
+    compat_host_member_id(team)?.ok_or_else(|| HostAuthorityError::Missing {
+        team_id: team.id.clone(),
+    })
+}
+
+/// Refuse Organization authority cutover unless every Team names an explicit,
+/// existing durable Host and the legacy wire field aliases that same identity.
+/// This makes the migration boundary visible and prevents dual Host authority.
+pub fn validate_host_authority_cutover(
+    teams: &BTreeMap<String, AgentTeam>,
+    members: &BTreeMap<String, DurableAgentMember>,
+) -> Result<(), HostAuthorityError> {
+    for team in teams.values() {
+        let Some(explicit_host) = team.host_member_id.as_deref().map(str::trim) else {
+            return Err(HostAuthorityError::CompatibilityAuthorityStillActive {
+                team_id: team.id.clone(),
+                host_member_id: team.owner_agent_id.clone(),
+            });
+        };
+        let resolved = resolve_team_host_authority(team)?;
+        if team.owner_agent_id.trim() != explicit_host {
+            return Err(HostAuthorityError::CompatibilityAuthorityStillActive {
+                team_id: team.id.clone(),
+                host_member_id: explicit_host.to_string(),
+            });
+        }
+        if !members.contains_key(resolved) {
+            return Err(HostAuthorityError::UnknownMember {
+                team_id: team.id.clone(),
+                host_member_id: resolved.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1478,17 @@ impl Validate for AgentMember {
         require_non_empty(&self.role, "AgentMember.role")?;
         require_non_empty(&self.provider, "AgentMember.provider")?;
         require_non_empty(&self.created_at, "AgentMember.created_at")
+    }
+}
+
+impl Validate for DurableAgentMember {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "DurableAgentMember.id")?;
+        require_non_empty(&self.name, "DurableAgentMember.name")?;
+        require_non_empty(&self.description, "DurableAgentMember.description")?;
+        require_non_empty(&self.role, "DurableAgentMember.role")?;
+        require_non_empty(&self.created_at, "DurableAgentMember.created_at")?;
+        require_non_empty(&self.updated_at, "DurableAgentMember.updated_at")
     }
 }
 
@@ -2428,9 +2573,10 @@ pub struct MemberRun {
     pub team_run_id: String,
     #[serde(default)]
     pub slot_id: Option<String>,
-    /// Optional stable link to a durable AgentMember / Company OS
-    /// StandingAgent identity. Absence means this remains a temporary execution
-    /// participant; callers must never infer the link from display fields.
+    /// Optional stable link to [`DurableAgentMember`]. Absence means this
+    /// remains a temporary execution participant; callers must never infer the
+    /// link from display fields, provider sessions, or the compatibility
+    /// [`AgentMember`] registry.
     #[serde(default)]
     pub agent_member_id: Option<String>,
     pub name: String,
@@ -5172,6 +5318,65 @@ mod tests {
         assert_eq!(team.host_member_id, None);
         let teams = topology_map(vec![team]);
         assert_eq!(validate_agent_team_topology(&teams), Ok(()));
+    }
+
+    fn durable_member(id: &str) -> DurableAgentMember {
+        DurableAgentMember {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: format!("Durable identity for {id}"),
+            role: "lead".to_string(),
+            provider_profile: Some("kimi/qwen3.8-max".to_string()),
+            model: Some("qwen/qwen3.8-max".to_string()),
+            workspace_policy: Some("project_binding".to_string()),
+            project_binding_id: Some("project-harness".to_string()),
+            business_access_ceiling_refs: vec!["company_os.read".to_string()],
+            status: DurableAgentMemberStatus::Active,
+            created_by_member_id: None,
+            created_at: "unix-ms:1".to_string(),
+            updated_at: "unix-ms:1".to_string(),
+        }
+    }
+
+    #[test]
+    fn host_authority_compatibility_mapping_is_deterministic_and_refuses_conflicts() {
+        let mut team = topology_team("root", &["lead"], None, None);
+        team.owner_agent_id = "lead".to_string();
+        assert_eq!(compat_host_member_id(&team), Ok(Some("lead")));
+
+        team.host_member_id = Some("lead".to_string());
+        assert_eq!(resolve_team_host_authority(&team), Ok("lead"));
+
+        team.host_member_id = Some("different-lead".to_string());
+        assert_eq!(
+            resolve_team_host_authority(&team),
+            Err(HostAuthorityError::Conflicting {
+                team_id: "root".to_string(),
+                owner_agent_id: "lead".to_string(),
+                host_member_id: "different-lead".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn host_authority_cutover_requires_explicit_member_backed_single_authority() {
+        let mut team = topology_team("root", &["lead"], None, Some("lead"));
+        let mut teams = topology_map(vec![team.clone()]);
+        let members = BTreeMap::from([("lead".to_string(), durable_member("lead"))]);
+
+        assert!(matches!(
+            validate_host_authority_cutover(&teams, &members),
+            Err(HostAuthorityError::CompatibilityAuthorityStillActive { .. })
+        ));
+
+        team.owner_agent_id = "lead".to_string();
+        teams.insert(team.id.clone(), team);
+        assert_eq!(validate_host_authority_cutover(&teams, &members), Ok(()));
+
+        assert!(matches!(
+            validate_host_authority_cutover(&teams, &BTreeMap::new()),
+            Err(HostAuthorityError::UnknownMember { .. })
+        ));
     }
 
     #[test]

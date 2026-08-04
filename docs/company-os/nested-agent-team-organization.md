@@ -1,7 +1,7 @@
 # Nested Agent Team Organization
 
 ```text
-status: canonical target product contract; implementation pending
+status: canonical target product contract; durable identity/topology foundation implemented, full cutover pending
 owner_role: product-architecture
 canonical_for: AgentMember-based Organization, recursive Agent Teams, unified
   Work administration, and Supervising Operator boundary
@@ -27,6 +27,28 @@ runtime hierarchy.
 `Host` is relative to one Team. The Lead Hosts the root Team. A Member that
 creates a child Team becomes that Team's Host. A Member remains accountable to
 its parent Host while managing its own direct children.
+
+## Implemented identity foundation
+
+The first ADR 0051 cutover slice is intentionally additive:
+
+- `DurableAgentMember` is the slim Organization identity and is stored in
+  `durable_agent_members.jsonl`;
+- the old runtime-heavy `AgentMember` / `members.jsonl` row remains a readable
+  compatibility source only and converges through an explicit command;
+- `MemberRun.agent_member_id` binds execution to the durable identity while
+  runtime status and provider-native Session remain outside it;
+- root Lead bootstrap creates or reuses the durable identity and makes
+  `AgentTeam.host_member_id` authoritative; and
+- cutover audit refuses missing members, compatibility-only Hosts, and
+  conflicting `owner_agent_id` / `host_member_id` identities.
+
+The CLI surface is `harness org member create|converge|list|show`,
+`harness org bootstrap-lead`, `harness org host`, and
+`harness org cutover-audit`. HTTP/MCP, Dashboard, Work-kernel convergence, and
+the full Lead → CTO → child-Team dogfood scenario are still follow-up work.
+Passing this identity audit therefore proves no more than one explicit durable
+Host authority; it does not claim the whole ADR is implemented.
 
 ## Durable identity and replaceable runtime
 

@@ -13,28 +13,29 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, content_hash_hex16, validate_agent_team_topology, AgentEvent, AgentMember,
+    build_launch_spec, content_hash_hex16, resolve_team_host_authority,
+    validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
-    AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence,
-    ExecutionSpace, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability,
-    NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind,
-    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
-    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
-    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
-    ProviderCompatibilityStatus, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work,
-    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
-    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
+    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, HostControlMode,
+    LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
+    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
+    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
+    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
+    ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
+    WaveGateStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -835,6 +836,7 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "missions.jsonl",
     "waves.jsonl",
     "members.jsonl",
+    "durable_agent_members.jsonl",
     "teams.jsonl",
     "agent_runtimes.jsonl",
     "agent_events.jsonl",
@@ -1428,6 +1430,7 @@ fn run() -> CliResult<()> {
         "project" => project_command(&args[1..])?,
         "space" => execution_space_command(&args[1..])?,
         "agent" => agent_command(&store, resolved.context.as_ref(), &args[1..])?,
+        "org" => org_command(&store, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
         "mission" => mission_command(&store, &args[1..])?,
         "wave" => wave_command(&store, &args[1..])?,
@@ -8957,6 +8960,163 @@ fn agent_command(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Organization durable AgentMember identity (ADR 0051).
+//
+// This surface is intentionally CLI/store-only in this slice. HTTP/MCP wiring
+// belongs to the application-service follow-up and must not create a second
+// implementation of Host-authority resolution.
+// ---------------------------------------------------------------------------
+
+fn durable_member_status(value: Option<String>) -> CliResult<DurableAgentMemberStatus> {
+    match value.as_deref().unwrap_or("active") {
+        "active" => Ok(DurableAgentMemberStatus::Active),
+        "paused" => Ok(DurableAgentMemberStatus::Paused),
+        "retired" => Ok(DurableAgentMemberStatus::Retired),
+        other => Err(CliError::Usage(format!(
+            "unknown durable AgentMember status: {other}; expected active|paused|retired"
+        ))),
+    }
+}
+
+fn build_durable_member_from_args(args: &[String]) -> CliResult<DurableAgentMember> {
+    let now = now_string();
+    Ok(DurableAgentMember {
+        id: value(args, "--id").unwrap_or_else(|| generated_id("agent-member")),
+        name: required(args, "--name")?,
+        description: required(args, "--description")?,
+        role: required(args, "--role")?,
+        provider_profile: value(args, "--provider-profile"),
+        model: value(args, "--model"),
+        workspace_policy: value(args, "--workspace-policy"),
+        project_binding_id: value(args, "--project-binding"),
+        business_access_ceiling_refs: many(args, "--business-access-ceiling"),
+        status: durable_member_status(value(args, "--status"))?,
+        created_by_member_id: value(args, "--created-by-member"),
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
+fn converge_durable_member(
+    store: &HarnessStore,
+    id: &str,
+    args: &[String],
+) -> CliResult<DurableAgentMember> {
+    let source = latest_members(store)?
+        .remove(id)
+        .ok_or_else(|| CliError::Usage(format!("compatibility AgentMember not found: {id}")))?;
+    let status = match source.status {
+        AgentMemberStatus::Retired => DurableAgentMemberStatus::Retired,
+        AgentMemberStatus::Paused
+        | AgentMemberStatus::Stale
+        | AgentMemberStatus::Closed
+        | AgentMemberStatus::Closing => DurableAgentMemberStatus::Paused,
+        _ => DurableAgentMemberStatus::Active,
+    };
+    let member = DurableAgentMember {
+        id: source.id,
+        name: source.name,
+        description: source.description,
+        role: source.role,
+        provider_profile: source.profile.or(Some(source.provider)),
+        model: source.model,
+        workspace_policy: source.workspace_policy,
+        project_binding_id: value(args, "--project-binding"),
+        business_access_ceiling_refs: many(args, "--business-access-ceiling"),
+        status,
+        created_by_member_id: value(args, "--created-by-member"),
+        // Deterministic projection: re-running convergence produces the same
+        // identity row rather than introducing a wall-clock difference.
+        created_at: source.created_at.clone(),
+        updated_at: source.created_at,
+    };
+    Ok(store.converge_registry_member(&member)?)
+}
+
+fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "org member|bootstrap-lead|host|cutover-audit")?;
+    match args[0].as_str() {
+        "member" => {
+            let member_args = args.get(1..).unwrap_or(&[]);
+            require_subcommand(member_args, "org member create|converge|list|show")?;
+            match member_args[0].as_str() {
+                "create" => {
+                    let member = build_durable_member_from_args(&member_args[1..])?;
+                    store.insert_durable_member(&member)?;
+                    print_json(&member)?;
+                }
+                "converge" => {
+                    let rest = &member_args[1..];
+                    let member = converge_durable_member(store, &required(rest, "--id")?, rest)?;
+                    print_json(&member)?;
+                }
+                "list" => print_json(
+                    &store
+                        .latest_durable_members()?
+                        .into_values()
+                        .collect::<Vec<_>>(),
+                )?,
+                "show" => {
+                    let id = required(&member_args[1..], "--id")?;
+                    let member = store.latest_durable_members()?.remove(&id).ok_or_else(|| {
+                        CliError::Usage(format!("durable AgentMember not found: {id}"))
+                    })?;
+                    print_json(&member)?;
+                }
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "unknown org member command: {other}"
+                    )))
+                }
+            }
+        }
+        "bootstrap-lead" => {
+            let rest = &args[1..];
+            let team_id = value(rest, "--team")
+                .or_else(|| value(rest, "--team-id"))
+                .ok_or_else(|| CliError::Usage("missing required option --team".to_string()))?;
+            let member = build_durable_member_from_args(rest)?;
+            let team = store.bootstrap_root_lead_member(&team_id, &member)?;
+            print_json(&serde_json::json!({"member": member, "team": team}))?;
+        }
+        "host" => {
+            let rest = &args[1..];
+            let team_id = value(rest, "--team")
+                .or_else(|| value(rest, "--team-id"))
+                .ok_or_else(|| CliError::Usage("missing required option --team".to_string()))?;
+            let team = store
+                .latest_teams()?
+                .remove(&team_id)
+                .ok_or_else(|| CliError::Usage(format!("AgentTeam not found: {team_id}")))?;
+            let host = resolve_team_host_authority(&team)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            print_json(&serde_json::json!({
+                "team_id": team.id,
+                "host_member_id": host,
+                "source": if team.host_member_id.is_some() { "explicit" } else { "owner_agent_id_compatibility" }
+            }))?;
+        }
+        "cutover-audit" => {
+            let teams = store.latest_teams()?;
+            validate_agent_team_topology(&teams)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            let members = store.latest_durable_members()?;
+            validate_host_authority_cutover(&teams, &members)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            print_json(&serde_json::json!({
+                "ready": true,
+                "team_count": teams.len(),
+                "durable_member_count": members.len(),
+                "authority": "host_member_id",
+                "legacy_owner_is_alias_only": true
+            }))?;
+        }
+        other => return Err(CliError::Usage(format!("unknown org command: {other}"))),
+    }
+    Ok(())
+}
+
 fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
@@ -9013,7 +9173,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .remove(&id)
                 .ok_or_else(|| CliError::Usage(format!("team not found: {id}")))?;
             if args[0] == "add-member" {
-                if !latest_members(store)?.contains_key(&member_id) {
+                if !known_agent_member_ids(store)?.contains(&member_id) {
                     return Err(CliError::Usage(format!(
                         "agent member not found: {member_id}"
                     )));
@@ -23741,7 +23901,7 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
             team.id
         )));
     }
-    let members = latest_members(store)?;
+    let members = known_agent_member_ids(store)?;
     let mut unique = BTreeSet::new();
     for member_id in &team.member_ids {
         if member_id.trim().is_empty() {
@@ -23754,14 +23914,14 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
                 "AgentTeam contains duplicate member id: {member_id}"
             )));
         }
-        if !members.contains_key(member_id) {
+        if !members.contains(member_id) {
             return Err(CliError::Usage(format!(
                 "AgentTeam references missing AgentMember: {member_id}"
             )));
         }
     }
     if let Some(host_member_id) = team.host_member_id.as_deref() {
-        if !members.contains_key(host_member_id) {
+        if !members.contains(host_member_id) {
             return Err(CliError::Usage(format!(
                 "AgentTeam references missing host AgentMember: {host_member_id}"
             )));
@@ -30732,6 +30892,12 @@ fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentMembe
     Ok(members)
 }
 
+fn known_agent_member_ids(store: &HarnessStore) -> CliResult<BTreeSet<String>> {
+    let mut ids = latest_members(store)?.into_keys().collect::<BTreeSet<_>>();
+    ids.extend(store.latest_durable_members()?.into_keys());
+    Ok(ids)
+}
+
 fn latest_teams(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentTeam>> {
     let mut teams = BTreeMap::new();
     for team in store.teams()? {
@@ -33182,6 +33348,8 @@ fn print_help() {
   member-run show --id <member-run-id> [--json]
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
+  org member create|converge|list|show
+  org bootstrap-lead|host|cutover-audit
   member register|list|providers
   member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
                    [--timeout-s <n>] [--fail-on-unavailable] [--json]
