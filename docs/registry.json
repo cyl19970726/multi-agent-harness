@@ -4973,6 +4973,194 @@
    "authorityClass": "implementation_reference",
    "implementationState": "design_only",
    "truthRefs": []
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "recursive Organization, global Works, Member Focus, Team War Room, and Docs-to-Work handoff visual and interaction acceptance entry"
+   ],
+   "dependsOn": [
+    "docs/company-os/frontend-information-architecture.md",
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Surface scope, baseline viewports, evidence policy, or placement (company-os-v6) changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "field-level data provenance and IMPLEMENTED/TARGET/RESEARCH classes for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "specs/nested-agent-team-organization/design.md",
+    "docs/company-os/implementation-truth-matrix.md",
+    "docs/product/agent-team-works.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Any rendered field, source contract, provenance class, or frozen discrepancy changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "navigation, click, scroll, filter, loading, empty, and error rules for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+    "docs/company-os/frontend-information-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Interaction rules, motion policy, or responsive rules for any of the five surfaces change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Wave 0 Expected text wireframes for the five recursive-org UI surfaces at desktop, tablet, 390, and 320"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Any Expected layout, label, or viewport frame changes; replaced by approved Expected PNGs when captured.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "per-state, per-viewport acceptance rows for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Page priorities, states, viewports, baselines, or acceptance mechanism changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/expected-vs-actual.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "expected-vs-actual gap map and production-component seam freeze for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Gap analysis, likely-to-change component list, non-goals, or acceptance criteria change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/visual-contract.json",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "machine-readable visual acceptance case list for the recursive-org-docs-works-v1 slice"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "visual acceptance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Cases, viewports, expected references, artifact policy, or wave0 policy changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
   }
  ]
 }
