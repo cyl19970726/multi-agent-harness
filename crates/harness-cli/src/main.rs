@@ -853,6 +853,7 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "team_messages.jsonl",
     "work_operations.jsonl",
     "work_delivery_updates.jsonl",
+    "host_attentions.jsonl",
     "team_supervisor_leases.jsonl",
     "team_member_close_requests.jsonl",
     "member_actions.jsonl",

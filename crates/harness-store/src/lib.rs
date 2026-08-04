@@ -9,14 +9,14 @@ use harness_core::{
     validate_agent_team_topology, validate_work_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, DurableAgentMember, Evidence, Gap, HostAttention, HostAttentionInbox,
-    HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageTerminalSource, Mission, MissionStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
-    WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
-    WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
+    HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
+    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
+    WorkEvent, WorkEventKind, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
     WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -718,70 +718,24 @@ impl HarnessStore {
     /// returns the latest delivery/intake projection instead of resetting it
     /// to `actionable` or fabricating a TeamMessage.
     pub fn ensure_host_attention(&self, attention: &HostAttention) -> StoreResult<HostAttention> {
-        attention
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if attention.status != HostAttentionStatus::Actionable
-            || attention.attempt != 0
-            || attention.claim_id.is_some()
-            || attention.claimed_host_surface.is_some()
-            || attention.claimed_host_thread_id.is_some()
-            || attention.provider_receipt_id.is_some()
-        {
-            return Err(StoreError::Conflict(
-                "new HostAttention must be actionable and unclaimed".to_string(),
-            ));
-        }
-
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let mut attentions = self.latest_host_attentions_unlocked()?;
-        if let Some(existing) = attentions.remove(&attention.id) {
-            let same_fact = existing.team_run_id == attention.team_run_id
-                && existing.kind == attention.kind
-                && existing.work_id == attention.work_id
-                && existing.work_version == attention.work_version
-                && existing.source_event_ref == attention.source_event_ref
-                && existing.member_run_id == attention.member_run_id
-                && existing.created_at == attention.created_at;
-            if same_fact {
-                return Ok(existing);
-            }
-            return Err(StoreError::Conflict(format!(
-                "HostAttention id {} already names a different causal fact",
-                attention.id
-            )));
-        }
+        self.ensure_host_attention_unlocked(attention)
+    }
 
-        self.require_team_run_unlocked(&attention.team_run_id)?;
-        let work = self
-            .latest_works_unlocked()?
-            .remove(&attention.work_id)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!("work not found: {}", attention.work_id))
-            })?;
-        if work.team_run_id != attention.team_run_id {
-            return Err(StoreError::Conflict(format!(
-                "Work {} does not belong to TeamRun {}",
-                attention.work_id, attention.team_run_id
-            )));
-        }
-        if work.version < attention.work_version {
-            return Err(StoreError::Conflict(format!(
-                "HostAttention references future Work version {} > {}",
-                attention.work_version, work.version
-            )));
-        }
-        if let Some(member_run_id) = attention.member_run_id.as_deref() {
-            self.require_member_run_unlocked(member_run_id, &attention.team_run_id)?;
-        }
-
-        self.append_jsonl_unlocked("host_attentions.jsonl", attention)?;
-        Ok(attention.clone())
+    /// Repair the only intentional two-ledger crash boundary: a WorkOperation
+    /// may be fsynced immediately before its derived HostAttention row. The
+    /// deterministic attention id makes this replay safe and lets Host reads or
+    /// an explicit startup reconciliation materialize exactly the missing row.
+    pub fn reconcile_work_host_attentions(&self) -> StoreResult<Vec<HostAttention>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.reconcile_work_host_attentions_unlocked()
     }
 
     /// Latest-wins Host-attention projection across all TeamRuns.
     pub fn host_attentions(&self) -> StoreResult<Vec<HostAttention>> {
+        self.reconcile_work_host_attentions()?;
         Ok(self
             .latest_host_attentions_unlocked()?
             .into_values()
@@ -795,28 +749,8 @@ impl HarnessStore {
         team_run_id: &str,
         include_all: bool,
     ) -> StoreResult<HostAttentionInbox> {
-        let run = self.require_team_run_unlocked(team_run_id)?;
-        let attentions = self
-            .latest_host_attentions_unlocked()?
-            .into_values()
-            .filter(|attention| attention.team_run_id == team_run_id)
-            .filter(|attention| include_all || attention.needs_host_action())
-            .collect::<Vec<_>>();
-        let warning = if run.host_thread_id.is_none() && !attentions.is_empty() {
-            Some(format!(
-                "UNBOUND_HOST: TeamRun {} has actionable Host attention but no exact native Host task; bind host_surface + host_thread_id before delivery",
-                run.id
-            ))
-        } else {
-            None
-        };
-        Ok(HostAttentionInbox {
-            team_run_id: run.id,
-            host_surface: run.host_surface,
-            host_thread_id: run.host_thread_id,
-            warning,
-            attentions,
-        })
+        self.reconcile_work_host_attentions()?;
+        self.host_attention_inbox_for_team_run_unreconciled(team_run_id, include_all)
     }
 
     /// Aggregate only attentions owned by the exact provider-native Host task.
@@ -832,6 +766,7 @@ impl HarnessStore {
                 "Host surface and native thread id must not be empty".to_string(),
             ));
         }
+        self.reconcile_work_host_attentions()?;
         let runs = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
             run.id.clone()
         });
@@ -840,7 +775,8 @@ impl HarnessStore {
             run.host_surface == host_surface
                 && run.host_thread_id.as_deref() == Some(host_thread_id)
         }) {
-            let inbox = self.host_attention_inbox_for_team_run(&run.id, include_all)?;
+            let inbox =
+                self.host_attention_inbox_for_team_run_unreconciled(&run.id, include_all)?;
             if include_all || !inbox.attentions.is_empty() {
                 inboxes.push(inbox);
             }
@@ -866,6 +802,7 @@ impl HarnessStore {
         require_non_empty_store(updated_at, "Host attention updated_at")?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        self.reconcile_work_host_attentions_unlocked()?;
         let mut attention = self.require_host_attention_unlocked(attention_id)?;
         self.require_exact_host_binding_unlocked(
             &attention.team_run_id,
@@ -1594,6 +1531,21 @@ impl HarnessStore {
         if current.is_terminal() {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} is terminal and cannot be retargeted"
+            )));
+        }
+        self.reconcile_work_host_attentions_unlocked()?;
+        if self
+            .latest_host_attentions_unlocked()?
+            .values()
+            .any(|attention| {
+                attention.work_id == current.id
+                    && attention.team_run_id == current.team_run_id
+                    && attention.needs_host_action()
+            })
+        {
+            return Err(StoreError::Conflict(format!(
+                "HOST_ATTENTION_PENDING: Work {work_id} has unresolved attention owned by TeamRun {}; the exact Host must ACK intake before execution retarget",
+                current.team_run_id
             )));
         }
         let team_id = current.team_id.clone().ok_or_else(|| {
@@ -2361,6 +2313,7 @@ impl HarnessStore {
             delivery_updates,
         };
         self.append_jsonl_unlocked("work_operations.jsonl", &operation)?;
+        self.ensure_host_attention_for_work_operation_unlocked(&operation)?;
         Ok(next)
     }
 
@@ -2378,6 +2331,188 @@ impl HarnessStore {
         })
         .remove(team_run_id)
         .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))
+    }
+
+    fn ensure_host_attention_unlocked(
+        &self,
+        attention: &HostAttention,
+    ) -> StoreResult<HostAttention> {
+        attention
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if attention.status != HostAttentionStatus::Actionable
+            || attention.attempt != 0
+            || attention.claim_id.is_some()
+            || attention.claimed_host_surface.is_some()
+            || attention.claimed_host_thread_id.is_some()
+            || attention.provider_receipt_id.is_some()
+        {
+            return Err(StoreError::Conflict(
+                "new HostAttention must be actionable and unclaimed".to_string(),
+            ));
+        }
+
+        let mut attentions = self.latest_host_attentions_unlocked()?;
+        if let Some(existing) = attentions.remove(&attention.id) {
+            if Self::same_host_attention_fact(&existing, attention) {
+                return Ok(existing);
+            }
+            return Err(StoreError::Conflict(format!(
+                "HostAttention id {} already names a different causal fact",
+                attention.id
+            )));
+        }
+
+        self.require_team_run_unlocked(&attention.team_run_id)?;
+        let source_operation = self
+            .work_operations_unlocked()?
+            .into_iter()
+            .find(|operation| operation.event.id == attention.source_event_ref);
+        if let Some(operation) = source_operation {
+            if operation.event.team_run_id != attention.team_run_id
+                || operation.event.work_id != attention.work_id
+                || operation.event.resulting_version != attention.work_version
+            {
+                return Err(StoreError::Conflict(format!(
+                    "HostAttention {} does not match source WorkEvent {}",
+                    attention.id, attention.source_event_ref
+                )));
+            }
+        } else {
+            // Member-runtime attention can be caused by a TeamRun/provider
+            // event rather than a WorkEvent. Validate that its current Work
+            // subject still resolves inside the named TeamRun.
+            let work = self
+                .latest_works_unlocked()?
+                .remove(&attention.work_id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!("work not found: {}", attention.work_id))
+                })?;
+            if work.team_run_id != attention.team_run_id {
+                return Err(StoreError::Conflict(format!(
+                    "Work {} does not belong to TeamRun {}",
+                    attention.work_id, attention.team_run_id
+                )));
+            }
+            if work.version < attention.work_version {
+                return Err(StoreError::Conflict(format!(
+                    "HostAttention references future Work version {} > {}",
+                    attention.work_version, work.version
+                )));
+            }
+        }
+        if let Some(member_run_id) = attention.member_run_id.as_deref() {
+            self.require_member_run_unlocked(member_run_id, &attention.team_run_id)?;
+        }
+
+        self.append_jsonl_unlocked("host_attentions.jsonl", attention)?;
+        Ok(attention.clone())
+    }
+
+    fn same_host_attention_fact(left: &HostAttention, right: &HostAttention) -> bool {
+        left.team_run_id == right.team_run_id
+            && left.kind == right.kind
+            && left.work_id == right.work_id
+            && left.work_version == right.work_version
+            && left.source_event_ref == right.source_event_ref
+            && left.member_run_id == right.member_run_id
+            && left.created_at == right.created_at
+    }
+
+    fn host_attention_for_work_operation(operation: &WorkOperation) -> Option<HostAttention> {
+        let kind = match operation.event.kind {
+            WorkEventKind::Submitted => HostAttentionKind::WorkReviewRequested,
+            WorkEventKind::Blocked => HostAttentionKind::WorkBlocked,
+            _ => return None,
+        };
+        Some(HostAttention {
+            id: format!("host-attention-{}", operation.event.id),
+            team_run_id: operation.event.team_run_id.clone(),
+            kind,
+            work_id: operation.event.work_id.clone(),
+            work_version: operation.event.resulting_version,
+            source_event_ref: operation.event.id.clone(),
+            member_run_id: operation.work.active_member_run_id.clone(),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: operation.event.created_at.clone(),
+            updated_at: operation.event.created_at.clone(),
+        })
+    }
+
+    fn ensure_host_attention_for_work_operation_unlocked(
+        &self,
+        operation: &WorkOperation,
+    ) -> StoreResult<Option<HostAttention>> {
+        Self::host_attention_for_work_operation(operation)
+            .map(|attention| self.ensure_host_attention_unlocked(&attention))
+            .transpose()
+    }
+
+    fn reconcile_work_host_attentions_unlocked(&self) -> StoreResult<Vec<HostAttention>> {
+        let operations = self.work_operations_unlocked()?;
+        let mut projected = self.latest_host_attentions_unlocked()?;
+        let mut reconciled = Vec::new();
+        for operation in &operations {
+            let Some(attention) = Self::host_attention_for_work_operation(operation) else {
+                continue;
+            };
+            if let Some(existing) = projected.get(&attention.id) {
+                if !Self::same_host_attention_fact(existing, &attention) {
+                    return Err(StoreError::Conflict(format!(
+                        "HostAttention id {} already names a different causal fact",
+                        attention.id
+                    )));
+                }
+                reconciled.push(existing.clone());
+                continue;
+            }
+            attention
+                .validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            self.require_team_run_unlocked(&attention.team_run_id)?;
+            if let Some(member_run_id) = attention.member_run_id.as_deref() {
+                self.require_member_run_unlocked(member_run_id, &attention.team_run_id)?;
+            }
+            self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+            projected.insert(attention.id.clone(), attention.clone());
+            reconciled.push(attention);
+        }
+        Ok(reconciled)
+    }
+
+    fn host_attention_inbox_for_team_run_unreconciled(
+        &self,
+        team_run_id: &str,
+        include_all: bool,
+    ) -> StoreResult<HostAttentionInbox> {
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        let attentions = self
+            .latest_host_attentions_unlocked()?
+            .into_values()
+            .filter(|attention| attention.team_run_id == team_run_id)
+            .filter(|attention| include_all || attention.needs_host_action())
+            .collect::<Vec<_>>();
+        let warning = if run.host_thread_id.is_none() && !attentions.is_empty() {
+            Some(format!(
+                "UNBOUND_HOST: TeamRun {} has actionable Host attention but no exact native Host task; bind host_surface + host_thread_id before delivery",
+                run.id
+            ))
+        } else {
+            None
+        };
+        Ok(HostAttentionInbox {
+            team_run_id: run.id,
+            host_surface: run.host_surface,
+            host_thread_id: run.host_thread_id,
+            warning,
+            attentions,
+        })
     }
 
     fn latest_host_attentions_unlocked(
@@ -2574,6 +2709,10 @@ impl HarnessStore {
                 existing.event.kind, existing.event.work_id
             )));
         }
+        // If the original process crashed after fsyncing the WorkOperation but
+        // before its derived HostAttention row, the ordinary idempotent retry
+        // repairs that gap before returning the already-applied Work result.
+        self.ensure_host_attention_for_work_operation_unlocked(&existing)?;
         Ok(Some(existing))
     }
 
@@ -4978,6 +5117,7 @@ mod tests {
                 Work {
                     id: format!("work-{run_id}"),
                     team_run_id: run_id.into(),
+                    team_id: None,
                     parent_work_id: None,
                     source_work_item_ref: None,
                     title: "deliver exact Host attention".into(),
@@ -4990,6 +5130,7 @@ mod tests {
                     eligible_member_ids: Vec::new(),
                     prerequisite_work_ids: Vec::new(),
                     priority: WorkPriority::Normal,
+                    created_by_member_id: None,
                     created_by_actor: TeamActorRef {
                         kind: TeamActorKind::Host,
                         id: "host".into(),
@@ -5151,6 +5292,128 @@ mod tests {
                 .status,
             HostAttentionStatus::Acknowledged,
             "replaying projection must not reset Host intake"
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn submitted_and_blocked_work_reconcile_exactly_one_host_attention_each() {
+        let root = team_test_root("work-host-attention-reconciliation");
+        let store = HarnessStore::new(&root);
+        let (_review_run, review_member, review_work) =
+            seed_host_attention_fixture(&store, "review-run", Some("review-host-task"));
+        let started_review = store
+            .start_work(
+                &review_work.id,
+                review_work.version,
+                &review_member.id,
+                member_work_context(
+                    &review_member.id,
+                    "work-event-review-started",
+                    "work-command-review-started",
+                    "unix-ms:3",
+                ),
+            )
+            .expect("start review Work");
+        let submitted = store
+            .submit_work(
+                &started_review.id,
+                started_review.version,
+                &review_member.id,
+                "ready for exact Host review",
+                Vec::new(),
+                vec!["cargo:test".into()],
+                member_work_context(
+                    &review_member.id,
+                    "work-event-review-submitted",
+                    "work-command-review-submitted",
+                    "unix-ms:4",
+                ),
+            )
+            .expect("submit Work");
+
+        let (_blocked_run, blocked_member, blocked_work) =
+            seed_host_attention_fixture(&store, "blocked-run", Some("blocked-host-task"));
+        let started_blocked = store
+            .start_work(
+                &blocked_work.id,
+                blocked_work.version,
+                &blocked_member.id,
+                member_work_context(
+                    &blocked_member.id,
+                    "work-event-blocked-started",
+                    "work-command-blocked-started",
+                    "unix-ms:5",
+                ),
+            )
+            .expect("start blocked Work");
+        let blocked = store
+            .block_work(
+                &started_blocked.id,
+                started_blocked.version,
+                &blocked_member.id,
+                "needs Host decision",
+                member_work_context(
+                    &blocked_member.id,
+                    "work-event-blocked",
+                    "work-command-blocked",
+                    "unix-ms:6",
+                ),
+            )
+            .expect("block Work");
+
+        let attentions = store.host_attentions().expect("derived Host attentions");
+        assert_eq!(attentions.len(), 2);
+        let review_attention = attentions
+            .iter()
+            .find(|attention| attention.work_id == submitted.id)
+            .expect("review attention");
+        assert_eq!(
+            review_attention.id,
+            "host-attention-work-event-review-submitted"
+        );
+        assert_eq!(
+            review_attention.kind,
+            HostAttentionKind::WorkReviewRequested
+        );
+        assert_eq!(review_attention.work_version, submitted.version);
+        let blocked_attention = attentions
+            .iter()
+            .find(|attention| attention.work_id == blocked.id)
+            .expect("blocked attention");
+        assert_eq!(blocked_attention.id, "host-attention-work-event-blocked");
+        assert_eq!(blocked_attention.kind, HostAttentionKind::WorkBlocked);
+        assert_eq!(blocked_attention.work_version, blocked.version);
+        assert!(
+            store.team_messages().expect("TeamMessages").is_empty(),
+            "Work-state attention must not fabricate conversation"
+        );
+
+        // Simulate the process dying after work_operations.jsonl was fsynced
+        // but before host_attentions.jsonl reached disk.
+        std::fs::remove_file(root.join("host_attentions.jsonl"))
+            .expect("remove derived ledger to simulate crash gap");
+        let reconciled = store
+            .reconcile_work_host_attentions()
+            .expect("repair crash gap from WorkEvent truth");
+        assert_eq!(reconciled.len(), 2);
+        let repaired_bytes = std::fs::read(root.join("host_attentions.jsonl"))
+            .expect("repaired Host-attention ledger");
+        assert_eq!(
+            repaired_bytes
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            2
+        );
+        store
+            .reconcile_work_host_attentions()
+            .expect("idempotent second reconciliation");
+        assert_eq!(
+            std::fs::read(root.join("host_attentions.jsonl")).expect("stable ledger"),
+            repaired_bytes,
+            "reconciliation must not append duplicates"
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
@@ -8208,6 +8471,27 @@ mod tests {
         store
             .append_member_run(&closed_member)
             .expect("close old runtime");
+        let old_run_attention = HostAttention {
+            id: "host-attention-old-runtime-stopped".into(),
+            team_run_id: linked_run.id.clone(),
+            kind: HostAttentionKind::MemberStoppedWithOwnedReadyWork,
+            work_id: promoted.id.clone(),
+            work_version: promoted.version,
+            source_event_ref: "member-runtime-stopped-old".into(),
+            member_run_id: Some(closed_member.id.clone()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: "unix-ms:5".into(),
+            updated_at: "unix-ms:5".into(),
+        };
+        store
+            .ensure_host_attention(&old_run_attention)
+            .expect("record old execution attention before retarget");
 
         let mut successor_run = linked_run.clone();
         successor_run.id = "tr-team-scope-retarget-successor".into();
@@ -8228,6 +8512,55 @@ mod tests {
             .append_member_run(&successor_member)
             .expect("append successor member");
 
+        let pending_error = store
+            .retarget_work_execution(
+                &promoted.id,
+                promoted.version,
+                &successor_run.id,
+                Some(&successor_member.id),
+                host_work_context(
+                    "event-retarget-persistent-pending",
+                    "command-retarget-persistent-pending",
+                    "unix-ms:7",
+                ),
+            )
+            .expect_err("unresolved old-Host attention must fence retarget");
+        assert!(pending_error.to_string().contains("HOST_ATTENTION_PENDING"));
+        assert!(matches!(
+            store
+                .claim_host_attention(
+                    &old_run_attention.id,
+                    &linked_run.host_surface,
+                    linked_run
+                        .host_thread_id
+                        .as_deref()
+                        .expect("bound old Host"),
+                    "claim-old-runtime-attention",
+                    "unix-ms:7",
+                )
+                .expect("claim old Host attention"),
+            HostAttentionClaimResult::Claimed(_)
+        ));
+        store
+            .complete_host_attention_claim(
+                &old_run_attention.id,
+                "claim-old-runtime-attention",
+                "old-host-provider-receipt",
+                "unix-ms:8",
+            )
+            .expect("deliver to exact old Host");
+        store
+            .acknowledge_host_attention(
+                &old_run_attention.id,
+                &linked_run.host_surface,
+                linked_run
+                    .host_thread_id
+                    .as_deref()
+                    .expect("bound old Host"),
+                "unix-ms:9",
+            )
+            .expect("old Host ACK before retarget");
+
         let retargeted = store
             .retarget_work_execution(
                 &promoted.id,
@@ -8237,7 +8570,7 @@ mod tests {
                 host_work_context(
                     "event-retarget-persistent",
                     "command-retarget-persistent",
-                    "unix-ms:7",
+                    "unix-ms:10",
                 ),
             )
             .expect("retarget Work");

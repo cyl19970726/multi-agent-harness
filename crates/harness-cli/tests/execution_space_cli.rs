@@ -118,6 +118,11 @@ fn explicit_migration_copies_only_execution_truth_and_keeps_source() {
     .unwrap();
     std::fs::write(source.join("members.jsonl"), "{\"id\":\"member-legacy\"}\n").unwrap();
     std::fs::write(
+        source.join("host_attentions.jsonl"),
+        b"{\"id\":\"host-attention-legacy\",\"status\":\"actionable\"}\n",
+    )
+    .unwrap();
+    std::fs::write(
         source.join("company_os_documents.jsonl"),
         "{\"id\":\"company-doc\"}\n",
     )
@@ -154,6 +159,11 @@ fn explicit_migration_copies_only_execution_truth_and_keeps_source() {
         std::fs::read(source.join("members.jsonl")).unwrap(),
         std::fs::read(target.join("members.jsonl")).unwrap()
     );
+    assert_eq!(
+        std::fs::read(source.join("host_attentions.jsonl")).unwrap(),
+        std::fs::read(target.join("host_attentions.jsonl")).unwrap(),
+        "Host-attention execution truth must be copied and byte-verified"
+    );
     assert!(!target.join("company_os_documents.jsonl").exists());
     assert!(!target.join("provider-sessions").exists());
     assert_eq!(
@@ -165,7 +175,7 @@ fn explicit_migration_copies_only_execution_truth_and_keeps_source() {
         source.join("missions.jsonl").exists(),
         "migration is copy-only"
     );
-    assert_eq!(migrated["migration"]["verified_records"].as_u64(), Some(2));
+    assert_eq!(migrated["migration"]["verified_records"].as_u64(), Some(3));
     assert_eq!(
         migrated["migration"]["source_retained"].as_bool(),
         Some(true)
