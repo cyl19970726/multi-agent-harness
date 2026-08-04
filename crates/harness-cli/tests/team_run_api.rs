@@ -5328,6 +5328,429 @@ fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
 }
 
 #[test]
+fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it() {
+    let home = TempHome::new("team-run-kimi-empty-circuit");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let prompts = home.base().join("kimi-empty-prompts");
+    let prompts_value = prompts.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_EMPTY_TERMINAL", "1"),
+            ("FAKE_KIMI_KEEP_WORK_ACTIVE", "1"),
+            // Round 3 produces a real report. The breaker must reset there,
+            // then open only after rounds 4/5/6 are empty again.
+            ("FAKE_KIMI_REAL_ON_PROMPT", "3"),
+            ("FAKE_KIMI_PROMPT_MARKER", prompts_value.as_str()),
+            // Disable the integration harness's default one-turn retirement;
+            // this test intentionally exercises production continuation.
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", ""),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Bound repeated empty Kimi terminal rounds",
+            "members": [{"name": "kimi-empty", "role": "implementer", "provider": "kimi", "initial_work": "Keep the Work active while the fake provider emits empty terminal rounds"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut stopped = None;
+    let mut last_snapshot = serde_json::Value::Null;
+    for _ in 0..500 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        last_snapshot = snapshot.clone();
+        stopped = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("provider_circuit_breaker")
+            })
+            .cloned();
+        if stopped.is_some() {
+            assert!(snapshot["member_runs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|member| {
+                    member["id"].as_str() == Some(member_id.as_str())
+                        && member["status"].as_str() == Some("failed")
+                }));
+            let empty_rounds = snapshot["member_actions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|action| {
+                    action["member_run_id"].as_str() == Some(member_id.as_str())
+                        && action["action_type"].as_str() == Some("empty_provider_round")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(empty_rounds.len(), 5, "snapshot: {snapshot}");
+            assert!(empty_rounds
+                .iter()
+                .all(|action| action["status"].as_str() == Some("failed")));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stopped = stopped.unwrap_or_else(|| {
+        panic!(
+            "repeated empty rounds must open the circuit; prompts={:?}; snapshot={last_snapshot}",
+            std::fs::read_to_string(&prompts).ok()
+        )
+    });
+    let summary = stopped["summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("3 consecutive unproductive rounds"),
+        "{summary}"
+    );
+    assert!(summary.contains("empty terminal success"), "{summary}");
+    assert!(summary.contains("capacity remains unknown"), "{summary}");
+
+    let active_work = last_snapshot["works"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|work| work["active_member_run_id"].as_str() == Some(member_id.as_str()))
+        .expect("the circuit must preserve the member's active Work");
+    assert_eq!(
+        active_work["status"].as_str(),
+        Some("in_progress"),
+        "the provider circuit must not rewrite active Work: {active_work}"
+    );
+    let work_id = active_work["id"].as_str().expect("active Work id");
+    let received_deliveries = last_snapshot["work_deliveries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|delivery| {
+            delivery["work_id"].as_str() == Some(work_id)
+                && delivery["recipient_member_run_id"].as_str() == Some(member_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        received_deliveries.len(),
+        1,
+        "the circuit must not replay or create another delivery attempt: {last_snapshot}"
+    );
+    let received = received_deliveries[0];
+    assert_eq!(received["status"].as_str(), Some("provider_received"));
+    assert_eq!(received["attempt"].as_u64(), Some(1));
+    assert!(
+        received["provider_receipt_id"].as_str().is_some(),
+        "the existing provider receipt must be preserved: {received}"
+    );
+
+    // Confirm the snapshot assertions resolve to the same authoritative store
+    // projection after the provider runtime has stopped.
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let stored_work = store
+        .latest_works()
+        .expect("latest Works")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("stored active Work");
+    assert_eq!(stored_work.status, harness_core::WorkStatus::InProgress);
+    let stored_delivery = store
+        .latest_work_deliveries()
+        .expect("latest Work deliveries")
+        .into_iter()
+        .find(|delivery| {
+            delivery.work_id == work_id && delivery.recipient_member_run_id == member_id
+        })
+        .expect("stored provider-received delivery");
+    assert_eq!(
+        stored_delivery.status,
+        harness_core::WorkDeliveryStatus::ProviderReceived
+    );
+    assert_eq!(stored_delivery.attempt, 1);
+    assert!(stored_delivery.provider_receipt_id.is_some());
+
+    // The fake process exits with the member. Six prompts prove the report on
+    // round 3 reset the counter; without reset the circuit would stop at 3.
+    std::thread::sleep(Duration::from_millis(50));
+    let prompt_count = std::fs::read_to_string(&prompts)
+        .expect("prompt marker")
+        .lines()
+        .count();
+    assert_eq!(
+        prompt_count, 6,
+        "real output must reset the empty-round counter"
+    );
+}
+
+#[test]
+fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
+    let home = TempHome::new("team-run-kimi-quota-circuit");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let prompts = home.base().join("kimi-quota-prompts");
+    let prompts_value = prompts.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_QUOTA_ERROR", "1"),
+            ("FAKE_KIMI_KEEP_WORK_ACTIVE", "1"),
+            ("FAKE_KIMI_PROMPT_MARKER", prompts_value.as_str()),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", ""),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Bound repeated quota-like Kimi failures",
+            "members": [{"name": "kimi-quota", "role": "implementer", "provider": "kimi", "initial_work": "Exercise quota-like provider failures"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+
+    let mut final_snapshot = None;
+    for _ in 0..500 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let opened = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("provider_circuit_breaker")
+                    && action["summary"]
+                        .as_str()
+                        .is_some_and(|summary| summary.contains("quota-like provider failure"))
+            });
+        if opened {
+            final_snapshot = Some(snapshot);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let snapshot = final_snapshot.expect("quota-like failures must open the circuit");
+    let member = snapshot["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+        .expect("member row");
+    assert_eq!(member["status"].as_str(), Some("failed"));
+    assert_eq!(
+        member["provider_capacity"]["state"].as_str(),
+        Some("unknown")
+    );
+    assert!(member["provider_capacity"]["windows"]
+        .as_array()
+        .is_some_and(|windows| windows.is_empty()));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        std::fs::read_to_string(&prompts)
+            .expect("prompt marker")
+            .lines()
+            .count(),
+        3,
+        "the quota-like circuit threshold must be deterministic"
+    );
+}
+
+#[test]
+fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
+    let home = TempHome::new("team-run-kimi-qwen-controls");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let controls = home.base().join("kimi-qwen-controls");
+    let controls_value = controls.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_CONTROL_MARKER", controls_value.as_str()),
+            ("FAKE_KIMI_MODEL_SWITCH_NO_REFRESH", "1"),
+            ("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "20"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Switch from the fake K3-shaped default to Qwen",
+            "members": [{"name": "qwen", "role": "implementer", "provider": "kimi", "model": "qwen/qwen3.8-max", "initial_work": "Run without a K3-only effort override"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Reproduce a pre-existing/resumed durable row whose old K3 model had
+    // already made `max` effective. The Qwen model switch below intentionally
+    // returns no refreshed thinking options, so every old-model projection
+    // field must be cleared rather than surviving by omission.
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let mut stale_member = store
+        .member_runs()
+        .expect("member rows")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("created member row");
+    stale_member.provider_controls.reasoning_effort.effective = Some("max".to_string());
+    stale_member.provider_controls.reasoning_effort.status =
+        harness_core::ProviderControlStatus::Effective;
+    stale_member.provider_controls.reasoning_effort.note =
+        Some("acknowledged by the previous K3 model".to_string());
+    store
+        .append_member_run(&stale_member)
+        .expect("seed stale old-model control projection");
+
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    let mut controlled = None;
+    for _ in 0..300 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        controlled = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["provider_controls"]["model"]["effective"].as_str()
+                        == Some("qwen/qwen3.8-max")
+            })
+            .cloned();
+        if controlled.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let controlled = controlled.expect("Qwen controls must become effective");
+    assert!(controlled["provider_controls"]["reasoning_effort"]["requested"].is_null());
+    assert!(
+        controlled["provider_controls"]["reasoning_effort"]["effective"].is_null(),
+        "without refreshed Qwen options, the old model's default is not evidence: {controlled}"
+    );
+    assert_eq!(
+        controlled["provider_controls"]["reasoning_effort"]["status"].as_str(),
+        Some("not_requested")
+    );
+    assert!(
+        controlled["provider_controls"]["reasoning_effort"]["note"].is_null(),
+        "the old model's receipt note must be cleared: {controlled}"
+    );
+    let calls = std::fs::read_to_string(&controls).expect("control marker");
+    assert!(calls.contains("qwen/qwen3.8-max"), "{calls}");
+    assert!(
+        !calls.contains("\"configId\":\"thinking\""),
+        "an omitted effort must not send the old model's override: {calls}"
+    );
+
+    // An explicitly requested K3-only value is not silently carried into the
+    // Qwen turn either: refreshed model-specific options reject it before any
+    // prompt, leaving an actionable failed MemberRun.
+    let rejected_home = TempHome::new("team-run-kimi-qwen-reject-k3-effort");
+    let _project_id = init_project(&rejected_home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(rejected_home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let prompts = rejected_home.base().join("qwen-rejected-prompts");
+    let prompts_value = prompts.display().to_string();
+    let rejected = ServeHandle::spawn_with_env(
+        &rejected_home,
+        rejected_home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_PROMPT_MARKER", prompts_value.as_str()),
+        ],
+    );
+    let (_, created) = rejected.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Reject K3-only effort on Qwen",
+            "members": [{"name": "qwen-bad-effort", "role": "implementer", "provider": "kimi", "model": "qwen/qwen3.8-max", "effort": "max", "initial_work": "Must fail before provider execution"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, started) = rejected.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    let mut failed = false;
+    for _ in 0..300 {
+        let (_, snapshot) = rejected.get_json("/v1/snapshot");
+        failed = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("error")
+                    && action["summary"].as_str().is_some_and(|summary| {
+                        summary.contains("does not advertise requested reasoning effort `max`")
+                    })
+            });
+        if failed {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(failed, "unsupported Qwen effort must fail before prompting");
+    assert!(
+        !prompts.exists(),
+        "the invalid control set must not reach session/prompt"
+    );
+}
+
+#[test]
 fn external_interactive_member_joins_and_exchanges_mail() {
     let home = TempHome::new("team-run-external-interactive");
     let project_id = init_project(&home, "alpha");

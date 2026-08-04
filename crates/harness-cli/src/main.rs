@@ -26,16 +26,17 @@ use harness_core::{
     PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
     ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
-    ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
+    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    TeamSupervisorLease, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
+    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -19298,6 +19299,67 @@ fn project_claude_team_event_live(
     }
 }
 
+const KIMI_UNPRODUCTIVE_ROUND_LIMIT: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KimiUnproductiveRound {
+    EmptyTerminalSuccess,
+    QuotaLikeProviderFailure,
+    ProviderFailureWithoutOutput,
+}
+
+impl KimiUnproductiveRound {
+    fn label(self) -> &'static str {
+        match self {
+            Self::EmptyTerminalSuccess => "empty terminal success",
+            Self::QuotaLikeProviderFailure => "quota-like provider failure",
+            Self::ProviderFailureWithoutOutput => "provider failure without agent output",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct KimiUnproductiveRoundCircuit {
+    consecutive: u32,
+}
+
+impl KimiUnproductiveRoundCircuit {
+    fn observe(
+        &mut self,
+        final_text: &str,
+        provider_error: Option<&str>,
+    ) -> Option<KimiUnproductiveRound> {
+        let empty = final_text.trim().is_empty();
+        if !empty {
+            self.consecutive = 0;
+            return None;
+        }
+        let quota_like = provider_error.is_some_and(kimi_error_looks_quota_like);
+        let kind = if quota_like {
+            KimiUnproductiveRound::QuotaLikeProviderFailure
+        } else if provider_error.is_some() {
+            KimiUnproductiveRound::ProviderFailureWithoutOutput
+        } else {
+            KimiUnproductiveRound::EmptyTerminalSuccess
+        };
+        self.consecutive = self.consecutive.saturating_add(1);
+        (self.consecutive >= KIMI_UNPRODUCTIVE_ROUND_LIMIT).then_some(kind)
+    }
+}
+
+fn kimi_error_looks_quota_like(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "quota",
+        "usage limit",
+        "rate limit",
+        "capacity exhausted",
+        "insufficient credits",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
+}
+
 /// Drive one persistent Kimi member. The ACP transport remains alive across
 /// idle periods; ordinary queued mail starts later turns on the same session.
 fn run_kimi_member(
@@ -19376,6 +19438,19 @@ fn run_kimi_member(
                 Some(effort.to_string()),
                 "acknowledged by kimi ACP configId=thinking or advertised session default",
             );
+    } else {
+        // A model switch may intentionally discard the previous model's
+        // thinking option when set_config_option does not return refreshed
+        // model-specific controls. Reinitialize the durable projection too:
+        // a resumed MemberRun must not keep an old model's effective effort,
+        // status, or receipt note merely because the new client has no
+        // evidence to replace it.
+        let requested = member_row
+            .provider_controls
+            .reasoning_effort
+            .requested
+            .clone();
+        member_row.provider_controls.reasoning_effort = ProviderControlValue::requested(requested);
     }
     if member_row
         .provider_controls
@@ -19416,6 +19491,7 @@ fn run_kimi_member(
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
     let mut final_summary = String::new();
+    let mut unproductive_rounds = KimiUnproductiveRoundCircuit::default();
     let initial_wake = if resumed_native_session {
         ledger
             .interrupted_active_work_for(&member_row.id)?
@@ -19676,18 +19752,29 @@ fn run_kimi_member(
             // empty or partial Handoff plus false idle/completion (parity
             // with the Claude provider-error contract, issue #293).
             let result = parse_round_result(&final_text);
+            let output_empty = final_text.trim().is_empty();
             let summary = outcome.provider_error.clone().unwrap_or_else(|| {
-                extract_report_section(&final_text, "SUMMARY")
-                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"))
+                if output_empty {
+                    "provider ended the round without durable agent output".to_string()
+                } else {
+                    extract_report_section(&final_text, "SUMMARY").unwrap_or_else(|| {
+                        final_text.lines().take(3).collect::<Vec<_>>().join("\n")
+                    })
+                }
             });
             let action = ledger.append_action(
                 &member.id,
                 if outcome.provider_error.is_some() {
                     "provider_error"
+                } else if output_empty {
+                    "empty_provider_round"
                 } else {
                     "turn_completed"
                 },
-                if outcome.provider_error.is_none() && result == MemberRoundResult::Done {
+                if !output_empty
+                    && outcome.provider_error.is_none()
+                    && result == MemberRoundResult::Done
+                {
                     MemberActionStatus::Succeeded
                 } else {
                     MemberActionStatus::Failed
@@ -19724,6 +19811,48 @@ fn run_kimi_member(
                 ),
             )?;
             final_summary = summary;
+
+            if let Some(kind) =
+                unproductive_rounds.observe(&final_text, outcome.provider_error.as_deref())
+            {
+                let mut reason = format!(
+                    "Kimi provider circuit breaker opened after {KIMI_UNPRODUCTIVE_ROUND_LIMIT} consecutive unproductive rounds (last outcome: {}). No durable agent output was produced. Provider capacity remains unknown because Kimi ACP exposes no reviewed quota signal. Inspect the provider-native session, account access, and model-specific controls before explicitly reopening the member.",
+                    kind.label()
+                );
+                if let Err(error) = ledger.fail_unreceived_work_claims_for(&member.id, &reason) {
+                    reason.push_str(&format!(
+                        " The unreceived Work claim also needs reconciliation: {error}"
+                    ));
+                }
+                member_row.status = MemberRunStatus::Failed;
+                member_row.finished_at = Some(now_string());
+                member_row.last_event_at = Some(now_string());
+                ledger.save_member_run(&member_row)?;
+                let action = ledger.append_action(
+                    &member.id,
+                    "provider_circuit_breaker",
+                    MemberActionStatus::Failed,
+                    "Kimi provider circuit breaker opened",
+                    &reason,
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Member,
+                    Some(member.id.clone()),
+                    "action",
+                    &action.id,
+                    "created",
+                    &format!(
+                        "member {} failed after repeated unproductive Kimi rounds",
+                        member.name
+                    ),
+                )?;
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Failed,
+                    reason,
+                ));
+            }
         }
 
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {

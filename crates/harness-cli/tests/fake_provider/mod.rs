@@ -125,7 +125,7 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"%s"}}}\n' "$id" "$version"
       ;;
     *'"method":"session/new"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
       ;;
     *'"method":"session/load"'*)
@@ -136,7 +136,7 @@ while IFS= read -r line; do
       if [ "${FAKE_KIMI_LOAD_REPLAY:-0}" = "1" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"STALE_HISTORY_REPLAY"}}}}\n' "$session_id"
       fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
       ;;
     *'"method":"session/resume"'*)
       if [ "${FAKE_KIMI_RESUME_UNSUPPORTED:-0}" = "1" ]; then
@@ -147,10 +147,23 @@ while IFS= read -r line; do
       if [ -n "${FAKE_KIMI_ATTACH_MARKER:-}" ]; then
         printf 'resume %s\n' "$session_id" >> "$FAKE_KIMI_ATTACH_MARKER"
       fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
       ;;
     *'"method":"session/set_config_option"'*)
+      if [ -n "${FAKE_KIMI_CONTROL_MARKER:-}" ]; then
+        printf '%s\n' "$line" >> "$FAKE_KIMI_CONTROL_MARKER"
+      fi
       case "$line" in
+        *'"configId":"model"'*'"value":"qwen/qwen3.8-max"'*)
+          # A model-switch receipt carries the NEW model's option set. Its
+          # thinking values intentionally exclude the old K3-only `max` so
+          # tests can prove stale controls are not inherited across models.
+          if [ "${FAKE_KIMI_MODEL_SWITCH_NO_REFRESH:-0}" = "1" ]; then
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          else
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"qwen/qwen3.8-max","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"on","options":[{"value":"on","name":"On"},{"value":"off","name":"Off"}]}]}}\n' "$id"
+          fi
+          ;;
         *'"configId":"model"'*'"value":"k2.5"'*)
           printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
           ;;
@@ -198,12 +211,37 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ "${FAKE_KIMI_KEEP_WORK_ACTIVE:-0}" = "1" ] && [ "$prompt_count" = "1" ]; then
+        # Mirror a real member's first durable action: after the provider has
+        # accepted the prompt, start its assigned Work. An outputless terminal
+        # response then makes the supervisor continue that same responsibility
+        # immediately, reproducing the quota-loop failure deterministically.
+        sleep 0.1
+        work_json=$("$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run work list \
+          --team-run-id "$HARNESS_TEAM_RUN_ID" \
+          --member-run-id "$HARNESS_MEMBER_RUN_ID")
+        work_id=$(printf '%s\n' "$work_json" | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | sed -n '1p')
+        work_version=$(printf '%s\n' "$work_json" | sed -n 's/.*"version": \([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+        "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run work start \
+          --team-run-id "$HARNESS_TEAM_RUN_ID" \
+          --work-id "$work_id" \
+          --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+          --expected-version "$work_version" >/dev/null
+      fi
+      if [ "${FAKE_KIMI_QUOTA_ERROR:-0}" = "1" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: quota exceeded"}}\n' "$id"
+        continue
+      fi
       if [ -n "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}" ]; then
         # One non-retryable provider failure after partial content streamed:
         # the terminal session/prompt response is a JSON-RPC error. Harness
         # must record a provider_error round, not a partial Handoff.
         : > "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}"
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: usage limit reached"}}\n' "$id"
+        continue
+      fi
+      if [ "${FAKE_KIMI_EMPTY_TERMINAL:-0}" = "1" ] && [ "${FAKE_KIMI_REAL_ON_PROMPT:-0}" != "$prompt_count" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
         continue
       fi
       if [ -n "${FAKE_KIMI_PEER_ACK_CONFIG:-}" ] && [ -s "${FAKE_KIMI_PEER_ACK_CONFIG}" ] && [ "$prompt_count" = "2" ]; then
