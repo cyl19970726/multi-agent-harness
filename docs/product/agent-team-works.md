@@ -503,18 +503,21 @@ relation. Child completion updates a roll-up projection but never automatically
 completes or accepts the parent. The parent owner owns integration and
 correction.
 
-Organization may select this mechanism: multi-level Org Agents can create
-nested Agent Teams for execution, but Organization identity, reporting, and
-authority remain distinct. The joins are explicit:
+Organization adopts this mechanism directly under ADR 0051: multi-level Org
+Agents are durable AgentMembers in recursive AgentTeams. The target relations
+are explicit:
 
 ```text
-StandingAgent <-> AgentMember
-Company WorkItem <-> Agent Team Work
-Org delegation <-> WorkDelegation
+AgentTeam(parent_team_id, host_member_id) -> AgentMember
+parent Work -> child Team Works
+Work -> optional business/Approval/Finance/Mission relations
 ```
 
-Company WorkItem remains the business-governance scheduler; Team Work is one
-execution board and cannot approve legal, financial, or organization effects.
+Current Company WorkItem remains compatibility implementation truth until the
+explicit migration. The target has one Work responsibility kernel shared by
+Team and Organization views. Work still cannot approve legal, financial,
+credential, or irreversible external effects; those stay in their owning
+product modules.
 
 ## Mission And Wave
 

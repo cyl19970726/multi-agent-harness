@@ -79,12 +79,16 @@ Human participation is required for policies that explicitly demand human
 authority, such as funds movement, legal filing, organization changes, or
 credential delegation.
 
-### StandingAgent and AgentMember
+### AgentMember and runtime
 
-`StandingAgent` is the durable Company identity and authority record.
-`AgentMember` is reusable execution configuration. Company OS may relate them
-only through optional `StandingAgent.execution_agent_member_ref`; equal ids do
-not bind, and MemberRun lifecycle never writes back to StandingAgent.
+`AgentMember` is the target durable Company agent identity. It may belong to a
+parent AgentTeam, Host a child AgentTeam, own Work, and bind to replaceable
+MemberRuns and provider-native sessions. Runtime lifecycle never creates or
+retires the durable Member identity.
+
+Current `StandingAgent.execution_agent_member_ref` rows are compatibility
+implementation truth pending ADR 0051 migration. New target architecture must
+not add another identity join or infer identity from equal ids.
 
 ```text
 org_unit_id?

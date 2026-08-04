@@ -56,11 +56,14 @@ the live canary fails. Authentication, payment, license acceptance, new
 credentials and other protected actions still require the appropriate Human or
 policy approval.
 
-Standing Agents + Docs are the current product direction. Their Company OS
-contracts are additive and still being implemented; do not claim planned
-objects or fields exist until schemas, stores, APIs, and acceptance checks
-prove them. See [company-os/README.md](company-os/README.md) and
-[ADR 0027](decisions/0027-company-os-primary-model.md).
+Docs plus recursive AgentTeam Organization is the accepted target direction.
+AgentMember is the target durable agent identity and Work is the target shared
+responsibility kernel. Current StandingAgent, Company WorkItem, OrgUnit, and
+explicit execution-ref rows remain compatibility implementation truth until an
+explicit verified cutover. Do not claim target objects or fields exist until
+schemas, stores, APIs, and acceptance checks prove them. See
+[company-os/README.md](company-os/README.md) and
+[ADR 0051](decisions/0051-nested-agent-teams-are-the-agent-organization.md).
 
 The first Company OS acceptance scenario is a governed Trademark Management
 module whose filing WorkItem, human approval, ¥3,000 financial commitment,
@@ -73,9 +76,11 @@ in the generic core.
 
 For company operations, the native product objects are `Document`,
 `BusinessModule`, `TypedRecord`, `Relation`, `ActorRef`, `HumanMember`,
-`AgentMember`, `OrgUnit`, `WorkItem`, `Assignment`, `Approval`,
+`AgentMember`, recursive `AgentTeam`, `Work`, `Approval`,
 `FinancialRecord`, and `MetricObservation`. Some of these are currently design
-contracts rather than implemented schemas; keep that distinction explicit. See
+contracts rather than implemented schemas; current `OrgUnit`, `StandingAgent`,
+`WorkItem`, and `Assignment` rows remain compatibility implementation truth.
+Keep that distinction explicit. See
 [concept-model.md](concept-model.md).
 
 `Mission` and `Wave` are the only native coordination objects for new work. The
@@ -379,7 +384,7 @@ companion.
 | Product We Are Building — Work responsibility, Work-linked conversation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
 | Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: [agent-runtime.md](agent-runtime.md) |
 | Product We Are Building — provider release discovery and version maintenance | Root invariant 5; here §Product Context | Full procedure kept here |
-| Product We Are Building — Standing Agents + Docs direction, honesty about planned objects | Root invariant 10; here §Product Context | ADR 0027 |
+| Product We Are Building — recursive AgentTeams + Docs direction, honesty about planned objects | Root invariant 10; here §Product Context | ADR 0051 |
 | Product We Are Building — Trademark scenario, module placement | Here §Product Context | Canonical scenario: [prd.md](prd.md) |
 | Native Product And Execution Objects — object inventory | Here §Native Product And Execution Objects | [concept-model.md](concept-model.md) |
 | Native Product And Execution Objects — Mission/Wave only, ADR 0028 retirement | Root invariant 3; here §Native Product And Execution Objects | — |

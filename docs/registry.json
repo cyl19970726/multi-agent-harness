@@ -4779,6 +4779,152 @@
      "ref": "crates/harness-cli/tests/company_store_cli.rs"
     }
    ]
+  },
+  {
+   "path": "docs/company-os/nested-agent-team-organization.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentMember-based recursive Organization target",
+    "unified Work administration and Supervising Operator boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/collaboration-and-agent-work.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md",
+    "specs/nested-agent-team-organization/requirements.md",
+    "specs/nested-agent-team-organization/design.md",
+    "specs/nested-agent-team-organization/tasks.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-04",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Agent identity, recursive Team topology, Work administration, Supervising Operator, or Organization UI boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "AgentMember as durable Organization agent identity",
+    "recursive AgentTeam topology and unified Work target decision"
+   ],
+   "dependsOn": [
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-04",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The durable Agent identity, recursive Team hierarchy, Work kernel, local Host authority, or Supervising Operator boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "specs/nested-agent-team-organization/requirements.md",
+   "ownerRole": "product-architecture",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "nested Agent Team Organization product requirements and acceptance"
+   ],
+   "dependsOn": [
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-25",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Product behavior, actors, Work authority, recursive delegation, UI acceptance, or non-goals change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+    }
+   ]
+  },
+  {
+   "path": "specs/nested-agent-team-organization/design.md",
+   "ownerRole": "product-architecture",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "nested Agent Team Organization technical design and migration boundary"
+   ],
+   "dependsOn": [
+    "specs/nested-agent-team-organization/requirements.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-25",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Target schemas, authority table, delivery, recovery, CLI/API, UI, migration, or tests change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "specs/nested-agent-team-organization/tasks.md",
+   "ownerRole": "product-architecture",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "nested Agent Team Organization implementation and dogfood task sequence"
+   ],
+   "dependsOn": [
+    "specs/nested-agent-team-organization/requirements.md",
+    "specs/nested-agent-team-organization/design.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Implementation sequencing, migration gates, UI contract, provider recovery acceptance, or dogfood scope changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "design_only",
+   "truthRefs": []
   }
  ]
 }

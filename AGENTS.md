@@ -14,9 +14,10 @@ this file and a canonical doc conflict, the canonical doc wins — fix this file
 
 Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
 system for company memory and operating structure, and a mixed Organization of
-humans, Standing Agents, external collaborators, and services. Documents create
-WorkItems and Approvals; accountable actors execute them; results, evidence,
-metrics, and financial effects return to the originating records. See
+humans, durable AgentMembers arranged in recursive AgentTeams, external
+collaborators, and services. Documents create or relate Work and Approvals;
+accountable actors execute them; results, evidence, metrics, and financial
+effects return to the originating records. See
 [docs/prd.md](docs/prd.md) and
 [docs/company-os/README.md](docs/company-os/README.md).
 
@@ -32,9 +33,11 @@ AgentTeamRun -> MemberRun -> provider-native session
 `Mission` is durable intent; `Wave` is a lightweight, versioned Markdown record
 of the Host's current plan and judgment — not an executor container or
 synchronization barrier. An AgentTeamRun may span multiple Waves while its
-MemberRuns and native sessions continue. Standing Agents + Docs are the current
-product direction (ADR 0027); repository self-hosting remains the first
-execution-foundation scenario.
+MemberRuns and native sessions continue. Docs plus recursive AgentTeam
+Organization is the accepted target product direction (ADR 0051); current
+StandingAgent and Company WorkItem stores remain compatibility implementation
+truth until an explicit verified cutover. Repository self-hosting remains the
+first execution-foundation scenario.
 
 ## Hard Invariants
 
@@ -116,7 +119,11 @@ doc carries the contract behind each rule.
 10. **Honest capability claims.** Company OS contracts are additive and still
     being implemented; do not claim planned objects or fields exist until
     schemas, stores, APIs, and acceptance checks prove them. Keep the
-    design-contract vs implemented-schema distinction explicit.
+    design-contract vs implemented-schema distinction explicit. In particular,
+    ADR 0051's AgentMember identity, recursive AgentTeam Organization, and
+    unified Work kernel are accepted target contracts, not shipped Store/API/UI
+    claims. Do not extend the compatibility StandingAgent-to-AgentMember join or
+    create a dual-write Company WorkItem/Team Work path.
 11. **Skill optionality.** Skills are optional capabilities, never the
     authority for product architecture or Lead behavior. Do not load a skill
     merely because you are working in this repository; canonical docs, schemas,

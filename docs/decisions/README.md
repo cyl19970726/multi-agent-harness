@@ -25,7 +25,7 @@ consequences, affected modules, and validation path.
 | [0023](0023-starlark-workflow-frontend.md) | partially superseded | Hermetic Starlark authoring and later convergence notes |
 | [0025](0025-agent-team-run-control-plane.md) | partially superseded | Agent Team runtime substrate remains; Wave attempt ownership is superseded by 0034 |
 | [0026](0026-mission-wave-architecture.md) | partially superseded | Mission/Wave names and transient-thinking policy remain; Wave-as-executor hierarchy is superseded by 0034 |
-| [0027](0027-company-os-primary-model.md) | active | Docs + mixed Organization product cores and WorkItem/Approval bridge |
+| [0027](0027-company-os-primary-model.md) | amended by 0051 | Docs + mixed Organization product cores remain; separate agent scheduling hierarchy is superseded |
 | [0028](0028-retire-goal-phase-task-graph.md) | active | Retire the superseded coordination stack |
 | [0029](0029-agent-programmable-document-runtime.md) | active, staged | Basic docs, structured views and governed custom pages |
 | [0030](0030-provider-interaction-contract.md) | active | Execution-mode profiles, durable PendingInteraction routing, and provider-versus-semantic truth |
@@ -42,12 +42,13 @@ consequences, affected modules, and validation path.
 | [0041](0041-provider-neutral-member-continuation.md) | active; responsibility ref amended by 0050 | Continuation separates durable Work from the provider-native execution driver and one top-level Workspace lease |
 | [0042](0042-company-store-execution-space-project-binding.md) | active | Company Store, Execution Space, and Project Binding are distinct identities |
 | [0044](0044-durable-team-supervision-and-typed-mail.md) | active | One durable Supervisor lease owns Provider control; typed mail and atomic delivery claims make multi-client coordination safe |
-| [0045](0045-company-owned-standing-agent-execution-relation.md) | active | Company-owned one-to-one StandingAgent execution ref; no inferred identity or lifecycle writeback |
-| [0046](0046-supervised-agentos-self-hosting-loop.md) | active | Supervising Operator, durable Lead, Runtime Supervisor, and continuous Docs/Work/Org self-hosting remain distinct |
-| [0047](0047-scoped-company-authority-broker.md) | accepted target; implementation pending | Company-side one-command authority broker binds exact Standing Agent execution and delivered Work Assignment to a short, non-secret, auditable capability receipt |
-| [0048](0048-human-rooted-company-constitution.md) | accepted target; implementation pending | Human Principal roots Company authority; Leads operate through one attenuating grant lineage while the Runtime Supervisor remains provenance-only |
+| [0045](0045-company-owned-standing-agent-execution-relation.md) | historical implementation; target superseded by 0051 | Current StandingAgent-to-AgentMember compatibility join; not the target identity model |
+| [0046](0046-supervised-agentos-self-hosting-loop.md) | amended by 0051 | Supervising Operator and Runtime Supervisor boundaries remain; separate StandingAgent target is superseded |
+| [0047](0047-scoped-company-authority-broker.md) | scoped target; implementation pending | Sensitive Company effects only; routine Team scheduling follows 0051 topology |
+| [0048](0048-human-rooted-company-constitution.md) | scoped target; implementation pending | Sensitive or root Company effects only; routine Team scheduling follows 0051 topology |
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
-| [0050](0050-agent-team-work-board-and-message-boundary.md) | accepted target; implementation pending | Agent Team Work is the scheduling primitive; shared Kanban, atomic claim, Work delivery and authored Message are separate |
+| [0050](0050-agent-team-work-board-and-message-boundary.md) | amended by 0051; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
+| [0051](0051-nested-agent-teams-are-the-agent-organization.md) | accepted target; implementation pending | AgentMember is the durable agent identity; Organization is recursive AgentTeam topology over one Work kernel |
 
 ## Split Rule
 

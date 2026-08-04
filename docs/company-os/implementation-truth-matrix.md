@@ -2,9 +2,17 @@
 
 ```text
 status: canonical implementation audit
-owner_role: Lead Agent with four System Governance Agents
+owner_role: AgentOS Lead with direct Team Hosts
 canonical_for: Docs, Organization, Work, Finance, and Company authority contract-to-acceptance status and the trademark closure gap
 ```
+
+> **Target versus current truth:** ADR 0051 adopts AgentMember as the durable
+> agent identity, recursive AgentTeams as Organization, and one shared Work
+> responsibility kernel. The Organization and Work rows below intentionally
+> describe the currently shipped `StandingAgent` / Company `WorkItem`
+> compatibility implementation. They do not prove the ADR 0051 target. That
+> target remains design-only until the explicit migration and Lead -> CTO ->
+> child Team dogfood acceptance pass.
 
 This matrix answers one question: what can the product prove today from native
 records and executable code? A design image, fixture, seed script or stable
