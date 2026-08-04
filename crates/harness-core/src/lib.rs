@@ -3010,8 +3010,10 @@ impl TeamMessage {
     }
 }
 
-/// Agent Team Work is durable responsibility inside one TeamRun. WorkEvent is
-/// the append-only authority; this row is the latest rebuildable projection.
+/// Agent Team Work is durable responsibility inside one AgentTeam. A
+/// `team_run_id` is the current execution attempt, not the Work's lifetime.
+/// WorkEvent is the append-only authority; this row is the latest rebuildable
+/// projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkStatus {
@@ -3067,6 +3069,13 @@ pub struct WorkCommandContext {
 pub struct Work {
     pub id: String,
     pub team_run_id: String,
+    /// Durable AgentTeam scope (ADR 0051). `None` reads as a compatibility
+    /// TeamRun-scoped Work written before the Team-scope promotion slice.
+    /// When set, `team_run_id` names only the current execution attempt: the
+    /// Work's responsibility survives that TeamRun's completion and a later
+    /// execution attempt rebinds `team_run_id` without changing `team_id`.
+    #[serde(default)]
+    pub team_id: Option<String>,
     /// Same-TeamRun hierarchy only. Cross-Team delegation uses
     /// [`WorkDelegation`].
     #[serde(default)]
@@ -3090,6 +3099,11 @@ pub struct Work {
     pub prerequisite_work_ids: Vec<String>,
     pub priority: WorkPriority,
     pub created_by_actor: TeamActorRef,
+    /// Durable AgentMember identity of the creator (ADR 0051 provenance).
+    /// `None` for Host, Supervising Operator, or external intake; populated
+    /// from the bound MemberRun's stable identity when a Member creates Work.
+    #[serde(default)]
+    pub created_by_member_id: Option<String>,
     #[serde(default)]
     pub result_summary: Option<String>,
     #[serde(default)]
@@ -3134,6 +3148,22 @@ impl Work {
     pub fn is_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
         self.is_claim_ready(works)
     }
+
+    /// Whether this Work carries a durable AgentTeam scope (ADR 0051) rather
+    /// than only a compatibility TeamRun scope.
+    pub fn is_team_scoped(&self) -> bool {
+        self.team_id.is_some()
+    }
+
+    /// Assigned/unassigned is a derived view over `owner_member_id`, never a
+    /// stored lifecycle of its own (ADR 0050/0051).
+    pub fn is_assigned(&self) -> bool {
+        self.owner_member_id.is_some()
+    }
+
+    pub fn is_unassigned(&self) -> bool {
+        self.owner_member_id.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3152,6 +3182,175 @@ pub enum WorkEventKind {
     Cancelled,
     Updated,
     Rebound,
+    /// A compatibility TeamRun-scoped Work was explicitly promoted onto the
+    /// durable AgentTeam named by its current execution attempt.
+    TeamScopePromoted,
+    /// The execution attempt (`team_run_id`) of a Team-scoped Work moved to a
+    /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
+    /// owner, and provenance are unchanged (ADR 0051).
+    ExecutionRetargeted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkCutoverIssueKind {
+    LegacyTeamRunScope,
+    MissingExecutionRun,
+    TeamScopeMismatch,
+    MissingCompanyWorkItem,
+    ActiveCompanyWorkItemOverlap,
+    DuplicateCompanyWorkItemLink,
+}
+
+/// One reason the Company WorkItem -> persistent Team Work cutover cannot be
+/// accepted. The validator is deliberately read-only: it proves a snapshot is
+/// unambiguous but never dual-writes either responsibility system.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCutoverIssue {
+    pub kind: WorkCutoverIssueKind,
+    #[serde(default)]
+    pub work_id: Option<String>,
+    #[serde(default)]
+    pub company_work_item_id: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCutoverReport {
+    pub valid: bool,
+    pub checked_work_count: usize,
+    pub team_scoped_work_count: usize,
+    pub source_linked_work_count: usize,
+    pub issues: Vec<WorkCutoverIssue>,
+}
+
+/// Validate the breaking responsibility cutover required by ADR 0051.
+///
+/// A source-linked persistent Work is accepted only after the compatibility
+/// Company WorkItem is no longer live. This prevents two mutable owner/status
+/// records from surviving the cutover. Duplicate source links are refused
+/// because they would make one Company responsibility fan out into competing
+/// Work authorities.
+pub fn validate_work_cutover(
+    works: &[Work],
+    team_runs: &[AgentTeamRun],
+    company_work_items: &[WorkItem],
+) -> WorkCutoverReport {
+    let runs = team_runs
+        .iter()
+        .map(|run| (run.id.as_str(), run))
+        .collect::<BTreeMap<_, _>>();
+    let company_items = company_work_items
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<BTreeMap<_, _>>();
+    let mut source_links = BTreeMap::<&str, Vec<&str>>::new();
+    let mut issues = Vec::new();
+
+    for work in works {
+        let Some(team_id) = work.team_id.as_deref() else {
+            issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::LegacyTeamRunScope,
+                work_id: Some(work.id.clone()),
+                company_work_item_id: work.source_work_item_ref.clone(),
+                detail: format!(
+                    "Work {} is still scoped only to TeamRun {}",
+                    work.id, work.team_run_id
+                ),
+            });
+            continue;
+        };
+        match runs.get(work.team_run_id.as_str()) {
+            None => issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::MissingExecutionRun,
+                work_id: Some(work.id.clone()),
+                company_work_item_id: work.source_work_item_ref.clone(),
+                detail: format!(
+                    "Work {} references missing execution TeamRun {}",
+                    work.id, work.team_run_id
+                ),
+            }),
+            Some(run) => {
+                let run_team_id = run
+                    .agent_team_id
+                    .as_deref()
+                    .or(run.definition_id.as_deref());
+                if run_team_id != Some(team_id) {
+                    issues.push(WorkCutoverIssue {
+                        kind: WorkCutoverIssueKind::TeamScopeMismatch,
+                        work_id: Some(work.id.clone()),
+                        company_work_item_id: work.source_work_item_ref.clone(),
+                        detail: format!(
+                            "Work {} is scoped to AgentTeam {} but execution TeamRun {} belongs to {:?}",
+                            work.id, team_id, work.team_run_id, run_team_id
+                        ),
+                    });
+                }
+            }
+        }
+
+        let Some(source_id) = work.source_work_item_ref.as_deref() else {
+            continue;
+        };
+        source_links.entry(source_id).or_default().push(&work.id);
+        match company_items.get(source_id) {
+            None => issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::MissingCompanyWorkItem,
+                work_id: Some(work.id.clone()),
+                company_work_item_id: Some(source_id.to_string()),
+                detail: format!(
+                    "Work {} references missing Company WorkItem {}",
+                    work.id, source_id
+                ),
+            }),
+            Some(item)
+                if !matches!(
+                    item.status,
+                    WorkItemStatus::Draft
+                        | WorkItemStatus::Completed
+                        | WorkItemStatus::Cancelled
+                        | WorkItemStatus::Archived
+                ) =>
+            {
+                issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap,
+                    work_id: Some(work.id.clone()),
+                    company_work_item_id: Some(source_id.to_string()),
+                    detail: format!(
+                        "Company WorkItem {} is {:?} while persistent Work {} is also authoritative",
+                        source_id, item.status, work.id
+                    ),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+
+    for (source_id, linked_work_ids) in source_links {
+        if linked_work_ids.len() > 1 {
+            issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::DuplicateCompanyWorkItemLink,
+                work_id: None,
+                company_work_item_id: Some(source_id.to_string()),
+                detail: format!(
+                    "Company WorkItem {} is linked by multiple Works: {}",
+                    source_id,
+                    linked_work_ids.join(", ")
+                ),
+            });
+        }
+    }
+
+    WorkCutoverReport {
+        valid: issues.is_empty(),
+        checked_work_count: works.len(),
+        team_scoped_work_count: works.iter().filter(|work| work.is_team_scoped()).count(),
+        source_linked_work_count: works
+            .iter()
+            .filter(|work| work.source_work_item_ref.is_some())
+            .count(),
+        issues,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4742,6 +4941,8 @@ mod tests {
             Work {
                 id: id.into(),
                 team_run_id: "team-1".into(),
+                team_id: None,
+                created_by_member_id: None,
                 parent_work_id: None,
                 source_work_item_ref: None,
                 title: id.into(),
@@ -4781,6 +4982,100 @@ mod tests {
         let unfinished = work("prerequisite", WorkStatus::Review, vec![]);
         assert!(!open.prerequisites_satisfied([&unfinished]));
         assert!(!open.is_claim_ready([&unfinished]));
+    }
+
+    #[test]
+    fn work_cutover_rejects_live_company_overlap_and_accepts_archived_source() {
+        let run: AgentTeamRun = serde_json::from_value(serde_json::json!({
+            "id": "run-1",
+            "agent_team_id": "team-1",
+            "host_surface": "test",
+            "objective": "cut over",
+            "status": "running",
+            "member_run_ids": [],
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("team run");
+        let work: Work = serde_json::from_value(serde_json::json!({
+            "id": "work-1",
+            "team_run_id": "run-1",
+            "team_id": "team-1",
+            "source_work_item_ref": "company-work-1",
+            "title": "Persistent Work",
+            "context_markdown": "context",
+            "completion_criteria_markdown": "done",
+            "status": "open",
+            "claim_mode": "team_claim",
+            "eligible_member_ids": [],
+            "prerequisite_work_ids": [],
+            "priority": "normal",
+            "created_by_actor": {"kind": "host", "id": "host"},
+            "artifact_refs": [],
+            "check_refs": [],
+            "version": 1,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("Work");
+        let item = |status: &str| -> WorkItem {
+            serde_json::from_value(serde_json::json!({
+                "id": "company-work-1",
+                "title": "Compatibility WorkItem",
+                "objective": "cut over",
+                "status": status,
+                "source_document_ref": "document-1",
+                "source_record_refs": [],
+                "result_document_ref": null,
+                "result_record_refs": [],
+                "submitted_by": {"actor_type": "human", "actor_id": "human-1"},
+                "requested_by": null,
+                "accountable_owner": {"actor_type": "human", "actor_id": "human-1"},
+                "assignees": [],
+                "contributors": [],
+                "reviewer": null,
+                "approver": null,
+                "execution_mode": "agent_team",
+                "execution_refs": [],
+                "approval_refs": [],
+                "evidence_refs": [],
+                "artifact_refs": [],
+                "outcome_summary": null,
+                "due_at": null,
+                "priority": null,
+                "risk_level": null,
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1",
+                "completed_at": null
+            }))
+            .expect("WorkItem")
+        };
+
+        let active = validate_work_cutover(&[work.clone()], &[run.clone()], &[item("in_progress")]);
+        assert!(!active.valid);
+        assert!(active
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap }));
+
+        let archived = validate_work_cutover(&[work.clone()], &[run], &[item("archived")]);
+        assert!(archived.valid, "unexpected issues: {:?}", archived.issues);
+
+        let duplicate = validate_work_cutover(
+            &[
+                work.clone(),
+                Work {
+                    id: "work-2".into(),
+                    ..work
+                },
+            ],
+            &[],
+            &[item("archived")],
+        );
+        assert!(duplicate
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::DuplicateCompanyWorkItemLink }));
     }
 
     #[test]

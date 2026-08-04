@@ -6,17 +6,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    validate_agent_team_topology, AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime,
-    AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, Gap, HostAttention,
-    HostAttentionInbox, HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
-    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
-    WorkflowStep,
+    validate_agent_team_topology, validate_work_cutover, AgentEvent, AgentMember,
+    AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence,
+    Gap, HostAttention, HostAttentionInbox, HostAttentionStatus, MemberAction, MemberRun, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus,
+    PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus, Review,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
+    Work, WorkClaimMode, WorkCommandContext, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
+    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItemStatus, WorkOperation, WorkStatus,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -1051,6 +1051,35 @@ impl HarnessStore {
                 team_run.id, team_run.status
             )));
         }
+        let run_team_id = durable_team_id(&team_run);
+        match (work.team_id.as_deref(), run_team_id) {
+            (Some(work_team_id), Some(run_team_id)) if work_team_id != run_team_id => {
+                return Err(StoreError::Conflict(format!(
+                    "TEAM_SCOPE_MISMATCH: Work names AgentTeam {work_team_id}, but TeamRun {} belongs to {run_team_id}",
+                    team_run.id
+                )));
+            }
+            (Some(_), Some(_)) if work.source_work_item_ref.is_some() => {
+                return Err(StoreError::Conflict(
+                    "SOURCE_WORK_ITEM_REQUIRES_EXPLICIT_CUTOVER: create the compatibility Work first, retire its Company WorkItem authority, then run Work promote"
+                        .to_string(),
+                ));
+            }
+            (None, Some(run_team_id)) if work.source_work_item_ref.is_none() => {
+                work.team_id = Some(run_team_id.to_string())
+            }
+            // A source-linked Work stays in readable TeamRun compatibility
+            // scope until the explicit promotion command validates the
+            // independently selected Company Store.
+            (None, Some(_)) => {}
+            (Some(_), None) => {
+                return Err(StoreError::Conflict(format!(
+                    "TEAM_SCOPE_UNAVAILABLE: TeamRun {} has no durable AgentTeam identity",
+                    team_run.id
+                )));
+            }
+            _ => {}
+        }
         if self.latest_works_unlocked()?.contains_key(work.id.as_str()) {
             return Err(StoreError::Conflict(format!(
                 "work already exists: {}",
@@ -1081,6 +1110,7 @@ impl HarnessStore {
             }
             work.owner_member_id = Some(stable_identity);
         }
+        work.created_by_actor = context.performed_by_actor.clone();
         match context.performed_by_actor.kind {
             harness_core::TeamActorKind::MemberRun => {
                 let member = self.require_member_run_unlocked(
@@ -1093,6 +1123,17 @@ impl HarnessStore {
                     ));
                 }
                 let own_identity = stable_member_identity(&member);
+                if work
+                    .created_by_member_id
+                    .as_deref()
+                    .is_some_and(|creator| creator != own_identity)
+                {
+                    return Err(StoreError::Conflict(
+                        "created_by_member_id does not match creator MemberRun stable identity"
+                            .to_string(),
+                    ));
+                }
+                work.created_by_member_id = Some(own_identity.clone());
                 if work
                     .owner_member_id
                     .as_deref()
@@ -1108,7 +1149,14 @@ impl HarnessStore {
                     ));
                 }
             }
-            _ => require_host_actor(&context.performed_by_actor)?,
+            _ => {
+                require_host_actor(&context.performed_by_actor)?;
+                if work.created_by_member_id.is_some() {
+                    return Err(StoreError::Conflict(
+                        "only a MemberRun actor may set created_by_member_id".to_string(),
+                    ));
+                }
+            }
         }
         self.validate_work_relations_unlocked(&work)?;
         let deliveries =
@@ -1270,6 +1318,218 @@ impl HarnessStore {
                 "previous_member_run_id": old_member_run_id,
                 "replacement_member_run_id": new_member_run_id,
                 "owner_member_id": owner_member_id,
+            }),
+        )
+    }
+
+    /// Explicitly promote a compatibility TeamRun-scoped Work to the durable
+    /// AgentTeam named by its current execution attempt. Source-linked Work
+    /// refuses promotion while the Company WorkItem remains live, preventing
+    /// two mutable owner/status authorities from surviving cutover.
+    pub fn promote_work_to_team_scope(
+        &self,
+        company_store: &HarnessStore,
+        work_id: &str,
+        expected_version: u64,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) = self.idempotent_work_operation_unlocked(
+            &context.idempotency_key,
+            work_id,
+            WorkEventKind::TeamScopePromoted,
+        )? {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.team_id.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "WORK_ALREADY_TEAM_SCOPED: Work {work_id} already belongs to AgentTeam {}",
+                current.team_id.as_deref().unwrap_or_default()
+            )));
+        }
+        let run = self.require_team_run_unlocked(&current.team_run_id)?;
+        let team_id = durable_team_id(&run).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_SCOPE_UNAVAILABLE: TeamRun {} has no durable AgentTeam identity",
+                run.id
+            ))
+        })?;
+        if let Some(source_id) = current.source_work_item_ref.as_deref() {
+            let source = company_store
+                .latest_work_items()?
+                .into_iter()
+                .find(|item| item.id == source_id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "COMPANY_WORK_ITEM_MISSING: source WorkItem {source_id} does not exist"
+                    ))
+                })?;
+            if !matches!(
+                source.status,
+                WorkItemStatus::Draft
+                    | WorkItemStatus::Completed
+                    | WorkItemStatus::Cancelled
+                    | WorkItemStatus::Archived
+            ) {
+                return Err(StoreError::Conflict(format!(
+                    "ACTIVE_COMPANY_WORK_ITEM_CONFLICT: WorkItem {source_id} is {:?}; archive, cancel, or complete it before Team-scope promotion",
+                    source.status
+                )));
+            }
+            if self.latest_works_unlocked()?.values().any(|other| {
+                other.id != current.id
+                    && other.source_work_item_ref.as_deref() == Some(source_id)
+                    && other.team_id.is_some()
+            }) {
+                return Err(StoreError::Conflict(format!(
+                    "DUPLICATE_COMPANY_WORK_ITEM_LINK: WorkItem {source_id} already has a persistent Team Work"
+                )));
+            }
+        }
+
+        let mut next = current.clone();
+        next.team_id = Some(team_id.to_string());
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_with_payload_unlocked(
+            current,
+            next,
+            WorkEventKind::TeamScopePromoted,
+            context,
+            serde_json::json!({ "team_id": team_id }),
+        )
+    }
+
+    /// Move a persistent Work onto a successor execution attempt of the same
+    /// AgentTeam. Stable ownership, creator provenance, source relations, and
+    /// Work identity remain unchanged; only the execution binding moves.
+    pub fn retarget_work_execution(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        successor_team_run_id: &str,
+        successor_member_run_id: Option<&str>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) = self.idempotent_work_operation_unlocked(
+            &context.idempotency_key,
+            work_id,
+            WorkEventKind::ExecutionRetargeted,
+        )? {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.is_terminal() {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is terminal and cannot be retargeted"
+            )));
+        }
+        let team_id = current.team_id.clone().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "WORK_NOT_TEAM_SCOPED: promote Work {work_id} before retargeting execution"
+            ))
+        })?;
+        if current.team_run_id == successor_team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "Work {work_id} already targets TeamRun {successor_team_run_id}"
+            )));
+        }
+        let successor = self.require_team_run_unlocked(successor_team_run_id)?;
+        if matches!(
+            successor.status,
+            TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled
+        ) {
+            return Err(StoreError::Conflict(format!(
+                "successor TeamRun {} is {:?} and cannot execute Work",
+                successor.id, successor.status
+            )));
+        }
+        if durable_team_id(&successor) != Some(team_id.as_str()) {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SCOPE_MISMATCH: successor TeamRun {} does not belong to AgentTeam {team_id}",
+                successor.id
+            )));
+        }
+        if let Some(previous_member_run_id) = current.active_member_run_id.as_deref() {
+            let previous =
+                self.require_member_run_unlocked(previous_member_run_id, &current.team_run_id)?;
+            if previous.coordination_is_active()
+                && !matches!(
+                    previous.status,
+                    harness_core::MemberRunStatus::Completed
+                        | harness_core::MemberRunStatus::Failed
+                        | harness_core::MemberRunStatus::Stopped
+                )
+            {
+                return Err(StoreError::Conflict(format!(
+                    "OLD_RUNTIME_ACTIVE: MemberRun {previous_member_run_id} must be closed or terminal before execution retarget"
+                )));
+            }
+        }
+        if self
+            .latest_work_deliveries_unlocked()?
+            .values()
+            .any(|delivery| {
+                delivery.work_id == work_id && delivery.status == WorkDeliveryStatus::Claimed
+            })
+        {
+            return Err(StoreError::Conflict(
+                "RECONCILIATION_REQUIRED: Work has a claimed delivery".to_string(),
+            ));
+        }
+
+        let new_binding = match (current.owner_member_id.as_deref(), successor_member_run_id) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(StoreError::Conflict(
+                    "unassigned Work cannot gain an execution binding during retarget".to_string(),
+                ));
+            }
+            (Some(_), None) => {
+                return Err(StoreError::Conflict(
+                    "owned Work requires --successor-member-run-id during retarget".to_string(),
+                ));
+            }
+            (Some(owner_id), Some(member_run_id)) => {
+                let member =
+                    self.require_member_run_unlocked(member_run_id, successor_team_run_id)?;
+                self.ensure_member_can_receive_work_unlocked(&member)?;
+                let successor_identity = stable_member_identity(&member);
+                if successor_identity != owner_id {
+                    return Err(StoreError::Conflict(format!(
+                        "OWNER_MISMATCH: successor MemberRun {member_run_id} belongs to {successor_identity}, expected {owner_id}"
+                    )));
+                }
+                Some(member.id)
+            }
+        };
+
+        let previous_team_run_id = current.team_run_id.clone();
+        let previous_member_run_id = current.active_member_run_id.clone();
+        let mut next = current.clone();
+        next.team_run_id = successor_team_run_id.to_string();
+        next.active_member_run_id = new_binding.clone();
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_with_payload_unlocked(
+            current,
+            next,
+            WorkEventKind::ExecutionRetargeted,
+            context,
+            serde_json::json!({
+                "team_id": team_id,
+                "previous_team_run_id": previous_team_run_id,
+                "successor_team_run_id": successor_team_run_id,
+                "previous_member_run_id": previous_member_run_id,
+                "successor_member_run_id": new_binding,
             }),
         )
     }
@@ -1882,6 +2142,8 @@ impl HarnessStore {
                 | WorkEventKind::ChangesRequested
                 | WorkEventKind::Resumed
                 | WorkEventKind::Rebound
+                | WorkEventKind::TeamScopePromoted
+                | WorkEventKind::ExecutionRetargeted
         ) {
             self.initial_work_deliveries_unlocked(&next, &context.event_id, &context.created_at)?
         } else {
@@ -2011,9 +2273,10 @@ impl HarnessStore {
             let prerequisite = works.get(prerequisite_id).ok_or_else(|| {
                 StoreError::Conflict(format!("prerequisite work not found: {prerequisite_id}"))
             })?;
-            if prerequisite.team_run_id != work.team_run_id || prerequisite.id == work.id {
+            if !works_share_scope(prerequisite, work) || prerequisite.id == work.id {
                 return Err(StoreError::Conflict(
-                    "prerequisites must be distinct Works in the same TeamRun".to_string(),
+                    "prerequisites must be distinct Works in the same durable Team scope"
+                        .to_string(),
                 ));
             }
         }
@@ -2021,9 +2284,10 @@ impl HarnessStore {
             let parent = works.get(parent_id).ok_or_else(|| {
                 StoreError::Conflict(format!("parent work not found: {parent_id}"))
             })?;
-            if parent.team_run_id != work.team_run_id || parent.id == work.id {
+            if !works_share_scope(parent, work) || parent.id == work.id {
                 return Err(StoreError::Conflict(
-                    "parent_work_id must reference a distinct Work in the same TeamRun".to_string(),
+                    "parent_work_id must reference a distinct Work in the same durable Team scope"
+                        .to_string(),
                 ));
             }
         }
@@ -3161,6 +3425,25 @@ impl HarnessStore {
         Ok(self.latest_works_unlocked()?.into_values().collect())
     }
 
+    /// Read-only ADR 0051 cutover gate across the independently selected
+    /// Execution Space and Company Store. It does not migrate or dual-write
+    /// either side; callers decide whether a reported snapshot may advance.
+    pub fn work_cutover_report(
+        &self,
+        company_store: &HarnessStore,
+    ) -> StoreResult<WorkCutoverReport> {
+        let works = self.latest_works()?;
+        let team_runs = latest_by_id(self.team_runs()?, |run| run.id.clone())
+            .into_values()
+            .collect::<Vec<_>>();
+        let company_work_items = company_store.latest_work_items()?;
+        Ok(validate_work_cutover(
+            &works,
+            &team_runs,
+            &company_work_items,
+        ))
+    }
+
     pub fn work_events(&self) -> StoreResult<Vec<WorkEvent>> {
         Ok(self
             .work_operations_unlocked()?
@@ -3844,6 +4127,20 @@ fn stable_member_identity(member: &MemberRun) -> String {
         .clone()
         .or_else(|| member.slot_id.clone())
         .unwrap_or_else(|| member.id.clone())
+}
+
+fn durable_team_id(run: &AgentTeamRun) -> Option<&str> {
+    run.agent_team_id
+        .as_deref()
+        .or(run.definition_id.as_deref())
+}
+
+fn works_share_scope(left: &Work, right: &Work) -> bool {
+    match (left.team_id.as_deref(), right.team_id.as_deref()) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => left.team_run_id == right.team_run_id,
+        _ => false,
+    }
 }
 
 fn compare_store_timestamps(left: &str, right: &str) -> std::cmp::Ordering {
@@ -5898,6 +6195,8 @@ mod tests {
         Work {
             id: id.into(),
             team_run_id: run_id.into(),
+            team_id: None,
+            created_by_member_id: None,
             parent_work_id: None,
             source_work_item_ref: None,
             title: "Implement Work core".into(),
@@ -7616,5 +7915,175 @@ mod tests {
         );
         assert_eq!(store.latest_teams().expect("latest teams").len(), 1);
         std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn persistent_work_promotes_and_retargets_without_losing_provenance() {
+        let (root, store, run, member_a, _) = work_test_fixture("team-scope-retarget");
+        let company_root = team_test_root("team-scope-retarget-company");
+        let company_store = HarnessStore::new(&company_root);
+        company_store.init().expect("init company store");
+        let archived_source: harness_core::WorkItem = serde_json::from_value(serde_json::json!({
+            "id": "company-work-persistent",
+            "title": "Compatibility WorkItem",
+            "objective": "cut over",
+            "status": "archived",
+            "source_document_ref": "document-1",
+            "source_record_refs": [],
+            "result_document_ref": null,
+            "result_record_refs": [],
+            "submitted_by": {"actor_type": "human", "actor_id": "human-1"},
+            "requested_by": null,
+            "accountable_owner": {"actor_type": "human", "actor_id": "human-1"},
+            "assignees": [],
+            "contributors": [],
+            "reviewer": null,
+            "approver": null,
+            "execution_mode": "agent_team",
+            "execution_refs": [],
+            "approval_refs": [],
+            "evidence_refs": [],
+            "artifact_refs": [],
+            "outcome_summary": null,
+            "due_at": null,
+            "priority": null,
+            "risk_level": null,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+            "completed_at": null
+        }))
+        .expect("archived Company WorkItem");
+        company_store
+            .append_jsonl("company_os_work_items.jsonl", &archived_source)
+            .expect("append archived source");
+
+        let mut linked_run = run.clone();
+        linked_run.agent_team_id = Some("agent-team-persistent".into());
+        linked_run.updated_at = "unix-ms:2".into();
+        store
+            .append_team_run(&linked_run)
+            .expect("link durable team before compatibility Work creation");
+
+        let mut initial = unassigned_test_work(&run.id, "persistent-work");
+        initial.claim_mode = WorkClaimMode::HostAssign;
+        initial.owner_member_id = member_a.agent_member_id.clone();
+        initial.active_member_run_id = Some(member_a.id.clone());
+        initial.source_work_item_ref = Some(archived_source.id.clone());
+        let created = store
+            .insert_work(
+                initial,
+                member_work_context(
+                    &member_a.id,
+                    "event-create-persistent",
+                    "command-create-persistent",
+                    "unix-ms:2",
+                ),
+            )
+            .expect("insert legacy Work");
+        assert!(created.team_id.is_none());
+        assert_eq!(created.created_by_member_id, member_a.agent_member_id);
+
+        let promoted = store
+            .promote_work_to_team_scope(
+                &company_store,
+                &created.id,
+                created.version,
+                host_work_context(
+                    "event-promote-persistent",
+                    "command-promote-persistent",
+                    "unix-ms:4",
+                ),
+            )
+            .expect("promote Work");
+        assert_eq!(promoted.team_id.as_deref(), Some("agent-team-persistent"));
+        assert_eq!(promoted.owner_member_id, created.owner_member_id);
+        assert_eq!(promoted.created_by_member_id, created.created_by_member_id);
+        assert_eq!(promoted.source_work_item_ref, created.source_work_item_ref);
+        assert!(
+            store
+                .work_cutover_report(&company_store)
+                .expect("cutover report")
+                .valid
+        );
+
+        let mut closed_member = member_a.clone();
+        closed_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
+        closed_member.status = harness_core::MemberRunStatus::Stopped;
+        closed_member.finished_at = Some("unix-ms:5".into());
+        store
+            .append_member_run(&closed_member)
+            .expect("close old runtime");
+
+        let mut successor_run = linked_run.clone();
+        successor_run.id = "tr-team-scope-retarget-successor".into();
+        successor_run.previous_run_id = Some(linked_run.id.clone());
+        successor_run.member_run_ids = vec!["mr-team-scope-retarget-successor-a".into()];
+        successor_run.created_at = "unix-ms:6".into();
+        successor_run.updated_at = "unix-ms:6".into();
+        store
+            .append_team_run(&successor_run)
+            .expect("append successor run");
+        let mut successor_member = member_a.clone();
+        successor_member.id = successor_run.member_run_ids[0].clone();
+        successor_member.team_run_id = successor_run.id.clone();
+        successor_member.coordination_status = harness_core::MemberCoordinationStatus::Active;
+        successor_member.status = harness_core::MemberRunStatus::Idle;
+        successor_member.finished_at = None;
+        store
+            .append_member_run(&successor_member)
+            .expect("append successor member");
+
+        let retargeted = store
+            .retarget_work_execution(
+                &promoted.id,
+                promoted.version,
+                &successor_run.id,
+                Some(&successor_member.id),
+                host_work_context(
+                    "event-retarget-persistent",
+                    "command-retarget-persistent",
+                    "unix-ms:7",
+                ),
+            )
+            .expect("retarget Work");
+        assert_eq!(retargeted.team_run_id, successor_run.id);
+        assert_eq!(retargeted.team_id, promoted.team_id);
+        assert_eq!(retargeted.owner_member_id, promoted.owner_member_id);
+        assert_eq!(
+            retargeted.created_by_member_id,
+            promoted.created_by_member_id
+        );
+        assert_eq!(
+            retargeted.active_member_run_id,
+            Some(successor_member.id.clone())
+        );
+
+        let events = store.work_events().expect("events");
+        assert!(events
+            .iter()
+            .any(|event| event.kind == WorkEventKind::TeamScopePromoted));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == WorkEventKind::ExecutionRetargeted));
+        let deliveries = store.latest_work_deliveries().expect("deliveries");
+        assert!(deliveries.iter().any(|delivery| {
+            delivery.work_version == retargeted.version
+                && delivery.recipient_member_run_id == successor_member.id
+                && delivery.status == WorkDeliveryStatus::Queued
+        }));
+        assert!(
+            deliveries
+                .iter()
+                .filter(|delivery| {
+                    delivery.work_id == retargeted.id
+                        && delivery.work_version < retargeted.version
+                        && delivery.status == WorkDeliveryStatus::Invalidated
+                })
+                .count()
+                >= 2
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+        std::fs::remove_dir_all(company_root).expect("remove company temp store");
     }
 }

@@ -8,6 +8,7 @@
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "team_run_id": { "type": "string", "minLength": 1 },
+    "team_id": { "type": ["string", "null"], "minLength": 1, "description": "Durable AgentTeam scope. Null is readable compatibility state only; cutover validation rejects it." },
     "parent_work_id": { "type": ["string", "null"], "minLength": 1 },
     "source_work_item_ref": { "type": ["string", "null"], "minLength": 1 },
     "title": { "type": "string", "minLength": 1 },
@@ -21,6 +22,7 @@
     "prerequisite_work_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
     "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
     "created_by_actor": { "$ref": "#/$defs/actor" },
+    "created_by_member_id": { "type": ["string", "null"], "minLength": 1, "description": "Stable AgentMember creator identity when created_by_actor is a MemberRun." },
     "result_summary": { "type": ["string", "null"] },
     "blocker_reason": { "type": ["string", "null"], "minLength": 1 },
     "artifact_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },

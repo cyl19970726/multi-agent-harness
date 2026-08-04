@@ -11791,6 +11791,8 @@ fn create_team_run(
                 Work {
                     id: generated_id("work"),
                     team_run_id: run_id.clone(),
+                    team_id: None,
+                    created_by_member_id: None,
                     parent_work_id: None,
                     source_work_item_ref: None,
                     title: format!("{}: {}", member_run.name, member_run.role),
@@ -11918,6 +11920,8 @@ fn add_team_run_member(
                     Work {
                         id: generated_id("work"),
                         team_run_id: team_run_id.to_string(),
+                        team_id: None,
+                        created_by_member_id: None,
                         parent_work_id: None,
                         source_work_item_ref: None,
                         title: format!("{}: {}", member_run.name, member_run.role),
@@ -13263,11 +13267,18 @@ fn member_work_context(
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reconcile-delivery",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|validate-cutover|reconcile-delivery",
     )?;
     match args[0].as_str() {
         "list" => {
-            let team_run_id = required(args, "--team-run-id")?;
+            let team_run_id = value(args, "--team-run-id");
+            let team_id = value(args, "--team-id");
+            if team_run_id.is_some() == team_id.is_some() {
+                return Err(CliError::Usage(
+                    "team-run work list requires exactly one of --team-run-id or --team-id"
+                        .to_string(),
+                ));
+            }
             let status = value(args, "--status")
                 .map(|raw| parse_work_status(&raw))
                 .transpose()?;
@@ -13275,7 +13286,14 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let mut works = store
                 .latest_works()?
                 .into_iter()
-                .filter(|work| work.team_run_id == team_run_id)
+                .filter(|work| {
+                    team_run_id
+                        .as_deref()
+                        .is_some_and(|run_id| work.team_run_id == run_id)
+                        || team_id
+                            .as_deref()
+                            .is_some_and(|id| work.team_id.as_deref() == Some(id))
+                })
                 .filter(|work| status.is_none_or(|status| work.status == status))
                 .filter(|work| {
                     member_run_id.as_deref().is_none_or(|member| {
@@ -13334,6 +13352,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let work = Work {
                 id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
+                team_id: None,
+                created_by_member_id: None,
                 parent_work_id: value(args, "--parent-work-id"),
                 source_work_item_ref: value(args, "--source-work-item-ref"),
                 title: required(args, "--title")?,
@@ -13479,6 +13499,26 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             &required(args, "--reason")?,
             host_work_context(args),
         )?),
+        "promote" => {
+            let company_store = selected_company_store_for_work_cutover(args)?;
+            print_json(&store.promote_work_to_team_scope(
+                &company_store,
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                host_work_context(args),
+            )?)
+        }
+        "retarget" => print_json(&store.retarget_work_execution(
+            &required(args, "--work-id")?,
+            required_work_version(args)?,
+            &required(args, "--successor-team-run-id")?,
+            value(args, "--successor-member-run-id").as_deref(),
+            host_work_context(args),
+        )?),
+        "validate-cutover" => {
+            let company_store = selected_company_store_for_work_cutover(args)?;
+            print_json(&store.work_cutover_report(&company_store)?)
+        }
         "reconcile-delivery" => print_json(&store.reconcile_stale_work_delivery_claim(
             &required(args, "--team-run-id")?,
             &required(args, "--delivery-id")?,
@@ -13492,9 +13532,30 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             &now_string(),
         )?),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|validate-cutover|reconcile-delivery"
         ))),
     }
+}
+
+fn selected_company_store_for_work_cutover(args: &[String]) -> CliResult<HarnessStore> {
+    let home = company_store::harness_home().map_err(company_store_err)?;
+    let company_id = value(args, "--company")
+        .or_else(|| {
+            env::var("HARNESS_COMPANY")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| company_store::active_company_id(&home).ok().flatten())
+        .ok_or_else(|| {
+            CliError::Usage(
+                "Work cutover requires --company <id>, HARNESS_COMPANY, or an active Company"
+                    .to_string(),
+            )
+        })?;
+    let context = company_store::context_for_id(&home, &company_id)
+        .map_err(company_store_err)?
+        .ok_or_else(|| CliError::Usage(format!("unknown company: {company_id}")))?;
+    Ok(HarnessStore::new(context.store_root))
 }
 
 fn team_run_command(
@@ -23782,6 +23843,8 @@ fn create_team_work_value(
     let work = Work {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
+        team_id: None,
+        created_by_member_id: None,
         parent_work_id: optional_json_string(body, "parent_work_id")?,
         source_work_item_ref: optional_json_string(body, "source_work_item_ref")?,
         title: required_json_string(body, "title")?,

@@ -129,6 +129,18 @@ pub fn handle_get(
                 }),
         ));
     }
+    if path == "/v1/company-os/work-cutover" {
+        return Some(finish(
+            execution_store
+                .unwrap_or(store)
+                .work_cutover_report(store)
+                .map_err(ApiError::from)
+                .and_then(|report| {
+                    serde_json::to_value(report)
+                        .map_err(|error| ApiError::internal(error.to_string()))
+                }),
+        ));
+    }
     // Read-only archived-source provenance and Docs health projections. They
     // resolve the latest ledger rows only; they never write or migrate rows.
     if path == "/v1/company-os/work-provenance" {
@@ -231,6 +243,7 @@ pub fn snapshot_with_execution(
     } = standing_assignment_projection(store, execution_store)?;
     let work_execution_chains =
         work_execution_projection(store, execution_store, now_unix_millis())?;
+    let work_cutover = execution_store.work_cutover_report(store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -272,6 +285,7 @@ pub fn snapshot_with_execution(
         "standing_assignments": standing_assignments,
         "standing_assignment_conflicts": standing_assignment_conflicts,
         "work_execution_chains": work_execution_chains,
+        "work_cutover": work_cutover,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
         "commitments": commitments,
@@ -1520,6 +1534,8 @@ mod projection_tests {
                     harness_core::Work {
                         id: id.to_string(),
                         team_run_id: "run".to_string(),
+                        team_id: None,
+                        created_by_member_id: None,
                         parent_work_id: None,
                         source_work_item_ref: None,
                         title: id.to_string(),
@@ -1682,6 +1698,10 @@ mod projection_tests {
             snapshot["standing_assignments"],
             json!(projected.assignments)
         );
+        assert_eq!(snapshot["work_cutover"]["valid"], true);
+        let cutover = handle_get(&store, Some(&store), "/v1/company-os/work-cutover").unwrap();
+        assert_eq!(cutover.status, "200 OK");
+        assert_eq!(cutover.body["result"]["valid"], true);
         let response = handle_get(&store, Some(&store), "/v1/company-os/snapshot").unwrap();
         assert_eq!(
             response.status, "200 OK",

@@ -105,7 +105,10 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
     };
     let member_a = member("a");
     let member_b = member("b");
-    harness.store.append_team_run(&run).expect("append team run");
+    harness
+        .store
+        .append_team_run(&run)
+        .expect("append team run");
     harness
         .store
         .append_member_run(&member_a)
@@ -133,12 +136,7 @@ fn host_context(event_id: &str, key: &str, at: &str) -> WorkCommandContext {
     }
 }
 
-fn member_context(
-    member_run_id: &str,
-    event_id: &str,
-    key: &str,
-    at: &str,
-) -> WorkCommandContext {
+fn member_context(member_run_id: &str, event_id: &str, key: &str, at: &str) -> WorkCommandContext {
     WorkCommandContext {
         event_id: event_id.into(),
         performed_by_actor: TeamActorRef {
@@ -158,6 +156,8 @@ fn base_work(run_id: &str, id: &str) -> Work {
     Work {
         id: id.into(),
         team_run_id: run_id.into(),
+        team_id: None,
+        created_by_member_id: None,
         parent_work_id: None,
         source_work_item_ref: None,
         title: format!("Work {id}"),
@@ -363,7 +363,10 @@ fn member_with_active_work_cannot_start_or_claim_a_second_work() {
 
     // Neither rejected command mutated the board.
     let works = store.latest_works().expect("read works");
-    let work_two = works.iter().find(|work| work.id == "work-2").expect("work-2");
+    let work_two = works
+        .iter()
+        .find(|work| work.id == "work-2")
+        .expect("work-2");
     assert_eq!(work_two.status, WorkStatus::Open);
     assert_eq!(work_two.version, 1);
 }
