@@ -4051,7 +4051,7 @@
    ],
    "reviewAfter": "2026-08-18",
    "lastVerifiedWith": [
-    "PR #302 b01df88 over origin/master 52c0864",
+    "PR #302 b23b7ac over origin/master 52c0864",
     "official upstream repositories reviewed 2026-08-04"
    ],
    "reorgTrigger": "ADR 0051 AgentMember/AgentTeam/Work fields, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050/0051.",

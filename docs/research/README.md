@@ -15,7 +15,7 @@ proof, or default Agent context.
 
 | Study | Decision it informs | Status |
 | --- | --- | --- |
-| [AI-first multi-device Docs infrastructure](ai-first-multi-device-docs-infrastructure.md) | Future Docs service, revision, remote access, storage ADR, and Docs boundary for ADR 0051 AgentMember/nested Team/unified Work | Active stacked proposal on PR #302; awaiting PoC review |
+| [AI-first multi-device Docs infrastructure](ai-first-multi-device-docs-infrastructure.md) | Future Docs service, revision, remote access, storage ADR, and Docs boundary for ADR 0051 AgentMember/nested Team/unified Work | PR #300 stacked on #302; awaiting PoC review |
 | [Agent Team shared Works](agent-team-shared-task-list.md) | Evidence and alternatives that informed the Work/Message boundary | Absorbed by ADR 0050; retained until implementation and repeat dogfood |
 
 ## Lifecycle

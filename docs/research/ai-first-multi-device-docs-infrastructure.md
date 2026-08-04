@@ -7,7 +7,7 @@ authority_class: research
 canonical_for: nothing
 decision_target: a future Docs service and multi-device storage ADR
 review_trigger: Agent review, CLI/API PoC results, or a canonical Store migration proposal
-based_on: PR #302 commit b01df88 over origin/master 52c0864; reviewed 2026-08-04
+based_on: PR #302 commit b23b7ac over origin/master 52c0864; reviewed 2026-08-04
 execution_context: docs-collaboration-spec-20260804 / mission-docs-collaboration-spec / wave-docs-collaboration-spec-v1
 ```
 
@@ -63,10 +63,13 @@ It consumes the accepted target contract from
 and [Nested Agent Team Organization](../company-os/nested-agent-team-organization.md):
 
 ```text
-AgentMember = one durable Agent identity across Teams, machines, runtimes, and providers
+AgentMember = one durable Agent identity across its parent/host Team roles,
+              machines, runtimes, and providers
 Organization = a persistent projection of recursively nested Agent Teams
 Work        = one responsibility kernel used by Team and Organization views
 Message     = communication around Work, never responsibility state
+Work discovery = every Member may turn observations into self-owned,
+                 unassigned, or direct-child Work within Team topology
 ```
 
 ADR 0051 supersedes the two-identity and two-responsibility target while keeping
@@ -188,7 +191,7 @@ The dotted edges are references, not ownership. A Work transition does not
 rewrite a Document embed. A provider session ending does not change the durable
 AgentMember author. A document change does not assign Work.
 
-`AgentMember` is global and durable. Explicit AgentTeam `host_member_id` and
+`AgentMember` is Company-durable. Explicit AgentTeam `host_member_id` and
 direct `member_ids` explain how the same AgentMember can be a Member of one
 Team, Host another Team, keep one company identity across machines, and change
 runtime/provider without losing history. Docs must not create a separate
@@ -214,6 +217,26 @@ internal implementation detail; it does not become an AgentMember or Team
 member. When a child Agent changes a document, the request records its durable
 AgentMember actor plus the MemberRun execution provenance. Docs creates neither
 the Agent identity nor the Team membership.
+
+### Docs observations participate in recursive Work discovery
+
+ADR 0051 does not make the root Lead the only source of demand. Every Member
+may discover a missing decision, stale fact, structural gap, defect, or next
+action while reading or changing Docs. Docs should make that observation easy
+to preserve as Work without becoming the Work scheduler.
+
+The same placement rules apply at every Team depth:
+
+- the Member may create Work assigned to itself;
+- it may create unassigned Work in its current Team for Host triage; and
+- if it Hosts a child Team, it may assign Work to a direct child Member.
+
+Docs must not offer same-level, ancestor, sibling-Team, or unrelated assignees
+that the Work service would reject. When the correct owner is outside the
+Member's topology authority, Docs creates unassigned Work in an allowed Team
+and may send a Work-linked Message to the appropriate Host. Every Work created
+from Docs pins the source Document/Block/revision or Comment that produced the
+observation so the company's self-evolution remains reconstructable.
 
 ## Proposed deployment model
 
@@ -294,17 +317,21 @@ Each authenticated request should resolve server-side to:
 
 ```text
 principal_actor_ref          # Human, AgentMember, External, or Service
-agent_team_ref?              # Team scope whose Host/direct-Member refs authorize this action
-delegation_lineage[]         # optional, bounded by parent permission ceilings
+agent_team_ref?              # topology/audit scope; never sufficient Docs authority
+delegation_lineage[]         # optional provenance; server resolves effective ceilings
 credential_id                # device/service credential used; audit only
 execution_ref?               # Mission/TeamRun/MemberRun/NativeSession reference
 action_command_id            # existing ActionCommand.id; idempotency key
 ```
 
-The client must not gain authority by submitting an arbitrary actor id. Device
-credentials should be scoped to one Company, permission set, and expiry, and
-should be independently revocable. One AgentMember may use more than one
-credential, machine, MemberRun, or provider while retaining one identity.
+The client must not gain authority by submitting an arbitrary actor or Team id.
+Team Host/member topology governs Work placement but does not by itself grant
+Docs read or write. The server intersects the authenticated actor's business-
+access ceiling, any bounded delegation, and the target Document/DocumentSpace
+policy. Device credentials should be scoped to one Company, permission set,
+and expiry, and should be independently revocable. One AgentMember may use
+more than one credential, machine, MemberRun, or provider while retaining one
+identity.
 Execution attribution is
 useful evidence, but its absence must not be filled by inference from names,
 timestamps, or the current device.
@@ -543,14 +570,20 @@ Docs needs one first-class cross-system action without becoming a scheduler:
 select Document / Block at revision R
   -> Create Work
      -> choose Agent Team
-     -> optional assignee in that Team
+     -> choose a topology-permitted placement
+          - self
+          - unassigned in current/allowed Team
+          - direct child when creator Hosts that child Team
      -> title, context, completion criteria
      -> Work.source_refs includes the selected revision/anchor
 ```
 
-Selecting an assignee creates owned Work and lets WorkDelivery notify the
-runtime. Selecting only a Team creates unassigned Work for its Host or an
-eligible claim policy. A Docs comment, checkbox, or heading never becomes Work
+Selecting a permitted assignee creates owned Work and lets WorkDelivery notify
+the runtime. Selecting only a Team creates unassigned Work for its Host or an
+eligible claim policy. Supervising Operator intake can create only unassigned
+Work. An ordinary Member can select only itself; a Team Host can select direct
+Members of its hosted Team. A Member acting as child Team Host can select its
+direct children. A Docs comment, checkbox, or heading never becomes Work
 implicitly. The Work action validates Team scope, Host/member authority, owner,
 and permission ceiling in the Work/Team service before Docs displays the
 resulting stable WorkRef.
@@ -567,6 +600,8 @@ should expose the current governed Block/Markdown editing path plus:
 
 - current revision, author avatar, and diff/history;
 - `Create Work from selection` and `Link existing Work`;
+- clear placement choices for self-owned, unassigned, and direct-child Work,
+  with unavailable peer/cross-Team assignment omitted rather than failing late;
 - derived Related Works with Team, owner, status, and source/result role;
 - Comment/Mention with delivery state, without implying Work ownership;
 - result submission that records an exact DocumentRevision on Work; and
@@ -857,6 +892,7 @@ durable, while search/index freshness is reported separately.
 | Authority | MemberRun claims broader Docs authority than its AgentMember and Team permission ceiling | server rejects the command; no revision/index/event side effect |
 | Work boundary | Work references and produces a Document revision | Work and Docs retain independent owner/status; explicit refs resolve both ways where declared |
 | Child delegation | parent AgentMember delegates child Works to a child Team | child output revision has AgentMember/MemberRun provenance; child completion does not close parent Work |
+| Recursive discovery | lower Members create follow-up Work from a revision, comment, review, or Docs gap | one self-owned and one unassigned/direct-child Work preserve exact source provenance and obey topology authority |
 | Search | rebuild index after deleting derived database | exact refs and authorized results match pre-rebuild snapshot; freshness is observable |
 | Backup/restore | restore canonical Store and attachments | revision sequence, digests, relations, audit refs, and blob digests verify |
 | Offline | Agent prepares a change from a stale cached revision | no offline canonical write; submit either rebases explicitly or returns conflict |
