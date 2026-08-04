@@ -15,6 +15,7 @@ proof, or default Agent context.
 
 | Study | Decision it informs | Status |
 | --- | --- | --- |
+| [AI-first multi-device Docs infrastructure](ai-first-multi-device-docs-infrastructure.md) | Future Docs service, revision, remote access, and storage ADR | Active proposal; awaiting independent Agent review |
 | [Agent Team shared Works](agent-team-shared-task-list.md) | Evidence and alternatives that informed the Work/Message boundary | Absorbed by ADR 0050; retained until implementation and repeat dogfood |
 
 ## Lifecycle
