@@ -3241,6 +3241,125 @@ pub struct WorkDeliveryUpdate {
     pub updated_at: String,
 }
 
+/// Why the exact bound Host must inspect durable Agent Team state.
+///
+/// This is deliberately separate from [`TeamMessageKind`] and
+/// [`WorkEventKind`]. Work remains the responsibility/status plane, while a
+/// Host attention row is only a durable notification that a particular Work
+/// state now needs Host action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostAttentionKind {
+    WorkReviewRequested,
+    WorkBlocked,
+    MemberStoppedWithOwnedReadyWork,
+    MemberFailedWithOwnedReadyWork,
+}
+
+/// Transport/intake state for one Host attention row.
+///
+/// `Delivered` proves only that the exact provider-native Host task accepted
+/// the notification. `Acknowledged` proves Host intake. Neither state accepts,
+/// rejects, resumes, or otherwise mutates the referenced Work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostAttentionStatus {
+    Actionable,
+    Claimed,
+    Delivered,
+    Acknowledged,
+}
+
+/// Durable notification derived from a Work-state or member-runtime fact.
+///
+/// Host binding is intentionally not copied into this row. Read projections
+/// resolve the latest [`AgentTeamRun`] binding, so an item created while
+/// unbound cannot leak to another task and becomes deliverable only after an
+/// explicit binding exists. Claim fields snapshot the exact binding that owns
+/// an in-flight delivery attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAttention {
+    pub id: String,
+    pub team_run_id: String,
+    pub kind: HostAttentionKind,
+    pub work_id: String,
+    pub work_version: u64,
+    /// Exact WorkEvent, TeamRunEvent, or provider control event that caused
+    /// this notification. Runtime integration should derive `id`
+    /// deterministically from this reference so retries remain idempotent.
+    pub source_event_ref: String,
+    #[serde(default)]
+    pub member_run_id: Option<String>,
+    pub status: HostAttentionStatus,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claimed_host_surface: Option<String>,
+    #[serde(default)]
+    pub claimed_host_thread_id: Option<String>,
+    #[serde(default)]
+    pub provider_receipt_id: Option<String>,
+    #[serde(default)]
+    pub last_failure_reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl HostAttention {
+    /// Delivered rows remain actionable until the exact Host explicitly ACKs
+    /// intake. A claim is also visible so another transport cannot double-wake
+    /// the same Host while the first attempt is in flight.
+    pub fn needs_host_action(&self) -> bool {
+        self.status != HostAttentionStatus::Acknowledged
+    }
+}
+
+impl Validate for HostAttention {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "HostAttention.id")?;
+        require_non_empty(&self.team_run_id, "HostAttention.team_run_id")?;
+        require_non_empty(&self.work_id, "HostAttention.work_id")?;
+        require_non_empty(&self.source_event_ref, "HostAttention.source_event_ref")?;
+        require_non_empty(&self.created_at, "HostAttention.created_at")?;
+        require_non_empty(&self.updated_at, "HostAttention.updated_at")?;
+        if let Some(member_run_id) = &self.member_run_id {
+            require_non_empty(member_run_id, "HostAttention.member_run_id")?;
+        }
+        if let Some(claim_id) = &self.claim_id {
+            require_non_empty(claim_id, "HostAttention.claim_id")?;
+        }
+        if let Some(surface) = &self.claimed_host_surface {
+            require_non_empty(surface, "HostAttention.claimed_host_surface")?;
+        }
+        if let Some(thread_id) = &self.claimed_host_thread_id {
+            require_non_empty(thread_id, "HostAttention.claimed_host_thread_id")?;
+        }
+        if let Some(receipt_id) = &self.provider_receipt_id {
+            require_non_empty(receipt_id, "HostAttention.provider_receipt_id")?;
+        }
+        if let Some(reason) = &self.last_failure_reason {
+            require_non_empty(reason, "HostAttention.last_failure_reason")?;
+        }
+        Ok(())
+    }
+}
+
+/// TeamRun-scoped read projection. `warning` is populated for an unbound run;
+/// exact native-thread queries never return such a projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAttentionInbox {
+    pub team_run_id: String,
+    pub host_surface: String,
+    #[serde(default)]
+    pub host_thread_id: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+    #[serde(default)]
+    pub attentions: Vec<HostAttention>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkDelegation {
     pub id: String,
@@ -4674,6 +4793,45 @@ mod tests {
         }))
         .expect("legacy delivery update remains readable");
         assert_eq!(update.update_sequence, 0);
+    }
+
+    #[test]
+    fn host_attention_keeps_transport_intake_distinct_from_work_semantics() {
+        let mut attention = HostAttention {
+            id: "host-attention-work-event-1".into(),
+            team_run_id: "team-run-1".into(),
+            kind: HostAttentionKind::WorkReviewRequested,
+            work_id: "work-1".into(),
+            work_version: 3,
+            source_event_ref: "work-event-1".into(),
+            member_run_id: Some("member-run-1".into()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        assert!(attention.validate().is_ok());
+        assert!(attention.needs_host_action());
+
+        attention.status = HostAttentionStatus::Delivered;
+        attention.provider_receipt_id = Some("provider-receipt-1".into());
+        assert!(
+            attention.needs_host_action(),
+            "delivery is transport receipt, not Host intake or Work acceptance"
+        );
+        attention.status = HostAttentionStatus::Acknowledged;
+        assert!(!attention.needs_host_action());
+
+        let json = serde_json::to_value(&attention).expect("serialize Host attention");
+        assert_eq!(json["kind"], "work_review_requested");
+        assert_eq!(json["status"], "acknowledged");
+        assert!(json.get("team_message_id").is_none());
+        assert!(json.get("work_status").is_none());
     }
 
     fn topology_team(

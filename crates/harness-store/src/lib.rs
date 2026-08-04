@@ -7,15 +7,16 @@ use std::time::{Duration, Instant};
 
 use harness_core::{
     validate_agent_team_topology, AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime,
-    AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, Gap, MemberAction, MemberRun,
-    Message, MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus,
-    PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus, Review,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work,
-    WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
-    WorkEvent, WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    AgentTeam, AgentTeamRun, Decision, DelegationRun, Evidence, Gap, HostAttention,
+    HostAttentionInbox, HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
+    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
+    WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -68,6 +69,12 @@ pub enum TeamMessageDeliveryClaimResult {
 pub enum WorkDeliveryClaimResult {
     Claimed(Box<WorkDelivery>),
     NotQueued,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostAttentionClaimResult {
+    Claimed(Box<HostAttention>),
+    NotActionable,
 }
 
 #[derive(Debug, Clone)]
@@ -538,6 +545,295 @@ impl HarnessStore {
             ));
         }
         self.append_jsonl_unlocked("team_runs.jsonl", next)
+    }
+
+    /// Idempotently append one durable Host-attention fact.
+    ///
+    /// Runtime integration must derive `attention.id` from the causal event
+    /// (for example `host-attention-<work-event-id>`). Replaying the same event
+    /// returns the latest delivery/intake projection instead of resetting it
+    /// to `actionable` or fabricating a TeamMessage.
+    pub fn ensure_host_attention(&self, attention: &HostAttention) -> StoreResult<HostAttention> {
+        attention
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if attention.status != HostAttentionStatus::Actionable
+            || attention.attempt != 0
+            || attention.claim_id.is_some()
+            || attention.claimed_host_surface.is_some()
+            || attention.claimed_host_thread_id.is_some()
+            || attention.provider_receipt_id.is_some()
+        {
+            return Err(StoreError::Conflict(
+                "new HostAttention must be actionable and unclaimed".to_string(),
+            ));
+        }
+
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut attentions = self.latest_host_attentions_unlocked()?;
+        if let Some(existing) = attentions.remove(&attention.id) {
+            let same_fact = existing.team_run_id == attention.team_run_id
+                && existing.kind == attention.kind
+                && existing.work_id == attention.work_id
+                && existing.work_version == attention.work_version
+                && existing.source_event_ref == attention.source_event_ref
+                && existing.member_run_id == attention.member_run_id
+                && existing.created_at == attention.created_at;
+            if same_fact {
+                return Ok(existing);
+            }
+            return Err(StoreError::Conflict(format!(
+                "HostAttention id {} already names a different causal fact",
+                attention.id
+            )));
+        }
+
+        self.require_team_run_unlocked(&attention.team_run_id)?;
+        let work = self
+            .latest_works_unlocked()?
+            .remove(&attention.work_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("work not found: {}", attention.work_id))
+            })?;
+        if work.team_run_id != attention.team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "Work {} does not belong to TeamRun {}",
+                attention.work_id, attention.team_run_id
+            )));
+        }
+        if work.version < attention.work_version {
+            return Err(StoreError::Conflict(format!(
+                "HostAttention references future Work version {} > {}",
+                attention.work_version, work.version
+            )));
+        }
+        if let Some(member_run_id) = attention.member_run_id.as_deref() {
+            self.require_member_run_unlocked(member_run_id, &attention.team_run_id)?;
+        }
+
+        self.append_jsonl_unlocked("host_attentions.jsonl", attention)?;
+        Ok(attention.clone())
+    }
+
+    /// Latest-wins Host-attention projection across all TeamRuns.
+    pub fn host_attentions(&self) -> StoreResult<Vec<HostAttention>> {
+        Ok(self
+            .latest_host_attentions_unlocked()?
+            .into_values()
+            .collect())
+    }
+
+    /// Read one TeamRun's Host-attention projection, including an explicit
+    /// warning when no exact native Host task is bound.
+    pub fn host_attention_inbox_for_team_run(
+        &self,
+        team_run_id: &str,
+        include_all: bool,
+    ) -> StoreResult<HostAttentionInbox> {
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        let attentions = self
+            .latest_host_attentions_unlocked()?
+            .into_values()
+            .filter(|attention| attention.team_run_id == team_run_id)
+            .filter(|attention| include_all || attention.needs_host_action())
+            .collect::<Vec<_>>();
+        let warning = if run.host_thread_id.is_none() && !attentions.is_empty() {
+            Some(format!(
+                "UNBOUND_HOST: TeamRun {} has actionable Host attention but no exact native Host task; bind host_surface + host_thread_id before delivery",
+                run.id
+            ))
+        } else {
+            None
+        };
+        Ok(HostAttentionInbox {
+            team_run_id: run.id,
+            host_surface: run.host_surface,
+            host_thread_id: run.host_thread_id,
+            warning,
+            attentions,
+        })
+    }
+
+    /// Aggregate only attentions owned by the exact provider-native Host task.
+    /// Unbound TeamRuns and other tasks are excluded by construction.
+    pub fn host_attention_inboxes_for_native_thread(
+        &self,
+        host_surface: &str,
+        host_thread_id: &str,
+        include_all: bool,
+    ) -> StoreResult<Vec<HostAttentionInbox>> {
+        if host_surface.trim().is_empty() || host_thread_id.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "Host surface and native thread id must not be empty".to_string(),
+            ));
+        }
+        let runs = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        });
+        let mut inboxes = Vec::new();
+        for run in runs.into_values().filter(|run| {
+            run.host_surface == host_surface
+                && run.host_thread_id.as_deref() == Some(host_thread_id)
+        }) {
+            let inbox = self.host_attention_inbox_for_team_run(&run.id, include_all)?;
+            if include_all || !inbox.attentions.is_empty() {
+                inboxes.push(inbox);
+            }
+        }
+        Ok(inboxes)
+    }
+
+    /// Fence one delivery attempt to the TeamRun's current exact Host binding.
+    /// A claimed or delivered row cannot be claimed again, which prevents a
+    /// managed idle wake and a safe-boundary hook from both starting delivery.
+    pub fn claim_host_attention(
+        &self,
+        attention_id: &str,
+        host_surface: &str,
+        host_thread_id: &str,
+        claim_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<HostAttentionClaimResult> {
+        require_non_empty_store(attention_id, "Host attention id")?;
+        require_non_empty_store(host_surface, "Host surface")?;
+        require_non_empty_store(host_thread_id, "Host thread id")?;
+        require_non_empty_store(claim_id, "Host attention claim id")?;
+        require_non_empty_store(updated_at, "Host attention updated_at")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut attention = self.require_host_attention_unlocked(attention_id)?;
+        self.require_exact_host_binding_unlocked(
+            &attention.team_run_id,
+            host_surface,
+            host_thread_id,
+        )?;
+        if attention.status == HostAttentionStatus::Claimed
+            && attention.claim_id.as_deref() == Some(claim_id)
+            && attention.claimed_host_surface.as_deref() == Some(host_surface)
+            && attention.claimed_host_thread_id.as_deref() == Some(host_thread_id)
+        {
+            return Ok(HostAttentionClaimResult::Claimed(Box::new(attention)));
+        }
+        if attention.status != HostAttentionStatus::Actionable {
+            return Ok(HostAttentionClaimResult::NotActionable);
+        }
+        attention.status = HostAttentionStatus::Claimed;
+        attention.attempt = attention.attempt.saturating_add(1);
+        attention.claim_id = Some(claim_id.to_string());
+        attention.claimed_host_surface = Some(host_surface.to_string());
+        attention.claimed_host_thread_id = Some(host_thread_id.to_string());
+        attention.provider_receipt_id = None;
+        attention.last_failure_reason = None;
+        attention.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+        Ok(HostAttentionClaimResult::Claimed(Box::new(attention)))
+    }
+
+    /// Record provider-native delivery receipt for the currently-owned claim.
+    pub fn complete_host_attention_claim(
+        &self,
+        attention_id: &str,
+        claim_id: &str,
+        provider_receipt_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<HostAttention> {
+        require_non_empty_store(provider_receipt_id, "Host attention provider receipt")?;
+        require_non_empty_store(updated_at, "Host attention updated_at")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut attention = self.require_host_attention_unlocked(attention_id)?;
+        if attention.status == HostAttentionStatus::Delivered
+            && attention.claim_id.as_deref() == Some(claim_id)
+            && attention.provider_receipt_id.as_deref() == Some(provider_receipt_id)
+        {
+            return Ok(attention);
+        }
+        if attention.status != HostAttentionStatus::Claimed
+            || attention.claim_id.as_deref() != Some(claim_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "HostAttention claim {claim_id} no longer owns {attention_id}"
+            )));
+        }
+        let surface = attention.claimed_host_surface.clone().ok_or_else(|| {
+            StoreError::Conflict("claimed HostAttention has no Host surface".to_string())
+        })?;
+        let thread_id = attention.claimed_host_thread_id.clone().ok_or_else(|| {
+            StoreError::Conflict("claimed HostAttention has no Host thread id".to_string())
+        })?;
+        self.require_exact_host_binding_unlocked(&attention.team_run_id, &surface, &thread_id)?;
+        attention.status = HostAttentionStatus::Delivered;
+        attention.provider_receipt_id = Some(provider_receipt_id.to_string());
+        attention.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+        Ok(attention)
+    }
+
+    /// Return an uncertain/failed claim to the actionable state for retry.
+    pub fn fail_host_attention_claim(
+        &self,
+        attention_id: &str,
+        claim_id: &str,
+        reason: &str,
+        updated_at: &str,
+    ) -> StoreResult<HostAttention> {
+        require_non_empty_store(reason, "Host attention failure reason")?;
+        require_non_empty_store(updated_at, "Host attention updated_at")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut attention = self.require_host_attention_unlocked(attention_id)?;
+        if attention.status != HostAttentionStatus::Claimed
+            || attention.claim_id.as_deref() != Some(claim_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "HostAttention claim {claim_id} no longer owns {attention_id}"
+            )));
+        }
+        attention.status = HostAttentionStatus::Actionable;
+        attention.claim_id = None;
+        attention.claimed_host_surface = None;
+        attention.claimed_host_thread_id = None;
+        attention.provider_receipt_id = None;
+        attention.last_failure_reason = Some(reason.to_string());
+        attention.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+        Ok(attention)
+    }
+
+    /// ACK transport intake from the exact currently-bound Host task. This is
+    /// intentionally independent of Work accept/request-changes commands.
+    pub fn acknowledge_host_attention(
+        &self,
+        attention_id: &str,
+        host_surface: &str,
+        host_thread_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<HostAttention> {
+        require_non_empty_store(updated_at, "Host attention updated_at")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut attention = self.require_host_attention_unlocked(attention_id)?;
+        self.require_exact_host_binding_unlocked(
+            &attention.team_run_id,
+            host_surface,
+            host_thread_id,
+        )?;
+        if attention.status == HostAttentionStatus::Acknowledged {
+            return Ok(attention);
+        }
+        if attention.status != HostAttentionStatus::Delivered
+            || attention.claimed_host_surface.as_deref() != Some(host_surface)
+            || attention.claimed_host_thread_id.as_deref() != Some(host_thread_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "HostAttention {attention_id} has not been delivered to this exact Host task"
+            )));
+        }
+        attention.status = HostAttentionStatus::Acknowledged;
+        attention.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+        Ok(attention)
     }
 
     /// Atomically append a newly-created TeamRun. Mission-scoped runs are the
@@ -1656,6 +1952,39 @@ impl HarnessStore {
         })
         .remove(team_run_id)
         .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))
+    }
+
+    fn latest_host_attentions_unlocked(
+        &self,
+    ) -> StoreResult<std::collections::BTreeMap<String, HostAttention>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<HostAttention>("host_attentions.jsonl")?,
+            |attention| attention.id.clone(),
+        ))
+    }
+
+    fn require_host_attention_unlocked(&self, attention_id: &str) -> StoreResult<HostAttention> {
+        self.latest_host_attentions_unlocked()?
+            .remove(attention_id)
+            .ok_or_else(|| StoreError::Conflict(format!("HostAttention not found: {attention_id}")))
+    }
+
+    fn require_exact_host_binding_unlocked(
+        &self,
+        team_run_id: &str,
+        host_surface: &str,
+        host_thread_id: &str,
+    ) -> StoreResult<AgentTeamRun> {
+        require_non_empty_store(host_surface, "Host surface")?;
+        require_non_empty_store(host_thread_id, "Host thread id")?;
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        if run.host_surface != host_surface || run.host_thread_id.as_deref() != Some(host_thread_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "HOST_BINDING_MISMATCH: TeamRun {team_run_id} is not bound to {host_surface}/{host_thread_id}"
+            )));
+        }
+        Ok(run)
     }
 
     fn require_member_run_unlocked(
@@ -3541,6 +3870,14 @@ fn apply_work_delivery_update(delivery: &mut WorkDelivery, update: WorkDeliveryU
     delivery.updated_at = update.updated_at;
 }
 
+fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
+    if value.trim().is_empty() {
+        Err(StoreError::Conflict(format!("{label} must not be empty")))
+    } else {
+        Ok(())
+    }
+}
+
 fn require_host_actor(actor: &harness_core::TeamActorRef) -> StoreResult<()> {
     if matches!(
         actor.kind,
@@ -3612,11 +3949,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
-        DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus,
-        MemberWorkspaceSnapshot, MessageKind, Mission, MissionStatus, SenderKind,
-        TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
+        DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus, MemberRunStatus,
+        MemberWorkspaceSnapshot, MessageKind, Mission, MissionStatus, SenderKind, TeamActorKind,
+        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
         TeamMessageResponseIntent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
-        WaveGateStatus, WaveStatus,
+        WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;
@@ -4109,6 +4446,240 @@ mod tests {
                 .expect("system clock")
                 .as_millis()
         ))
+    }
+
+    fn seed_host_attention_fixture(
+        store: &HarnessStore,
+        run_id: &str,
+        host_thread_id: Option<&str>,
+    ) -> (AgentTeamRun, MemberRun, Work) {
+        let run = AgentTeamRun {
+            id: run_id.into(),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            project_binding_id: None,
+            host_surface: "codex-app".into(),
+            host_thread_id: host_thread_id.map(str::to_string),
+            host_actor: None,
+            host_control_mode: Default::default(),
+            objective: "prove exact Host attention".into(),
+            execution_root: None,
+            status: TeamRunStatus::Running,
+            member_run_ids: vec![format!("member-{run_id}")],
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        store.append_team_run(&run).expect("seed TeamRun");
+        let member = MemberRun {
+            id: format!("member-{run_id}"),
+            team_run_id: run_id.into(),
+            slot_id: None,
+            agent_member_id: None,
+            name: "builder".into(),
+            role: "builder".into(),
+            provider: "kimi".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: None,
+            provider_capacity: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        store.append_member_run(&member).expect("seed MemberRun");
+        let work = store
+            .insert_work(
+                Work {
+                    id: format!("work-{run_id}"),
+                    team_run_id: run_id.into(),
+                    parent_work_id: None,
+                    source_work_item_ref: None,
+                    title: "deliver exact Host attention".into(),
+                    context_markdown: String::new(),
+                    completion_criteria_markdown: "Host receives exact durable attention".into(),
+                    status: WorkStatus::Open,
+                    owner_member_id: None,
+                    active_member_run_id: Some(member.id.clone()),
+                    claim_mode: WorkClaimMode::HostAssign,
+                    eligible_member_ids: Vec::new(),
+                    prerequisite_work_ids: Vec::new(),
+                    priority: WorkPriority::Normal,
+                    created_by_actor: TeamActorRef {
+                        kind: TeamActorKind::Host,
+                        id: "host".into(),
+                        display_name: None,
+                        authn_source: None,
+                    },
+                    result_summary: None,
+                    blocker_reason: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    version: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                WorkCommandContext {
+                    event_id: format!("work-event-{run_id}"),
+                    performed_by_actor: TeamActorRef {
+                        kind: TeamActorKind::Host,
+                        id: "host".into(),
+                        display_name: None,
+                        authn_source: None,
+                    },
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("create-work-{run_id}"),
+                    created_at: "unix-ms:2".into(),
+                },
+            )
+            .expect("seed Work");
+        (run, member, work)
+    }
+
+    #[test]
+    fn host_attention_is_durable_exact_bound_and_semantically_separate() {
+        let root = team_test_root("host-attention");
+        let store = HarnessStore::new(&root);
+        let (run, member, work) = seed_host_attention_fixture(&store, "run-a", None);
+        let attention = HostAttention {
+            id: "host-attention-work-review-a".into(),
+            team_run_id: run.id.clone(),
+            kind: HostAttentionKind::WorkReviewRequested,
+            work_id: work.id.clone(),
+            work_version: work.version,
+            source_event_ref: "work-event-review-a".into(),
+            member_run_id: Some(member.id.clone()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: "unix-ms:3".into(),
+            updated_at: "unix-ms:3".into(),
+        };
+        store
+            .ensure_host_attention(&attention)
+            .expect("append attention");
+        assert!(
+            store.team_messages().expect("messages").is_empty(),
+            "Work state attention must not fabricate TeamMessage conversation"
+        );
+        let unbound = store
+            .host_attention_inbox_for_team_run(&run.id, false)
+            .expect("unbound projection");
+        assert_eq!(unbound.attentions.len(), 1);
+        assert!(unbound.warning.as_deref().is_some_and(|warning| {
+            warning.contains("UNBOUND_HOST") && warning.contains(&run.id)
+        }));
+        assert!(store
+            .host_attention_inboxes_for_native_thread("codex-app", "other-task", false)
+            .expect("other task")
+            .is_empty());
+
+        let mut bound = run.clone();
+        bound.host_thread_id = Some("codex-task-a".into());
+        bound.updated_at = "unix-ms:4".into();
+        store
+            .compare_and_append_team_run(&run, &bound)
+            .expect("bind exact Host task");
+        let exact = store
+            .host_attention_inboxes_for_native_thread("codex-app", "codex-task-a", false)
+            .expect("exact Host inbox");
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].attentions[0].id, attention.id);
+        assert!(store
+            .host_attention_inboxes_for_native_thread("codex-app", "codex-task-b", false)
+            .expect("other exact task")
+            .is_empty());
+
+        let claimed = store
+            .claim_host_attention(
+                &attention.id,
+                "codex-app",
+                "codex-task-a",
+                "claim-a",
+                "unix-ms:5",
+            )
+            .expect("claim attention");
+        assert!(matches!(claimed, HostAttentionClaimResult::Claimed(_)));
+        assert!(matches!(
+            store
+                .claim_host_attention(
+                    &attention.id,
+                    "codex-app",
+                    "codex-task-a",
+                    "claim-a",
+                    "unix-ms:5",
+                )
+                .expect("idempotent claim"),
+            HostAttentionClaimResult::Claimed(_)
+        ));
+        assert!(store
+            .claim_host_attention(
+                &attention.id,
+                "codex-app",
+                "codex-task-a",
+                "claim-b",
+                "unix-ms:5",
+            )
+            .is_ok_and(|result| result == HostAttentionClaimResult::NotActionable));
+
+        let delivered = store
+            .complete_host_attention_claim(
+                &attention.id,
+                "claim-a",
+                "codex-turn-start-1",
+                "unix-ms:6",
+            )
+            .expect("record provider receipt");
+        assert_eq!(delivered.status, HostAttentionStatus::Delivered);
+        assert!(delivered.needs_host_action());
+        assert_eq!(
+            store
+                .host_attention_inboxes_for_native_thread("codex-app", "codex-task-a", false,)
+                .expect("delivered still actionable")[0]
+                .attentions
+                .len(),
+            1
+        );
+
+        let acknowledged = store
+            .acknowledge_host_attention(&attention.id, "codex-app", "codex-task-a", "unix-ms:7")
+            .expect("Host intake ACK");
+        assert_eq!(acknowledged.status, HostAttentionStatus::Acknowledged);
+        assert!(store
+            .host_attention_inboxes_for_native_thread("codex-app", "codex-task-a", false)
+            .expect("actionable inbox after ACK")
+            .is_empty());
+        assert_eq!(
+            store.latest_works().expect("Work remains")[0].status,
+            WorkStatus::Open,
+            "attention ACK must not accept or request changes on Work"
+        );
+        assert_eq!(
+            store
+                .ensure_host_attention(&attention)
+                .expect("causal replay remains idempotent")
+                .status,
+            HostAttentionStatus::Acknowledged,
+            "replaying projection must not reset Host intake"
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     #[test]
