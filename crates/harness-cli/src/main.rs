@@ -21183,35 +21183,44 @@ fn broadcast_live_member_activity(
 }
 
 fn handle_sse_stream(
-    store: &HarnessStore,
-    project_id: &str,
+    execution_space_id: &str,
+    company_scope_id: Option<&str>,
     mut stream: TcpStream,
     sse_manager: sse::SseManager,
 ) -> CliResult<()> {
     use std::time::Duration;
 
+    // Subscribe before exposing the initial snapshot marker. The browser starts
+    // its authoritative GET after that marker; registering first guarantees
+    // that a write crossing the marker -> GET boundary is queued for this
+    // stream instead of falling into a gap between the GET and subscription.
+    let rx = sse_manager.subscribe_scoped(execution_space_id, company_scope_id);
+
     // Send SSE header
     sse::write_sse_header(&mut stream)?;
 
     // Send initial snapshot
-    let events = store.events()?;
-    let messages = store.messages()?;
     // Initial snapshot sent to client for sync
     let _snapshot = sse::SseEventFrame::Snapshot {
-        agent_events: events,
-        messages,
+        agent_events: Vec::new(),
+        messages: Vec::new(),
         generated_at: now_string(),
     };
 
     // Convert snapshot to JSON for transmission
     let snapshot_json = serde_json::json!({
         "generated_at": now_string(),
+        "execution_space_id": execution_space_id,
+        "company_scope_id": company_scope_id,
+        "stream_epoch": sse_manager.stream_epoch(),
     });
     sse::write_sse_frame(&mut stream, "snapshot", &snapshot_json)?;
 
-    // Subscribe to the SSE channel for THIS project only, so frames from another
-    // project never leak into this client's stream (multi-project P6).
-    let rx = sse_manager.subscribe(project_id);
+    // Deterministic integration-test hook for the marker -> GET crossing. The
+    // subscription is intentionally already live while this pause is active.
+    if let Some(pause) = sse_post_snapshot_test_pause() {
+        std::thread::sleep(pause);
+    }
     let mut last_keepalive = std::time::Instant::now();
 
     // Wait for events and stream them to the client
@@ -21346,6 +21355,15 @@ fn handle_sse_stream(
                             }
                         }
                     }
+                    sse::SseEventFrame::ProjectionInvalidated(invalidation) => {
+                        if let Ok(json) = serde_json::to_value(&invalidation) {
+                            if sse::write_sse_frame(&mut stream, "projection_invalidated", &json)
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                     sse::SseEventFrame::MemberActivity(activity) => {
                         if sse::write_sse_frame(&mut stream, "member_activity", &activity).is_err()
                         {
@@ -21369,6 +21387,14 @@ fn handle_sse_stream(
     }
 
     Ok(())
+}
+
+fn sse_post_snapshot_test_pause() -> Option<std::time::Duration> {
+    std::env::var("HARNESS_TEST_SSE_POST_SNAPSHOT_PAUSE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(std::time::Duration::from_millis)
 }
 
 /// Independent Execution Space and Project Binding routing for one live serve.
@@ -21426,20 +21452,33 @@ impl ServeProjects {
     /// Resolve an Execution Space selector to its coordination store. In
     /// compatibility mode (no native space selected at startup), project-derived
     /// stores remain readable through the old selector.
-    fn store_for(&self, selector: Option<&str>) -> (String, HarnessStore) {
-        if let (Some(home), Some(id)) = (&self.harness_home, selector) {
-            if !id.is_empty() && id != self.default_id {
-                if let Ok(Some(space)) = execution_space::context_for_id(home, id) {
-                    return (space.id, HarnessStore::new(space.store_root));
-                }
-                if self.default_space.is_none() {
-                    if let Ok(Some(ctx)) = project::context_for_id(home, id) {
-                        return (ctx.id, HarnessStore::new(ctx.store_root));
-                    }
+    fn store_for(&self, selector: Option<&str>) -> CliResult<(String, HarnessStore)> {
+        let Some(id) = selector.filter(|id| !id.is_empty()) else {
+            return Ok((self.default_id.clone(), self.default_store.clone()));
+        };
+        if id == self.default_id {
+            return Ok((self.default_id.clone(), self.default_store.clone()));
+        }
+        if let Some(home) = &self.harness_home {
+            if let Some(space) =
+                execution_space::context_for_id(home, id).map_err(execution_space_err)?
+            {
+                return Ok((space.id, HarnessStore::new(space.store_root)));
+            }
+            if self.default_space.is_none() {
+                if let Some(ctx) = project::context_for_id(home, id).map_err(project_err)? {
+                    return Ok((ctx.id, HarnessStore::new(ctx.store_root)));
                 }
             }
         }
-        (self.default_id.clone(), self.default_store.clone())
+        Err(CliError::Usage(format!(
+            "unknown {}: {id}",
+            if self.default_space.is_some() {
+                "execution space"
+            } else {
+                "coordination store"
+            }
+        )))
     }
 
     /// Resolve the independent Project Binding used for provider cwd.
@@ -21577,6 +21616,24 @@ impl ServeProjects {
         map
     }
 
+    /// Independently enumerate Company Store projection sources. The watcher
+    /// emits scoped invalidations only; it never copies Company rows into an
+    /// Execution Space. Compatibility project stores retain an explicit
+    /// `project-compat:` scope so they cannot collide with native Company ids.
+    fn company_watch_map(&self) -> std::collections::HashMap<String, PathBuf> {
+        let mut map = std::collections::HashMap::new();
+        for company in self.list_companies() {
+            map.insert(company.id, company.store_root);
+        }
+        if self.harness_home.is_some() {
+            for project in self.list_project_bindings() {
+                map.entry(format!("project-compat:{}", project.id))
+                    .or_insert(project.store_root);
+            }
+        }
+        map
+    }
+
     fn current_company_id(&self) -> Option<String> {
         let home = self.harness_home.as_ref()?;
         company_store::active_company_id(home).ok().flatten()
@@ -21672,8 +21729,13 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     // registry so spaces registered after serve starts become live without a
     // restart. Each stream stays scoped to its coordination store.
     let watcher_projects = projects.clone();
-    sse::start_sse_watcher(move || watcher_projects.watch_map(), sse_manager.clone())
-        .map_err(CliError::Io)?;
+    let watcher_companies = projects.clone();
+    sse::start_scoped_sse_watcher(
+        move || watcher_projects.watch_map(),
+        move || watcher_companies.company_watch_map(),
+        sse_manager.clone(),
+    )
+    .map_err(CliError::Io)?;
 
     // Start the abandoned-run reaper per watched coordination store: periodically flip
     // `Running` runs whose driver process has died (or legacy runs past the stale
@@ -21814,34 +21876,50 @@ fn handle_http_connection(
     } else {
         space_param.as_deref().or(project_param.as_deref())
     };
-    let (project_id, store_owned) = projects.store_for(store_selector);
+    let (project_id, store_owned) = match projects.store_for(store_selector) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            let detail = error.to_string();
+            write_http_json(
+                &mut stream,
+                "404 Not Found",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "execution_space_not_found",
+                    "detail": detail,
+                }),
+            )?;
+            return Ok(());
+        }
+    };
     let company_param = query_param(&path, "company");
     let company_os_path = path_only.starts_with("/v1/company-os/");
     let dashboard_snapshot_path = matches!(
         path_only.as_str(),
         "/v1/snapshot" | "/v1/dashboard/snapshot"
     );
-    let company_store_owned = if company_os_path || dashboard_snapshot_path {
-        match projects.company_store_for(company_param.as_deref(), project_param.as_deref()) {
-            Ok(store) => store,
-            Err(error) => {
-                let detail = error.to_string();
-                let code = if detail.starts_with("unknown project binding:") {
-                    "project_not_found"
-                } else {
-                    detail.as_str()
-                };
-                write_http_json(
-                    &mut stream,
-                    "404 Not Found",
-                    &serde_json::json!({"ok": false, "error": code, "detail": detail}),
-                )?;
-                return Ok(());
+    let company_store_owned =
+        if company_os_path || dashboard_snapshot_path || path_only == "/v1/events" {
+            match projects.company_store_for(company_param.as_deref(), project_param.as_deref()) {
+                Ok(store) => store,
+                Err(error) => {
+                    let detail = error.to_string();
+                    let code = if detail.starts_with("unknown project binding:") {
+                        "project_not_found"
+                    } else {
+                        detail.as_str()
+                    };
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"ok": false, "error": code, "detail": detail}),
+                    )?;
+                    return Ok(());
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
     let store = company_store_owned
         .as_ref()
         .map(|(_, company_store)| company_store)
@@ -22131,9 +22209,14 @@ fn handle_http_connection(
                 )?
             }
             "/v1/events" => {
-                // Handle SSE endpoint, scoped to the requested project channel so a
-                // client subscribed to project A never receives project B frames.
-                handle_sse_stream(store, &project_id, stream, sse_manager)?
+                // Scope coordination to the selected Execution Space and Company
+                // invalidations to the independently selected Company Store.
+                handle_sse_stream(
+                    &project_id,
+                    company_store_owned.as_ref().map(|(id, _)| id.as_str()),
+                    stream,
+                    sse_manager,
+                )?
             }
             "/v1/docs" => match read_allowed_doc(&path) {
                 Ok((doc_path, content)) => write_http_json(

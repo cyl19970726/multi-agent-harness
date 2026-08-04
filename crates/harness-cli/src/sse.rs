@@ -59,11 +59,34 @@ pub enum SseEventFrame {
     MemberAction(MemberAction),
     /// A provider request awaiting or carrying an operator/policy response.
     PendingInteraction(PendingInteraction),
+    /// A durable source used by the Dashboard projection changed outside the
+    /// serve process. The frame deliberately carries no business row: clients
+    /// must refresh the scoped authoritative snapshot instead of treating this
+    /// notification as a second truth store.
+    ProjectionInvalidated(ProjectionInvalidation),
     /// Sanitized, transient member activity for live display only. This value is
     /// never written to JSONL, included in snapshots, or replayed to a later
     /// subscriber. Callers must not place provider thinking or other durable
     /// claims here.
     MemberActivity(serde_json::Value),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectionInvalidation {
+    pub scope: String,
+    pub scope_id: String,
+    pub ledger: String,
+    /// Monotonic only within `stream_epoch` and one
+    /// `(scope, scope_id, ledger)` key. This is not a durable cursor.
+    pub revision: u64,
+    pub reason: String,
+    pub stream_epoch: String,
+}
+
+#[derive(Clone)]
+struct SseClient {
+    company_scope_id: Option<String>,
+    sender: Sender<SseEventFrame>,
 }
 
 /// Manages SSE client subscriptions and broadcasts, keyed by project id
@@ -72,22 +95,45 @@ pub enum SseEventFrame {
 /// — project B never sees it. A subscriber to an unknown project simply receives no
 /// frames (the watcher only broadcasts ids it knows about), which is harmless.
 pub struct SseManager {
-    // project_id → connected client senders. Drop a sender to unsubscribe a client.
-    clients: Arc<Mutex<HashMap<String, Vec<Sender<SseEventFrame>>>>>,
+    // Execution-Space id → connected clients. A Company Store selection is an
+    // independent filter on each subscriber; Company truth never becomes an
+    // Execution-Space ledger merely because both are composed in one snapshot.
+    clients: Arc<Mutex<HashMap<String, Vec<SseClient>>>>,
+    invalidation_revisions: Arc<Mutex<HashMap<(String, String, String), u64>>>,
+    stream_epoch: Arc<String>,
 }
 
 impl SseManager {
     pub fn new() -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
+            invalidation_revisions: Arc::new(Mutex::new(HashMap::new())),
+            stream_epoch: Arc::new(new_stream_epoch()),
         }
     }
 
     /// Subscribe a new client to a single project's event stream.
+    #[allow(dead_code)]
     pub fn subscribe(&self, project_id: &str) -> Receiver<SseEventFrame> {
+        self.subscribe_scoped(project_id, None)
+    }
+
+    /// Subscribe to one Execution Space and, optionally, one independently
+    /// selected Company Store projection.
+    pub fn subscribe_scoped(
+        &self,
+        execution_space_id: &str,
+        company_scope_id: Option<&str>,
+    ) -> Receiver<SseEventFrame> {
         let (tx, rx) = bounded(100); // Buffered channel
         let mut clients = self.clients.lock().unwrap();
-        clients.entry(project_id.to_string()).or_default().push(tx);
+        clients
+            .entry(execution_space_id.to_string())
+            .or_default()
+            .push(SseClient {
+                company_scope_id: company_scope_id.map(str::to_string),
+                sender: tx,
+            });
         rx
     }
 
@@ -96,8 +142,65 @@ impl SseManager {
         let mut clients = self.clients.lock().unwrap();
         if let Some(senders) = clients.get_mut(project_id) {
             // Remove clients whose receivers are dropped.
-            senders.retain(|tx| tx.try_send(frame.clone()).is_ok());
+            senders.retain(|client| client.sender.try_send(frame.clone()).is_ok());
         }
+    }
+
+    /// Broadcast an invalidation to every active stream selecting this exact
+    /// Company Store, regardless of Execution Space, and to no other Company.
+    pub fn invalidate_company(&self, company_scope_id: &str, ledger: &str, reason: &str) {
+        let frame = SseEventFrame::ProjectionInvalidated(self.next_invalidation(
+            "company",
+            company_scope_id,
+            ledger,
+            reason,
+        ));
+        let mut clients = self.clients.lock().unwrap();
+        for subscribers in clients.values_mut() {
+            subscribers.retain(|client| {
+                if client.company_scope_id.as_deref() == Some(company_scope_id) {
+                    client.sender.try_send(frame.clone()).is_ok()
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
+    pub fn invalidate_execution_space(&self, execution_space_id: &str, ledger: &str, reason: &str) {
+        let frame = SseEventFrame::ProjectionInvalidated(self.next_invalidation(
+            "execution_space",
+            execution_space_id,
+            ledger,
+            reason,
+        ));
+        self.broadcast(execution_space_id, frame);
+    }
+
+    fn next_invalidation(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        ledger: &str,
+        reason: &str,
+    ) -> ProjectionInvalidation {
+        let mut revisions = self.invalidation_revisions.lock().unwrap();
+        let revision = revisions
+            .entry((scope.to_string(), scope_id.to_string(), ledger.to_string()))
+            .or_insert(0);
+        *revision += 1;
+        ProjectionInvalidation {
+            scope: scope.to_string(),
+            scope_id: scope_id.to_string(),
+            ledger: ledger.to_string(),
+            revision: *revision,
+            reason: reason.to_string(),
+            stream_epoch: self.stream_epoch().to_string(),
+        }
+    }
+
+    pub fn stream_epoch(&self) -> &str {
+        self.stream_epoch.as_str()
     }
 
     /// Directly broadcast an ephemeral member-activity update to current
@@ -120,8 +223,20 @@ impl Clone for SseManager {
     fn clone(&self) -> Self {
         Self {
             clients: Arc::clone(&self.clients),
+            invalidation_revisions: Arc::clone(&self.invalidation_revisions),
+            stream_epoch: Arc::clone(&self.stream_epoch),
         }
     }
+}
+
+fn new_stream_epoch() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("serve-{}-{nanos}", std::process::id())
 }
 
 /// A live-turn-event normalizer, scoped to one project's store (so the provider
@@ -144,8 +259,20 @@ impl Clone for SseManager {
 /// byte, which makes a row appended right after registration deliverable with no
 /// seed-vs-append race (a post-startup project is newly created, so its history is
 /// empty/small and the full replay is cheap and deduped by id on the client).
+#[allow(dead_code)]
 pub fn start_sse_watcher(
     rescan: impl Fn() -> HashMap<String, PathBuf> + Send + 'static,
+    manager: SseManager,
+) -> std::io::Result<()> {
+    start_scoped_sse_watcher(rescan, HashMap::new, manager)
+}
+
+/// Start the durable coordination watcher plus an independent Company Store
+/// invalidation watcher. Company ledgers are observed only as change signals;
+/// their rows are never copied into or decoded as Execution-Space truth.
+pub fn start_scoped_sse_watcher(
+    rescan: impl Fn() -> HashMap<String, PathBuf> + Send + 'static,
+    company_rescan: impl Fn() -> HashMap<String, PathBuf> + Send + 'static,
     manager: SseManager,
 ) -> std::io::Result<()> {
     thread::spawn(move || {
@@ -157,10 +284,28 @@ pub fn start_sse_watcher(
         // projects with the same filename (e.g. both have `messages.jsonl`)
         // completely independent.
         let mut consumed_offsets: HashMap<(String, String), u64> = HashMap::new();
+        let mut execution_invalidations = HashMap::new();
+        let mut company_invalidations = HashMap::new();
         // Seed offsets at current EOF for the projects known at startup so we only
         // stream rows appended after the watcher starts.
         for (project_id, store_root) in rescan() {
             seed_offsets_at_eof(&project_id, &store_root, &mut consumed_offsets);
+            seed_invalidation_files(
+                "execution_space",
+                &project_id,
+                &store_root,
+                EXECUTION_INVALIDATION_FILES.iter().copied(),
+                &mut execution_invalidations,
+            );
+        }
+        for (company_id, store_root) in company_rescan() {
+            seed_invalidation_files(
+                "company",
+                &company_id,
+                &store_root,
+                company_ledger_names(&store_root),
+                &mut company_invalidations,
+            );
         }
 
         // Poll for new appends at a low floor (~150ms) so the operator sees
@@ -173,6 +318,24 @@ pub fn start_sse_watcher(
             // `/v1/snapshot`; this closes the matching gap for `/v1/events`.
             for (project_id, store_root) in rescan() {
                 poll_project(&project_id, &store_root, &mut consumed_offsets, &manager);
+                poll_invalidation_files(
+                    "execution_space",
+                    &project_id,
+                    &store_root,
+                    EXECUTION_INVALIDATION_FILES.iter().copied(),
+                    &mut execution_invalidations,
+                    &manager,
+                );
+            }
+            for (company_id, store_root) in company_rescan() {
+                poll_invalidation_files(
+                    "company",
+                    &company_id,
+                    &store_root,
+                    company_ledger_names(&store_root),
+                    &mut company_invalidations,
+                    &manager,
+                );
             }
         }
     });
@@ -218,6 +381,219 @@ const WATCHED_FILES: &[&str] = &[
     "member_actions.jsonl",
     "pending_interactions.jsonl",
 ];
+
+/// Ledgers represented in the full Dashboard snapshot but not safely merged as
+/// one typed row. Any complete external append invalidates the scoped snapshot.
+const EXECUTION_INVALIDATION_FILES: &[&str] = &[
+    "teams.jsonl",
+    "members.jsonl",
+    "durable_agent_members.jsonl",
+    "agent_runtimes.jsonl",
+    "evidence.jsonl",
+    "provider_child_threads.jsonl",
+    "workflow_patches.jsonl",
+    "workflow_artifact_manifests.jsonl",
+    "delegation_runs.jsonl",
+    "work_operations.jsonl",
+    "work_delivery_updates.jsonl",
+    "host_attentions.jsonl",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InvalidationFileState {
+    identity: u128,
+    modified_nanos: u128,
+    observed_len: u64,
+    consumed_len: u64,
+}
+
+fn company_ledger_names(store_root: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(store_root) else {
+        return Vec::new();
+    };
+    let mut names = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("company_os_") && name.ends_with(".jsonl"))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn seed_invalidation_files<I, S>(
+    scope: &str,
+    scope_id: &str,
+    store_root: &Path,
+    filenames: I,
+    states: &mut HashMap<(String, String, String), InvalidationFileState>,
+) where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    for filename in filenames {
+        let filename = filename.as_ref();
+        let path = store_root.join(filename);
+        let Ok(metadata) = fs::metadata(path) else {
+            continue;
+        };
+        states.insert(
+            (
+                scope.to_string(),
+                scope_id.to_string(),
+                filename.to_string(),
+            ),
+            InvalidationFileState {
+                identity: file_identity(&metadata),
+                modified_nanos: modified_nanos(&metadata),
+                observed_len: metadata.len(),
+                consumed_len: metadata.len(),
+            },
+        );
+    }
+}
+
+fn poll_invalidation_files<I, S>(
+    scope: &str,
+    scope_id: &str,
+    store_root: &Path,
+    filenames: I,
+    states: &mut HashMap<(String, String, String), InvalidationFileState>,
+    manager: &SseManager,
+) where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    for filename in filenames {
+        let filename = filename.as_ref();
+        poll_invalidation_file(scope, scope_id, store_root, filename, states, manager);
+    }
+}
+
+fn poll_invalidation_file(
+    scope: &str,
+    scope_id: &str,
+    store_root: &Path,
+    filename: &str,
+    states: &mut HashMap<(String, String, String), InvalidationFileState>,
+    manager: &SseManager,
+) {
+    let path = store_root.join(filename);
+    let Ok(metadata) = fs::metadata(&path) else {
+        return;
+    };
+    let key = (
+        scope.to_string(),
+        scope_id.to_string(),
+        filename.to_string(),
+    );
+    let identity = file_identity(&metadata);
+    let modified_nanos = modified_nanos(&metadata);
+    let observed_len = metadata.len();
+
+    let Some(previous) = states.get(&key).cloned() else {
+        let consumed_len = complete_prefix_len(&path, 0).unwrap_or(0);
+        states.insert(
+            key,
+            InvalidationFileState {
+                identity,
+                modified_nanos,
+                observed_len,
+                consumed_len,
+            },
+        );
+        if consumed_len > 0 {
+            emit_invalidation(scope, scope_id, filename, "append", manager);
+        }
+        return;
+    };
+
+    let replacement = identity != previous.identity
+        || (observed_len == previous.observed_len
+            && modified_nanos != previous.modified_nanos
+            && observed_len > 0);
+    let truncated = !replacement
+        && (observed_len < previous.observed_len || observed_len < previous.consumed_len);
+    if replacement || truncated {
+        let consumed_len = complete_prefix_len(&path, 0).unwrap_or(0);
+        states.insert(
+            key,
+            InvalidationFileState {
+                identity,
+                modified_nanos,
+                observed_len,
+                consumed_len,
+            },
+        );
+        emit_invalidation(
+            scope,
+            scope_id,
+            filename,
+            if replacement { "replace" } else { "truncate" },
+            manager,
+        );
+        return;
+    }
+
+    let consumed_len =
+        complete_prefix_len(&path, previous.consumed_len).unwrap_or(previous.consumed_len);
+    states.insert(
+        key,
+        InvalidationFileState {
+            identity,
+            modified_nanos,
+            observed_len,
+            consumed_len,
+        },
+    );
+    if consumed_len > previous.consumed_len {
+        emit_invalidation(scope, scope_id, filename, "append", manager);
+    }
+}
+
+fn complete_prefix_len(path: &Path, start: u64) -> Option<u64> {
+    let mut file = fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|last_newline| start + last_newline as u64 + 1)
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> u128 {
+    use std::os::unix::fs::MetadataExt;
+    ((metadata.dev() as u128) << 64) | metadata.ino() as u128
+}
+
+#[cfg(not(unix))]
+fn file_identity(_metadata: &fs::Metadata) -> u128 {
+    0
+}
+
+fn modified_nanos(metadata: &fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+fn emit_invalidation(
+    scope: &str,
+    scope_id: &str,
+    ledger: &str,
+    reason: &str,
+    manager: &SseManager,
+) {
+    if scope == "company" {
+        manager.invalidate_company(scope_id, ledger, reason);
+    } else {
+        manager.invalidate_execution_space(scope_id, ledger, reason);
+    }
+}
 
 /// Keep the incremental SSE read model aligned with the snapshot projection:
 /// legacy/manual reasoning actions are not product-visible durable state, even
@@ -1252,6 +1628,172 @@ mod tests {
             other_project_rx.try_recv().is_err(),
             "native ledger frames must stay inside their subscribed project"
         );
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn scoped_invalidations_do_not_leak_between_spaces_or_companies() {
+        let manager = SseManager::new();
+        let a_x = manager.subscribe_scoped("space-a", Some("company-x"));
+        let a_y = manager.subscribe_scoped("space-a", Some("company-y"));
+        let b_x = manager.subscribe_scoped("space-b", Some("company-x"));
+        let b_y = manager.subscribe_scoped("space-b", Some("company-y"));
+
+        manager.invalidate_company("company-x", "company_os_work_items.jsonl", "append");
+        for rx in [&a_x, &b_x] {
+            match rx.try_recv() {
+                Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
+                    assert_eq!(frame.scope, "company");
+                    assert_eq!(frame.scope_id, "company-x");
+                    assert_eq!(frame.revision, 1);
+                    assert_eq!(frame.stream_epoch, manager.stream_epoch());
+                }
+                other => panic!("company-x subscriber missing invalidation: {other:?}"),
+            }
+        }
+        assert!(
+            a_y.try_recv().is_err(),
+            "company X leaked to space A/company Y"
+        );
+        assert!(
+            b_y.try_recv().is_err(),
+            "company X leaked to space B/company Y"
+        );
+
+        manager.invalidate_execution_space("space-a", "work_operations.jsonl", "append");
+        for rx in [&a_x, &a_y] {
+            match rx.try_recv() {
+                Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
+                    assert_eq!(frame.scope, "execution_space");
+                    assert_eq!(frame.scope_id, "space-a");
+                }
+                other => panic!("space-a subscriber missing invalidation: {other:?}"),
+            }
+        }
+        assert!(
+            b_x.try_recv().is_err(),
+            "space A leaked to space B/company X"
+        );
+        assert!(
+            b_y.try_recv().is_err(),
+            "space A leaked to space B/company Y"
+        );
+    }
+
+    #[test]
+    fn snapshot_only_execution_ledgers_have_an_invalidation_path() {
+        for ledger in [
+            "teams.jsonl",
+            "members.jsonl",
+            "durable_agent_members.jsonl",
+            "agent_runtimes.jsonl",
+            "evidence.jsonl",
+            "provider_child_threads.jsonl",
+            "workflow_patches.jsonl",
+            "workflow_artifact_manifests.jsonl",
+            "delegation_runs.jsonl",
+            "work_operations.jsonl",
+            "work_delivery_updates.jsonl",
+        ] {
+            assert!(
+                EXECUTION_INVALIDATION_FILES.contains(&ledger),
+                "snapshot-visible ledger {ledger} has neither a typed delta nor invalidation"
+            );
+        }
+    }
+
+    #[test]
+    fn invalidation_watcher_handles_complete_appends_truncation_and_atomic_replace() {
+        let root = unique_dir("projection-invalidation");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("work_operations.jsonl");
+        std::fs::write(&path, "{\"v\":1}\n").expect("seed ledger");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut states = HashMap::new();
+        seed_invalidation_files(
+            "execution_space",
+            TEST_PID,
+            &root,
+            ["work_operations.jsonl"],
+            &mut states,
+        );
+
+        // A torn external write must not claim convergence until its newline is
+        // durable; completing it emits exactly one append invalidation.
+        let mut file = OpenOptions::new().append(true).open(&path).expect("append");
+        file.write_all(b"{\"v\":2}").expect("write torn row");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "work_operations.jsonl",
+            &mut states,
+            &manager,
+        );
+        assert!(rx.try_recv().is_err(), "torn row must not invalidate yet");
+        file.write_all(b"\n").expect("complete row");
+        file.flush().expect("flush row");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "work_operations.jsonl",
+            &mut states,
+            &manager,
+        );
+        match rx.try_recv() {
+            Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
+                assert_eq!(frame.reason, "append");
+                assert_eq!(frame.revision, 1);
+            }
+            other => panic!("complete append missing invalidation: {other:?}"),
+        }
+        drop(file);
+
+        // Atomic replacement with the same byte length changes inode, not
+        // length. A length-only watcher would stay falsely healthy forever.
+        let replacement = root.join("work_operations.jsonl.replace");
+        let same_len = std::fs::metadata(&path).expect("metadata").len();
+        let replacement_bytes = vec![b' '; same_len.saturating_sub(1) as usize];
+        let mut replacement_content = replacement_bytes;
+        replacement_content.push(b'\n');
+        std::fs::write(&replacement, replacement_content).expect("write replacement");
+        std::fs::rename(&replacement, &path).expect("atomic replace");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "work_operations.jsonl",
+            &mut states,
+            &manager,
+        );
+        match rx.try_recv() {
+            Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
+                assert_eq!(frame.reason, "replace");
+                assert_eq!(frame.revision, 2);
+            }
+            other => panic!("same-size replacement missing invalidation: {other:?}"),
+        }
+
+        std::fs::write(&path, "").expect("truncate ledger");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "work_operations.jsonl",
+            &mut states,
+            &manager,
+        );
+        match rx.try_recv() {
+            Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
+                assert_eq!(frame.reason, "truncate");
+                assert_eq!(frame.revision, 3);
+            }
+            other => panic!("truncation missing invalidation: {other:?}"),
+        }
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }

@@ -1,7 +1,8 @@
 //! Live HTTP coverage for ADR 0042 Company Store selection in `harness serve`.
 
 mod harness_env;
-use harness_env::{run_harness, run_harness_with_env, ServeHandle, TempHome};
+use harness_env::{collect_sse_data, run_harness, run_harness_with_env, ServeHandle, TempHome};
+use std::time::Duration;
 
 #[test]
 fn serve_company_compatibility_uses_project_binding_not_execution_space() {
@@ -227,5 +228,112 @@ fn serve_lists_switches_and_routes_company_os_by_company_store() {
             .iter()
             .any(|actor| actor["id"] == "human-a"),
         "dashboard snapshot should blend company_os from active company store: {active_blended}"
+    );
+}
+
+#[test]
+fn external_company_write_invalidates_only_subscribers_selecting_that_company() {
+    let home = TempHome::new("company-sse-invalidation");
+    let repo = home.home().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let out = run_harness(&home, &repo, &["init"]);
+    assert!(out.status.success(), "project init failed: {out:?}");
+
+    for (id, name) in [("company-a", "Company A"), ("company-b", "Company B")] {
+        let out = run_harness(
+            &home,
+            &repo,
+            &["company", "init", "--id", id, "--name", name],
+        );
+        assert!(out.status.success(), "{id} init failed: {out:?}");
+    }
+    let project_id = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(home.registry_path()).unwrap(),
+    )
+    .unwrap()["current_project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let space_id = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(home.space_registry_path()).unwrap(),
+    )
+    .unwrap()["current_space_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let server = ServeHandle::spawn(&home, &repo, &[]);
+    let mut company_a = server.open_sse(&format!(
+        "?space={space_id}&project={project_id}&company=company-a"
+    ));
+    let mut company_b = server.open_sse(&format!(
+        "?space={space_id}&project={project_id}&company=company-b"
+    ));
+
+    // A separate CLI writes native Company Store truth after both streams are
+    // connected. The Company row never enters the Execution Space.
+    let out = run_harness_with_env(
+        &home,
+        &repo,
+        &[
+            "--company",
+            "company-a",
+            "company",
+            "org",
+            "create-human",
+            "--id",
+            "human-a-live",
+            "--display-name",
+            "Human A Live",
+            "--responsibility",
+            "Prove scoped Company convergence",
+            "--permission",
+            "company_os.admin",
+            "--authority",
+            "human-a-live",
+        ],
+        &[("HARNESS_COMPANY_OS_TOKEN", "test-token")],
+    );
+    assert!(
+        out.status.success(),
+        "company-a external write failed: {out:?}"
+    );
+
+    let frames_a = collect_sse_data(&mut company_a, Duration::from_secs(6), 1);
+    let invalidation = frames_a
+        .iter()
+        .find(|frame| frame["ledger"] == "company_os_human_members.jsonl")
+        .unwrap_or_else(|| panic!("company A stream missed invalidation: {frames_a:?}"));
+    assert_eq!(invalidation["scope"], "company");
+    assert_eq!(invalidation["scope_id"], "company-a");
+    assert_eq!(invalidation["reason"], "append");
+
+    let frames_b = collect_sse_data(&mut company_b, Duration::from_millis(500), 1);
+    assert!(
+        frames_b
+            .iter()
+            .all(|frame| frame["scope_id"] != "company-a"),
+        "company A invalidation leaked to company B: {frames_b:?}"
+    );
+
+    let (status, snapshot) = server.get_json(&format!(
+        "/v1/snapshot?space={space_id}&project={project_id}&company=company-a"
+    ));
+    assert_eq!(status, 200);
+    assert!(
+        snapshot["company_os"]["actors"]
+            .as_array()
+            .expect("Company actors")
+            .iter()
+            .any(|actor| actor["id"] == "human-a-live"),
+        "Company snapshot did not converge: {snapshot}"
+    );
+    assert!(
+        !home
+            .spaces_dir()
+            .join(&space_id)
+            .join("company_os_human_members.jsonl")
+            .exists(),
+        "Company truth must not be copied into the Execution Space"
     );
 }

@@ -63,6 +63,20 @@ fn record_ids(frames: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
+fn json_output(output: &std::process::Output, context: &str) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "{context} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "{context} returned non-JSON ({error}): {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
+
 #[test]
 fn sse_streams_are_isolated_per_execution_space() {
     let home = TempHome::new("sse-iso");
@@ -165,4 +179,205 @@ fn events_without_space_uses_active_default_stream() {
         ids.contains(&"mission-default".to_string()),
         "default stream did not receive active project's frame: {ids:?}"
     );
+}
+
+#[test]
+fn invalidation_is_queued_across_snapshot_marker_to_get_boundary() {
+    let home = TempHome::new("sse-snapshot-get-boundary");
+    let project_id = init_project(&home, "alpha");
+    create_space(&home, "space-alpha", &project_id);
+
+    // Keep the server handler parked immediately after the client sees the
+    // initial marker. A subscriber registered after the marker would miss the
+    // write below; a subscriber registered first queues it until streaming
+    // resumes.
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("HARNESS_TEST_SSE_POST_SNAPSHOT_PAUSE_MS", "1200")],
+    );
+    let query = format!("?space=space-alpha&project={project_id}");
+    let mut sse = serve.open_sse(&query);
+
+    create_mission(
+        &home,
+        "space-alpha",
+        &project_id,
+        "mission-crossing",
+        "written after marker before authoritative GET",
+    );
+
+    let frames = collect_sse_data(&mut sse, Duration::from_secs(5), 1);
+    assert!(
+        record_ids(&frames).contains(&"mission-crossing".to_string()),
+        "write crossing initial marker boundary was not queued: {frames:?}"
+    );
+}
+
+#[test]
+fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_converges() {
+    use std::io::Write as _;
+
+    let home = TempHome::new("sse-external-work");
+    let project_id = init_project(&home, "alpha");
+    create_space(&home, "space-alpha", &project_id);
+
+    let created_run = json_output(
+        &run_harness(
+            &home,
+            home.base(),
+            &[
+                "--space",
+                "space-alpha",
+                "--project",
+                &project_id,
+                "team-run",
+                "create",
+                "--objective",
+                "Exercise external Work projection",
+                "--member",
+                "worker:builder:kimi#Own external Work",
+                "--json",
+            ],
+        ),
+        "team-run create",
+    );
+    let team_run_id = created_run["team_run"]["id"]
+        .as_str()
+        .expect("team run id")
+        .to_string();
+    let member_run_id = created_run["member_runs"][0]["id"]
+        .as_str()
+        .expect("member run id")
+        .to_string();
+
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let query = format!("?space=space-alpha&project={project_id}");
+    let mut sse = serve.open_sse(&query);
+
+    // This is a separate real CLI process writing after the EventSource is
+    // already healthy. Before this regression fix it produced no SSE delta.
+    let created_work = json_output(
+        &run_harness(
+            &home,
+            home.base(),
+            &[
+                "--space",
+                "space-alpha",
+                "--project",
+                &project_id,
+                "team-run",
+                "work",
+                "create",
+                "--team-run-id",
+                &team_run_id,
+                "--owner-member-run-id",
+                &member_run_id,
+                "--title",
+                "work-after-stream-open",
+                "--completion-criteria",
+                "Dashboard converges without reload",
+            ],
+        ),
+        "external Work create",
+    );
+    let work_id = created_work["id"].as_str().expect("Work id");
+    let invalidations = collect_sse_data(&mut sse, Duration::from_secs(6), 1);
+    let work_invalidation = invalidations
+        .iter()
+        .find(|frame| frame["ledger"] == "work_operations.jsonl")
+        .unwrap_or_else(|| panic!("healthy SSE missed external Work append: {invalidations:?}"));
+    assert_eq!(work_invalidation["scope"], "execution_space");
+    assert_eq!(work_invalidation["scope_id"], "space-alpha");
+    assert_eq!(work_invalidation["reason"], "append");
+    assert!(work_invalidation["stream_epoch"].as_str().is_some());
+
+    let (status, snapshot) = serve.get_json(&format!("/v1/snapshot{query}"));
+    assert_eq!(status, 200);
+    assert!(
+        snapshot["works"]
+            .as_array()
+            .expect("snapshot Works")
+            .iter()
+            .any(|work| work["id"] == work_id),
+        "authoritative snapshot did not converge after invalidation: {snapshot}"
+    );
+
+    // WorkDelivery update rows are a separate ledger and must independently
+    // invalidate the same already-open stream. This simulates a supervisor or
+    // external runtime process committing a durable delivery status update.
+    let delivery = snapshot["work_deliveries"]
+        .as_array()
+        .expect("snapshot deliveries")
+        .iter()
+        .find(|delivery| delivery["work_id"] == work_id)
+        .expect("new Work delivery");
+    let update = serde_json::json!({
+        "delivery_id": delivery["id"],
+        "update_sequence": 1,
+        "status": "failed",
+        "attempt": 1,
+        "claim_id": null,
+        "claimed_by_supervisor_id": null,
+        "claimed_generation": null,
+        "provider_receipt_id": null,
+        "failure_reason": "deterministic external-writer fixture",
+        "updated_at": "unix-ms:2"
+    });
+    let updates_path = home
+        .spaces_dir()
+        .join("space-alpha")
+        .join("work_delivery_updates.jsonl");
+    let mut updates = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&updates_path)
+        .expect("open delivery updates");
+    writeln!(updates, "{update}").expect("append delivery update");
+    updates.sync_all().expect("fsync delivery update");
+
+    let delivery_invalidations = collect_sse_data(&mut sse, Duration::from_secs(6), 1);
+    let delivery_invalidation = delivery_invalidations
+        .iter()
+        .find(|frame| frame["ledger"] == "work_delivery_updates.jsonl")
+        .unwrap_or_else(|| {
+            panic!("healthy SSE missed external delivery append: {delivery_invalidations:?}")
+        });
+    assert_eq!(delivery_invalidation["scope_id"], "space-alpha");
+    assert_eq!(delivery_invalidation["revision"], 1);
+
+    let (status, refreshed) = serve.get_json(&format!("/v1/snapshot{query}"));
+    assert_eq!(status, 200);
+    assert!(
+        refreshed["work_deliveries"]
+            .as_array()
+            .expect("refreshed deliveries")
+            .iter()
+            .any(|candidate| candidate["id"] == delivery["id"] && candidate["status"] == "failed"),
+        "delivery projection did not converge after invalidation: {refreshed}"
+    );
+}
+
+#[test]
+fn unknown_execution_space_fails_closed_for_snapshot_and_events() {
+    let home = TempHome::new("sse-unknown-space");
+    let project_id = init_project(&home, "alpha");
+    create_space(&home, "space-alpha", &project_id);
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+
+    for path in [
+        "/v1/snapshot?space=typo-space",
+        "/v1/events?space=typo-space",
+    ] {
+        let (status, body) = serve.get_json(path);
+        assert_eq!(status, 404, "{path} must fail closed: {body}");
+        assert_eq!(body["error"], "execution_space_not_found");
+        assert!(
+            body["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("typo-space")),
+            "error must name the rejected selector: {body}"
+        );
+    }
 }
