@@ -278,6 +278,14 @@ pub fn snapshot_with_execution(
             "org_units": store.latest_org_units()?,
             "memberships": store.latest_organization_memberships()?,
         },
+        // ADR 0051 Organization identity is execution-space truth even when
+        // this Company Store is joined to a separately selected Execution
+        // Space. Keep it distinct from the compatibility runtime `members`
+        // projection in the outer Dashboard snapshot.
+        "durable_agent_members": execution_store
+            .latest_durable_members()?
+            .into_values()
+            .collect::<Vec<_>>(),
         "milestones": store.latest_milestones()?,
         "work_items": store.latest_work_items()?,
         "work": store.work_projection(&WorkQuery::default())?,
@@ -1296,7 +1304,9 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
 #[cfg(test)]
 mod projection_tests {
     use super::*;
-    use harness_core::{AgentTeamRun, MemberRun, StandingAgent};
+    use harness_core::{
+        AgentTeamRun, DurableAgentMember, DurableAgentMemberStatus, MemberRun, StandingAgent,
+    };
 
     fn standing(id: &str, execution_ref: Option<&str>) -> StandingAgent {
         serde_json::from_value(json!({
@@ -1312,6 +1322,57 @@ mod projection_tests {
             "native_session_refs": [], "created_at": "1", "updated_at": "1"
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn snapshot_projects_durable_agent_members_from_the_execution_space() {
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let company_root = std::env::temp_dir().join(format!("company-snapshot-{nonce}"));
+        let execution_root = std::env::temp_dir().join(format!("execution-snapshot-{nonce}"));
+        let company_store = HarnessStore::new(&company_root);
+        let execution_store = HarnessStore::new(&execution_root);
+        company_store.init().unwrap();
+        execution_store.init().unwrap();
+        execution_store
+            .insert_durable_member(&DurableAgentMember {
+                id: "root-lead".to_string(),
+                name: "Foundation Lead".to_string(),
+                description: "Durable-only root Team Lead".to_string(),
+                role: "lead".to_string(),
+                provider_profile: Some("codex/default".to_string()),
+                model: None,
+                workspace_policy: None,
+                project_binding_id: Some("project-harness".to_string()),
+                business_access_ceiling_refs: vec!["company_os.read".to_string()],
+                status: DurableAgentMemberStatus::Active,
+                created_by_member_id: None,
+                created_at: "unix-ms:1".to_string(),
+                updated_at: "unix-ms:1".to_string(),
+            })
+            .unwrap();
+
+        let projected = snapshot_with_execution(&company_store, &execution_store).unwrap();
+        assert_eq!(projected["durable_agent_members"][0]["id"], "root-lead");
+        assert_eq!(
+            projected["durable_agent_members"][0]["name"],
+            "Foundation Lead"
+        );
+        assert!(
+            projected["durable_agent_members"][0]
+                .get("runtime_status")
+                .is_none(),
+            "durable Organization identity must not absorb runtime state"
+        );
+
+        let _ = std::fs::remove_dir_all(company_root);
+        let _ = std::fs::remove_dir_all(execution_root);
     }
 
     #[test]

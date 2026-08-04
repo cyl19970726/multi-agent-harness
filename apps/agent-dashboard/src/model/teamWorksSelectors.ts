@@ -1,4 +1,5 @@
 import type { DashboardSnapshot, Work } from "../types";
+import { organizationMembersById } from "./orgSelectors";
 
 /**
  * Global "Team Works" aggregate: one cross-TeamRun projection over native
@@ -74,7 +75,7 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
   const works = snapshot.works ?? [];
   const runsById = new Map((snapshot.team_runs ?? []).map((run) => [run.id, run]));
   const teamsById = new Map((snapshot.teams ?? []).map((team) => [team.id, team]));
-  const membersById = new Map((snapshot.members ?? []).map((member) => [member.id, member]));
+  const membersById = organizationMembersById(snapshot);
   const teamPath = (teamId?: string): string => {
     if (!teamId) return "Team unavailable";
     const labels: string[] = [];
@@ -108,8 +109,12 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
       teamId: team?.id,
       runId: work.team_run_id,
       runStatus: run?.status,
-      hostId: run?.host_actor?.id ?? undefined,
-      hostLabel: run?.host_actor?.display_name ?? run?.host_actor?.id ?? undefined,
+      // Durable Team authority wins. TeamRun.host_actor is execution-attempt
+      // metadata and remains only as a compatibility fallback for old Teams.
+      hostId: team?.host_member_id ?? run?.host_actor?.id ?? undefined,
+      hostLabel: team?.host_member_id
+        ? (membersById.get(team.host_member_id)?.name ?? team.host_member_id)
+        : (run?.host_actor?.display_name ?? run?.host_actor?.id ?? undefined),
       ownerLabel,
       sourceLabel: work.source_work_item_ref
         ? `WorkItem ${work.source_work_item_ref}`
@@ -138,11 +143,7 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
     ),
     hosts: uniq(
       rows
-        .map((row) => {
-          const run = runsById.get(row.runId);
-          const id = run?.host_actor?.id;
-          return id ? { id, label: run?.host_actor?.display_name ?? id } : undefined;
-        })
+        .map((row) => row.hostId ? { id: row.hostId, label: row.hostLabel ?? row.hostId } : undefined)
         .filter((item): item is { id: string; label: string } => Boolean(item)),
     ),
     members: uniq(

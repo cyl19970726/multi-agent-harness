@@ -1,7 +1,7 @@
 import type {
-  AgentMember,
   AgentTeam,
   DashboardSnapshot,
+  DurableAgentMember,
   MemberRun,
   TeamRun,
   Work,
@@ -30,15 +30,26 @@ export interface OrgRuntimeSummary {
   total: number;
 }
 
+/** Identity-only view used by Organization. Durable rows override matching
+ * compatibility AgentMember rows without absorbing runtime/session fields. */
+export interface OrgMemberIdentity {
+  id: string;
+  name?: string;
+  description?: string;
+  role?: string;
+  status?: string;
+  identitySource: "durable" | "compatibility";
+}
+
 export interface OrgTeamNode {
   team: AgentTeam;
   depth: number;
   parentId: string | null;
   childTeamIds: string[];
   /** Direct members resolved from `member_ids`; unresolved ids are findings. */
-  members: AgentMember[];
+  members: OrgMemberIdentity[];
   /** Durable Host from `host_member_id` when the store records one. */
-  host?: AgentMember;
+  host?: OrgMemberIdentity;
   /**
    * Compatibility lead label from `owner_agent_id` when no `host_member_id`
    * is recorded. Labelled as compatibility, never presented as the ADR 0051
@@ -84,6 +95,44 @@ const ACTIVE_RUN_STATUSES = new Set([
   "reviewing",
 ]);
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Read the additive ADR 0051 projection while accepting a future top-level
+ * lift. An explicitly present top-level field wins, including an empty list. */
+export function durableAgentMembers(snapshot: DashboardSnapshot): DurableAgentMember[] {
+  if (snapshot.durable_agent_members) return snapshot.durable_agent_members;
+  if (!isRecord(snapshot.company_os)) return [];
+  const rows = snapshot.company_os.durable_agent_members;
+  return Array.isArray(rows) ? rows as DurableAgentMember[] : [];
+}
+
+export function organizationMembersById(snapshot: DashboardSnapshot): Map<string, OrgMemberIdentity> {
+  const merged = new Map<string, OrgMemberIdentity>();
+  for (const member of snapshot.members ?? []) {
+    merged.set(member.id, {
+      id: member.id,
+      name: member.name,
+      description: member.description,
+      role: member.role,
+      status: member.status,
+      identitySource: "compatibility",
+    });
+  }
+  for (const member of durableAgentMembers(snapshot)) {
+    merged.set(member.id, {
+      id: member.id,
+      name: member.name,
+      description: member.description,
+      role: member.role,
+      status: member.status,
+      identitySource: "durable",
+    });
+  }
+  return merged;
+}
+
 function latestRunForTeam(runs: TeamRun[], teamId: string): TeamRun | undefined {
   const candidates = runs
     .filter((run) => run.agent_team_id === teamId)
@@ -127,12 +176,11 @@ function runtimeForTeam(memberRuns: MemberRun[], runIds: Set<string>): OrgRuntim
 
 export function buildAgentTeamOrgModel(snapshot: DashboardSnapshot): AgentTeamOrgModel {
   const teams = snapshot.teams ?? [];
-  const members = snapshot.members ?? [];
   const runs = snapshot.team_runs ?? [];
   const memberRuns = snapshot.member_runs ?? [];
   const works = snapshot.works ?? [];
 
-  const membersById = new Map(members.map((member) => [member.id, member]));
+  const membersById = organizationMembersById(snapshot);
   const teamsById = new Map(teams.map((team) => [team.id, team]));
   const findings: string[] = [];
   const nodesById = new Map<string, OrgTeamNode>();
@@ -142,7 +190,7 @@ export function buildAgentTeamOrgModel(snapshot: DashboardSnapshot): AgentTeamOr
       runs.filter((run) => run.agent_team_id === team.id).map((run) => run.id),
     );
     const nodeFindings: string[] = [];
-    const resolvedMembers: AgentMember[] = [];
+    const resolvedMembers: OrgMemberIdentity[] = [];
     for (const memberId of team.member_ids ?? []) {
       const member = membersById.get(memberId);
       if (member) resolvedMembers.push(member);
@@ -150,7 +198,7 @@ export function buildAgentTeamOrgModel(snapshot: DashboardSnapshot): AgentTeamOr
     }
     resolvedMembers.sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
 
-    let host: AgentMember | undefined;
+    let host: OrgMemberIdentity | undefined;
     let compatLeadLabel: string | undefined;
     if (team.host_member_id) {
       host = membersById.get(team.host_member_id);
