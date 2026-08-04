@@ -48,6 +48,7 @@ consequences, affected modules, and validation path.
 | [0048](0048-human-rooted-company-constitution.md) | accepted target; implementation pending | Human Principal roots Company authority; Leads operate through one attenuating grant lineage while the Runtime Supervisor remains provenance-only |
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
 | [0050](0050-agent-team-work-board-and-message-boundary.md) | accepted target; implementation pending | Agent Team Work is the scheduling primitive; shared Kanban, atomic claim, Work delivery and authored Message are separate |
+| [0051](0051-single-intent-spine.md) | accepted; staged breaking cutover | Mission absorbs Wave as an append-only Mission Log; provider-native goal/plan are derived drive cache, never truth |
 
 ## Split Rule
 
