@@ -55,7 +55,12 @@ function memberAction(id) {
 
 async function main() {
   console.log("== Mission/Wave live snapshot merge checks ==");
-  const { SnapshotFrameBuffer, matchesStreamProject } = await loadApi();
+  const {
+    ProjectionInvalidationTracker,
+    SnapshotFrameBuffer,
+    matchesStreamProject,
+    streamSelectionKey,
+  } = await loadApi();
 
   // The exact race: /v1/snapshot starts, an SSE member_action arrives, then
   // the older snapshot returns without that action. The client must replay it.
@@ -169,6 +174,55 @@ async function main() {
     ok("project reset and captured-project guard reject a late A frame after selecting B");
   } else {
     bad("a late A frame can still contaminate project B");
+  }
+
+  const invalidations = new ProjectionInvalidationTracker();
+  invalidations.reset("serve-a");
+  const scope = { executionSpaceId: "space-a", companyScopeId: "company-a" };
+  const token = (revision, overrides = {}) => ({
+    scope: "execution_space",
+    scope_id: "space-a",
+    ledger: "work_operations.jsonl",
+    revision,
+    reason: "append",
+    stream_epoch: "serve-a",
+    ...overrides,
+  });
+  const first = invalidations.observe(token(1), scope);
+  const gap = invalidations.observe(token(3), scope);
+  const duplicate = invalidations.observe(token(2), scope);
+  const otherCompany = invalidations.observe(token(1, {
+    scope: "company", scope_id: "company-b", ledger: "company_os_work_items.jsonl",
+  }), scope);
+  if (
+    first.kind === "refresh" && !first.gap
+    && gap.kind === "refresh" && gap.gap
+    && duplicate.kind === "ignore" && duplicate.reason === "duplicate"
+    && otherCompany.kind === "ignore" && otherCompany.reason === "other_scope"
+  ) {
+    ok("invalidation revisions detect gaps, ignore duplicates, and enforce scope");
+  } else {
+    bad("invalidation revision/scope decision was not deterministic");
+  }
+
+  const restarted = invalidations.observe(token(1, { stream_epoch: "serve-b" }), scope);
+  const malformed = invalidations.observe(null, scope);
+  if (
+    restarted.kind === "refresh" && !restarted.gap
+    && malformed.kind === "refresh" && malformed.malformed
+  ) {
+    ok("serve epoch reset accepts low revisions and malformed invalidations fail stale");
+  } else {
+    bad("serve epoch reset or malformed invalidation recovery was rejected");
+  }
+
+  if (
+    streamSelectionKey("space-a", "project-a", "company-a")
+      !== streamSelectionKey("space-a", "project-a", "company-b")
+  ) {
+    ok("stream identity includes Company as well as Execution Space and Project");
+  } else {
+    bad("Company selection was omitted from stream identity");
   }
 
   console.log(`\n   mission-wave live merge checks: ${passed} pass, ${failed} fail`);

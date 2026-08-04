@@ -191,7 +191,11 @@ export function WorkbenchShell({
           onRefresh={onRefresh}
           sourceError={sourceError}
           sourceLabel={sourceLabel}
-          prototypeMode={isCompanyOsSurface(selection.surface) && resolveCompanyOsRouteData(model).mode !== "store-live"}
+          prototypeMode={
+            isCompanyOsSurface(selection.surface)
+            && !(isLoading && actionsEnabled && !model.snapshot.company_os)
+            && resolveCompanyOsRouteData(model).mode !== "store-live"
+          }
           debugActive={selection.surface === "debug"}
           onToggleDebug={() =>
             updateSelection({ surface: selection.surface === "debug" ? "home" : "debug" })
@@ -301,15 +305,17 @@ function TopBar({
   onToggleDebug: () => void;
   prototypeMode: boolean;
 }) {
-  // Source mode reflected in the chip: "live (SSE)" while the stream is
-  // connected, "polling" once we fall back, "offline fixture" otherwise. The
-  // pulsing green dot is reserved for a connected stream; polling (live but no
-  // push) gets a steady "good" dot; offline is neutral. The freshness
-  // ("updated Ns ago") shows in any online mode.
-  const transportStreaming = sourceLabel.includes("SSE");
-  const transportOnline = transportStreaming || sourceLabel === "polling";
+  // Product freshness is explicit: socket-open alone does not earn Live.
+  const transportStreaming = sourceLabel === "Live";
+  const transportOnline = ["Live", "Reconnecting", "Stale"].includes(sourceLabel);
   const isStreaming = !prototypeMode && transportStreaming;
-  const statusTone = sourceError ? "warn" : prototypeMode ? "info" : transportOnline ? "good" : "info";
+  const statusTone = sourceError || sourceLabel === "Stale"
+    ? "warn"
+    : prototypeMode || sourceLabel === "Reconnecting"
+      ? "info"
+      : transportOnline
+        ? "good"
+        : "info";
   const displayedSourceLabel = prototypeMode ? "prototype fixture" : sourceLabel;
   return (
     <header className="flex h-[58px] min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 backdrop-blur-md lg:gap-3">
@@ -354,9 +360,14 @@ function TopBar({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 sm:flex">
+        <div
+          role="status"
+          aria-label={`Dashboard freshness: ${displayedSourceLabel}`}
+          data-dashboard-freshness={displayedSourceLabel.toLowerCase()}
+          className="flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background/50 px-1.5 py-1.5 sm:px-2"
+        >
           <StatusDot tone={statusTone} pulse={isStreaming} />
-          <span className="text-[11px] text-muted-foreground">{displayedSourceLabel}</span>
+          <span className="max-w-24 truncate text-[10px] text-muted-foreground sm:text-[11px]">{displayedSourceLabel}</span>
         </div>
         {!prototypeMode && transportOnline && <FreshnessChip generatedAt={model.generatedAt} />}
         {!prototypeMode && <Tooltip>
@@ -673,6 +684,7 @@ function AppRail({
       moduleId: undefined,
       memberId: undefined,
       memberRunId: undefined,
+      teamId: undefined,
           workflowRunId: undefined,
           orgView: undefined,
           orgTeamId: undefined,

@@ -1,14 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import { openEventStream, type SseFrame } from "../api";
+import {
+  openEventStream,
+  streamSelectionKey,
+  type SseFrame,
+  type SseSnapshotMarker,
+} from "../api";
 
 /**
  * Live source mode surfaced by the freshness chip:
  * - `sse`: the `/v1/events` stream is connected and pushing deltas.
- * - `polling`: the stream is down; we fell back to interval polling.
+ * - `reconnecting`: the stream is down; bounded HTTP probes preserve freshness
+ *   while the controlled reconnect ladder is active.
  * - `connecting`: an EventSource is open but the initial snapshot frame has not
- *   arrived yet (we poll in this window so the view is never starved).
+ *   arrived yet.
  */
-export type LiveMode = "sse" | "polling" | "connecting";
+export type LiveMode = "sse" | "reconnecting" | "connecting";
+
+export interface EventStreamState {
+  mode: LiveMode;
+  /** Browser receipt time of the newest snapshot marker or named frame. */
+  lastActivityAt: number | null;
+  /** Increments for every controlled EventSource connect attempt. */
+  connectionAttempt: number;
+}
 
 export interface UseEventStreamOptions {
   /** Only connect while true (i.e. the snapshot source is live). */
@@ -22,10 +36,12 @@ export interface UseEventStreamOptions {
   project?: string | null;
   /** Selected Execution Space; this scopes the durable coordination stream. */
   space?: string | null;
-  /** Connection confirmed; includes the project captured when this stream opened. */
-  onConnect: (streamProject: string, generatedAt?: string) => void;
-  /** A delta frame arrived; includes the project captured when this stream opened. */
-  onFrame: (streamProject: string, frame: SseFrame) => void;
+  /** Selected Company Store; included in stream isolation and invalidations. */
+  company?: string | null;
+  /** Connection confirmed; includes the full selection captured at open. */
+  onConnect: (streamKey: string, marker: SseSnapshotMarker) => boolean | void;
+  /** A delta frame arrived; includes the full selection captured at open. */
+  onFrame: (streamKey: string, frame: SseFrame) => void;
 }
 
 /** Reconnect backoff: 1s, 2s, 4s, 8s, capped at 15s. */
@@ -48,10 +64,15 @@ export function useEventStream({
   baseUrl,
   project,
   space,
+  company,
   onConnect,
   onFrame,
-}: UseEventStreamOptions): LiveMode {
-  const [mode, setMode] = useState<LiveMode>("connecting");
+}: UseEventStreamOptions): EventStreamState {
+  const [state, setState] = useState<EventStreamState>({
+    mode: "connecting",
+    lastActivityAt: null,
+    connectionAttempt: 0,
+  });
 
   // Keep the latest callbacks in refs so the effect depends only on
   // enabled/baseUrl — handler identity churn must not reconnect the stream.
@@ -72,7 +93,7 @@ export function useEventStream({
     // Capture this effect's project, rather than reading a callback ref's latest
     // selection. A late event from a just-disposed A stream can then be rejected
     // by App after the user has synchronously selected B.
-    const streamProject = space ?? project ?? "";
+    const streamKey = streamSelectionKey(space, project, company);
 
     const clearRetry = () => {
       if (retryTimer !== null) {
@@ -81,22 +102,41 @@ export function useEventStream({
       }
     };
 
+    const scheduleReconnect = () => {
+      clearRetry();
+      const delay = backoffMs(attempt);
+      attempt += 1;
+      retryTimer = window.setTimeout(connect, delay);
+    };
+
     const connect = () => {
       if (disposed) return;
-      setMode((current) => (current === "sse" ? "connecting" : current));
+      setState((current) => ({
+        ...current,
+        mode: current.mode === "sse" ? "connecting" : current.mode,
+        connectionAttempt: current.connectionAttempt + 1,
+      }));
       try {
         closeSource = openEventStream(
           baseUrl,
           {
-            onSnapshot: (generatedAt) => {
+            onSnapshot: (marker) => {
               if (disposed) return;
-              attempt = 0; // a clean connect resets the backoff ladder
-              setMode("sse");
-              onConnectRef.current(streamProject, generatedAt);
+              const accepted = onConnectRef.current(streamKey, marker);
+              if (accepted === false) {
+                closeSource?.();
+                closeSource = null;
+                setState((current) => ({ ...current, mode: "reconnecting" }));
+                scheduleReconnect();
+                return;
+              }
+              attempt = 0; // a clean, scope-confirmed connect resets backoff
+              setState((current) => ({ ...current, mode: "sse", lastActivityAt: Date.now() }));
             },
             onFrame: (frame) => {
               if (disposed) return;
-              onFrameRef.current(streamProject, frame);
+              setState((current) => ({ ...current, lastActivityAt: Date.now() }));
+              onFrameRef.current(streamKey, frame);
             },
             onError: () => {
               if (disposed) return;
@@ -105,23 +145,18 @@ export function useEventStream({
               // fallback in the meantime).
               closeSource?.();
               closeSource = null;
-              setMode("polling");
-              clearRetry();
-              const delay = backoffMs(attempt);
-              attempt += 1;
-              retryTimer = window.setTimeout(connect, delay);
+              setState((current) => ({ ...current, mode: "reconnecting" }));
+              scheduleReconnect();
             },
           },
           project,
           space,
+          company,
         );
       } catch {
-        // baseUrl was empty/invalid: stay in polling and retry on the ladder.
-        setMode("polling");
-        clearRetry();
-        const delay = backoffMs(attempt);
-        attempt += 1;
-        retryTimer = window.setTimeout(connect, delay);
+        // baseUrl was empty/invalid: stay reconnecting and retry on the ladder.
+        setState((current) => ({ ...current, mode: "reconnecting" }));
+        scheduleReconnect();
       }
     };
 
@@ -132,7 +167,7 @@ export function useEventStream({
       clearRetry();
       closeSource?.();
     };
-  }, [enabled, baseUrl, project, space]);
+  }, [enabled, baseUrl, project, space, company]);
 
-  return mode;
+  return state;
 }
