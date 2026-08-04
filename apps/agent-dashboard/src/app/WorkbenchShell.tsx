@@ -673,7 +673,18 @@ function AppRail({
       moduleId: undefined,
       memberId: undefined,
       memberRunId: undefined,
-      workflowRunId: undefined,
+          workflowRunId: undefined,
+          orgView: undefined,
+          orgTeamId: undefined,
+          orgExpanded: undefined,
+          workView: undefined,
+          teamWorkId: undefined,
+          workTeamId: undefined,
+          workHostId: undefined,
+          workMemberId: undefined,
+          workStatus: undefined,
+          workSource: undefined,
+          workDemand: undefined,
     });
   }
 
@@ -932,7 +943,7 @@ function SurfaceSwitch({
   };
   if (isCompanyOsSurface(selection.surface)) {
     const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
-    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} onAction={onAction} onSelectionChange={onSelectionChange} />;
+    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} snapshotLoading={isLoading} sourceLabel={sourceLabel} onAction={onAction} onSelectionChange={onSelectionChange} />;
   }
   switch (selection.surface) {
     case "missions":
@@ -963,6 +974,7 @@ function SurfaceSwitch({
         <TeamWarRoom
           {...shared}
           teamRunId={selection.teamId}
+          workId={selection.teamWorkId}
           missionId={selection.missionId}
           waveId={selection.waveId}
         />

@@ -128,6 +128,18 @@ export interface AgentTeam {
   owner_agent_id?: string;
   status?: "active" | "closed" | "archived";
   member_ids?: string[];
+  /**
+   * Recursive Organization relation (ADR 0051): parent AgentTeam id. Absent
+   * or null means a root Team. Wire name frozen by the topology slice
+   * (schemas/agent-team.schema.json); rows pre-dating it read as roots.
+   */
+  parent_team_id?: string | null;
+  /**
+   * Recursive Organization relation (ADR 0051): durable AgentMember that
+   * Hosts this Team. Optional on compatibility rows; never inferred from
+   * `owner_agent_id` — that legacy field is rendered separately.
+   */
+  host_member_id?: string | null;
 }
 
 export interface Message {

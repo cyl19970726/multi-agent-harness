@@ -1,4 +1,4 @@
-import { Database, FlaskConical, Plug, Settings2, Wrench } from "lucide-react";
+import { BriefcaseBusiness, Database, FlaskConical, Network, Plug, Settings2, Wrench } from "lucide-react";
 import type { ReactNode } from "react";
 
 import canonicalFixture from "../../../../docs/design/company-os-v1/fixtures/company-os-trademark-v1.json";
@@ -26,6 +26,8 @@ import {
 } from "./operations";
 import { WorkOperatingPage } from "./work/WorkOperatingPage";
 import { CustomPageHost } from "./page-packages/CustomPageHost";
+import { AgentTeamOrganization } from "@/surfaces/AgentTeamOrganization";
+import { TeamWorks } from "@/surfaces/TeamWorks";
 
 type CompanyOsPage =
   | "home"
@@ -34,9 +36,11 @@ type CompanyOsPage =
   | "document-focus"
   | "custom-page"
   | "workboard"
+  | "team-works"
   | "work-item-focus"
   | "finance"
   | "agents-organization"
+  | "agent-team-organization"
   | "standing-agent-focus"
   | "governance-proposal"
   | "approval-focus"
@@ -97,6 +101,7 @@ function selectedPage(selection: SelectionState): CompanyOsPage | undefined {
       if (selection.documentId) return "document-focus";
       return "docs-workspace";
     case "work":
+      if (selection.workView === "team-works") return "team-works";
       return selection.workItemId ? "work-item-focus" : "workboard";
     case "finance":
       return "finance";
@@ -104,6 +109,7 @@ function selectedPage(selection: SelectionState): CompanyOsPage | undefined {
       if (selection.proposalId) return "governance-proposal";
       if (selection.standingAgentId) return "standing-agent-focus";
       if (selection.personId) return "human-member-focus";
+      if (selection.orgView === "agent-teams") return "agent-team-organization";
       return "agents-organization";
     case "approvals":
       return "approval-focus";
@@ -210,6 +216,47 @@ function CompanyOsRouteRoot({
   );
 }
 
+function ExecutionSnapshotRoot({ sourceLabel, children }: { sourceLabel: string; children: ReactNode }) {
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-company-os-data-mode="execution-snapshot">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-primary/20 bg-primary/[0.035] px-4 text-[11px] text-muted-foreground" role="status">
+        <Database className="size-3.5 text-primary" aria-hidden />
+        <span className="font-medium text-foreground">Execution snapshot</span>
+        <span className="hidden sm:inline">{sourceLabel} · AgentTeam and Team Work truth remain separate from the Company Store.</span>
+      </div>
+      <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+function KernelViewTabs({ surface, selection, onSelectionChange }: { surface: "organization" | "work"; selection: SelectionState; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
+  const organization = surface === "organization";
+  const options = organization
+    ? [
+        { id: "org-units", label: "Company OrgUnits", icon: Database },
+        { id: "agent-teams", label: "Agent Teams", icon: Network },
+      ]
+    : [
+        { id: "company-work", label: "Company WorkItems", icon: Database },
+        { id: "team-works", label: "Team Works", icon: BriefcaseBusiness },
+      ];
+  const active = organization ? (selection.orgView ?? "org-units") : (selection.workView ?? "company-work");
+  return (
+    <nav aria-label={`${organization ? "Organization" : "Work"} data kernel`} className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-card px-3 sm:px-5">
+      {options.map((option) => {
+        const Icon = option.icon;
+        return <button key={option.id} type="button" aria-current={active === option.id ? "page" : undefined} onClick={() => onSelectionChange?.(organization
+          ? { surface: "organization", orgView: option.id === "agent-teams" ? "agent-teams" : undefined, orgTeamId: undefined, orgExpanded: undefined, standingAgentId: undefined, personId: undefined, proposalId: undefined }
+          : { surface: "work", workView: option.id === "team-works" ? "team-works" : undefined, workItemId: undefined, teamWorkId: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workSource: undefined, workDemand: undefined })} className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-xs font-medium ${active === option.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-3.5" />{option.label}</button>;
+      })}
+    </nav>
+  );
+}
+
+function KernelViewFrame({ surface, selection, onSelectionChange, children }: { surface: "organization" | "work"; selection: SelectionState; onSelectionChange?: (selection: Partial<SelectionState>) => void; children: ReactNode }) {
+  return <div className="flex h-full min-h-0 flex-col"><KernelViewTabs surface={surface} selection={selection} onSelectionChange={onSelectionChange} /><div className="min-h-0 flex-1 overflow-hidden">{children}</div></div>;
+}
+
 function PlatformPlaceholder({ surface }: { surface: "providers" | "plugins" | "settings" }) {
   const details = {
     providers: { icon: Wrench, title: "Providers", body: "Provider runtimes remain an execution capability. They do not define company membership or responsibility." },
@@ -237,13 +284,19 @@ function PlatformPlaceholder({ surface }: { surface: "providers" | "plugins" | "
  * explicitly labelled prototype fixture. Presentation remains read-only until
  * a governed browser Action transport is connected separately.
  */
-export function CompanyOsRouter({ model, selection, actionsEnabled = false, livePending = false, onAction, onSelectionChange }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; livePending?: boolean; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
+export function CompanyOsRouter({ model, selection, actionsEnabled = false, livePending = false, snapshotLoading = false, sourceLabel = "snapshot", onAction, onSelectionChange }: { model: WorkbenchModel; selection: SelectionState; actionsEnabled?: boolean; livePending?: boolean; snapshotLoading?: boolean; sourceLabel?: string; onAction?: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   if (selection.surface === "providers" || selection.surface === "plugins" || selection.surface === "settings") {
     return <PlatformPlaceholder surface={selection.surface} />;
   }
 
   const page = selectedPage(selection);
   if (!page) return null;
+  if (page === "agent-team-organization") {
+    return <ExecutionSnapshotRoot sourceLabel={sourceLabel}><KernelViewFrame surface="organization" selection={selection} onSelectionChange={onSelectionChange}><AgentTeamOrganization snapshot={model.snapshot} selection={selection} loading={snapshotLoading} onSelectionChange={onSelectionChange} /></KernelViewFrame></ExecutionSnapshotRoot>;
+  }
+  if (page === "team-works") {
+    return <ExecutionSnapshotRoot sourceLabel={sourceLabel}><KernelViewFrame surface="work" selection={selection} onSelectionChange={onSelectionChange}><TeamWorks snapshot={model.snapshot} selection={selection} loading={snapshotLoading} onSelectionChange={onSelectionChange} /></KernelViewFrame></ExecutionSnapshotRoot>;
+  }
   const resolved = resolveCompanyOsRouteData(model);
   if (livePending && resolved.mode === "prototype-fixture") {
     return <StoreLiveLoadingPage page={page} />;
@@ -272,5 +325,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, live
     case "human-member-focus": content = <HumanMemberFocus data={operations} />; break;
   }
 
+  if (page === "agents-organization") content = <KernelViewFrame surface="organization" selection={selection} onSelectionChange={onSelectionChange}>{content}</KernelViewFrame>;
+  if (page === "workboard") content = <KernelViewFrame surface="work" selection={selection} onSelectionChange={onSelectionChange}>{content}</KernelViewFrame>;
   return <CompanyOsRouteRoot page={page} resolved={resolved}>{content}</CompanyOsRouteRoot>;
 }

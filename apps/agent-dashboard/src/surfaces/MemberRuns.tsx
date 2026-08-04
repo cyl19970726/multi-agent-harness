@@ -342,7 +342,11 @@ export function MemberRunFocus({
             </div>
           </section>
         )}
-        <MemberGoalPanel context={context} />
+        <MemberGoalPanel
+          context={context}
+          snapshotWorks={model.snapshot.works ?? []}
+          onOpenWork={(work) => onSelectionChange({ surface: "team", teamId: work.team_run_id, memberRunId: undefined, teamWorkId: work.id })}
+        />
         <section className="min-h-[18rem] overflow-hidden bg-background" data-native-activity-state={nativeActivityState}>
           <header className="flex min-h-[58px] flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-border/70 py-2 sm:h-[58px] sm:flex-nowrap sm:py-0">
             <h2 className="text-[17px] font-semibold tracking-[-0.025em] text-foreground sm:text-[20px]">Work history</h2>
@@ -555,12 +559,23 @@ function Breadcrumb({
   );
 }
 
-function MemberGoalPanel({ context }: { context: MemberRunContext }) {
+function MemberGoalPanel({ context, snapshotWorks, onOpenWork }: { context: MemberRunContext; snapshotWorks: Work[]; onOpenWork: (work: Work) => void }) {
   const work = context.currentWork;
   const queuedOwnedWorks = context.queuedOwnedWorks.filter((candidate) => candidate.id !== work?.id);
   const eligibleReadyWorks = context.eligibleReadyWorks.filter((candidate) => candidate.id !== work?.id);
   const latestSteer = latestSteerSummary(context);
   const nextAction = memberWorkNextAction(context);
+  const creatorIds = new Set([context.member.id, context.member.agent_member_id].filter((id): id is string => Boolean(id)));
+  const createdWorks = snapshotWorks.filter((candidate) =>
+    ["member_run", "agent_member"].includes(candidate.created_by_actor.kind)
+    && creatorIds.has(candidate.created_by_actor.id),
+  );
+  const parentIds = new Set([
+    work?.id,
+    ...context.queuedOwnedWorks.map((candidate) => candidate.id),
+    ...createdWorks.map((candidate) => candidate.id),
+  ].filter((id): id is string => Boolean(id)));
+  const childWorks = snapshotWorks.filter((candidate) => Boolean(candidate.parent_work_id && parentIds.has(candidate.parent_work_id)));
   return (
     <section aria-label="Current Work (Member Goal)" className="mb-2 rounded-xl border border-primary/20 bg-[linear-gradient(135deg,hsl(var(--primary)/.055),hsl(var(--background))_52%)] px-4 py-3 shadow-[0_14px_34px_-30px_rgba(15,23,42,.55)]">
       {/* The fact grid holds a 15rem minimum, so on a phone the flex-1 summary
@@ -591,12 +606,30 @@ function MemberGoalPanel({ context }: { context: MemberRunContext }) {
           description="Assigned to this member and ready after the current Work."
           works={queuedOwnedWorks}
           empty="No additional owned Work is queued."
+          onOpen={onOpenWork}
         />
         <MemberWorkQueue
           label="Eligible ready pool"
           description="Unowned team Work this member may claim from its own runtime."
           works={eligibleReadyWorks}
           empty="No unowned ready Work is eligible for this member."
+          onOpen={onOpenWork}
+        />
+      </div>
+      <div className="mt-2 grid gap-2 border-t border-border/60 pt-3 sm:grid-cols-2" data-member-work-lineage="true">
+        <MemberWorkQueue
+          label="Created Work"
+          description="Rows whose created_by_actor explicitly identifies this MemberRun or AgentMember."
+          works={createdWorks}
+          empty="No created Work"
+          onOpen={onOpenWork}
+        />
+        <MemberWorkQueue
+          label="Child Work"
+          description="Direct children linked through parent_work_id from this member's Work."
+          works={childWorks}
+          empty="No child Work"
+          onOpen={onOpenWork}
         />
       </div>
       <div className="mt-2 flex items-start gap-2 rounded-lg border border-primary/15 bg-primary/[0.035] px-3 py-2 text-[10px] leading-relaxed text-muted-foreground" aria-label="Member next Work action">
@@ -632,11 +665,13 @@ function MemberWorkQueue({
   description,
   works,
   empty,
+  onOpen,
 }: {
   label: string;
   description: string;
   works: Work[];
   empty: string;
+  onOpen?: (work: Work) => void;
 }) {
   return (
     <div className="rounded-lg border border-border/60 bg-background/75 px-3 py-2.5">
@@ -648,12 +683,14 @@ function MemberWorkQueue({
       {works.length ? (
         <ul className="mt-2 space-y-1.5">
           {works.slice(0, 3).map((work) => (
-            <li key={work.id} className="flex min-w-0 items-start justify-between gap-2 rounded-md border border-border/50 bg-card px-2 py-1.5">
+            <li key={work.id} className="rounded-md border border-border/50 bg-card">
+              <button type="button" disabled={!onOpen} onClick={() => onOpen?.(work)} className="flex w-full min-w-0 items-start justify-between gap-2 px-2 py-1.5 text-left disabled:cursor-default">
               <div className="min-w-0">
                 <p className="truncate text-[11px] font-medium text-foreground" title={work.title}>{work.title}</p>
                 <p className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground" title={work.id}>{work.id}</p>
               </div>
               <Badge tone={workStatusTone(work.status)}>{work.status}</Badge>
+              </button>
             </li>
           ))}
           {works.length > 3 && <li className="text-[10px] text-muted-foreground">+{works.length - 3} more on the Team Works board</li>}
