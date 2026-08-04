@@ -11808,6 +11808,7 @@ fn create_team_run(
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
                     created_at: now,
+                    duplicate_ok: false,
                 },
             )?;
             append_team_run_event(
@@ -11938,6 +11939,7 @@ fn add_team_run_member(
                         causation_ref: None,
                         idempotency_key: generated_id("work-command"),
                         created_at: now_string(),
+                        duplicate_ok: false,
                     },
                 ),
             )
@@ -12998,6 +13000,415 @@ pub(crate) fn transition_team_run(
     Ok(next)
 }
 
+/// Per-member recovery classification returned by the pure decision function.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+enum MemberRecoveryPath {
+    /// Member is already active with a current supervisor lease.
+    AlreadyActive,
+    /// Native session exists and supports resume — reopen the member.
+    ResumeCompatible,
+    /// Session is incompatible or missing — rebind Works to a new generation.
+    RebindIncompatible { reason: String },
+    /// Member is in a terminal state (retired/completed/failed).
+    Terminal { reason: String },
+}
+
+/// Pure function: classify a member's recovery path. Does not perform I/O or
+/// mutation. Unit-testable across every edge case without a store.
+fn classify_member_recovery_path(
+    member: &MemberRun,
+    supervisor_current: bool,
+) -> MemberRecoveryPath {
+    // Retired members are permanently dead.
+    if member.coordination_is_retired() {
+        return MemberRecoveryPath::Terminal {
+            reason: "member is retired".to_string(),
+        };
+    }
+    // Already active — running coordination, regardless of supervisor.
+    if member.coordination_is_active() {
+        return MemberRecoveryPath::AlreadyActive;
+    }
+    // Terminal runtime status without an active coordinator.
+    if matches!(
+        member.status,
+        MemberRunStatus::Completed | MemberRunStatus::Failed
+    ) && !supervisor_current
+    {
+        return MemberRecoveryPath::Terminal {
+            reason: format!(
+                "member is {} with no active supervisor",
+                serde_snake_label(&member.status)
+            ),
+        };
+    }
+    // Closed/stopped members need inspection.
+    if !member.coordination_is_active()
+        && matches!(
+            member.status,
+            MemberRunStatus::Stopped
+                | MemberRunStatus::Completed
+                | MemberRunStatus::Failed
+                | MemberRunStatus::Idle
+                | MemberRunStatus::Queued
+        )
+    {
+        // External interactive members are always resumable (even if Stopped).
+        if member.is_external_interactive() {
+            return MemberRecoveryPath::ResumeCompatible;
+        }
+        // Check native session resumability.
+        if let Some(native_session) = member.native_session.as_ref() {
+            if native_session.supports_resume
+                && !matches!(
+                    native_session.availability,
+                    harness_core::NativeSessionAvailability::Missing
+                        | harness_core::NativeSessionAvailability::Incompatible
+                )
+            {
+                // Also check provider profile.
+                if let Some(profile) = member.provider_profile.as_ref() {
+                    if profile.supports_resume {
+                        return MemberRecoveryPath::ResumeCompatible;
+                    }
+                }
+            }
+            return MemberRecoveryPath::RebindIncompatible {
+                reason: format!(
+                    "native session {} is not resumable (availability: {})",
+                    native_session.native_session_id,
+                    serde_snake_label(&native_session.availability)
+                ),
+            };
+        }
+        // No native session for a non-external member: if stopped, rebind; otherwise can resume.
+        if member.status == MemberRunStatus::Stopped {
+            return MemberRecoveryPath::RebindIncompatible {
+                reason: "no native session and member is stopped".to_string(),
+            };
+        }
+        return MemberRecoveryPath::ResumeCompatible;
+    }
+    MemberRecoveryPath::Terminal {
+        reason: format!(
+            "member status {} coordination {} not recoverable",
+            serde_snake_label(&member.status),
+            serde_snake_label(&member.coordination_status)
+        ),
+    }
+}
+
+/// Recover a team run without minting new ids: reconcile deliveries, reopen
+/// compatible sessions, rebind incompatible ones. Always reads current state
+/// first; never creates new TeamRun ids or Work ids.
+fn team_run_recover(
+    store: &HarnessStore,
+    team_run_id: &str,
+    json: bool,
+) -> CliResult<serde_json::Value> {
+    let run = latest_team_run(store, team_run_id)?;
+    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect();
+    let works: Vec<Work> = store
+        .latest_works()?
+        .into_iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .collect();
+    let deliveries: Vec<WorkDelivery> = store
+        .latest_work_deliveries()?
+        .into_iter()
+        .filter(|delivery| delivery.team_run_id == team_run_id)
+        .collect();
+    let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
+    let supervisor_current = supervisor.as_ref().is_some_and(|lease| {
+        lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+            && lease.expires_unix_ms > current_unix_ms_u64()
+    });
+
+    // ── Phase 1: orientation (read-only) ────────────────────────────
+    if !json {
+        println!(
+            "team run: {}\tstatus={}\tobjective={}",
+            run.id,
+            serde_snake_label(&run.status),
+            run.objective
+        );
+        println!(
+            "supervisor: {}\tcurrent={}",
+            supervisor
+                .as_ref()
+                .map(|s| format!("{} gen={}", s.supervisor_id, s.generation))
+                .unwrap_or_else(|| "none".to_string()),
+            supervisor_current
+        );
+        let (open, done, cancelled) = (
+            works.iter().filter(|w| !w.is_terminal()).count(),
+            works
+                .iter()
+                .filter(|w| w.status == WorkStatus::Done)
+                .count(),
+            works
+                .iter()
+                .filter(|w| w.status == WorkStatus::Cancelled)
+                .count(),
+        );
+        println!(
+            "works: {} total  {} open  {} done  {} cancelled",
+            works.len(),
+            open,
+            done,
+            cancelled
+        );
+        for member in &members {
+            let member_works: Vec<&Work> = works
+                .iter()
+                .filter(|w| {
+                    w.active_member_run_id.as_deref() == Some(&member.id)
+                        || w.owner_member_id.as_deref() == member.agent_member_id.as_deref()
+                })
+                .collect();
+            let path = classify_member_recovery_path(member, supervisor_current);
+            println!(
+                "  {} ({}): status={} coordination={} recovery={} works={}",
+                member.name,
+                member.provider,
+                serde_snake_label(&member.status),
+                serde_snake_label(&member.coordination_status),
+                serde_snake_label(&path),
+                member_works.len()
+            );
+        }
+    }
+
+    // ── Gather recovery plan ─────────────────────────────────────────
+    let recovery_plan: Vec<(&MemberRun, MemberRecoveryPath)> = members
+        .iter()
+        .map(|member| {
+            (
+                member,
+                classify_member_recovery_path(member, supervisor_current),
+            )
+        })
+        .collect();
+
+    let unrecoverable: Vec<_> = recovery_plan
+        .iter()
+        .filter(|(_, path)| matches!(path, MemberRecoveryPath::Terminal { .. }))
+        .collect();
+    if !unrecoverable.is_empty() {
+        let blocked: Vec<String> = unrecoverable
+            .iter()
+            .map(|(member, path)| {
+                let reason = match path {
+                    MemberRecoveryPath::Terminal { reason } => reason.as_str(),
+                    _ => "unknown",
+                };
+                format!("{}: {}", member.id, reason)
+            })
+            .collect();
+        let msg = format!(
+            "UNRECOVERABLE_MEMBERS: {} member(s) cannot be recovered: {}; run `harness team-run status --id {}` for details",
+            blocked.len(),
+            blocked.join("; "),
+            team_run_id
+        );
+        if json {
+            return Err(CliError::Usage(msg));
+        }
+        eprintln!("{msg}");
+        std::process::exit(1);
+    }
+
+    // ── Phase 2: reconcile stale deliveries ──────────────────────────
+    let mut reconciled = 0u64;
+    let now = current_unix_ms_u64();
+    let now_str = now_string();
+    for delivery in &deliveries {
+        if delivery.status != WorkDeliveryStatus::Claimed {
+            continue;
+        }
+        // Only reconcile deliveries that are stale (claimed by a previous gen).
+        if let Some(claimed_gen) = delivery.claimed_generation {
+            if let Some(ref lease) = supervisor {
+                if claimed_gen < lease.generation
+                    && lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                {
+                    let _ = store.reconcile_stale_work_delivery_claim(
+                        team_run_id,
+                        &delivery.id,
+                        &lease.supervisor_id,
+                        lease.generation,
+                        now,
+                        &now_str,
+                    );
+                    reconciled += 1;
+                }
+            }
+        }
+    }
+    if !json && reconciled > 0 {
+        println!("reconciled_stale_deliveries: {reconciled}");
+    }
+
+    // ── Phase 3: reopen compatible sessions ──────────────────────────
+    let mut reopened = 0u64;
+    let mut rebound = 0u64;
+    let mut skipped = 0u64;
+    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
+    for (member, path) in &recovery_plan {
+        match path {
+            MemberRecoveryPath::AlreadyActive => {
+                skipped += 1;
+            }
+            MemberRecoveryPath::ResumeCompatible => {
+                // Reopen the member using the existing reopen path.
+                let mut reopened_member = (*member).clone();
+                reopened_member.runtime_generation =
+                    reopened_member.runtime_generation.saturating_add(1);
+                reopened_member.coordination_status = MemberCoordinationStatus::Active;
+                reopened_member.status = if reopened_member.is_external_interactive() {
+                    MemberRunStatus::Idle
+                } else {
+                    MemberRunStatus::Queued
+                };
+                reopened_member.finished_at = None;
+                reopened_member.last_event_at = Some(now_str.clone());
+                store.append_member_run(&reopened_member)?;
+                ledger.append_action(
+                    &member.id,
+                    "recovered",
+                    MemberActionStatus::Succeeded,
+                    "member recovered and reopened",
+                    &format!(
+                        "host: recovered after supervisor death; runtime generation {}",
+                        reopened_member.runtime_generation
+                    ),
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Host,
+                    Some(member.id.clone()),
+                    "member_run",
+                    &member.id,
+                    "recovered",
+                    &format!(
+                        "member {} recovered at runtime generation {}",
+                        member.name, reopened_member.runtime_generation
+                    ),
+                )?;
+                reopened += 1;
+            }
+            MemberRecoveryPath::RebindIncompatible { reason } => {
+                // Rebind member's Works to a new generation.
+                let member_works: Vec<Work> = works
+                    .iter()
+                    .filter(|w| {
+                        w.active_member_run_id.as_deref() == Some(&member.id) && !w.is_terminal()
+                    })
+                    .cloned()
+                    .collect();
+                if member_works.is_empty() {
+                    if !json {
+                        println!(
+                            "  {} ({}): no non-terminal Works to rebind ({})",
+                            member.name, member.provider, reason
+                        );
+                    }
+                    skipped += 1;
+                    continue;
+                }
+                // Create a new runtime generation row first.
+                let mut rebound_member = (*member).clone();
+                rebound_member.runtime_generation =
+                    rebound_member.runtime_generation.saturating_add(1);
+                rebound_member.coordination_status = MemberCoordinationStatus::Active;
+                rebound_member.status = MemberRunStatus::Queued;
+                rebound_member.finished_at = None;
+                rebound_member.last_event_at = Some(now_str.clone());
+                store.append_member_run(&rebound_member)?;
+                ledger.append_action(
+                    &member.id,
+                    "recovered",
+                    MemberActionStatus::Succeeded,
+                    "member recovered with Work rebinds",
+                    &format!(
+                        "host: recovered after supervisor death; {} Works rebound to generation {}",
+                        member_works.len(),
+                        rebound_member.runtime_generation
+                    ),
+                )?;
+                // Rebind each Work.
+                for work in &member_works {
+                    let ctx = WorkCommandContext {
+                        event_id: generated_id("work-event"),
+                        performed_by_actor: TeamActorRef {
+                            kind: TeamActorKind::Host,
+                            id: "host".to_string(),
+                            display_name: Some("Host recovery".to_string()),
+                            authn_source: Some("team_run_recover".to_string()),
+                        },
+                        authority_actor: None,
+                        causation_ref: None,
+                        idempotency_key: generated_id("work-command"),
+                        created_at: now_str.clone(),
+                        duplicate_ok: false,
+                    };
+                    store.rebind_work(&work.id, work.version, &rebound_member.id, ctx)?;
+                    ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        Some(member.id.clone()),
+                        "work",
+                        &work.id,
+                        "rebound",
+                        &format!(
+                            "Work {} rebound from {} gen {} to {} gen {} ({})",
+                            work.title,
+                            member.id,
+                            member.runtime_generation,
+                            rebound_member.id,
+                            rebound_member.runtime_generation,
+                            reason
+                        ),
+                    )?;
+                }
+                if !json {
+                    println!(
+                        "  {} ({}): rebound {} Works ({})",
+                        member.name,
+                        member.provider,
+                        member_works.len(),
+                        reason
+                    );
+                }
+                rebound += member_works.len() as u64;
+            }
+            MemberRecoveryPath::Terminal { .. } => {
+                // Already checked above.
+            }
+        }
+    }
+
+    let report = serde_json::json!({
+        "team_run_id": team_run_id,
+        "status": serde_snake_label(&run.status),
+        "supervisor_current": supervisor_current,
+        "members": members.len(),
+        "works_total": works.len(),
+        "reconciled_deliveries": reconciled,
+        "reopened": reopened,
+        "rebound_works": rebound,
+        "skipped": skipped,
+    });
+    if !json {
+        println!(
+            "recovery complete: reopened={} rebound_works={} reconciled_deliveries={} skipped={}",
+            reopened, rebound, reconciled, skipped
+        );
+    }
+    Ok(report)
+}
+
 /// Recover a running attempt only after the operator has independently stopped
 /// every provider process. This is not cooperative interruption: the explicit
 /// CLI flag is an auditable attestation used when the foreground orchestrator
@@ -13207,6 +13618,7 @@ fn host_work_context(args: &[String]) -> WorkCommandContext {
         idempotency_key: value(args, "--idempotency-key")
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
+        duplicate_ok: has_flag(args, "--duplicate-ok"),
     }
 }
 
@@ -13246,6 +13658,7 @@ fn member_work_context(
         idempotency_key: value(args, "--idempotency-key")
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
+        duplicate_ok: false,
     })
 }
 
@@ -13717,7 +14130,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14493,6 +14906,13 @@ fn team_run_command(
         "board-summary" => {
             let id = required(args, "--id")?;
             println!("{}", team_run_board_summary_text(store, &id)?);
+        }
+        "recover" => {
+            let id = required(args, "--id")?;
+            let report = team_run_recover(store, &id, json)?;
+            if json {
+                print_json(&report)?;
+            }
         }
         other => {
             return Err(CliError::Usage(format!(
@@ -23818,6 +24238,7 @@ fn http_host_work_context(body: &serde_json::Value) -> CliResult<WorkCommandCont
         idempotency_key: json_string(body, "idempotency_key")
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
+        duplicate_ok: json_bool(body, "duplicate_ok").unwrap_or(false),
     })
 }
 
@@ -33175,7 +33596,7 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -41418,6 +41839,232 @@ mod sse_tests {
 
         drop(sse_conn);
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+// ── Tests for team-run recover decision logic ────────────────────
+
+#[cfg(test)]
+mod tests_team_run_recover {
+    use super::*;
+
+    fn make_member(
+        status: MemberRunStatus,
+        coordination_status: MemberCoordinationStatus,
+        has_session: bool,
+        session_supports_resume: bool,
+        session_availability: NativeSessionAvailability,
+        is_external: bool,
+    ) -> MemberRun {
+        let execution_mode = if is_external {
+            EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string()
+        } else {
+            "codex_app_server".to_string()
+        };
+        MemberRun {
+            id: "mr-test".into(),
+            team_run_id: "tr-test".into(),
+            slot_id: Some("slot-test".into()),
+            agent_member_id: Some("agent-test".into()),
+            name: "test-member".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: if has_session || is_external {
+                Some(ProviderIntegrationProfile {
+                    provider: "codex".into(),
+                    execution_mode: execution_mode.clone(),
+                    execution_driver: if is_external {
+                        MemberExecutionDriver::UserDriven
+                    } else {
+                        MemberExecutionDriver::default()
+                    },
+                    provider_version: None,
+                    adapter_contract_version: None,
+                    reviewed_provider_versions: Vec::new(),
+                    compatibility_status: ProviderCompatibilityStatus::Current,
+                    adapter_reviewed_at: None,
+                    compatibility_note: None,
+                    interaction_mode: ProviderInteractionMode::PauseAndResume,
+                    ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
+                    plan_mode: ProviderFeatureMode::Unknown,
+                    goal_mode: ProviderFeatureMode::Unknown,
+                    tool_event_fidelity: ProviderEventFidelity::Structured,
+                    artifact_event_fidelity: ProviderEventFidelity::Structured,
+                    supports_cancel: true,
+                    supports_resume: session_supports_resume,
+                    observes_native_subagents: false,
+                    observes_background_tasks: false,
+                    thinking_transient_only: true,
+                })
+            } else {
+                None
+            },
+            provider_capacity: None,
+            coordination_status,
+            runtime_generation: 1,
+            status,
+            native_session: if has_session {
+                Some(NativeSessionRef {
+                    provider: "codex".into(),
+                    execution_mode: execution_mode.clone(),
+                    native_session_id: "ns-1".into(),
+                    native_locator_kind: "codex_sqlite".into(),
+                    provider_version: None,
+                    adapter_contract_version: "1.0".into(),
+                    availability: session_availability,
+                    supports_resume: session_supports_resume,
+                    last_verified_at: None,
+                    parent_native_session_id: None,
+                })
+            } else {
+                None
+            },
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn active_with_supervisor_returns_already_active() {
+        let member = make_member(
+            MemberRunStatus::Running,
+            MemberCoordinationStatus::Active,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, true),
+            MemberRecoveryPath::AlreadyActive
+        );
+    }
+
+    #[test]
+    fn compatible_session_returns_resume() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false),
+            MemberRecoveryPath::ResumeCompatible
+        );
+    }
+
+    #[test]
+    fn incompatible_session_returns_rebind() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            true,
+            false,
+            NativeSessionAvailability::Incompatible,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
+            "expected RebindIncompatible, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_session_returns_rebind() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            false,
+            false,
+            NativeSessionAvailability::Missing,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
+            "expected RebindIncompatible, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn retired_member_returns_terminal() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Retired,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::Terminal { .. }),
+            "expected Terminal, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn external_interactive_always_resume() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            false,
+            false,
+            NativeSessionAvailability::Missing,
+            true, // external interactive
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false),
+            MemberRecoveryPath::ResumeCompatible
+        );
+    }
+
+    #[test]
+    fn already_active_member_no_supervisor_remains_already_active() {
+        // Active coordination but no supervisor lease: still AlreadyActive.
+        let member = make_member(
+            MemberRunStatus::Running,
+            MemberCoordinationStatus::Active,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false),
+            MemberRecoveryPath::AlreadyActive
+        );
+    }
+
+    #[test]
+    fn completed_member_no_supervisor_returns_terminal() {
+        let member = make_member(
+            MemberRunStatus::Completed,
+            MemberCoordinationStatus::Closed,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::Terminal { .. }),
+            "expected Terminal, got {:?}",
+            result
+        );
     }
 }
 
