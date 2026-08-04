@@ -188,6 +188,40 @@ Suppose Member `CTO` owns root Work `W0` and Hosts child Team `T1`.
 Child completion never automatically completes `W0`. Delegation transfers
 execution, not the delegator's accountability to its parent.
 
+## Recursive self-evolution loop
+
+Every active AgentMember, including the root Lead and every lower Member,
+executes the same local operating loop:
+
+```text
+observe current Work / Docs / code / runtime / external facts
+  -> identify gap, risk, optimization, or next action
+  -> create Work with source provenance
+  -> choose one permitted placement
+       1. assign to self
+       2. leave unassigned for the current Team Host
+       3. if Host of a child Team, assign to a direct child
+  -> execute / review / integrate
+  -> create follow-up Work from the result when needed
+```
+
+This loop is recursive but not permissionless. A Member cannot use discovery to
+assign a same-level peer, mutate a sibling Team, or escape its workspace,
+provider-budget, and business-access ceiling. It can always preserve a useful
+observation as unassigned Work with explicit provenance.
+
+Work therefore serves two roles without adding a second object:
+
+- **commitment:** responsibility currently owned by a Member; and
+- **demand signal:** explicit unassigned Work waiting for local Host judgment.
+
+Host queues are not populated only from the top. They are continuously fed by
+Members closest to execution, review, Docs, runtime failures, and external
+facts. Global views make this emergent demand visible to the Human and
+Supervising Operator. Limits, duplicate detection, prioritization, and capacity
+remain Host judgments; self-evolution does not mean automatically executing
+every observation.
+
 ## Runtime and mailbox behavior
 
 The durable Supervisor contract remains unchanged:
@@ -294,9 +328,11 @@ root or the Work board.
 
 - graph invariants: root, direct host, cycle rejection, subtree isolation;
 - Work authority: unassigned, self-assign, Host assignment, peer denial,
-  delegation, parent accountability;
+  delegation, parent accountability, and provenance-backed follow-up creation;
 - delivery: busy, idle, crash/recovery, close/reopen, retire;
 - provider-neutral live canaries for Codex, Claude, and Kimi;
 - Dashboard exact-relation tests and recursive navigation;
 - migration refusal when two responsibility authorities would remain active;
-- end-to-end Lead -> CTO -> child Team scenario from the requirements.
+- end-to-end Lead -> CTO -> child Team scenario from the requirements,
+  including self-owned and unassigned/delegated follow-up Work created by
+  lower Members.
