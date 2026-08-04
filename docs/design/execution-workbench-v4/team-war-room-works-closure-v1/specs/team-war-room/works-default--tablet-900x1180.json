@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "page": "team-war-room",
+  "expected": "/Users/hhh0x/.codex/worktrees/ui-plugin-closure.kmUpOt/multi-agent-harness/docs/design/execution-workbench-v4/team-war-room-works-closure-v1/expected/team-war-room/works-default--tablet-900x1180-v1.png",
+  "viewport": {
+    "width": 900,
+    "height": 1180,
+    "device_scale_factor": 1
+  },
+  "geometry": {
+    "regions": [
+      { "id": "team-main", "x": 0, "y": 0, "width": 900, "height": 1180 },
+      { "id": "capacity-strip", "x": 24, "y": 154, "width": 852, "height": 86 },
+      { "id": "works-list", "x": 24, "y": 428, "width": 852, "height": 630 }
+    ],
+    "grid": { "columns": 2, "lane_gap": 12, "lane_min_width": 360 },
+    "gutters": { "page": 24, "section": 16, "card": 12 },
+    "max_content_width": 900,
+    "scroll_owner": "team-main",
+    "sticky_regions": ["compact-team-toolbar"]
+  },
+  "vertical_landmarks": [
+    { "id": "identity-end", "y": 138 },
+    { "id": "capacity-end", "y": 240 },
+    { "id": "tabs-end", "y": 348 },
+    { "id": "first-work", "y_max": 500 },
+    { "id": "compact-toolbar-start", "y": 1116 }
+  ],
+  "typography": [
+    { "role": "page-title", "size": 24, "weight": 650, "line_height": 1.2 },
+    { "role": "section-title", "size": 17, "weight": 650, "line_height": 1.25 },
+    { "role": "body", "size": 14, "weight": 400, "line_height": 1.45 }
+  ],
+  "spacing_scale": [4, 8, 12, 16, 24],
+  "surfaces": ["warm-white-canvas", "hairline-dividers", "subtle-status-tint"],
+  "colors": ["coral-primary", "ink-900", "gray-500", "blue-running", "amber-review", "red-blocked", "green-done"],
+  "icons_and_assets": ["lucide-navigation-icons", "project-avatar-set", "status-dots"],
+  "component_strategy": {
+    "reuse": ["FocusShell", "TeamAvatar", "Button", "Badge", "Drawer"],
+    "page_specific": ["TeamCapacityStrip", "TeamWorksBoard"],
+    "replace_or_split": ["desktop rail becomes responsive sheet", "five lanes become grouped two-column sections"]
+  },
+  "responsive_transformations": ["context rail hidden behind Context & controls", "filters summarize into compact controls", "composer is not permanently expanded"],
+  "design_risks": ["avoid nested scroll owners", "do not render desktop and mobile boards simultaneously"],
+  "unresolved_decisions": []
+}

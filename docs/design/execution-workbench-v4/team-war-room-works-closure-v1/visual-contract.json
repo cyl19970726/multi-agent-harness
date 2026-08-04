@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "workstream": "team-war-room-works-closure-v1",
+  "artifact_policy": {
+    "expected": "durable",
+    "selected_comparisons": "durable",
+    "raw_browser_runs": ".visual-evidence/team-war-room-works-closure-v1"
+  },
+  "fidelity_policy": {
+    "required_for_p0": true,
+    "expected_viewport_must_match": true,
+    "minimum_implementation_iterations": 2
+  },
+  "cases": [
+    {
+      "id": "team-war-room--works-default--desktop-1440x1000",
+      "priority": "P0",
+      "page": "team-war-room",
+      "state": "works-default-active-pressure",
+      "route": "/?surface=team&team=teamrun-mission-current&mission=mission-workbench-v2&wave=wave-team-console",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 1440, "height": 1000, "device_scale_factor": 1 },
+      "baseline": "../../../../.visual-evidence/team-war-room-works-closure-v1/baseline/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "expected": "expected/team-war-room/works-default--desktop-1440x1000-v1.png",
+      "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/final/team-war-room--running-needs-you--desktop-1440x1000.png",
+      "comparison": "comparisons/team-war-room/works-default--desktop-1440x1000.png",
+      "overlay": "overlays/team-war-room/works-default--desktop-1440x1000.png",
+      "prompt": "prompts/team-war-room/works-default.md",
+      "design_spec": "specs/team-war-room/works-default--desktop-1440x1000.json",
+      "ux_contract": "ux/team-war-room-works--interaction-contract.md",
+      "asset_inventory": "assets/team-war-room/works-default--desktop-1440x1000.md",
+      "expected_approval": { "status": "approved", "by": "host under established user-approved War Room direction", "date": "2026-08-04" },
+      "required_browser_journeys": ["works-content-reachability", "work-detail-return", "keyboard-work-detail", "reduced-motion"],
+      "implementation_iterations": [
+        {
+          "revision": "baseline-v1",
+          "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/baseline/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "existing Works board before visual closure",
+          "verdict": "revise: product truth existed, but hierarchy and control density were unfinished"
+        },
+        {
+          "revision": "closure-v2",
+          "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/final/team-war-room--running-needs-you--desktop-1440x1000.png",
+          "stage": "semantic tabs, truthful capacity, shared Works hierarchy, and compact composer",
+          "verdict": "pass: desktop product, keyboard, focus, and exact-size visual gates passed"
+        }
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "Works remain the responsibility truth; capacity derives only from MemberRuns and Works; Dashboard and browser journeys passed." },
+        "visual_fidelity": { "status": "pass", "note": "The 1440x1000 final capture, overlay, and comparison were regenerated after the final implementation iteration." }
+      },
+      "review": {
+        "status": "pass_with_deviations",
+        "intentional_deviations": [
+          "The live header says running rather than active because running is the durable MemberRun state.",
+          "Owner and attention remain keyboard-tested visible chips instead of concept-only dropdowns."
+        ],
+        "defects": [],
+        "follow_ups": ["Track the separate MemberRun Focus mobile header/composer defect as its own Work."]
+      }
+    },
+    {
+      "id": "team-war-room--works-default--tablet-900x1180",
+      "priority": "P0",
+      "page": "team-war-room",
+      "state": "works-default-active-pressure",
+      "route": "/?surface=team&team=teamrun-mission-current&mission=mission-workbench-v2&wave=wave-team-console",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 900, "height": 1180, "device_scale_factor": 1 },
+      "baseline": "../../../../.visual-evidence/team-war-room-works-closure-v1/baseline/responsive/team-war-room--running-needs-you--tablet-900x1180.png",
+      "expected": "expected/team-war-room/works-default--tablet-900x1180-v1.png",
+      "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/final/responsive/team-war-room--running-needs-you--tablet-900x1180.png",
+      "comparison": "comparisons/team-war-room/works-default--tablet-900x1180.png",
+      "overlay": "overlays/team-war-room/works-default--tablet-900x1180.png",
+      "prompt": "prompts/team-war-room/works-default.md",
+      "design_spec": "specs/team-war-room/works-default--tablet-900x1180.json",
+      "ux_contract": "ux/team-war-room-works--interaction-contract.md",
+      "asset_inventory": "assets/team-war-room/works-default--tablet-900x1180.md",
+      "expected_approval": { "status": "approved", "by": "host under established user-approved War Room direction", "date": "2026-08-04" },
+      "required_browser_journeys": ["works-content-reachability", "responsive-context-sheet", "work-detail-return", "reduced-motion"],
+      "implementation_iterations": [
+        {
+          "revision": "baseline-v1",
+          "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/baseline/responsive/team-war-room--running-needs-you--tablet-900x1180.png",
+          "stage": "existing tablet reflow before density closure",
+          "verdict": "revise: capacity and composer used two rows and single-card lanes left an unstructured blank half"
+        },
+        {
+          "revision": "closure-v2",
+          "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/final/responsive/team-war-room--running-needs-you--tablet-900x1180.png",
+          "stage": "one-row capacity, one-row composer, and honest two-column empty slots",
+          "verdict": "pass: exact 900x1180 geometry and responsive context-sheet journey passed"
+        }
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "One Works DOM reflows into two-column lanes; empty slots describe absence without inventing Work; tablet journeys passed." },
+        "visual_fidelity": { "status": "pass", "note": "The 900x1180 final capture, overlay, and comparison prove the final compact geometry." }
+      },
+      "review": {
+        "status": "pass_with_deviations",
+        "intentional_deviations": [
+          "The live view keeps the complete five-lane sequence vertically instead of collapsing durable status ownership.",
+          "Dashed empty slots state that no additional Work exists instead of leaving ambiguous whitespace."
+        ],
+        "defects": [],
+        "follow_ups": []
+      }
+    },
+    {
+      "id": "team-war-room--works-default--mobile-390x844",
+      "priority": "P0",
+      "page": "team-war-room",
+      "state": "works-default-active-pressure",
+      "route": "/?surface=team&team=teamrun-mission-current&mission=mission-workbench-v2&wave=wave-team-console",
+      "fixture": "workbench-layout-v2-native-v1",
+      "viewport": { "width": 390, "height": 844, "device_scale_factor": 1 },
+      "baseline": "../../../../.visual-evidence/team-war-room-works-closure-v1/baseline/responsive/team-war-room--running-needs-you--mobile-390x844.png",
+      "expected": "expected/team-war-room/works-default--mobile-390x844-v1.png",
+      "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/final/responsive/team-war-room--running-needs-you--mobile-390x844.png",
+      "comparison": "comparisons/team-war-room/works-default--mobile-390x844.png",
+      "overlay": "overlays/team-war-room/works-default--mobile-390x844.png",
+      "prompt": "prompts/team-war-room/works-default.md",
+      "design_spec": "specs/team-war-room/works-default--mobile-390x844.json",
+      "ux_contract": "ux/team-war-room-works--interaction-contract.md",
+      "asset_inventory": "assets/team-war-room/works-default--mobile-390x844.md",
+      "expected_approval": { "status": "approved", "by": "host under established user-approved War Room direction", "date": "2026-08-04" },
+      "required_browser_journeys": ["mobile-first-work", "responsive-context-sheet", "keyboard-work-detail", "reduced-motion"],
+      "implementation_iterations": [
+        {
+          "revision": "baseline-v1",
+          "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/baseline/responsive/team-war-room--running-needs-you--mobile-390x844.png",
+          "stage": "existing mobile view before first-viewport closure",
+          "verdict": "revise: filters dominated the viewport and context/composer occupied separate bottom bands"
+        },
+        {
+          "revision": "closure-v2",
+          "implemented": "../../../../.visual-evidence/team-war-room-works-closure-v1/final/responsive/team-war-room--running-needs-you--mobile-390x844.png",
+          "stage": "compact filters, first-viewport Work, and one split bottom toolbar",
+          "verdict": "pass: first Work is visible, primary targets are 44px, and context opens as a sheet"
+        }
+      ],
+      "gates": {
+        "product_truth": { "status": "pass", "note": "A real Work is visible in the first viewport at 390x844 and 320x720; Works renders once without horizontal overflow." },
+        "visual_fidelity": { "status": "pass", "note": "The 390x844 final capture, overlay, and comparison show the approved split toolbar and compact hierarchy." }
+      },
+      "review": {
+        "status": "pass_with_deviations",
+        "intentional_deviations": [
+          "At 320x720 Activity conversation begins inside the first viewport, but a whole long Markdown row need not fit.",
+          "Secondary Activity filter chips may remain below 44px; primary mobile actions meet the 44px target."
+        ],
+        "defects": [],
+        "follow_ups": []
+      }
+    }
+  ]
+}

@@ -9997,11 +9997,15 @@ fn team_member_provider_profile_for_mode(
             execution_driver: MemberExecutionDriver::HostDriven,
             provider_version: None,
             adapter_contract_version: Some("kimi-acp-v1".to_string()),
-            reviewed_provider_versions: vec!["0.27.0".to_string(), "0.31.0".to_string()],
+            reviewed_provider_versions: vec![
+                "0.27.0".to_string(),
+                "0.31.0".to_string(),
+                "0.31.1".to_string(),
+            ],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-07-30".to_string()),
+            adapter_reviewed_at: Some("2026-08-04".to_string()),
             compatibility_note: Some(
-                "Kimi Code 0.31.0 is reviewed for prompt delivery, model and \
+                "Kimi Code 0.31.1 is reviewed for prompt delivery, model and \
                  reasoning-effort selection, native-session resume, and \
                  next-round batched mail. ACP session/cancel is sent as a \
                  JSON-RPC notification and provides cooperative Interrupt."
@@ -10101,17 +10105,20 @@ fn apply_provider_version(
     profile.provider_version = provider_version;
     // Kimi capability claims are version-specific. ACP defines
     // session/cancel as a JSON-RPC notification, not a request. The reviewed
-    // 0.27.0 and 0.31.0 paths support that notification; unknown versions
+    // 0.27.0, 0.31.0, and 0.31.1 paths support that notification; unknown versions
     // fail closed rather than inheriting a stale cancellation claim.
     if profile.provider == "kimi" {
         profile.supports_cancel = matches!(
             profile.provider_version.as_deref(),
-            Some("0.27.0" | "0.31.0")
+            Some("0.27.0" | "0.31.0" | "0.31.1")
         );
         // Kimi 0.31 adds a real provider-native Goal lifecycle. Harness does
         // not drive it through ACP yet: execution_driver remains host_driven
         // until inspect/replace/cancel/terminal operations are reviewed.
-        profile.goal_mode = if profile.provider_version.as_deref() == Some("0.31.0") {
+        profile.goal_mode = if matches!(
+            profile.provider_version.as_deref(),
+            Some("0.31.0" | "0.31.1")
+        ) {
             ProviderFeatureMode::Native
         } else {
             ProviderFeatureMode::Emulated
@@ -10137,8 +10144,8 @@ fn apply_provider_version(
         profile.provider_version.as_deref(),
         profile.compatibility_status,
     ) {
-        ("kimi", Some("0.31.0"), ProviderCompatibilityStatus::Current) => {
-            "Kimi Code 0.31.0 is adapter-reviewed for persistent ACP prompt \
+        ("kimi", Some("0.31.0" | "0.31.1"), ProviderCompatibilityStatus::Current) => {
+            "Kimi Code 0.31.x is adapter-reviewed for persistent ACP prompt \
              delivery, model/reasoning-effort selection, native-session resume, \
              next-round batched mail, and cooperative Interrupt through the ACP \
              session/cancel notification."
@@ -15429,6 +15436,29 @@ impl TeamRunLedger {
         provider_status: Option<String>,
     ) -> CliResult<MemberAction> {
         let _guard = self.write_lock();
+        self.append_action_locked(
+            member_run_id,
+            action_type,
+            status,
+            title,
+            summary,
+            provider_status,
+        )
+    }
+
+    /// MemberAction append with the write lock already held by the caller, so
+    /// a bounded check-then-append receipt shares one critical section with
+    /// the seq assignment.
+    #[allow(clippy::too_many_arguments)]
+    fn append_action_locked(
+        &self,
+        member_run_id: &str,
+        action_type: &str,
+        status: MemberActionStatus,
+        title: &str,
+        summary: &str,
+        provider_status: Option<String>,
+    ) -> CliResult<MemberAction> {
         let seq = self
             .store
             .member_actions()?
@@ -15462,6 +15492,41 @@ impl TeamRunLedger {
         };
         self.store.append_member_action(&action)?;
         Ok(action)
+    }
+
+    /// Append at most one durable `provider_control` receipt per MemberRun
+    /// and receipt identity. The convergence key is the stable
+    /// (member_run_id, "provider_control", title) triple, so an unrelated
+    /// provider_control row never suppresses a distinct receipt. The first
+    /// routine acknowledgement proves the control policy became active; later
+    /// identical control effects are performed without growing the activity
+    /// stream. The existence check and the append share one write lock so
+    /// overlapping acknowledgements cannot duplicate the row. Returns true
+    /// when this call wrote the receipt.
+    fn append_provider_control_receipt_once(
+        &self,
+        member_run_id: &str,
+        title: &str,
+        summary: &str,
+    ) -> CliResult<bool> {
+        let _guard = self.write_lock();
+        let already_receipted = self.store.member_actions()?.into_iter().any(|action| {
+            action.member_run_id == member_run_id
+                && action.action_type == "provider_control"
+                && action.title == title
+        });
+        if already_receipted {
+            return Ok(false);
+        }
+        self.append_action_locked(
+            member_run_id,
+            "provider_control",
+            MemberActionStatus::Succeeded,
+            title,
+            summary,
+            None,
+        )?;
+        Ok(true)
     }
 
     fn save_member_run(&self, member: &MemberRun) -> CliResult<()> {
@@ -19986,7 +20051,10 @@ fn handle_kimi_provider_request(
     // adapter acknowledgement, not an unresolved product interaction. Answer
     // it directly and retain only a bounded control receipt; persisting a
     // synthetic pending -> approved pair floods the Lead inbox and falsely
-    // implies that a Human or policy decision was required.
+    // implies that a Human or policy decision was required. The receipt is
+    // bounded to the first safe acknowledgement per MemberRun: one durable row
+    // proves the policy became active, later per-tool prompts are answered the
+    // same way without new rows, and no tool title or command text is logged.
     if kind == PendingInteractionKind::ToolApproval {
         if let Some(option_id) = options
             .iter()
@@ -20007,10 +20075,8 @@ fn handle_kimi_provider_request(
             })
             .map(|option| option.id.clone())
         {
-            ledger.append_action(
+            ledger.append_provider_control_receipt_once(
                 &member.id,
-                "provider_control",
-                MemberActionStatus::Succeeded,
                 "Kimi full-access tool permission acknowledged",
                 "provider exposed a safe allow option; full-access adapter acknowledged it without creating a PendingInteraction",
             )?;
@@ -37100,6 +37166,162 @@ mod tests {
     }
 
     #[test]
+    fn kimi_full_access_safe_approvals_converge_to_one_bounded_receipt() {
+        let (store, _root) = temp_store("kimi-receipt-once");
+        let ledger = TeamRunLedger::without_supervisor(&store, "team-run-receipt-bound");
+        let member = native_open_test_member("kimi", "kimi_acp", "session-receipt-bound");
+
+        let safe_frame = |id: u64| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-receipt-bound",
+                    "options": [
+                        {"optionId": format!("tool_allow_always_{id}"), "name": "Always allow", "kind": "allow_always"},
+                        {"optionId": "tool_reject_once", "name": "Reject", "kind": "reject_once"}
+                    ],
+                    "toolCall": {
+                        "toolCallId": format!("{id}:bash"),
+                        "title": "Bash",
+                        "content": [{"type": "content", "content": {"type": "text", "text": format!("Run sensitive command number {id}?")}}]
+                    }
+                }
+            })
+        };
+
+        // Many repeated safe approvals: every prompt is still answered with
+        // its safe allow option, none creates a PendingInteraction, and the
+        // durable stream converges to ONE bounded provider_control receipt.
+        for id in 700..707 {
+            let outcome = handle_kimi_provider_request(&ledger, &member, &safe_frame(id))
+                .expect("safe acknowledgement");
+            let expected_option = format!("tool_allow_always_{id}");
+            assert_eq!(
+                outcome["outcome"]["optionId"].as_str(),
+                Some(expected_option.as_str()),
+                "each safe prompt must still be acknowledged"
+            );
+        }
+
+        let receipts = store
+            .member_actions()
+            .expect("member actions")
+            .into_iter()
+            .filter(|action| {
+                action.member_run_id == member.id && action.action_type == "provider_control"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            receipts.len(),
+            1,
+            "receipts must converge to one per MemberRun: {receipts:?}"
+        );
+        let receipt = &receipts[0];
+        assert_eq!(
+            receipt.title,
+            "Kimi full-access tool permission acknowledged"
+        );
+        assert_eq!(receipt.status, MemberActionStatus::Succeeded);
+        assert!(receipt.summary.contains("safe allow option"));
+        assert!(
+            !receipt.summary.contains("sensitive command") && !receipt.title.contains("Bash"),
+            "no tool title or command text may be persisted: {receipt:?}"
+        );
+        assert!(
+            store
+                .pending_interactions()
+                .expect("pending interactions")
+                .is_empty(),
+            "safe approvals must never create PendingInteractions"
+        );
+    }
+
+    #[test]
+    fn kimi_full_access_receipt_ignores_unrelated_provider_control_rows() {
+        let (store, _root) = temp_store("kimi-receipt-identity");
+        let ledger = TeamRunLedger::without_supervisor(&store, "team-run-receipt-identity");
+        let member = native_open_test_member("kimi", "kimi_acp", "session-receipt-identity");
+
+        // An unrelated provider_control row for the same MemberRun must not
+        // suppress the bounded Kimi receipt: the convergence key is the
+        // stable (member_run_id, action_type, title) identity, not the bare
+        // action type.
+        ledger
+            .append_action(
+                &member.id,
+                "provider_control",
+                MemberActionStatus::Succeeded,
+                "Unrelated provider control observation",
+                "pre-existing control row from another control path",
+            )
+            .expect("seed unrelated provider_control row");
+
+        let safe_frame = |id: u64| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "session-receipt-identity",
+                    "options": [
+                        {"optionId": format!("tool_allow_always_{id}"), "name": "Always allow", "kind": "allow_always"},
+                        {"optionId": "tool_reject_once", "name": "Reject", "kind": "reject_once"}
+                    ],
+                    "toolCall": {
+                        "toolCallId": format!("{id}:bash"),
+                        "title": "Bash",
+                        "content": [{"type": "content", "content": {"type": "text", "text": format!("Run sensitive command number {id}?")}}]
+                    }
+                }
+            })
+        };
+
+        for id in 710..713 {
+            let outcome = handle_kimi_provider_request(&ledger, &member, &safe_frame(id))
+                .expect("safe acknowledgement");
+            let expected_option = format!("tool_allow_always_{id}");
+            assert_eq!(
+                outcome["outcome"]["optionId"].as_str(),
+                Some(expected_option.as_str()),
+                "each safe prompt must still be acknowledged"
+            );
+        }
+
+        let actions = store.member_actions().expect("member actions");
+        let kimi_receipts = actions
+            .iter()
+            .filter(|action| {
+                action.member_run_id == member.id
+                    && action.action_type == "provider_control"
+                    && action.title == "Kimi full-access tool permission acknowledged"
+            })
+            .count();
+        assert_eq!(
+            kimi_receipts, 1,
+            "first safe approval writes exactly one Kimi receipt; later ones converge: {actions:?}"
+        );
+        let member_controls = actions
+            .iter()
+            .filter(|action| {
+                action.member_run_id == member.id && action.action_type == "provider_control"
+            })
+            .count();
+        assert_eq!(
+            member_controls, 2,
+            "the seeded unrelated row is preserved alongside the one bounded receipt: {actions:?}"
+        );
+        assert!(
+            store
+                .pending_interactions()
+                .expect("pending interactions")
+                .is_empty(),
+            "safe approvals must never create PendingInteractions"
+        );
+    }
+
+    #[test]
     fn claude_sdk_native_session_has_deterministic_desktop_import_target() {
         let target = native_session_open_target(&native_open_test_member(
             "claude",
@@ -37341,6 +37563,15 @@ package:com.tencent.mm
         assert_eq!(current.goal_mode, ProviderFeatureMode::Native);
         assert_eq!(
             current.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut current_patch = team_member_provider_profile("kimi");
+        apply_provider_version(&mut current_patch, Some("0.31.1".to_string()));
+        assert!(current_patch.supports_cancel);
+        assert_eq!(current_patch.goal_mode, ProviderFeatureMode::Native);
+        assert_eq!(
+            current_patch.compatibility_status,
             ProviderCompatibilityStatus::Current
         );
 

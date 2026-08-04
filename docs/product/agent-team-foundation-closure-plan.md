@@ -47,7 +47,7 @@ ownership. It consumes their stable selection and Workspace contracts.
 
 The 2026-07-29 deterministic repository gate and real Codex/Claude/Kimi
 generation-1 → generation-2 canaries pass for their documented slices. The
-Human-approved Kimi 0.31.0 upgrade is current for prompt delivery,
+Human-approved Kimi 0.31.1 upgrade is current for prompt delivery,
 model/thinking controls, same-session resume, next-round mail, and cooperative
 Interrupt. `session/cancel` is sent as an ACP notification; the earlier
 method-not-found result came from incorrectly attaching a request id.
@@ -205,7 +205,7 @@ Host.” Operator surfaces must keep those labels separate.
 | --- | --- | --- | --- | --- | --- |
 | Codex `codex_app_server` | `turn/start` | `turn/steer` | `turn/interrupt` | `thread/resume` | Harness ends its owned app-server runtime |
 | Claude `claude_agent_sdk` | streaming input | unsupported until reviewed | `query.interrupt()` | SDK session resume | runner Close |
-| Kimi `kimi_acp` | `session/prompt` at the next safe boundary | unsupported | reviewed 0.31.0 `session/cancel` notification | prefer `session/resume`; older-server `session/load` fallback | ACP has no native session-close; Harness ends its client runtime |
+| Kimi `kimi_acp` | `session/prompt` at the next safe boundary | unsupported | reviewed 0.31.0/0.31.1 `session/cancel` notification | prefer `session/resume`; older-server `session/load` fallback | ACP has no native session-close; Harness ends its client runtime |
 
 Provider release review remains version and mode specific. Unsupported
 capability is an honest disabled state, not fallback to one-shot execution.

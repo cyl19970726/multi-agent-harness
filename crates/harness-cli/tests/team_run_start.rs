@@ -1153,8 +1153,8 @@ fn kimi_full_access_tool_permissions_acknowledge_without_pending_interactions() 
         .collect::<Vec<_>>();
     assert_eq!(
         controls.len(),
-        2,
-        "each provider permission request gets one bounded acknowledgement: {actions:?}"
+        1,
+        "repeated safe approvals converge to one bounded receipt per MemberRun: {actions:?}"
     );
     assert!(controls.iter().all(|action| {
         action["status"].as_str() == Some("succeeded")

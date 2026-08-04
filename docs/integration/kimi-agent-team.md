@@ -27,7 +27,8 @@ Kimi does not currently have a reviewed native continuation controller in this
 adapter. It uses the provider-neutral `host_driven` path: Harness delivers one
 eligible mailbox envelope at a time and Kimi keeps its native session as
 execution truth. This is not an emulated Goal; no Harness Goal object exists.
-For 0.31.0 the capability snapshot truthfully reports `goal_mode=native`, while
+For 0.31.0 and 0.31.1 the capability snapshot truthfully reports
+`goal_mode=native`, while
 the separate execution driver remains `host_driven` because ACP does not yet
 provide the reviewed Goal inspection and control operations Harness would need
 to delegate cycle ownership.
@@ -51,14 +52,16 @@ Harness never silently falls back from ACP to one-shot print mode.
 `ProviderCapabilities::kimi_exec()` describes bounded Workflow execution and
 must not be used to infer Team capability.
 
-The installed Kimi Code probe reports `0.31.0`. After the Human-approved
-upgrade, deterministic adapter checks and a live ACP canary reviewed this
-version for prompt delivery, model/reasoning selection, native-session resume,
-next-round batched mail, and cooperative Interrupt. `kimi-acp-v1` therefore
+The installed Kimi Code probe reports `0.31.1`. After the Human-approved
+upgrade, deterministic adapter checks and live ACP canaries reviewed this
+version for prompt delivery, K3/`max` model and reasoning selection, exact
+native-session resume across Supervisor generation 1 → 2, next-round batched
+mail, full-access permission receipt convergence, and cooperative Interrupt.
+`kimi-acp-v1` therefore
 reports `current` for those slices. ACP defines `session/cancel` as a JSON-RPC
 notification without a request id. The first live canary incorrectly sent it
 as a request and received `-32601 Method not found`; inspection of the installed
-0.31.0 implementation and a corrected notification canary identified the
+0.31.x implementation and a corrected notification canary identified the
 framing defect in Harness.
 
 ## Model and reasoning controls
@@ -106,7 +109,7 @@ surface. Harness adopts it in layers:
 | `session/list` | supported upstream; useful next for recovery diagnostics, never for guessing which session to resume |
 | ACP MCP forwarding | supported upstream; pass only explicitly approved MCP descriptors and never copy credentials into Harness state |
 | native Goals and custom/background/nested agents | usable inside the Kimi Member; remain provider-native execution details until separately reviewed control/observation contracts exist |
-| `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.31.0 |
+| `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.31.0 and 0.31.1 |
 | `session/close`, audio prompts, terminal reverse-RPC | unsupported upstream; Harness must not advertise them |
 
 This lets Kimi gain native capability without expanding the Harness object

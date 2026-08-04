@@ -1,7 +1,7 @@
 # Agent Team Workbench Page Spec
 
 ```text
-status: implemented baseline; Works redesign accepted and pending
+status: implemented baseline; Works visual and responsive closure in progress
 owner_role: product-design
 canonical_for: one standalone or Mission-scoped AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
@@ -76,9 +76,10 @@ surface, Activity conversation, Members capacity, and flexible context modules.
 
 `Works` is the default view. `Owned by me` appears only for a current actor
 bound to a participating MemberRun; Host/Operator views use `By owner`. It
-offers Unassigned, Assigned, Blocked, Review, and All filters; Open, In
-progress, Blocked, Review, and Done Kanban
-columns; and an optional dense list. Cards expose owner portrait, readiness,
+offers Unassigned, Assigned, Blocked, Review, and All filters; Open, Assigned,
+In progress, Review, and Done Kanban columns; and an optional dense list.
+Blocked is a canonical Work state rendered with explicit red/amber pressure in
+the active-work region rather than a sixth ownership lane. Cards expose owner portrait, readiness,
 criteria preview, blockers, child progress, source WorkItem, unread discussion,
 and update time. Kanban is a projection over Work, never separate state.
 
@@ -90,6 +91,10 @@ Member Focus. A non-modal details drawer is not a replacement for the full page.
 Every row renders typed author → recipient identity. A Dashboard Operator and
 the Host Lead remain visually and structurally distinct, and neither can
 impersonate a Member.
+
+The selected view tabs and source-aware Activity stream precede any expanded
+mailbox detail. Lead Inbox is a pressure disclosure and filter, not a large
+standalone block that can push the first conversation below the viewport.
 
 `Activity` is one source-aware timeline:
 
@@ -187,6 +192,13 @@ restarts this TeamRun.
   tablet/mobile use a compact capacity list. Capacity means addressability,
   active/queued/blocked-review/eligible-ready counts, plus separately labeled
   provider-account capacity—never a synthetic percentage.
+- **Truthful team summary:** Active turns is the count of Members whose current
+  runtime status proves a running turn; Ready members is the eligible accepting
+  count over current participating members; Queued Works, Needs review and
+  Blocked derive from current Works and Member runtime states. A concurrency
+  denominator is omitted until the selected runtime ceiling is durable on the
+  TeamRun. Provider-account capacity remains separately labelled per member;
+  absent data means `not observed`, never `available`.
 - Navigation preserves filters, selected member, scroll, Mission id, selected
   Wave id, TeamRun id, and project id across Team → Member → Team deep links.
 - A canonical MCP Dashboard URL for a Mission-scoped run includes the current
