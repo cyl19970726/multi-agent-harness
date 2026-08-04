@@ -105,6 +105,24 @@ await page.route("**/v1/**", async (route) => {
   if (url.pathname === "/v1/events") {
     return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
   }
+  if (url.pathname === "/v1/meta") {
+    // The persistent provenance footer (issue #307) polls this on its own;
+    // stub it like every other endpoint so the fixture run stays free of
+    // console-logged network errors. Its rev is deliberately not the real
+    // build rev — this check does not assert anything about the footer/
+    // banner, only that the rest of the surface renders correctly.
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        git_rev: "fixture0",
+        built_at: null,
+        store_root: fixtureRoot,
+        latest_op_seq: workOperations.length,
+        server_version: "0.0.0-fixture",
+      }),
+    });
+  }
   return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not_found"}' });
 });
 

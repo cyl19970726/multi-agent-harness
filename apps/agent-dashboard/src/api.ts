@@ -4,6 +4,7 @@ import type {
   DashboardSnapshot,
   DocRegistryEntry,
   ExecutionSpace,
+  HarnessMeta,
   LiveMemberActivity,
   MemberAction,
   MemberRun,
@@ -121,6 +122,24 @@ export async function fetchTeamRunSnapshot(
   const response = await fetch(`${normalized}${withProjectAndCompany(path, project, company, space)}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as DashboardSnapshot;
+}
+
+/**
+ * Fetch server build/data provenance via `GET /v1/meta` (issue #307). Used by
+ * the persistent provenance footer to prove which build served this session
+ * and to detect a stale frontend build (its own compiled-in rev disagreeing
+ * with the server's) without reading server logs.
+ */
+export async function fetchMeta(
+  baseUrl: string,
+  project?: string | null,
+  space?: string | null,
+): Promise<HarnessMeta> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}${withQuery("/v1/meta", { space, project })}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as HarnessMeta;
 }
 
 /** Read a display-only projection directly from the provider's native session.

@@ -36,6 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
+import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
 
 import type { WorkbenchModel } from "../model/readModel";
 import type { Company, ExecutionSpace, Project } from "../types";
@@ -236,6 +237,7 @@ export function WorkbenchShell({
             );
           })()}
         </main>
+        <ProvenanceFooter apiUrl={apiUrl} projectId={selectedProjectId} spaceId={selectedSpaceId} />
       </div>
     </div>
   );
