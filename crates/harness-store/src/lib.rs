@@ -3685,10 +3685,10 @@ mod tests {
 
     use harness_core::{
         DelegationMode, DelegationStatus, MemberActionStatus, MemberRunStatus,
-        MemberWorkspaceSnapshot, MessageKind, Mission, MissionStatus, SenderKind,
-        TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
-        TeamMessageResponseIntent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
-        WaveGateStatus, WaveStatus,
+        MemberWorkspaceSnapshot, MessageKind, Mission, MissionLogEntry, MissionLogEntryKind,
+        MissionStatus, SenderKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery,
+        TeamMessageKind, TeamMessageResponseIntent, TeamRunEventSourceKind, TeamRunStatus, Wave,
+        WaveExecutorKind, WaveGateStatus, WaveStatus,
     };
 
     use super::*;
@@ -3961,6 +3961,246 @@ mod tests {
             .collect::<Vec<_>>();
         seqs.sort_unstable();
         assert_eq!(seqs, (1..=8).collect::<Vec<_>>());
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    /// A minimal native Mission for Mission Log tests below.
+    fn mission_log_test_mission(id: &str) -> Mission {
+        Mission {
+            id: id.into(),
+            title: "Ship the Mission Log cutover".into(),
+            objective: "Prove append-only Mission Log semantics".into(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Planned,
+            wave_ids: Vec::new(),
+            agent_team_ids: Vec::new(),
+            outcome_summary: None,
+            completed_by: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn mission_log_entries_round_trip_with_ordered_revisions_and_tail() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-mission-log-round-trip-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store
+            .insert_mission(&mission_log_test_mission("mission-log-1"))
+            .expect("insert mission");
+
+        let kinds = [
+            MissionLogEntryKind::Judgment,
+            MissionLogEntryKind::Replan,
+            MissionLogEntryKind::Recovery,
+            MissionLogEntryKind::CloseoutEvidence,
+        ];
+        for (index, kind) in kinds.iter().enumerate() {
+            let appended = store
+                .append_mission_log_entry(MissionLogEntry {
+                    id: format!("entry-{index}"),
+                    mission_id: "mission-log-1".into(),
+                    revision: 0, // store-assigned; must be overwritten below
+                    kind: *kind,
+                    body: format!("entry body {index}"),
+                    actor: "host".into(),
+                    created_at: format!("unix-ms:{index}"),
+                })
+                .unwrap_or_else(|error| panic!("append entry {index}: {error}"));
+            // Store-assigned, monotonic starting at 1 -- the CLI's placeholder
+            // `revision: 0` is never trusted back.
+            assert_eq!(appended.revision, (index + 1) as u32);
+        }
+
+        // A second Mission's entries never leak into the first Mission's
+        // ledger, exactly like Wave's per-mission index scoping.
+        store
+            .insert_mission(&mission_log_test_mission("mission-log-2"))
+            .expect("insert other mission");
+        store
+            .append_mission_log_entry(MissionLogEntry {
+                id: "entry-other-mission".into(),
+                mission_id: "mission-log-2".into(),
+                revision: 0,
+                kind: MissionLogEntryKind::Judgment,
+                body: "unrelated mission's judgment".into(),
+                actor: "host".into(),
+                created_at: "unix-ms:9".into(),
+            })
+            .expect("append other-mission entry");
+
+        let entries = store
+            .mission_log_entries("mission-log-1")
+            .expect("mission log entries");
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            entries.iter().map(|entry| entry.revision).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(entries[0].kind, MissionLogEntryKind::Judgment);
+        assert_eq!(entries[3].kind, MissionLogEntryKind::CloseoutEvidence);
+
+        // tail(2) returns the last two, oldest-of-the-tail first (Unix `tail`
+        // ordering), never the unrelated Mission's row.
+        let tail = store
+            .mission_log_tail("mission-log-1", 2)
+            .expect("mission log tail");
+        assert_eq!(
+            tail.iter().map(|entry| entry.revision).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+
+        // tail(n) larger than the ledger returns every row, not an error.
+        let full_tail = store
+            .mission_log_tail("mission-log-1", 100)
+            .expect("mission log tail overshoot");
+        assert_eq!(full_tail.len(), 4);
+
+        // A Mission with no entries yet has an empty tail, not an error --
+        // the CLI/skill treat this as "no mission log yet", not a failure.
+        store
+            .insert_mission(&mission_log_test_mission("mission-log-empty"))
+            .expect("insert empty mission");
+        assert_eq!(
+            store
+                .mission_log_tail("mission-log-empty", 3)
+                .expect("empty tail"),
+            Vec::new()
+        );
+
+        // The raw cross-mission ledger sees every row in append order.
+        assert_eq!(store.mission_log().expect("raw mission log").len(), 5);
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn mission_log_entry_rejects_empty_body_empty_actor_and_missing_mission() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-mission-log-validation-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store
+            .insert_mission(&mission_log_test_mission("mission-log-validate"))
+            .expect("insert mission");
+
+        let base = MissionLogEntry {
+            id: "entry-invalid".into(),
+            mission_id: "mission-log-validate".into(),
+            revision: 0,
+            kind: MissionLogEntryKind::Judgment,
+            body: "   ".into(),
+            actor: "host".into(),
+            created_at: "unix-ms:1".into(),
+        };
+        let empty_body_error = store
+            .append_mission_log_entry(base.clone())
+            .expect_err("whitespace-only body must be rejected");
+        assert!(
+            empty_body_error.to_string().contains("body must not be empty"),
+            "error: {empty_body_error}"
+        );
+
+        let mut empty_actor = base.clone();
+        empty_actor.body = "a real judgment".into();
+        empty_actor.actor = "  ".into();
+        let empty_actor_error = store
+            .append_mission_log_entry(empty_actor)
+            .expect_err("whitespace-only actor must be rejected");
+        assert!(
+            empty_actor_error.to_string().contains("actor must not be empty"),
+            "error: {empty_actor_error}"
+        );
+
+        let mut missing_mission = base.clone();
+        missing_mission.body = "a real judgment".into();
+        missing_mission.mission_id = "mission-log-does-not-exist".into();
+        let missing_mission_error = store
+            .append_mission_log_entry(missing_mission)
+            .expect_err("unknown mission must be rejected");
+        assert!(
+            missing_mission_error.to_string().contains("mission not found"),
+            "error: {missing_mission_error}"
+        );
+
+        // No invalid attempt above left a row behind.
+        assert_eq!(
+            store
+                .mission_log_entries("mission-log-validate")
+                .expect("mission log entries")
+                .len(),
+            0
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn mission_log_entry_revision_is_monotonic_under_concurrent_append() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-mission-log-concurrency-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = Arc::new(HarnessStore::new(&root));
+        store
+            .insert_mission(&mission_log_test_mission("mission-log-concurrent"))
+            .expect("insert mission");
+
+        let barrier = Arc::new(Barrier::new(4));
+        let handles = ["a", "b", "c", "d"].map(|tag| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.append_mission_log_entry(MissionLogEntry {
+                    id: format!("entry-concurrent-{tag}"),
+                    mission_id: "mission-log-concurrent".into(),
+                    revision: 0,
+                    kind: MissionLogEntryKind::Judgment,
+                    body: format!("concurrent judgment {tag}"),
+                    actor: "host".into(),
+                    created_at: "unix-ms:1".into(),
+                })
+            })
+        });
+        let mut revisions = Vec::new();
+        for handle in handles {
+            revisions.push(
+                handle
+                    .join()
+                    .expect("append thread")
+                    .expect("append entry")
+                    .revision,
+            );
+        }
+        revisions.sort_unstable();
+        // Four concurrent appends against the same Mission never collide or
+        // skip: the store lock serializes the max-plus-one allocation exactly
+        // like insert_wave_and_update_mission's index allocation.
+        assert_eq!(revisions, vec![1, 2, 3, 4]);
+        let stored_revisions = store
+            .mission_log_entries("mission-log-concurrent")
+            .expect("mission log entries")
+            .into_iter()
+            .map(|entry| entry.revision)
+            .collect::<Vec<_>>();
+        assert_eq!(stored_revisions, vec![1, 2, 3, 4]);
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
