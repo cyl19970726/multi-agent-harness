@@ -3350,6 +3350,40 @@ pub enum WorkCutoverIssueKind {
     MissingCompanyWorkItem,
     ActiveCompanyWorkItemOverlap,
     DuplicateCompanyWorkItemLink,
+    MissingCompanyWorkItemFence,
+    ConflictingCompanyWorkItemFence,
+    IncompleteCompanyWorkItemFence,
+    CompanyWorkItemChangedAfterFence,
+}
+
+/// Durable one-way refusal marker written into the Company Store before a
+/// source-linked Work becomes Team-scoped authority.
+///
+/// This is deliberately not a cross-store transaction claim. The Company
+/// Store persists this marker first and thereafter refuses every revision of
+/// the retired WorkItem. Only then may the Execution Store append the
+/// `TeamScopePromoted` WorkOperation. A crash between those appends leaves no
+/// mutable responsibility authority and an idempotent retry may finish the
+/// promotion using the same marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCutoverFence {
+    pub company_work_item_id: String,
+    pub work_id: String,
+    pub team_id: String,
+    /// Event intended by the command that first installed the fence. A crash
+    /// gap may allow compatibility Work versions to advance; completion may
+    /// therefore use a later `TeamScopePromoted` event after a refreshed retry.
+    pub promotion_event_id: String,
+    pub expected_work_version: u64,
+    pub company_work_item_status: WorkItemStatus,
+    pub company_work_item_updated_at: String,
+    /// Canonical typed snapshot of the retired WorkItem. Store APIs refuse all
+    /// later revisions, and verification compares the full value so manual
+    /// ledger mutation cannot hide behind an unchanged status/timestamp.
+    #[serde(default)]
+    pub company_work_item_snapshot: serde_json::Value,
+    pub idempotency_key: String,
+    pub created_at: String,
 }
 
 /// One reason the Company WorkItem -> persistent Team Work cutover cannot be
@@ -3371,6 +3405,8 @@ pub struct WorkCutoverReport {
     pub checked_work_count: usize,
     pub team_scoped_work_count: usize,
     pub source_linked_work_count: usize,
+    #[serde(default)]
+    pub fenced_source_count: usize,
     pub issues: Vec<WorkCutoverIssue>,
 }
 
@@ -3386,6 +3422,36 @@ pub fn validate_work_cutover(
     team_runs: &[AgentTeamRun],
     company_work_items: &[WorkItem],
 ) -> WorkCutoverReport {
+    validate_work_cutover_impl(works, team_runs, company_work_items, &[], &[], false)
+}
+
+/// Validate the concurrency-safe cutover protocol, including the durable
+/// Company refusal markers and their matching Work promotion events.
+pub fn validate_work_cutover_with_fences(
+    works: &[Work],
+    team_runs: &[AgentTeamRun],
+    company_work_items: &[WorkItem],
+    fences: &[WorkCutoverFence],
+    work_events: &[WorkEvent],
+) -> WorkCutoverReport {
+    validate_work_cutover_impl(
+        works,
+        team_runs,
+        company_work_items,
+        fences,
+        work_events,
+        true,
+    )
+}
+
+fn validate_work_cutover_impl(
+    works: &[Work],
+    team_runs: &[AgentTeamRun],
+    company_work_items: &[WorkItem],
+    fences: &[WorkCutoverFence],
+    work_events: &[WorkEvent],
+    enforce_fences: bool,
+) -> WorkCutoverReport {
     let runs = team_runs
         .iter()
         .map(|run| (run.id.as_str(), run))
@@ -3394,6 +3460,21 @@ pub fn validate_work_cutover(
         .iter()
         .map(|item| (item.id.as_str(), item))
         .collect::<BTreeMap<_, _>>();
+    let works_by_id = works
+        .iter()
+        .map(|work| (work.id.as_str(), work))
+        .collect::<BTreeMap<_, _>>();
+    let events_by_id = work_events
+        .iter()
+        .map(|event| (event.id.as_str(), event))
+        .collect::<BTreeMap<_, _>>();
+    let mut fences_by_source = BTreeMap::<&str, Vec<&WorkCutoverFence>>::new();
+    for fence in fences {
+        fences_by_source
+            .entry(fence.company_work_item_id.as_str())
+            .or_default()
+            .push(fence);
+    }
     let mut source_links = BTreeMap::<&str, Vec<&str>>::new();
     let mut issues = Vec::new();
 
@@ -3474,6 +3555,90 @@ pub fn validate_work_cutover(
             }
             Some(_) => {}
         }
+
+        if enforce_fences {
+            match fences_by_source.get(source_id).map(Vec::as_slice) {
+                None | Some([]) => issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::MissingCompanyWorkItemFence,
+                    work_id: Some(work.id.clone()),
+                    company_work_item_id: Some(source_id.to_string()),
+                    detail: format!(
+                        "persistent Work {} has no durable Company WorkItem refusal fence",
+                        work.id
+                    ),
+                }),
+                Some([fence])
+                    if fence.work_id == work.id
+                        && fence.team_id == team_id
+                        && (events_by_id
+                            .get(fence.promotion_event_id.as_str())
+                            .is_some_and(|event| {
+                                event.work_id == work.id
+                                    && event.kind == WorkEventKind::TeamScopePromoted
+                                    && event.expected_version == fence.expected_work_version
+                            })
+                            || work_events.iter().any(|event| {
+                                event.work_id == work.id
+                                    && event.kind == WorkEventKind::TeamScopePromoted
+                                    && event.expected_version >= fence.expected_work_version
+                            })) =>
+                {
+                    if let Some(item) = company_items.get(source_id) {
+                        if serde_json::to_value(item).ok().as_ref()
+                            != Some(&fence.company_work_item_snapshot)
+                        {
+                            issues.push(WorkCutoverIssue {
+                                kind: WorkCutoverIssueKind::CompanyWorkItemChangedAfterFence,
+                                work_id: Some(work.id.clone()),
+                                company_work_item_id: Some(source_id.to_string()),
+                                detail: format!(
+                                    "Company WorkItem {source_id} changed after its cutover fence"
+                                ),
+                            });
+                        }
+                    }
+                }
+                Some([fence]) if fence.work_id == work.id && fence.team_id == team_id => {
+                    issues.push(WorkCutoverIssue {
+                        kind: WorkCutoverIssueKind::IncompleteCompanyWorkItemFence,
+                        work_id: Some(work.id.clone()),
+                        company_work_item_id: Some(source_id.to_string()),
+                        detail: format!(
+                            "Company WorkItem {source_id} fence references missing or invalid promotion event {}",
+                            fence.promotion_event_id
+                        ),
+                    });
+                }
+                Some(_) => issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::ConflictingCompanyWorkItemFence,
+                    work_id: Some(work.id.clone()),
+                    company_work_item_id: Some(source_id.to_string()),
+                    detail: format!(
+                        "Company WorkItem {source_id} has multiple or mismatched cutover fences"
+                    ),
+                }),
+            }
+        }
+    }
+
+    if enforce_fences {
+        for fence in fences {
+            if !works_by_id.get(fence.work_id.as_str()).is_some_and(|work| {
+                work.team_id.as_deref() == Some(fence.team_id.as_str())
+                    && work.source_work_item_ref.as_deref()
+                        == Some(fence.company_work_item_id.as_str())
+            }) {
+                issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::IncompleteCompanyWorkItemFence,
+                    work_id: Some(fence.work_id.clone()),
+                    company_work_item_id: Some(fence.company_work_item_id.clone()),
+                    detail: format!(
+                        "Company WorkItem {} is fenced for Work {}, but that Work is not yet the matching Team authority",
+                        fence.company_work_item_id, fence.work_id
+                    ),
+                });
+            }
+        }
     }
 
     for (source_id, linked_work_ids) in source_links {
@@ -3499,6 +3664,7 @@ pub fn validate_work_cutover(
             .iter()
             .filter(|work| work.source_work_item_ref.is_some())
             .count(),
+        fenced_source_count: fences_by_source.len(),
         issues,
     }
 }
@@ -5200,18 +5366,89 @@ mod tests {
             }))
             .expect("WorkItem")
         };
+        let promotion_event: WorkEvent = serde_json::from_value(serde_json::json!({
+            "id": "event-promote-work-1",
+            "team_run_id": "run-1",
+            "work_id": "work-1",
+            "sequence": 2,
+            "kind": "team_scope_promoted",
+            "expected_version": 0,
+            "resulting_version": 1,
+            "performed_by_actor": {"kind": "host", "id": "host"},
+            "idempotency_key": "promote-work-1",
+            "created_at": "unix-ms:1"
+        }))
+        .expect("promotion event");
+        let fence = WorkCutoverFence {
+            company_work_item_id: "company-work-1".into(),
+            work_id: work.id.clone(),
+            team_id: "team-1".into(),
+            promotion_event_id: promotion_event.id.clone(),
+            expected_work_version: promotion_event.expected_version,
+            company_work_item_status: WorkItemStatus::Archived,
+            company_work_item_updated_at: "unix-ms:1".into(),
+            company_work_item_snapshot: serde_json::to_value(item("archived"))
+                .expect("WorkItem snapshot"),
+            idempotency_key: promotion_event.idempotency_key.clone(),
+            created_at: "unix-ms:1".into(),
+        };
 
-        let active = validate_work_cutover(&[work.clone()], &[run.clone()], &[item("in_progress")]);
+        let active = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            std::slice::from_ref(&run),
+            &[item("in_progress")],
+            std::slice::from_ref(&fence),
+            std::slice::from_ref(&promotion_event),
+        );
         assert!(!active.valid);
         assert!(active
             .issues
             .iter()
             .any(|issue| { issue.kind == WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap }));
 
-        let archived = validate_work_cutover(&[work.clone()], &[run], &[item("archived")]);
-        assert!(archived.valid, "unexpected issues: {:?}", archived.issues);
+        let missing_fence = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            std::slice::from_ref(&run),
+            &[item("archived")],
+            &[],
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(missing_fence
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::MissingCompanyWorkItemFence }));
 
-        let duplicate = validate_work_cutover(
+        assert!(
+            validate_work_cutover(
+                std::slice::from_ref(&work),
+                std::slice::from_ref(&run),
+                &[item("archived")],
+            )
+            .valid
+        );
+        let archived = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            std::slice::from_ref(&run),
+            &[item("archived")],
+            std::slice::from_ref(&fence),
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(archived.valid, "unexpected issues: {:?}", archived.issues);
+        let mut silently_mutated = item("archived");
+        silently_mutated.title = "mutated without advancing updated_at".into();
+        let mutated = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            &[],
+            &[silently_mutated],
+            std::slice::from_ref(&fence),
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(mutated
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::CompanyWorkItemChangedAfterFence }));
+
+        let duplicate = validate_work_cutover_with_fences(
             &[
                 work.clone(),
                 Work {
@@ -5221,6 +5458,8 @@ mod tests {
             ],
             &[],
             &[item("archived")],
+            &[fence],
+            &[promotion_event],
         );
         assert!(duplicate
             .issues

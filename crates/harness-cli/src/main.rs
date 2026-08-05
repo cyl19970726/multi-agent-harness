@@ -14013,7 +14013,7 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|validate-cutover|reconcile-delivery",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -14312,6 +14312,11 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             value(args, "--successor-member-run-id").as_deref(),
             host_work_context(args),
         )?),
+        "reconcile-projection" => print_json(&store.reconcile_work_projection_provenance(
+            &required(args, "--work-id")?,
+            required_work_version(args)?,
+            host_work_context(args),
+        )?),
         "validate-cutover" => {
             let company_store = selected_company_store_for_work_cutover(args)?;
             print_json(&store.work_cutover_report(&company_store)?)
@@ -14329,7 +14334,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             &now_string(),
         )?),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|validate-cutover|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
         ))),
     }
 }

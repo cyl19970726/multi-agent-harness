@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use harness_core::{
-    validate_agent_team_topology, validate_work_cutover, AgentEvent, AgentMember,
+    validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, DurableAgentMember, Evidence, Gap, HostAttention, HostAttentionInbox,
     HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery,
@@ -15,9 +15,9 @@ use harness_core::{
     TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
     TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
     Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
-    WorkEvent, WorkEventKind, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
-    WorkflowPatch, WorkflowRun, WorkflowStep,
+    WorkCommandContext, WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
+    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation,
+    WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -34,6 +34,8 @@ unsafe extern "C" {
 const LOCK_EX: i32 = 2;
 const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
+const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
+const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -1296,7 +1298,7 @@ impl HarnessStore {
             deliveries,
             delivery_updates: Vec::new(),
         };
-        self.append_jsonl_unlocked("work_operations.jsonl", &operation)?;
+        self.append_work_operation_unlocked(&operation)?;
         Ok(work)
     }
 
@@ -1380,13 +1382,43 @@ impl HarnessStore {
         let owner_member_id = current.owner_member_id.clone().ok_or_else(|| {
             StoreError::Conflict(format!("work {work_id} has no stable owner identity"))
         })?;
-        if old_member_run_id == new_member_run_id {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is already bound to MemberRun {new_member_run_id}"
-            )));
-        }
-        let previous =
-            self.require_member_run_unlocked(&old_member_run_id, &current.team_run_id)?;
+        let (previous, replacement) = if old_member_run_id == new_member_run_id {
+            let revisions = self
+                .read_jsonl::<MemberRun>("member_runs.jsonl")?
+                .into_iter()
+                .filter(|member| {
+                    member.id == old_member_run_id && member.team_run_id == current.team_run_id
+                })
+                .collect::<Vec<_>>();
+            let replacement = revisions.last().cloned().ok_or_else(|| {
+                StoreError::Conflict(format!("member run not found: {new_member_run_id}"))
+            })?;
+            if compare_store_timestamps(&replacement.started_at, &current.updated_at)
+                != std::cmp::Ordering::Greater
+            {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_ALREADY_BOUND: MemberRun {new_member_run_id} generation {} does not postdate Work version {}",
+                    replacement.runtime_generation, current.version
+                )));
+            }
+            let previous = revisions
+                .iter()
+                .rev()
+                .skip(1)
+                .find(|member| member.runtime_generation < replacement.runtime_generation)
+                .cloned()
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "WORK_ALREADY_BOUND: MemberRun {new_member_run_id} has no higher replacement runtime generation"
+                    ))
+                })?;
+            (previous, replacement)
+        } else {
+            (
+                self.require_member_run_unlocked(&old_member_run_id, &current.team_run_id)?,
+                self.require_member_run_unlocked(new_member_run_id, &current.team_run_id)?,
+            )
+        };
         if previous.coordination_is_active()
             && !matches!(
                 previous.status,
@@ -1410,8 +1442,6 @@ impl HarnessStore {
                 "RECONCILIATION_REQUIRED: Work has a claimed delivery".to_string(),
             ));
         }
-        let replacement =
-            self.require_member_run_unlocked(new_member_run_id, &current.team_run_id)?;
         self.ensure_member_can_receive_work_unlocked(&replacement)?;
         let replacement_identity = stable_member_identity(&replacement);
         if replacement_identity != owner_member_id {
@@ -1432,7 +1462,73 @@ impl HarnessStore {
             serde_json::json!({
                 "previous_member_run_id": old_member_run_id,
                 "replacement_member_run_id": new_member_run_id,
+                "previous_runtime_generation": previous.runtime_generation,
+                "replacement_runtime_generation": replacement.runtime_generation,
                 "owner_member_id": owner_member_id,
+            }),
+        )
+    }
+
+    /// Append an explicit full-projection repair after a stale mixed-version
+    /// writer omitted immutable additive provenance. Raw sparse operations
+    /// remain untouched; the recovered reducer state becomes a new `Updated`
+    /// WorkOperation at the next version without changing lifecycle, owner, or
+    /// runtime binding.
+    pub fn reconcile_work_projection_provenance(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) = self.idempotent_work_operation_unlocked(
+            &context.idempotency_key,
+            work_id,
+            WorkEventKind::Updated,
+        )? {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let raw_current = latest_by_id(self.work_operations_unlocked()?, |operation| {
+            operation.work.id.clone()
+        })
+        .remove(work_id)
+        .ok_or_else(|| StoreError::Conflict(format!("work not found: {work_id}")))?;
+        if raw_current.work.version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "VERSION_CONFLICT: work {work_id} is at version {}, expected {expected_version}",
+                raw_current.work.version
+            )));
+        }
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        let mut recovered_fields = Vec::new();
+        if raw_current.work.team_id.is_none() && current.team_id.is_some() {
+            recovered_fields.push("team_id");
+        }
+        if raw_current.work.created_by_member_id.is_none() && current.created_by_member_id.is_some()
+        {
+            recovered_fields.push("created_by_member_id");
+        }
+        if recovered_fields.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "WORK_PROJECTION_PROVENANCE_CURRENT: Work {work_id} has no recoverable sparse provenance"
+            )));
+        }
+
+        let mut next = current.clone();
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_with_payload_unlocked(
+            current,
+            next,
+            WorkEventKind::Updated,
+            context,
+            serde_json::json!({
+                "reason": "mixed_version_projection_recovery",
+                "recovered_fields": recovered_fields,
+                "source_event_id": raw_current.event.id,
             }),
         )
     }
@@ -1448,19 +1544,73 @@ impl HarnessStore {
         expected_version: u64,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
+        self.promote_work_to_team_scope_inner(
+            company_store,
+            work_id,
+            expected_version,
+            context,
+            || {},
+            || Ok(()),
+        )
+    }
+
+    fn promote_work_to_team_scope_inner<BeforeFence, AfterFence>(
+        &self,
+        company_store: &HarnessStore,
+        work_id: &str,
+        expected_version: u64,
+        context: WorkCommandContext,
+        before_fence: BeforeFence,
+        after_fence: AfterFence,
+    ) -> StoreResult<Work>
+    where
+        BeforeFence: FnOnce(),
+        AfterFence: FnOnce() -> StoreResult<()>,
+    {
         self.init()?;
-        let _lock = self.acquire_write_lock()?;
+        company_store.init()?;
+        let (_first_lock, _second_lock) = self.acquire_joint_write_locks(company_store)?;
         self.ensure_work_store_compatible_unlocked()?;
         if let Some(existing) = self.idempotent_work_operation_unlocked(
             &context.idempotency_key,
             work_id,
             WorkEventKind::TeamScopePromoted,
         )? {
+            if let Some(fence) = self.prepare_work_cutover_fence_unlocked(
+                company_store,
+                &existing.work,
+                &existing.event,
+            )? {
+                company_store.append_jsonl_unlocked(WORK_CUTOVER_FENCES_LEDGER, &fence)?;
+            }
             return Ok(existing.work);
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
         if current.team_id.is_some() {
+            if current.source_work_item_ref.is_some() {
+                let promotion = self
+                    .work_operations_unlocked()?
+                    .into_iter()
+                    .rev()
+                    .find(|operation| {
+                        operation.work.id == current.id
+                            && operation.event.kind == WorkEventKind::TeamScopePromoted
+                    })
+                    .ok_or_else(|| {
+                        StoreError::Conflict(format!(
+                            "CUTOVER_PROVENANCE_MISSING: Team-scoped Work {work_id} has no promotion event"
+                        ))
+                    })?;
+                if let Some(fence) = self.prepare_work_cutover_fence_unlocked(
+                    company_store,
+                    &current,
+                    &promotion.event,
+                )? {
+                    company_store.append_jsonl_unlocked(WORK_CUTOVER_FENCES_LEDGER, &fence)?;
+                    return Ok(current);
+                }
+            }
             return Err(StoreError::Conflict(format!(
                 "WORK_ALREADY_TEAM_SCOPED: Work {work_id} already belongs to AgentTeam {}",
                 current.team_id.as_deref().unwrap_or_default()
@@ -1473,43 +1623,40 @@ impl HarnessStore {
                 run.id
             ))
         })?;
-        if let Some(source_id) = current.source_work_item_ref.as_deref() {
-            let source = company_store
-                .latest_work_items()?
-                .into_iter()
-                .find(|item| item.id == source_id)
-                .ok_or_else(|| {
-                    StoreError::Conflict(format!(
-                        "COMPANY_WORK_ITEM_MISSING: source WorkItem {source_id} does not exist"
-                    ))
-                })?;
-            if !matches!(
-                source.status,
-                WorkItemStatus::Draft
-                    | WorkItemStatus::Completed
-                    | WorkItemStatus::Cancelled
-                    | WorkItemStatus::Archived
-            ) {
-                return Err(StoreError::Conflict(format!(
-                    "ACTIVE_COMPANY_WORK_ITEM_CONFLICT: WorkItem {source_id} is {:?}; archive, cancel, or complete it before Team-scope promotion",
-                    source.status
-                )));
-            }
-            if self.latest_works_unlocked()?.values().any(|other| {
-                other.id != current.id
-                    && other.source_work_item_ref.as_deref() == Some(source_id)
-                    && other.team_id.is_some()
-            }) {
-                return Err(StoreError::Conflict(format!(
-                    "DUPLICATE_COMPANY_WORK_ITEM_LINK: WorkItem {source_id} already has a persistent Team Work"
-                )));
-            }
-        }
-
         let mut next = current.clone();
         next.team_id = Some(team_id.to_string());
         next.version += 1;
         next.updated_at = context.created_at.clone();
+        let intended_event = WorkEvent {
+            id: context.event_id.clone(),
+            team_run_id: next.team_run_id.clone(),
+            work_id: next.id.clone(),
+            sequence: 0,
+            kind: WorkEventKind::TeamScopePromoted,
+            expected_version: current.version,
+            resulting_version: next.version,
+            performed_by_actor: context.performed_by_actor.clone(),
+            authority_actor: context.authority_actor.clone(),
+            causation_ref: context.causation_ref.clone(),
+            idempotency_key: context.idempotency_key.clone(),
+            payload: serde_json::Value::Null,
+            created_at: context.created_at.clone(),
+        };
+        // Refuse a deterministic execution-ledger collision before the
+        // one-way Company fence is persisted. Once the fence exists, only
+        // crash/I/O/recoverable projection failures may interrupt completion.
+        self.ensure_work_event_id_available_unlocked(&intended_event.id)?;
+        let fence =
+            self.prepare_work_cutover_fence_unlocked(company_store, &next, &intended_event)?;
+        before_fence();
+        if let Some(fence) = fence {
+            company_store.append_jsonl_unlocked(WORK_CUTOVER_FENCES_LEDGER, &fence)?;
+        }
+        // This failure boundary models a process crash after the durable
+        // Company refusal marker but before the Execution Store operation.
+        // Production passes a no-op; deterministic tests stop here and prove
+        // that restart/retry is safe and idempotent.
+        after_fence()?;
         self.append_work_transition_with_payload_unlocked(
             current,
             next,
@@ -1517,6 +1664,83 @@ impl HarnessStore {
             context,
             serde_json::json!({ "team_id": team_id }),
         )
+    }
+
+    fn prepare_work_cutover_fence_unlocked(
+        &self,
+        company_store: &HarnessStore,
+        work: &Work,
+        promotion_event: &WorkEvent,
+    ) -> StoreResult<Option<WorkCutoverFence>> {
+        let Some(source_id) = work.source_work_item_ref.as_deref() else {
+            return Ok(None);
+        };
+        let team_id = work.team_id.as_deref().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_SCOPE_UNAVAILABLE: Work {} has no durable AgentTeam identity",
+                work.id
+            ))
+        })?;
+        let source = company_store
+            .latest_work_items()?
+            .into_iter()
+            .find(|item| item.id == source_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "COMPANY_WORK_ITEM_MISSING: source WorkItem {source_id} does not exist"
+                ))
+            })?;
+        if !work_item_is_retired(source.status) {
+            return Err(StoreError::Conflict(format!(
+                "ACTIVE_COMPANY_WORK_ITEM_CONFLICT: WorkItem {source_id} is {:?}; archive, cancel, complete, or return it to draft before Team-scope promotion",
+                source.status
+            )));
+        }
+        if self.latest_works_unlocked()?.values().any(|other| {
+            other.id != work.id
+                && other.source_work_item_ref.as_deref() == Some(source_id)
+                && other.team_id.is_some()
+        }) {
+            return Err(StoreError::Conflict(format!(
+                "DUPLICATE_COMPANY_WORK_ITEM_LINK: WorkItem {source_id} already has a persistent Team Work"
+            )));
+        }
+
+        let candidate = WorkCutoverFence {
+            company_work_item_id: source_id.to_string(),
+            work_id: work.id.clone(),
+            team_id: team_id.to_string(),
+            promotion_event_id: promotion_event.id.clone(),
+            expected_work_version: promotion_event.expected_version,
+            company_work_item_status: source.status,
+            company_work_item_updated_at: source.updated_at.clone(),
+            company_work_item_snapshot: serde_json::to_value(&source)?,
+            idempotency_key: promotion_event.idempotency_key.clone(),
+            created_at: promotion_event.created_at.clone(),
+        };
+        let existing = company_store
+            .work_cutover_fences_unlocked()?
+            .into_iter()
+            .filter(|fence| fence.company_work_item_id == source_id)
+            .collect::<Vec<_>>();
+        match existing.as_slice() {
+            [] => Ok(Some(candidate)),
+            [fence]
+                if fence.work_id == candidate.work_id
+                    && fence.team_id == candidate.team_id
+                    && fence.company_work_item_status == candidate.company_work_item_status
+                    && fence.company_work_item_updated_at
+                        == candidate.company_work_item_updated_at
+                    && fence.company_work_item_snapshot
+                        == candidate.company_work_item_snapshot
+                    && fence.expected_work_version <= candidate.expected_work_version =>
+            {
+                Ok(None)
+            }
+            _ => Err(StoreError::Conflict(format!(
+                "COMPANY_WORK_ITEM_CUTOVER_FENCE_CONFLICT: WorkItem {source_id} is already fenced for another promotion"
+            ))),
+        }
     }
 
     /// Move a persistent Work onto a successor execution attempt of the same
@@ -2326,7 +2550,7 @@ impl HarnessStore {
             deliveries,
             delivery_updates,
         };
-        self.append_jsonl_unlocked("work_operations.jsonl", &operation)?;
+        self.append_work_operation_unlocked(&operation)?;
         self.ensure_host_attention_for_work_operation_unlocked(&operation)?;
         Ok(next)
     }
@@ -2711,7 +2935,7 @@ impl HarnessStore {
         kind: WorkEventKind,
     ) -> StoreResult<Option<WorkOperation>> {
         let existing = self
-            .work_operations_unlocked()?
+            .work_operations_with_recovered_provenance_unlocked()?
             .into_iter()
             .find(|operation| operation.event.idempotency_key == idempotency_key);
         let Some(existing) = existing else {
@@ -2732,6 +2956,85 @@ impl HarnessStore {
 
     fn work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
         self.read_jsonl("work_operations.jsonl")
+    }
+
+    /// Fold immutable additive provenance through every WorkOperation.
+    ///
+    /// Mixed-version writers may deserialize a newer complete projection,
+    /// discard unknown fields, and append a later row without `team_id` or
+    /// `created_by_member_id`. Once either fact has been established, no Work
+    /// command is allowed to remove or change it. Reads therefore recover a
+    /// missing later value from ordered WorkOperation ledger history, while a
+    /// conflicting non-null value remains corruption and is refused.
+    fn work_operations_with_recovered_provenance_unlocked(
+        &self,
+    ) -> StoreResult<Vec<WorkOperation>> {
+        let mut team_ids = std::collections::BTreeMap::<String, String>::new();
+        let mut creator_ids = std::collections::BTreeMap::<String, String>::new();
+        let mut recovered = Vec::new();
+        for mut operation in self.work_operations_unlocked()? {
+            let work_id = operation.work.id.clone();
+            match (team_ids.get(&work_id), operation.work.team_id.as_deref()) {
+                (Some(expected), Some(actual)) if expected != actual => {
+                    return Err(StoreError::Conflict(format!(
+                        "WORK_PROJECTION_PROVENANCE_CONFLICT: Work {work_id} changed team_id from {expected} to {actual} in event {}",
+                        operation.event.id
+                    )));
+                }
+                (Some(expected), None) => operation.work.team_id = Some(expected.clone()),
+                (None, Some(actual)) => {
+                    team_ids.insert(work_id.clone(), actual.to_string());
+                }
+                _ => {}
+            }
+            match (
+                creator_ids.get(&work_id),
+                operation.work.created_by_member_id.as_deref(),
+            ) {
+                (Some(expected), Some(actual)) if expected != actual => {
+                    return Err(StoreError::Conflict(format!(
+                        "WORK_PROJECTION_PROVENANCE_CONFLICT: Work {work_id} changed created_by_member_id from {expected} to {actual} in event {}",
+                        operation.event.id
+                    )));
+                }
+                (Some(expected), None) => {
+                    operation.work.created_by_member_id = Some(expected.clone())
+                }
+                (None, Some(actual)) => {
+                    creator_ids.insert(work_id, actual.to_string());
+                }
+                _ => {}
+            }
+            recovered.push(operation);
+        }
+        Ok(recovered)
+    }
+
+    /// Current-version writers must emit a complete projection. This guard is
+    /// the refusal half of mixed-schema compatibility; the recovery fold above
+    /// is the lossless-preservation half for sparse rows already appended by a
+    /// stale binary.
+    fn append_work_operation_unlocked(&self, operation: &WorkOperation) -> StoreResult<()> {
+        if let Some(current) = self
+            .latest_works_unlocked()?
+            .remove(operation.work.id.as_str())
+        {
+            if current.team_id.is_some() && operation.work.team_id != current.team_id {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_PROJECTION_PROVENANCE_REGRESSION: Work {} event {} would drop or change team_id",
+                    operation.work.id, operation.event.id
+                )));
+            }
+            if current.created_by_member_id.is_some()
+                && operation.work.created_by_member_id != current.created_by_member_id
+            {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_PROJECTION_PROVENANCE_REGRESSION: Work {} event {} would drop or change created_by_member_id",
+                    operation.work.id, operation.event.id
+                )));
+            }
+        }
+        self.append_jsonl_unlocked("work_operations.jsonl", operation)
     }
 
     fn ensure_work_event_id_available_unlocked(&self, event_id: &str) -> StoreResult<()> {
@@ -2765,9 +3068,10 @@ impl HarnessStore {
     }
 
     fn latest_works_unlocked(&self) -> StoreResult<std::collections::BTreeMap<String, Work>> {
-        Ok(latest_by_id(self.work_operations_unlocked()?, |operation| {
-            operation.work.id.clone()
-        })
+        Ok(latest_by_id(
+            self.work_operations_with_recovered_provenance_unlocked()?,
+            |operation| operation.work.id.clone(),
+        )
         .into_iter()
         .map(|(id, operation)| (id, operation.work))
         .collect())
@@ -3762,16 +4066,40 @@ impl HarnessStore {
         &self,
         company_store: &HarnessStore,
     ) -> StoreResult<WorkCutoverReport> {
-        let works = self.latest_works()?;
-        let team_runs = latest_by_id(self.team_runs()?, |run| run.id.clone())
+        self.init()?;
+        company_store.init()?;
+        let (_first_lock, _second_lock) = self.acquire_joint_write_locks(company_store)?;
+        let works = self
+            .latest_works_unlocked()?
             .into_values()
             .collect::<Vec<_>>();
+        let team_runs = latest_by_id(self.read_jsonl("team_runs.jsonl")?, |run: &AgentTeamRun| {
+            run.id.clone()
+        })
+        .into_values()
+        .collect::<Vec<_>>();
         let company_work_items = company_store.latest_work_items()?;
-        Ok(validate_work_cutover(
+        let fences = company_store.work_cutover_fences_unlocked()?;
+        let work_events = self
+            .work_operations_unlocked()?
+            .into_iter()
+            .map(|operation| operation.event)
+            .collect::<Vec<_>>();
+        Ok(validate_work_cutover_with_fences(
             &works,
             &team_runs,
             &company_work_items,
+            &fences,
+            &work_events,
         ))
+    }
+
+    pub fn work_cutover_fences(&self) -> StoreResult<Vec<WorkCutoverFence>> {
+        self.work_cutover_fences_unlocked()
+    }
+
+    fn work_cutover_fences_unlocked(&self) -> StoreResult<Vec<WorkCutoverFence>> {
+        self.read_jsonl(WORK_CUTOVER_FENCES_LEDGER)
     }
 
     pub fn work_events(&self) -> StoreResult<Vec<WorkEvent>> {
@@ -4239,9 +4567,23 @@ impl HarnessStore {
     fn append_jsonl_unlocked<T: Serialize>(&self, file_name: &str, value: &T) -> StoreResult<()> {
         let mut row = Vec::new();
         serde_json::to_writer(&mut row, value)?;
+        if file_name == COMPANY_WORK_ITEMS_LEDGER {
+            let work_item = serde_json::from_slice::<WorkItem>(&row)?;
+            if self
+                .work_cutover_fences_unlocked()?
+                .iter()
+                .any(|fence| fence.company_work_item_id == work_item.id)
+            {
+                return Err(StoreError::Conflict(format!(
+                    "COMPANY_WORK_ITEM_CUTOVER_FENCED: WorkItem {} is immutable after Team Work authority promotion; Approval and Finance ledgers remain independent",
+                    work_item.id
+                )));
+            }
+        }
         row.push(b'\n');
 
         let path = self.root.join(file_name);
+        let creates_ledger = !path.exists();
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         file.write_all(&row)?;
         file.flush()?;
@@ -4254,6 +4596,12 @@ impl HarnessStore {
         // `sync_all`. Always called under the global flock, so write ordering
         // across files is preserved.
         file.sync_all()?;
+        if creates_ledger {
+            // The first fence/operation append creates a directory entry.
+            // Syncing only the inode is insufficient across a system crash;
+            // persist that new name before reporting the append durable.
+            File::open(&self.root)?.sync_all()?;
+        }
         Ok(())
     }
 
@@ -4404,6 +4752,31 @@ impl HarnessStore {
         }
     }
 
+    /// Acquire two store locks in canonical path order. This closes the
+    /// independently-read Company/Execution TOCTOU without claiming that two
+    /// JSONL appends are one physical transaction. Equal canonical roots share
+    /// one lock, which also keeps single-root test and compatibility stores
+    /// deadlock-free.
+    fn acquire_joint_write_locks(
+        &self,
+        other: &HarnessStore,
+    ) -> StoreResult<(StoreWriteLock, Option<StoreWriteLock>)> {
+        let self_root = fs::canonicalize(&self.root)?;
+        let other_root = fs::canonicalize(&other.root)?;
+        if self_root == other_root {
+            return Ok((self.acquire_write_lock()?, None));
+        }
+        if self_root < other_root {
+            let first = self.acquire_write_lock()?;
+            let second = other.acquire_write_lock()?;
+            Ok((first, Some(second)))
+        } else {
+            let first = other.acquire_write_lock()?;
+            let second = self.acquire_write_lock()?;
+            Ok((first, Some(second)))
+        }
+    }
+
     fn read_jsonl<T: DeserializeOwned>(&self, file_name: &str) -> StoreResult<Vec<T>> {
         let path = self.root.join(file_name);
         if !path.exists() {
@@ -4480,6 +4853,16 @@ fn works_share_scope(left: &Work, right: &Work) -> bool {
         (None, None) => left.team_run_id == right.team_run_id,
         _ => false,
     }
+}
+
+fn work_item_is_retired(status: WorkItemStatus) -> bool {
+    matches!(
+        status,
+        WorkItemStatus::Draft
+            | WorkItemStatus::Completed
+            | WorkItemStatus::Cancelled
+            | WorkItemStatus::Archived
+    )
 }
 
 fn compare_store_timestamps(left: &str, right: &str) -> std::cmp::Ordering {
@@ -4581,7 +4964,7 @@ impl Drop for StoreWriteLock {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{mpsc, Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
@@ -6686,6 +7069,77 @@ mod tests {
         }
     }
 
+    fn test_company_work_item(id: &str, status: WorkItemStatus, updated_at: &str) -> WorkItem {
+        let status = serde_json::to_value(status).expect("serialize WorkItem status");
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": "Compatibility WorkItem",
+            "objective": "cut over",
+            "status": status,
+            "source_document_ref": "document-1",
+            "source_record_refs": [],
+            "result_document_ref": null,
+            "result_record_refs": [],
+            "submitted_by": {"actor_type": "human", "actor_id": "human-1"},
+            "requested_by": null,
+            "accountable_owner": {"actor_type": "human", "actor_id": "human-1"},
+            "assignees": [],
+            "contributors": [],
+            "reviewer": null,
+            "approver": null,
+            "execution_mode": "agent_team",
+            "execution_refs": [],
+            "approval_refs": [],
+            "evidence_refs": [],
+            "artifact_refs": [],
+            "outcome_summary": null,
+            "due_at": null,
+            "priority": null,
+            "risk_level": null,
+            "created_at": "unix-ms:1",
+            "updated_at": updated_at,
+            "completed_at": null
+        }))
+        .expect("WorkItem")
+    }
+
+    fn source_linked_work_fixture(
+        name: &str,
+    ) -> (PathBuf, HarnessStore, PathBuf, HarnessStore, WorkItem, Work) {
+        let (root, store, run, _, _) = work_test_fixture(name);
+        let company_root = team_test_root(&format!("{name}-company"));
+        let company_store = HarnessStore::new(&company_root);
+        company_store.init().expect("init Company Store");
+        let source = test_company_work_item(
+            &format!("company-work-{name}"),
+            WorkItemStatus::Archived,
+            "unix-ms:2",
+        );
+        company_store
+            .append_jsonl(COMPANY_WORK_ITEMS_LEDGER, &source)
+            .expect("seed retired WorkItem");
+
+        let mut linked_run = run.clone();
+        linked_run.agent_team_id = Some(format!("agent-team-{name}"));
+        linked_run.updated_at = "unix-ms:2".into();
+        store
+            .append_team_run(&linked_run)
+            .expect("link durable AgentTeam");
+        let mut work = unassigned_test_work(&run.id, &format!("work-{name}"));
+        work.source_work_item_ref = Some(source.id.clone());
+        let work = store
+            .insert_work(
+                work,
+                host_work_context(
+                    &format!("event-create-{name}"),
+                    &format!("command-create-{name}"),
+                    "unix-ms:3",
+                ),
+            )
+            .expect("insert compatibility Work");
+        (root, store, company_root, company_store, source, work)
+    }
+
     fn completed_team_run(run: &AgentTeamRun, at: &str) -> AgentTeamRun {
         let mut completed = run.clone();
         completed.status = TeamRunStatus::Completed;
@@ -7784,6 +8238,236 @@ mod tests {
     }
 
     #[test]
+    fn rebind_redelivers_same_member_run_id_at_a_higher_runtime_generation() {
+        let (root, store, run, member, _) = work_test_fixture("same-id-generation-rebind");
+        let mut linked_run = run.clone();
+        linked_run.agent_team_id = Some("agent-team-same-id-rebind".into());
+        linked_run.updated_at = "unix-ms:2".into();
+        store
+            .append_team_run(&linked_run)
+            .expect("link durable AgentTeam");
+        let mut assigned = unassigned_test_work(&run.id, "work-same-id-rebind");
+        assigned.claim_mode = WorkClaimMode::HostAssign;
+        assigned.owner_member_id = member.agent_member_id.clone();
+        assigned.active_member_run_id = Some(member.id.clone());
+        let created = store
+            .insert_work(
+                assigned,
+                member_work_context(
+                    &member.id,
+                    "event-create-same-id-rebind",
+                    "command-create-same-id-rebind",
+                    "unix-ms:3",
+                ),
+            )
+            .expect("create assigned Work");
+
+        let mut failed = member.clone();
+        failed.status = MemberRunStatus::Failed;
+        failed.finished_at = Some("unix-ms:4".into());
+        store
+            .append_member_run(&failed)
+            .expect("record failed generation");
+        let mut replacement = member.clone();
+        replacement.runtime_generation += 1;
+        replacement.status = MemberRunStatus::Idle;
+        replacement.started_at = "unix-ms:5".into();
+        replacement.finished_at = None;
+        store
+            .append_member_run(&replacement)
+            .expect("append same-id replacement generation");
+
+        let rebound = store
+            .rebind_work(
+                &created.id,
+                created.version,
+                &replacement.id,
+                host_work_context(
+                    "event-rebind-same-id-generation",
+                    "command-rebind-same-id-generation",
+                    "unix-ms:6",
+                ),
+            )
+            .expect("higher same-id generation must fence and redeliver Work");
+        assert_eq!(rebound.active_member_run_id, created.active_member_run_id);
+        assert_eq!(rebound.team_id, created.team_id);
+        assert_eq!(rebound.created_by_member_id, created.created_by_member_id);
+        let operation = store
+            .work_operations()
+            .unwrap()
+            .into_iter()
+            .find(|operation| operation.event.kind == WorkEventKind::Rebound)
+            .expect("Rebound operation");
+        assert_eq!(operation.event.payload["previous_runtime_generation"], 1);
+        assert_eq!(operation.event.payload["replacement_runtime_generation"], 2);
+        assert!(store
+            .latest_work_deliveries()
+            .unwrap()
+            .iter()
+            .any(|delivery| {
+                delivery.work_id == rebound.id
+                    && delivery.work_version == rebound.version
+                    && delivery.recipient_member_run_id == replacement.id
+                    && delivery.status == WorkDeliveryStatus::Queued
+            }));
+        assert!(store
+            .rebind_work(
+                &rebound.id,
+                rebound.version,
+                &replacement.id,
+                host_work_context(
+                    "event-repeat-same-id-generation",
+                    "command-repeat-same-id-generation",
+                    "unix-ms:7",
+                ),
+            )
+            .expect_err("same runtime generation cannot rebound twice")
+            .to_string()
+            .contains("WORK_ALREADY_BOUND"));
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn sparse_mixed_version_rebound_recovers_and_repersists_work_provenance() {
+        let (root, store, run, member, _) = work_test_fixture("sparse-rebound-provenance");
+        let mut linked_run = run.clone();
+        linked_run.agent_team_id = Some("agent-team-sparse-rebound".into());
+        linked_run.updated_at = "unix-ms:2".into();
+        store
+            .append_team_run(&linked_run)
+            .expect("link durable AgentTeam");
+
+        let mut assigned = unassigned_test_work(&run.id, "work-sparse-rebound");
+        assigned.claim_mode = WorkClaimMode::HostAssign;
+        assigned.owner_member_id = member.agent_member_id.clone();
+        assigned.active_member_run_id = Some(member.id.clone());
+        let created = store
+            .insert_work(
+                assigned,
+                member_work_context(
+                    &member.id,
+                    "event-create-sparse-rebound",
+                    "command-create-sparse-rebound",
+                    "unix-ms:3",
+                ),
+            )
+            .expect("Member creates Team-scoped Work");
+        assert_eq!(
+            created.team_id.as_deref(),
+            Some("agent-team-sparse-rebound")
+        );
+        assert_eq!(created.created_by_member_id, member.agent_member_id);
+
+        let mut replacement = member.clone();
+        replacement.id = "member-sparse-rebound-generation-2".into();
+        replacement.runtime_generation += 1;
+        replacement.started_at = "unix-ms:4".into();
+        store
+            .append_member_run(&replacement)
+            .expect("append replacement runtime");
+
+        let rebound_context = host_work_context(
+            "event-sparse-mixed-writer-rebound",
+            "command-sparse-mixed-writer-rebound",
+            "unix-ms:5",
+        );
+        let mut sparse_work = created.clone();
+        sparse_work.active_member_run_id = Some(replacement.id.clone());
+        sparse_work.team_id = None;
+        sparse_work.created_by_member_id = None;
+        sparse_work.version += 1;
+        sparse_work.updated_at = rebound_context.created_at.clone();
+        let sparse_operation = WorkOperation {
+            event: WorkEvent {
+                id: rebound_context.event_id,
+                team_run_id: sparse_work.team_run_id.clone(),
+                work_id: sparse_work.id.clone(),
+                sequence: 2,
+                kind: WorkEventKind::Rebound,
+                expected_version: created.version,
+                resulting_version: sparse_work.version,
+                performed_by_actor: rebound_context.performed_by_actor,
+                authority_actor: rebound_context.authority_actor,
+                causation_ref: rebound_context.causation_ref,
+                idempotency_key: rebound_context.idempotency_key,
+                payload: serde_json::json!({
+                    "previous_member_run_id": member.id.clone(),
+                    "replacement_member_run_id": replacement.id.clone(),
+                }),
+                created_at: rebound_context.created_at,
+            },
+            work: sparse_work,
+            deliveries: Vec::new(),
+            delivery_updates: Vec::new(),
+        };
+        let refused = store
+            .append_work_operation_unlocked(&sparse_operation)
+            .expect_err("current writer must refuse provenance regression");
+        assert!(refused
+            .to_string()
+            .contains("WORK_PROJECTION_PROVENANCE_REGRESSION"));
+
+        // Model the already-observed stale HTTP writer: it omitted both keys
+        // entirely, bypassing code this newer binary did not yet contain.
+        let mut sparse_json = serde_json::to_value(&sparse_operation).expect("operation JSON");
+        let sparse_projection = sparse_json["work"]
+            .as_object_mut()
+            .expect("Work projection object");
+        sparse_projection.remove("team_id");
+        sparse_projection.remove("created_by_member_id");
+        store
+            .append_jsonl("work_operations.jsonl", &sparse_json)
+            .expect("simulate stale mixed-version append");
+        let raw = store.work_operations().expect("raw WorkOperations");
+        assert!(raw.last().expect("sparse rebound").work.team_id.is_none());
+        assert!(raw
+            .last()
+            .expect("sparse rebound")
+            .work
+            .created_by_member_id
+            .is_none());
+
+        let recovered = store.latest_works().expect("recovered Works").remove(0);
+        assert_eq!(recovered.team_id, created.team_id);
+        assert_eq!(recovered.created_by_member_id, created.created_by_member_id);
+        let repair_context = host_work_context(
+            "event-reconcile-sparse-rebound",
+            "command-reconcile-sparse-rebound",
+            "unix-ms:6",
+        );
+        let repaired = store
+            .reconcile_work_projection_provenance(
+                &recovered.id,
+                recovered.version,
+                repair_context.clone(),
+            )
+            .expect("explicit reconciliation re-persists recovered provenance");
+        assert_eq!(repaired.status, WorkStatus::Open);
+        assert_eq!(
+            repaired.active_member_run_id.as_deref(),
+            Some(replacement.id.as_str())
+        );
+        assert_eq!(repaired.team_id, created.team_id);
+        assert_eq!(repaired.created_by_member_id, created.created_by_member_id);
+        assert_eq!(
+            store
+                .reconcile_work_projection_provenance(
+                    &recovered.id,
+                    recovered.version,
+                    repair_context,
+                )
+                .expect("repair retry is idempotent"),
+            repaired
+        );
+        let raw = store.work_operations().expect("repaired WorkOperations");
+        assert_eq!(raw.last().expect("repair operation").work, repaired);
+        assert_eq!(raw.last().unwrap().event.kind, WorkEventKind::Updated);
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
     fn unavailable_members_and_idempotency_key_reuse_are_rejected() {
         let (root, store, run, member, _) = work_test_fixture("work-command-guards");
         let first = store
@@ -8759,6 +9443,325 @@ mod tests {
 
         std::fs::remove_dir_all(root).expect("remove temp store");
         std::fs::remove_dir_all(company_root).expect("remove company temp store");
+    }
+
+    #[test]
+    fn concurrent_company_revision_cannot_cross_the_promotion_fence_window() {
+        let (root, store, company_root, company_store, source, work) =
+            source_linked_work_fixture("cutover-concurrency");
+        let context = host_work_context(
+            "event-promote-cutover-concurrency",
+            "command-promote-cutover-concurrency",
+            "unix-ms:4",
+        );
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new(Barrier::new(2));
+        let promoter_release = Arc::clone(&release);
+        let promotion_store = store.clone();
+        let promotion_company_store = company_store.clone();
+        let work_id = work.id.clone();
+        let promotion = std::thread::spawn(move || {
+            promotion_store.promote_work_to_team_scope_inner(
+                &promotion_company_store,
+                &work_id,
+                work.version,
+                context,
+                || {
+                    entered_tx
+                        .send(())
+                        .expect("signal validated cross-store snapshot");
+                    promoter_release.wait();
+                },
+                || Ok(()),
+            )
+        });
+        entered_rx
+            .recv()
+            .expect("promotion reached the pre-fence boundary");
+
+        let mut revived = source.clone();
+        revived.status = WorkItemStatus::InProgress;
+        revived.updated_at = "unix-ms:5".into();
+        let writer_store = company_store.clone();
+        let (writer_started_tx, writer_started_rx) = mpsc::channel();
+        let (writer_done_tx, writer_done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_started_tx.send(()).expect("signal writer start");
+            let result = writer_store.append_jsonl(COMPANY_WORK_ITEMS_LEDGER, &revived);
+            writer_done_tx.send(result).expect("send writer result");
+        });
+        writer_started_rx.recv().expect("writer started");
+        assert!(matches!(
+            writer_done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release.wait();
+        let promoted = promotion
+            .join()
+            .expect("promotion thread")
+            .expect("promotion succeeds");
+        let writer_error = writer_done_rx
+            .recv()
+            .expect("writer completed after fence")
+            .expect_err("post-fence WorkItem revision must be refused");
+        writer.join().expect("writer thread");
+
+        assert!(promoted.is_team_scoped());
+        assert!(writer_error
+            .to_string()
+            .contains("COMPANY_WORK_ITEM_CUTOVER_FENCED"));
+        assert_eq!(
+            company_store
+                .latest_work_items()
+                .expect("Company WorkItems")[0]
+                .status,
+            WorkItemStatus::Archived
+        );
+        assert!(
+            store
+                .work_cutover_report(&company_store)
+                .expect("consistent cutover report")
+                .valid
+        );
+
+        std::fs::remove_dir_all(root).expect("remove Execution Store");
+        std::fs::remove_dir_all(company_root).expect("remove Company Store");
+    }
+
+    #[test]
+    fn deterministic_execution_collision_is_refused_before_company_fencing() {
+        let (root, store, company_root, company_store, source, work) =
+            source_linked_work_fixture("cutover-preflight");
+        let collision = store
+            .promote_work_to_team_scope(
+                &company_store,
+                &work.id,
+                work.version,
+                host_work_context(
+                    "event-create-cutover-preflight",
+                    "command-promote-cutover-preflight",
+                    "unix-ms:4",
+                ),
+            )
+            .expect_err("event collision must be rejected before the one-way fence");
+        assert!(collision.to_string().contains("WORK_EVENT_ID_CONFLICT"));
+        assert!(company_store.work_cutover_fences().unwrap().is_empty());
+
+        let mut still_company_authority = source;
+        still_company_authority.status = WorkItemStatus::InProgress;
+        still_company_authority.updated_at = "unix-ms:5".into();
+        company_store
+            .append_jsonl(COMPANY_WORK_ITEMS_LEDGER, &still_company_authority)
+            .expect("failed preflight must leave Company authority writable");
+        assert!(!store.latest_works().unwrap()[0].is_team_scoped());
+
+        std::fs::remove_dir_all(root).expect("remove Execution Store");
+        std::fs::remove_dir_all(company_root).expect("remove Company Store");
+    }
+
+    #[test]
+    fn crash_after_company_fence_restarts_and_retries_exactly_once() {
+        let (root, store, company_root, company_store, source, work) =
+            source_linked_work_fixture("cutover-crash-retry");
+        let context = host_work_context(
+            "event-promote-cutover-crash-retry",
+            "command-promote-cutover-crash-retry",
+            "unix-ms:4",
+        );
+        let injected = store
+            .promote_work_to_team_scope_inner(
+                &company_store,
+                &work.id,
+                work.version,
+                context.clone(),
+                || {},
+                || {
+                    Err(StoreError::Conflict(
+                        "INJECTED_CRASH_AFTER_COMPANY_FENCE".into(),
+                    ))
+                },
+            )
+            .expect_err("injected crash boundary");
+        assert!(injected
+            .to_string()
+            .contains("INJECTED_CRASH_AFTER_COMPANY_FENCE"));
+        assert_eq!(company_store.work_cutover_fences().unwrap().len(), 1);
+        assert!(!store.latest_works().unwrap()[0].is_team_scoped());
+        let mut forbidden_revision = source.clone();
+        forbidden_revision.status = WorkItemStatus::InProgress;
+        forbidden_revision.updated_at = "unix-ms:5".into();
+        assert!(company_store
+            .append_jsonl(COMPANY_WORK_ITEMS_LEDGER, &forbidden_revision)
+            .expect_err("fence survives failed promotion")
+            .to_string()
+            .contains("COMPANY_WORK_ITEM_CUTOVER_FENCED"));
+        assert!(
+            !store
+                .work_cutover_report(&company_store)
+                .expect("pending-fence report")
+                .valid
+        );
+
+        let reopened_store = HarnessStore::new(&root);
+        let reopened_company_store = HarnessStore::new(&company_root);
+        let promoted = reopened_store
+            .promote_work_to_team_scope(
+                &reopened_company_store,
+                &work.id,
+                work.version,
+                context.clone(),
+            )
+            .expect("restart completes fenced promotion");
+        let repeated = reopened_store
+            .promote_work_to_team_scope(&reopened_company_store, &work.id, work.version, context)
+            .expect("same retry is idempotent");
+        assert_eq!(repeated, promoted);
+        assert_eq!(
+            reopened_company_store.work_cutover_fences().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            reopened_store
+                .work_events()
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == WorkEventKind::TeamScopePromoted)
+                .count(),
+            1
+        );
+        assert!(
+            reopened_store
+                .work_cutover_report(&reopened_company_store)
+                .expect("completed cutover report")
+                .valid
+        );
+
+        std::fs::remove_dir_all(root).expect("remove Execution Store");
+        std::fs::remove_dir_all(company_root).expect("remove Company Store");
+    }
+
+    #[test]
+    fn crash_gap_allows_compatibility_work_to_advance_then_refreshes_promotion() {
+        let (root, store, company_root, company_store, _, work) =
+            source_linked_work_fixture("cutover-crash-advance");
+        let original_context = host_work_context(
+            "event-promote-cutover-crash-advance-original",
+            "command-promote-cutover-crash-advance-original",
+            "unix-ms:4",
+        );
+        store
+            .promote_work_to_team_scope_inner(
+                &company_store,
+                &work.id,
+                work.version,
+                original_context.clone(),
+                || {},
+                || Err(StoreError::Conflict("INJECTED_CRASH_GAP".into())),
+            )
+            .expect_err("stop after durable Company fence");
+        let member = store.member_runs().unwrap().remove(0);
+        let advanced = store
+            .assign_work(
+                &work.id,
+                work.version,
+                &member.id,
+                host_work_context(
+                    "event-assign-during-cutover-crash-gap",
+                    "command-assign-during-cutover-crash-gap",
+                    "unix-ms:5",
+                ),
+            )
+            .expect("TeamRun-scoped compatibility Work remains mutable");
+        assert!(advanced.team_id.is_none());
+        assert!(store
+            .promote_work_to_team_scope(&company_store, &work.id, work.version, original_context,)
+            .expect_err("stale expected version must still be refused")
+            .to_string()
+            .contains("VERSION_CONFLICT"));
+
+        let promoted = store
+            .promote_work_to_team_scope(
+                &company_store,
+                &advanced.id,
+                advanced.version,
+                host_work_context(
+                    "event-promote-cutover-crash-advance-refreshed",
+                    "command-promote-cutover-crash-advance-refreshed",
+                    "unix-ms:6",
+                ),
+            )
+            .expect("refreshed retry completes original fence intent");
+        assert!(promoted.is_team_scoped());
+        assert_eq!(company_store.work_cutover_fences().unwrap().len(), 1);
+        let promotion = store
+            .work_events()
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == WorkEventKind::TeamScopePromoted)
+            .expect("completion event");
+        assert_eq!(promotion.expected_version, advanced.version);
+        assert!(
+            store
+                .work_cutover_report(&company_store)
+                .expect("advanced-gap cutover report")
+                .valid
+        );
+
+        std::fs::remove_dir_all(root).expect("remove Execution Store");
+        std::fs::remove_dir_all(company_root).expect("remove Company Store");
+    }
+
+    #[test]
+    fn migration_verification_detects_and_repairs_a_missing_legacy_fence() {
+        let (root, store, company_root, company_store, _, work) =
+            source_linked_work_fixture("cutover-fence-migration");
+        let promoted = store
+            .promote_work_to_team_scope(
+                &company_store,
+                &work.id,
+                work.version,
+                host_work_context(
+                    "event-promote-cutover-fence-migration",
+                    "command-promote-cutover-fence-migration",
+                    "unix-ms:4",
+                ),
+            )
+            .expect("initial promotion");
+        std::fs::remove_file(company_root.join(WORK_CUTOVER_FENCES_LEDGER))
+            .expect("simulate a pre-fence migrated store");
+        let report = store
+            .work_cutover_report(&company_store)
+            .expect("legacy migration report");
+        assert!(!report.valid);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == harness_core::WorkCutoverIssueKind::MissingCompanyWorkItemFence
+        }));
+
+        let unchanged = HarnessStore::new(&root)
+            .promote_work_to_team_scope(
+                &HarnessStore::new(&company_root),
+                &promoted.id,
+                promoted.version,
+                host_work_context(
+                    "event-repair-cutover-fence-migration",
+                    "command-repair-cutover-fence-migration",
+                    "unix-ms:5",
+                ),
+            )
+            .expect("migration repair installs fence from existing promotion provenance");
+        assert_eq!(unchanged, promoted);
+        assert_eq!(store.work_events().unwrap().len(), 2);
+        assert_eq!(company_store.work_cutover_fences().unwrap().len(), 1);
+        assert!(
+            store
+                .work_cutover_report(&company_store)
+                .expect("repaired migration report")
+                .valid
+        );
+
+        std::fs::remove_dir_all(root).expect("remove Execution Store");
+        std::fs::remove_dir_all(company_root).expect("remove Company Store");
     }
 
     #[test]

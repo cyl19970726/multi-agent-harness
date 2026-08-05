@@ -32,9 +32,10 @@ Native Session = execution transcript, tools, commands, and turn truth
 The product name is **Works**. `Work` is the provider-neutral Agent Team
 responsibility contract. Company `WorkItem` remains a separate
 business-governance object. A `source_work_item_ref` may link one Company
-WorkItem to one or more Agent Team Works, but Work status never silently
-mutates WorkItem responsibility, approval, finance, or closure. Shared names
-are a semantic mapping, not storage inheritance.
+WorkItem to compatibility Agent Team Works, but durable Team-scope promotion
+requires exactly one linked Work. Work status never silently mutates WorkItem
+responsibility, approval, finance, or closure. Shared names are a semantic
+mapping, not storage inheritance.
 
 ## Why Work Is Not A Message
 
@@ -129,6 +130,18 @@ physical transaction with the same atomic meaning. Delivery claim/receipt
 updates that occur after the command are ordered deltas folded with the
 operation rows, not a replacement source of Work state.
 
+`team_id` and `created_by_member_id` are monotonic provenance once established.
+A current writer must refuse a WorkOperation that drops or changes either
+value. When a historical mixed-version writer omitted an unknown field from a
+later complete projection, the reducer carries the last established value
+forward from ordered WorkOperations; it never edits or hides the raw sparse
+row. The next ordinary versioned Work transition writes the recovered values
+back into a new complete WorkOperation. When no semantic lifecycle transition
+is appropriate, the Host uses `team-run work reconcile-projection --work-id
+<id> --expected-version <latest>` to append an `Updated` repair operation that
+changes only the recovered projection and version. This gives affected live
+stores an honest reconciliation path without rewriting ledger evidence.
+
 ```text
 WorkEvent
   event_id
@@ -160,6 +173,53 @@ Host or Member schedules directly.
 `(work_event_id, recipient_member_run_id)` identifies one delivery. Readiness
 is derived from the latest prerequisite Works. A readiness change does not
 append a synthetic event or increment the dependent Work's version.
+
+### Company WorkItem cutover fence
+
+A source-linked Work crosses two physical JSONL Stores, so the implementation
+does **not** claim a physical cross-store transaction. It uses a one-way
+refusal protocol that prevents two mutable responsibility authorities:
+
+```text
+acquire Company Store + Execution Store locks in canonical path order
+  -> re-read Work, TeamRun, Company WorkItem, prior fences, and source links
+  -> require the Company WorkItem to be draft/completed/cancelled/archived
+  -> append + fsync WorkCutoverFence in the Company Store
+  -> append + fsync the TeamScopePromoted WorkOperation in the Execution Store
+  -> release both locks
+```
+
+`WorkCutoverFence` records the Company WorkItem id and full retired snapshot,
+the target Work and AgentTeam, and the intended promotion event, expected Work
+version, idempotency key, and timestamp. Every Company WorkItem write takes the
+same Company Store lock and refuses any later revision of a fenced id. Approval
+and Finance remain separate ledgers and are not frozen or implicitly approved.
+
+The append order is the safety property:
+
+- before the fence, the source is terminal at the validated snapshot but can
+  still be revised, while the compatibility Work remains TeamRun-scoped;
+- after the fence but before the promotion WorkOperation, the Company WorkItem
+  is immutable and the compatibility Work may continue to advance;
+- after the WorkOperation, only the Team-scoped Work is mutable authority.
+
+A crash after the fence therefore leaves an incomplete but unambiguous
+migration. If Work did not advance, restart with the same command identity
+reuses the matching fence and appends exactly one WorkOperation. If it did
+advance, the Host refreshes the Work version and retries; the original fence
+remains the immutable migration intent and the later `TeamScopePromoted` event
+completes it. A conflicting target fence, changed source snapshot, active
+source, duplicate persistent source link, or stale expected version is refused.
+The cutover report acquires the same pair of locks and verifies the full source
+snapshot, fence, completing promotion event, Team scope, and duplicate-link
+invariants as one stable read. Direct/manual ledger mutation is corruption and
+makes the report invalid.
+
+Stores promoted before this fence existed are explicitly unverifiable until
+repaired. Re-running promotion at the current Work version may install the
+missing Company fence only when the existing `TeamScopePromoted` event and a
+still-retired source prove the migration relation; it does not invent another
+Work event or change Work version.
 
 ## Status And Readiness
 
@@ -475,6 +535,15 @@ must reconcile any claimed/provider-received delivery first. Member-side Work
 transitions (`start`, `block`, `resume`, `submit`) require active coordination:
 the store rejects them for a Closed or Retired MemberRun until an explicit
 Reopen, so a frozen mailbox cannot be paired with a live-looking Work board.
+
+When reviewed recovery retains the same durable `MemberRun` id but appends a
+higher `runtime_generation`, `WorkRebound` is still required: the Work version
+must fence the prior generation and a fresh WorkDelivery must target the
+replacement generation even though `active_member_run_id` is textually
+unchanged. The Store accepts this only when ordered MemberRun revisions prove a
+terminal lower generation followed by an available higher generation whose
+start postdates the current Work revision, and it records both generation
+numbers in the rebound payload. The same generation cannot rebound twice.
 
 ## Child Delegation And Organization
 
