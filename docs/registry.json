@@ -597,7 +597,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -641,7 +641,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
@@ -680,7 +680,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -731,7 +731,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -777,7 +777,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -816,7 +816,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -856,7 +856,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "https://developers.openai.com/codex/app-server",
     "https://developers.openai.com/codex/hooks",
@@ -898,7 +898,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "cargo test -p harness-cli",
     "npx pnpm@9.15.4 check",
@@ -943,7 +943,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "https://code.claude.com/docs",
     "cargo test -p harness-cli",
@@ -1076,7 +1076,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check"
    ],
@@ -1110,7 +1110,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -1185,7 +1185,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -1250,7 +1250,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "npx pnpm@9.15.4 check",
     "harness governance check"
@@ -1578,7 +1578,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "cargo test -p harness-cli",
     "npx pnpm@9.15.4 check",
@@ -1619,7 +1619,7 @@
     "check-doc-links",
     "check-doc-governance"
    ],
-   "reviewAfter": "2026-08-03",
+   "reviewAfter": "2026-09-03",
    "lastVerifiedWith": [
     "cargo test -p harness-cli",
     "npx pnpm@9.15.4 acceptance:mission-wave",
