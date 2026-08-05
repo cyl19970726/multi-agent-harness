@@ -1,8 +1,16 @@
-//! End-to-end acceptance for the additive Mission/Wave control plane.
+//! End-to-end acceptance for the Mission control plane, including the
+//! ADR 0051 Mission Log cutover: Mission absorbs Wave as an append-only
+//! judgment log, Wave write commands (`create`/`update`/`advance`/`gate`)
+//! retire on every surface (CLI, HTTP, MCP), and `wave list`/`show`/`history`
+//! remain historical reads only.
 //!
 //! This deliberately exercises the public CLI and HTTP surfaces rather than
-//! constructing core objects directly: Wave attempt registration, the gate,
-//! and snapshot projections must agree across the surfaces a Host uses.
+//! constructing core objects directly: Mission Log revisions, TeamRun retry
+//! lineage, and snapshot projections must agree across the surfaces a Host
+//! uses. Historical Wave rows are seeded directly via `seed_historical_wave`
+//! (the only way a Wave can exist post-cutover) rather than through the
+//! retired `wave create`, so tests can still prove reads and Wave-id
+//! citation/validation keep working against pre-cutover data.
 
 use std::time::{Duration, Instant};
 
@@ -1518,4 +1526,248 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
         body["error"].as_str().unwrap_or_default().contains("retired"),
         "body: {body}"
     );
+}
+
+/// `mission log append`/`show` CLI happy path, focused purely on the Mission
+/// Log surface itself (revision monotonicity, --tail, plain-text vs --json,
+/// the "no mission log yet" sentinel, and CLI-side empty-body rejection) --
+/// the other tests in this file exercise it woven into larger scenarios,
+/// this one is the dedicated coverage the ADR 0051 cutover asked for.
+#[test]
+fn mission_log_cli_append_and_show_happy_path() {
+    let home = TempHome::new("mission-log-cli-happy-path");
+    let project_id = init_project(&home, "alpha");
+
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-log-happy",
+            "--title",
+            "Mission Log happy path",
+            "--objective",
+            "Prove append/show end to end",
+            "--json",
+        ],
+    );
+
+    // A fresh Mission with no entries shows the explicit sentinel in text
+    // mode, not an empty line or an error.
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-log-happy",
+        ],
+    );
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "no mission log yet"
+    );
+
+    // Empty (whitespace-only) body is rejected before anything is appended.
+    let empty_body = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "judgment",
+            "--body",
+            "   ",
+        ],
+    );
+    assert!(!empty_body.status.success());
+    assert!(String::from_utf8_lossy(&empty_body.stderr).contains("body must not be empty"));
+
+    // Unknown --kind is rejected with the exact accepted set named.
+    let bad_kind = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "narration",
+            "--body",
+            "not a real kind",
+        ],
+    );
+    assert!(!bad_kind.status.success());
+    assert!(String::from_utf8_lossy(&bad_kind.stderr)
+        .contains("judgment|replan|recovery|closeout_evidence"));
+
+    for (kind, body, actor) in [
+        ("judgment", "First judgment.", None),
+        ("replan", "Re-planned after review.", Some("operator-a")),
+        ("recovery", "Recovered after a supervisor death.", None),
+        ("closeout_evidence", "Everything verified; closing.", Some("host")),
+    ] {
+        let mut args = vec![
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            kind,
+            "--body",
+            body,
+        ];
+        if let Some(actor) = actor {
+            args.push("--actor");
+            args.push(actor);
+        }
+        args.push("--json");
+        run_json(&home, &project_id, &args);
+    }
+
+    // --json show: full ordered history, correct kinds, default actor "host"
+    // when --actor was not supplied.
+    let all_json = run_json(
+        &home,
+        &project_id,
+        &["mission", "log", "show", "--mission-id", "mission-log-happy", "--json"],
+    );
+    let all_json = all_json.as_array().expect("entries array");
+    assert_eq!(all_json.len(), 4);
+    assert_eq!(
+        all_json
+            .iter()
+            .map(|entry| entry["revision"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert_eq!(
+        all_json
+            .iter()
+            .map(|entry| entry["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["judgment", "replan", "recovery", "closeout_evidence"]
+    );
+    assert_eq!(all_json[0]["actor"].as_str(), Some("host"));
+    assert_eq!(all_json[1]["actor"].as_str(), Some("operator-a"));
+
+    // --tail 2 in --json mode: last two only, oldest-of-the-tail first.
+    let tail_json = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-log-happy",
+            "--tail",
+            "2",
+            "--json",
+        ],
+    );
+    let tail_json = tail_json.as_array().expect("tail entries array");
+    assert_eq!(
+        tail_json
+            .iter()
+            .map(|entry| entry["revision"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+
+    // Plain-text show (no --json): every body appears, in revision order.
+    let text_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-log-happy",
+        ],
+    );
+    assert!(text_out.status.success());
+    let text = String::from_utf8_lossy(&text_out.stdout).to_string();
+    let first_pos = text.find("First judgment.").expect("revision 1 body");
+    let replan_pos = text.find("Re-planned after review.").expect("revision 2 body");
+    let recovery_pos = text
+        .find("Recovered after a supervisor death.")
+        .expect("revision 3 body");
+    let closeout_pos = text
+        .find("Everything verified; closing.")
+        .expect("revision 4 body");
+    assert!(
+        first_pos < replan_pos && replan_pos < recovery_pos && recovery_pos < closeout_pos,
+        "plain-text show must render entries in revision order: {text}"
+    );
+    assert!(text.contains("[judgment]"), "text: {text}");
+    assert!(text.contains("[closeout_evidence]"), "text: {text}");
+
+    // A non-JSON append prints a terse summary line, not the full entry.
+    let terse_append = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-happy",
+            "--kind",
+            "judgment",
+            "--body",
+            "Fifth entry, terse output.",
+        ],
+    );
+    assert!(terse_append.status.success());
+    let terse_stdout = String::from_utf8_lossy(&terse_append.stdout);
+    assert_eq!(
+        terse_stdout.trim(),
+        "mission-log-happy\t#5\tjudgment"
+    );
+
+    // Appending against a Mission that does not exist fails clearly instead
+    // of silently creating an orphaned Log row.
+    let missing_mission = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-log-does-not-exist",
+            "--kind",
+            "judgment",
+            "--body",
+            "orphan",
+        ],
+    );
+    assert!(!missing_mission.status.success());
+    assert!(String::from_utf8_lossy(&missing_mission.stderr).contains("mission not found"));
 }
