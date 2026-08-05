@@ -56,6 +56,7 @@ mod resident;
 #[cfg(unix)]
 mod resident_daemon;
 mod sse;
+mod supervisor_wake;
 mod workflow;
 
 #[derive(Debug, Error)]
@@ -15401,6 +15402,7 @@ enum IdleMemberWake {
     Messages(Vec<TeamMessage>),
     Closed,
     TestRetired,
+    Degraded(String),
 }
 
 #[derive(Clone, Copy)]
@@ -16595,11 +16597,16 @@ fn stop_member_for_latched_close(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wait_for_idle_member_wake(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
     controls: &ControlReceiver<MemberControlCommand>,
     mut ensure_transport_alive: impl FnMut() -> CliResult<()>,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+    policy: &supervisor_wake::WakePolicy,
+    backoff: &mut supervisor_wake::WakeBackoff,
 ) -> CliResult<IdleMemberWake> {
     let idle_since = Instant::now();
     loop {
@@ -16681,43 +16688,182 @@ fn wait_for_idle_member_wake(
                 route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
             }
         }
-        if let Some(claimed) = ledger.claim_next_work_for(&member_row.id)? {
-            member_row.status = MemberRunStatus::Running;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(member_row)?;
-            return Ok(IdleMemberWake::Work(Box::new(claimed)));
-        }
-        // The deterministic idle-grace harness intentionally retires fake
-        // providers after one turn. Production runtimes have no such grace
-        // and continue active Work until its durable state changes.
-        if member_supervisor_test_idle_grace().is_none() {
-            if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
-                member_row.status = MemberRunStatus::Running;
+
+        // Build pure views from the store for the decision function.
+        let member_view = build_member_wake_view(
+            ledger,
+            member_row,
+            zero_output_streak,
+            last_consumed_work_version,
+        )?;
+        let board_view = build_board_wake_view(ledger, member_row)?;
+
+        let decision = supervisor_wake::decide_wake(&member_view, &board_view, policy, backoff);
+        match decision {
+            supervisor_wake::WakeDecision::DeliverPending => {
+                // Try work deliveries first (work contract prompt).
+                if let Some(claimed) = ledger.claim_next_work_for(&member_row.id)? {
+                    backoff.reset();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    return Ok(IdleMemberWake::Work(Box::new(claimed)));
+                }
+                // Then try active-work continuation.
+                if member_supervisor_test_idle_grace().is_none() {
+                    if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                        backoff.reset();
+                        member_row.status = MemberRunStatus::Running;
+                        member_row.finished_at = None;
+                        member_row.last_event_at = Some(now_string());
+                        ledger.save_member_run(member_row)?;
+                        return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                    }
+                }
+                // Then response-required messages.
+                let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                if !claimed.is_empty() {
+                    backoff.reset();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    return Ok(IdleMemberWake::Messages(claimed));
+                }
+                // DeliverPending predicted but nothing claimable — fall through to Sleep.
+            }
+            supervisor_wake::WakeDecision::Continue(_work_id) => {
+                // Active Work version changed → re-inject continuation.
+                if member_supervisor_test_idle_grace().is_none() {
+                    if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                        backoff.reset();
+                        member_row.status = MemberRunStatus::Running;
+                        member_row.finished_at = None;
+                        member_row.last_event_at = Some(now_string());
+                        ledger.save_member_run(member_row)?;
+                        return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                    }
+                }
+                // Work version changed but continuation candidate disappeared — fall through to Sleep.
+            }
+            supervisor_wake::WakeDecision::ClaimHint(_work_ids) => {
+                // Board-discovery hint for idle members: the wake is only a
+                // discovery hint; ownership starts at the atomic claim.
+                // Inject a lightweight prompt so the member can discover and
+                // claim eligible Works.
+                if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                    backoff.reset();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                }
+            }
+            supervisor_wake::WakeDecision::Sleep(_duration) => {
+                if member_supervisor_test_idle_grace()
+                    .is_some_and(|grace| idle_since.elapsed() >= grace)
+                {
+                    return Ok(IdleMemberWake::TestRetired);
+                }
+                backoff.sleep_and_tick(policy);
+                continue;
+            }
+            supervisor_wake::WakeDecision::Degraded(reason) => {
+                // Mark the member blocked so continuation stops.
+                // The Host must intervene (message, steer, or recover).
+                member_row.status = MemberRunStatus::Blocked;
                 member_row.finished_at = None;
                 member_row.last_event_at = Some(now_string());
                 ledger.save_member_run(member_row)?;
-                return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                ledger.append_action(
+                    &member_row.id,
+                    "degraded",
+                    MemberActionStatus::Failed,
+                    "member degraded — zero-output spiral",
+                    &reason,
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Member,
+                    Some(member_row.id.clone()),
+                    "member_run",
+                    &member_row.id,
+                    "degraded",
+                    &format!("member {} degraded: {reason}", member_row.name),
+                )?;
+                return Ok(IdleMemberWake::Degraded(reason));
             }
         }
-        // Response-intent gate (ADR 0046 §4): informational or
-        // acknowledgement-only mail stays durable and queued but never wakes
-        // an idle member into a new provider round. When response-required
-        // mail triggers a round, the whole queued batch is claimed so every
-        // message is delivered exactly once with that round's receipt.
-        let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
-        if !claimed.is_empty() {
-            member_row.status = MemberRunStatus::Running;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(member_row)?;
-            return Ok(IdleMemberWake::Messages(claimed));
-        }
-        if member_supervisor_test_idle_grace().is_some_and(|grace| idle_since.elapsed() >= grace) {
-            return Ok(IdleMemberWake::TestRetired);
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Build a pure `MemberWakeView` from store reads.
+fn build_member_wake_view(
+    ledger: &TeamRunLedger,
+    member_row: &MemberRun,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+) -> CliResult<supervisor_wake::MemberWakeView> {
+    let is_idle = matches!(member_row.status, MemberRunStatus::Idle);
+
+    let all_works = ledger.store.latest_works()?;
+    let active_work = all_works.iter().find(|work| {
+        work.team_run_id == ledger.run_id
+            && is_active_work_continuation_candidate(work, &member_row.id, &all_works)
+    });
+
+    let delivery_count = ledger.queued_works_for(&member_row.id)?.len() as u32;
+
+    let message_count = ledger
+        .queued_messages_for(&member_row.id)?
+        .iter()
+        .filter(|message| message.requires_response())
+        .count() as u32;
+
+    Ok(supervisor_wake::MemberWakeView {
+        member_id: member_row.id.clone(),
+        status: member_row.status,
+        is_idle,
+        active_work_id: active_work.map(|work| work.id.clone()),
+        active_work_version: active_work.map(|work| work.version),
+        last_consumed_work_version,
+        unconsumed_delivery_count: delivery_count,
+        unconsumed_message_count: message_count,
+        zero_output_streak,
+    })
+}
+
+/// Build a pure `BoardWakeView` from store reads.
+fn build_board_wake_view(
+    ledger: &TeamRunLedger,
+    member_row: &MemberRun,
+) -> CliResult<supervisor_wake::BoardWakeView> {
+    let all_works = ledger.store.latest_works()?;
+    let stable_member_id = member_row
+        .agent_member_id
+        .as_deref()
+        .or(member_row.slot_id.as_deref())
+        .unwrap_or(member_row.id.as_str());
+    let eligible_claim_work_ids: Vec<String> = all_works
+        .iter()
+        .filter(|work| {
+            work.team_run_id == ledger.run_id
+                && work.status == harness_core::WorkStatus::Open
+                && work.owner_member_id.is_none()
+                && work.claim_mode == harness_core::WorkClaimMode::TeamClaim
+                && work.prerequisites_satisfied(all_works.iter())
+                && (work.eligible_member_ids.is_empty()
+                    || work
+                        .eligible_member_ids
+                        .iter()
+                        .any(|eligible| eligible == stable_member_id))
+        })
+        .map(|work| work.id.clone())
+        .collect();
+    Ok(supervisor_wake::BoardWakeView {
+        eligible_claim_work_ids,
+    })
 }
 
 /// Terminal outcome of one member's orchestration, for the run summary.
@@ -17440,10 +17586,24 @@ fn run_codex_member(
     let mut active_work: Option<ClaimedWork> = None;
     let mut active_assignment: Option<TeamMessage> = None;
     let mut final_summary = String::new();
-    match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-        ledger.require_supervisor_lease()?;
-        app_server.ensure_transport_alive()
-    })? {
+    // Supervisor wake-policy tracking.
+    let wake_policy = supervisor_wake::WakePolicy::default();
+    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
+    let zero_output_streak: u32 = 0;
+    let last_consumed_work_version: Option<u64> = None;
+    match wait_for_idle_member_wake(
+        ledger,
+        &mut member_row,
+        &live_control,
+        || {
+            ledger.require_supervisor_lease()?;
+            app_server.ensure_transport_alive()
+        },
+        zero_output_streak,
+        last_consumed_work_version,
+        &wake_policy,
+        &mut wake_backoff,
+    )? {
         IdleMemberWake::Work(claimed) => {
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
@@ -17497,6 +17657,13 @@ fn run_codex_member(
                 &member_row,
                 MemberRunStatus::Idle,
                 "Codex member test runtime retired while idle".to_string(),
+            ));
+        }
+        IdleMemberWake::Degraded(reason) => {
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Blocked,
+                format!("Codex member degraded: {reason}"),
             ));
         }
     }
@@ -17640,11 +17807,21 @@ fn run_codex_member(
             final_summary = round_summary;
         }
 
-        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            app_server.ensure_transport_alive()
-        })? {
+        match wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                app_server.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )? {
             IdleMemberWake::Work(claimed) => {
+                wake_backoff.reset();
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -17703,6 +17880,13 @@ fn run_codex_member(
                     &member_row,
                     MemberRunStatus::Idle,
                     final_summary,
+                ));
+            }
+            IdleMemberWake::Degraded(reason) => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Blocked,
+                    format!("Codex member degraded: {reason}"),
                 ));
             }
         }
@@ -19731,6 +19915,11 @@ fn run_kimi_member(
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
     let mut final_summary = String::new();
+    // Supervisor wake-policy tracking.
+    let wake_policy = supervisor_wake::WakePolicy::default();
+    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
+    let zero_output_streak: u32 = 0;
+    let last_consumed_work_version: Option<u64> = None;
     let initial_wake = if resumed_native_session {
         ledger
             .interrupted_active_work_for(&member_row.id)?
@@ -19766,10 +19955,19 @@ fn run_kimi_member(
     }
     let wake = match initial_wake {
         Some(wake) => wake,
-        None => wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            client.ensure_transport_alive()
-        })?,
+        None => wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                client.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )?,
     };
     match wake {
         IdleMemberWake::Work(claimed) => {
@@ -19834,6 +20032,14 @@ fn run_kimi_member(
                 &member_row,
                 MemberRunStatus::Idle,
                 "Kimi member test runtime retired while idle".to_string(),
+            ));
+        }
+        IdleMemberWake::Degraded(reason) => {
+            client.shutdown();
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Blocked,
+                format!("Kimi member degraded: {reason}"),
             ));
         }
     }
@@ -20041,11 +20247,21 @@ fn run_kimi_member(
             final_summary = summary;
         }
 
-        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            client.ensure_transport_alive()
-        })? {
+        match wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                client.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )? {
             IdleMemberWake::Work(claimed) => {
+                wake_backoff.reset();
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -20104,6 +20320,14 @@ fn run_kimi_member(
                     &member_row,
                     MemberRunStatus::Idle,
                     final_summary,
+                ));
+            }
+            IdleMemberWake::Degraded(reason) => {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Blocked,
+                    format!("Kimi member degraded: {reason}"),
                 ));
             }
         }
