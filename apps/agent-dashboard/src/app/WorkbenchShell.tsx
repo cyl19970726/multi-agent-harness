@@ -128,7 +128,6 @@ const mobileMoreGroups = navigationGroups.slice(1);
 /**
  * Surfaces reachable in code but intentionally off the primary rail:
  * - agent detail: the Agents surface with a selected agent (?agent=<id>)
- * - goal / task: drill-in detail views reached by selecting an object
  * - debug: moved behind a TopBar button
  */
 

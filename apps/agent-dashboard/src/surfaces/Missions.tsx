@@ -247,11 +247,9 @@ export function MissionsSurface({
   onAction,
 }: MissionsProps) {
   const [createOpen, setCreateOpen] = useState(false);
-  const missions = [...(model.snapshot.missions ?? [])]
-    .filter((mission) => !mission.id.startsWith("compat-goal:"))
-    .sort((a, b) =>
-      (b.updated_at ?? b.created_at ?? "").localeCompare(a.updated_at ?? a.created_at ?? ""),
-    );
+  const missions = [...(model.snapshot.missions ?? [])].sort((a, b) =>
+    (b.updated_at ?? b.created_at ?? "").localeCompare(a.updated_at ?? a.created_at ?? ""),
+  );
   const selected = missions.find((mission) => mission.id === missionId);
 
   if (selected) {

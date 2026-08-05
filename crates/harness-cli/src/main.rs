@@ -9279,8 +9279,7 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Create one native Mission. Compatibility Mission projections are read-only,
-/// so native ids are checked only against the native ledger.
+/// Create one native Mission.
 pub(crate) fn create_mission(
     store: &HarnessStore,
     id: Option<String>,
@@ -9292,12 +9291,6 @@ pub(crate) fn create_mission(
     let id = id.unwrap_or_else(|| generated_id("mission"));
     if id.trim().is_empty() {
         return Err(CliError::Usage("mission id must not be empty".to_string()));
-    }
-    if id.starts_with("compat-goal:") {
-        return Err(CliError::Usage(
-            "mission ids beginning with `compat-goal:` are reserved for read-only Goal projections"
-                .to_string(),
-        ));
     }
     if title.trim().is_empty() || objective.trim().is_empty() {
         return Err(CliError::Usage(
@@ -24335,8 +24328,7 @@ pub(crate) fn resolve_pending_interaction_value(
     serde_json::to_value(resolved).map_err(CliError::Json)
 }
 
-/// POST /v1/missions — create native Mission intent. Goal compatibility
-/// projections are read-only and intentionally have no creation endpoint.
+/// POST /v1/missions — create native Mission intent from the JSON body.
 fn create_mission_value(
     store: &HarnessStore,
     body: &serde_json::Value,
@@ -24581,9 +24573,9 @@ fn create_message_value(
 //
 // These functions own the *persistence + event* logic for creating each core
 // entity, so the CLI command arms and the HTTP create routes (POST /v1/teams,
-// /agents, /goals, /tasks[+assign]) share one implementation. The CLI builds
-// the struct from `--flag` args; the HTTP value-fns below build the same struct
-// from a JSON body. Both then call these helpers, so behaviour cannot diverge.
+// /agents) share one implementation. The CLI builds the struct from `--flag`
+// args; the HTTP value-fns below build the same struct from a JSON body. Both
+// then call these helpers, so behaviour cannot diverge.
 // ---------------------------------------------------------------------------
 
 /// Persist a freshly-built team. Mirrors the `team create` CLI arm.
@@ -24617,7 +24609,7 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
     Ok(())
 }
 
-/// Persist a freshly-built goal. Mirrors the `goal create` CLI arm.
+/// Persist a freshly-built Agent Member. Mirrors the `agent create` CLI arm.
 fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
     if latest_members(store)?.contains_key(&member.id) {
         return Err(CliError::Usage(format!(
@@ -24970,7 +24962,7 @@ fn create_agent_value(
     Ok(serde_json::to_value(member)?)
 }
 
-/// POST /v1/goals — build a goal from the JSON body and persist it.
+/// Build an Agent Member from a POST /v1/agents JSON body (see `create_agent_value`).
 fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
     Ok(AgentMember {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("agent")),
