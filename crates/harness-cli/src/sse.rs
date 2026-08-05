@@ -89,6 +89,9 @@ struct SseClient {
     sender: Sender<SseEventFrame>,
 }
 
+type InvalidationKey = (String, String, String);
+type InvalidationRevisionMap = Arc<Mutex<HashMap<InvalidationKey, u64>>>;
+
 /// Manages SSE client subscriptions and broadcasts, keyed by project id
 /// (goal-multi-project P6). Each project has its own list of client senders, so a
 /// frame appended to project A's store is only delivered to clients subscribed to A
@@ -99,7 +102,7 @@ pub struct SseManager {
     // independent filter on each subscriber; Company truth never becomes an
     // Execution-Space ledger merely because both are composed in one snapshot.
     clients: Arc<Mutex<HashMap<String, Vec<SseClient>>>>,
-    invalidation_revisions: Arc<Mutex<HashMap<(String, String, String), u64>>>,
+    invalidation_revisions: InvalidationRevisionMap,
     stream_epoch: Arc<String>,
 }
 
@@ -450,12 +453,15 @@ fn company_ledger_names(store_root: &Path) -> Vec<String> {
 fn company_ledger_names_with_known(
     store_root: &Path,
     company_id: &str,
-    states: &HashMap<(String, String, String), InvalidationFileState>,
+    states: &HashMap<InvalidationKey, InvalidationFileState>,
 ) -> Vec<String> {
     let mut names = company_ledger_names(store_root);
-    names.extend(states.keys().filter_map(|(scope, scope_id, ledger)| {
-        (scope == "company" && scope_id == company_id).then(|| ledger.clone())
-    }));
+    names.extend(
+        states
+            .keys()
+            .filter(|key| key.0 == "company" && key.1 == company_id)
+            .map(|key| key.2.clone()),
+    );
     names.sort();
     names.dedup();
     names

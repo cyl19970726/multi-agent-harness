@@ -553,7 +553,7 @@ pub enum HostAuthorityError {
 pub fn compat_host_member_id(team: &AgentTeam) -> Result<Option<&str>, HostAuthorityError> {
     let owner = team.owner_agent_id.trim();
     match team.host_member_id.as_deref().map(str::trim) {
-        Some(host) if host.is_empty() => Err(HostAuthorityError::Missing {
+        Some("") => Err(HostAuthorityError::Missing {
             team_id: team.id.clone(),
         }),
         Some(host) if owner == "host" || owner == host => Ok(Some(host)),
