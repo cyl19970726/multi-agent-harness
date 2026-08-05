@@ -13254,10 +13254,7 @@ fn team_run_recover(
         .filter(|delivery| delivery.team_run_id == team_run_id)
         .collect();
     let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
-    let supervisor_current = supervisor.as_ref().is_some_and(|lease| {
-        lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-            && lease.expires_unix_ms > current_unix_ms_u64()
-    });
+    let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
 
     // Mandatory reader: Mission Log tail (ADR 0051). This must remain before
     // provider probing or any recovery mutation so a recovering Host re-reads
@@ -13325,6 +13322,20 @@ fn team_run_recover(
                 .unwrap_or_else(|| "none".to_string()),
             supervisor_current
         );
+        if !supervisor_current {
+            let ready = works
+                .iter()
+                .filter(|work| work.is_claim_ready(&works))
+                .count();
+            let diagnosis = match supervisor.as_ref() {
+                Some(lease) => supervisor_lease_live_diagnosis(lease).1,
+                None => "no lease".to_string(),
+            };
+            eprintln!(
+                "[WARNING] no live supervisor: {}. {} ready work(s) undelivered. Run: harness team-run start --id {}",
+                diagnosis, ready, team_run_id
+            );
+        }
         let (open, done, cancelled) = (
             works.iter().filter(|w| !w.is_terminal()).count(),
             works
@@ -13573,10 +13584,24 @@ fn team_run_recover(
         }
     }
 
+    let supervisor_diagnosis = supervisor.as_ref().map(|lease| {
+        let (live, diagnosis) = supervisor_lease_live_diagnosis(lease);
+        let heartbeat_age_s = current_unix_ms_u64().saturating_sub(lease.heartbeat_unix_ms) / 1000;
+        serde_json::json!({
+            "live": live,
+            "diagnosis": diagnosis,
+            "owner_process_id": lease.owner_process_id,
+            "owner_pid_alive": pid_exists_libc(lease.owner_process_id),
+            "heartbeat_unix_ms": lease.heartbeat_unix_ms,
+            "heartbeat_age_s": heartbeat_age_s,
+            "expires_unix_ms": lease.expires_unix_ms,
+        })
+    });
     let report = serde_json::json!({
         "team_run_id": team_run_id,
         "status": serde_snake_label(&run.status),
         "supervisor_current": supervisor_current,
+        "supervisor_diagnosis": supervisor_diagnosis,
         "members": members.len(),
         "works_total": works.len(),
         "reconciled_deliveries": reconciled,
@@ -14015,6 +14040,38 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
             member.name,
             member_board_state(member, owned)
         ));
+    }
+    let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
+    match supervisor {
+        Some(ref lease) => {
+            let supervisor_current = is_supervisor_current(lease);
+            let pid_alive = pid_exists_libc(lease.owner_process_id);
+            let heartbeat_age_s =
+                current_unix_ms_u64().saturating_sub(lease.heartbeat_unix_ms) / 1000;
+            lines.push(format!(
+                "supervisor: gen={} pid={} alive={} hb_age={}s current={}",
+                lease.generation,
+                lease.owner_process_id,
+                pid_alive,
+                heartbeat_age_s,
+                supervisor_current
+            ));
+            if !supervisor_current || !pid_alive {
+                let ready = works.iter().filter(|w| w.is_claim_ready(&works)).count();
+                lines.push(format!(
+                    "[WARNING] no live supervisor: {} ready work(s) undelivered. Run: harness team-run start --id {}",
+                    ready, team_run_id
+                ));
+            }
+        }
+        None => {
+            lines.push("supervisor: none".to_string());
+            let ready = works.iter().filter(|w| w.is_claim_ready(&works)).count();
+            lines.push(format!(
+                "[WARNING] no supervisor lease. {} ready work(s) undelivered. Run: harness team-run start --id {}",
+                ready, team_run_id
+            ));
+        }
     }
     Ok(lines.join("\n"))
 }
@@ -14636,6 +14693,11 @@ fn team_run_command(
                 .collect();
             let actions = visible_member_actions_in_append_order(store)?;
             let messages = latest_team_messages_in_append_order(store)?;
+            let works: Vec<Work> = store
+                .latest_works()?
+                .into_iter()
+                .filter(|work| work.team_run_id == id)
+                .collect();
             let latest_action_of = |member_run_id: &str| {
                 actions
                     .iter()
@@ -14650,10 +14712,7 @@ fn team_run_command(
                 .filter(|message| has_actionable_delivered_manual_ack(message))
                 .count();
             let supervisor = store.latest_team_supervisor_lease(&id)?;
-            let supervisor_current = supervisor.as_ref().is_some_and(|lease| {
-                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                    && lease.expires_unix_ms > current_unix_ms_u64()
-            });
+            let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
             if json {
                 let members: Vec<serde_json::Value> = member_runs
                     .iter()
@@ -14672,6 +14731,18 @@ fn team_run_command(
                     "supervisor": {
                         "lease": supervisor,
                         "current": supervisor_current,
+                        "owner_pid_alive": supervisor
+                            .as_ref()
+                            .map(|lease| pid_exists_libc(lease.owner_process_id))
+                            .unwrap_or(false),
+                        "heartbeat_age_s": supervisor
+                            .as_ref()
+                            .map(|lease| {
+                                current_unix_ms_u64()
+                                    .saturating_sub(lease.heartbeat_unix_ms)
+                                    / 1000
+                            })
+                            .unwrap_or(0),
                     },
                 }))?;
                 if unacked_messages > 0 && run.host_thread_id.is_none() {
@@ -14715,15 +14786,43 @@ fn team_run_command(
                     );
                 }
                 match supervisor {
-                    Some(lease) => println!(
-                        "supervisor: {}\tgeneration={}\tstatus={}\tcurrent={}\texpires_unix_ms={}",
-                        lease.supervisor_id,
-                        lease.generation,
-                        serde_snake_label(&lease.status),
-                        supervisor_current,
-                        lease.expires_unix_ms
-                    ),
-                    None => println!("supervisor: none"),
+                    Some(lease) => {
+                        let pid_alive = pid_exists_libc(lease.owner_process_id);
+                        let heartbeat_age_s =
+                            current_unix_ms_u64().saturating_sub(lease.heartbeat_unix_ms) / 1000;
+                        println!(
+                            "supervisor: {}\tgen={}\tstatus={}\tcurrent={}\towner_pid={}\tpid_alive={}\thb_age={}s\texpires_unix_ms={}",
+                            lease.supervisor_id,
+                            lease.generation,
+                            serde_snake_label(&lease.status),
+                            supervisor_current,
+                            lease.owner_process_id,
+                            pid_alive,
+                            heartbeat_age_s,
+                            lease.expires_unix_ms
+                        );
+                        if !supervisor_current || !pid_alive {
+                            let ready = works
+                                .iter()
+                                .filter(|work| work.is_claim_ready(&works))
+                                .count();
+                            eprintln!(
+                                "[WARNING] no live supervisor: {} ready work(s) undelivered. Run: harness team-run start --id {}",
+                                ready, run.id
+                            );
+                        }
+                    }
+                    None => {
+                        println!("supervisor: none");
+                        let ready = works
+                            .iter()
+                            .filter(|work| work.is_claim_ready(&works))
+                            .count();
+                        eprintln!(
+                            "[WARNING] no supervisor lease. {} ready work(s) undelivered. Run: harness team-run start --id {}",
+                            ready, run.id
+                        );
+                    }
                 }
             }
         }
@@ -25368,10 +25467,7 @@ fn close_team_member_value(
 
     let live_lease = store
         .latest_team_supervisor_lease(team_run_id)?
-        .filter(|lease| {
-            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                && lease.expires_unix_ms > current_unix_ms_u64()
-        });
+        .filter(is_supervisor_current);
     // An external interactive member has no supervisor-owned runtime to
     // dispatch control to; closing it only records the terminal status.
     if live_lease.is_some() && !member.is_external_interactive() {
@@ -25483,10 +25579,7 @@ pub(crate) fn reopen_team_member_value(
         let external_interactive = member.is_external_interactive();
         let supervisor_current = store
             .latest_team_supervisor_lease(team_run_id)?
-            .is_some_and(|lease| {
-                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                    && lease.expires_unix_ms > current_unix_ms_u64()
-            });
+            .is_some_and(|lease| is_supervisor_current(&lease));
         return Ok(serde_json::json!({
             "member_run": member,
             "runtime_activation": if external_interactive {
@@ -25622,10 +25715,7 @@ pub(crate) fn reopen_team_member_value(
 
     let supervisor_current = store
         .latest_team_supervisor_lease(team_run_id)?
-        .is_some_and(|lease| {
-            lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                && lease.expires_unix_ms > current_unix_ms_u64()
-        });
+        .is_some_and(|lease| is_supervisor_current(&lease));
     Ok(serde_json::json!({
         "member_run": member,
         "runtime_activation": if external_interactive {
@@ -25666,10 +25756,7 @@ pub(crate) fn reopened_member_requires_supervisor_start(
         }
         let supervisor_current = store
             .latest_team_supervisor_lease(team_run_id)?
-            .is_some_and(|lease| {
-                lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                    && lease.expires_unix_ms > current_unix_ms_u64()
-            });
+            .is_some_and(|lease| is_supervisor_current(&lease));
         if !supervisor_current {
             return Ok(true);
         }
@@ -32706,6 +32793,42 @@ fn pid_exists_libc(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// Is the supervisor lease live — status Active, not expired, and owner PID exists.
+fn is_supervisor_current(lease: &harness_core::TeamSupervisorLease) -> bool {
+    // PID liveness is deliberately excluded here: this function gates
+    // control-plane decisions (close, reopen, recover-candidate) which
+    // must stay on lease expiry+status semantics.  PID-alive check lives
+    // in diagnostics (supervisor_lease_live_diagnosis, status output) and
+    // in the status warning condition separately.
+    lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+        && lease.expires_unix_ms > current_unix_ms_u64()
+}
+
+/// Returns (is_live, human-readable diagnosis). The diagnosis lists which of the
+/// three liveness checks failed, or "live" when all pass.
+fn supervisor_lease_live_diagnosis(lease: &harness_core::TeamSupervisorLease) -> (bool, String) {
+    let status_active = lease.status == harness_core::TeamSupervisorLeaseStatus::Active;
+    let not_expired = lease.expires_unix_ms > current_unix_ms_u64();
+    let pid_alive = pid_exists_libc(lease.owner_process_id);
+    let live = status_active && not_expired && pid_alive;
+    let mut reasons = Vec::new();
+    if !status_active {
+        reasons.push(format!("status={}", serde_snake_label(&lease.status)));
+    }
+    if !not_expired {
+        reasons.push("expired".to_string());
+    }
+    if !pid_alive {
+        reasons.push(format!("owner PID {} dead", lease.owner_process_id));
+    }
+    let diagnosis = if reasons.is_empty() {
+        "live".to_string()
+    } else {
+        reasons.join(", ")
+    };
+    (live, diagnosis)
 }
 
 fn kill_orphan_worker_group(pid: u32, pgid: u32) -> bool {
@@ -44788,6 +44911,144 @@ mod tests_team_run_recover {
             "expected Terminal, got {:?}",
             result
         );
+    }
+
+    // ── supervisor lease liveness helpers ─────────────────────────
+
+    fn make_lease(
+        status: harness_core::TeamSupervisorLeaseStatus,
+        expires_ms: u64,
+        pid: u32,
+    ) -> harness_core::TeamSupervisorLease {
+        harness_core::TeamSupervisorLease {
+            team_run_id: "tr-test".into(),
+            supervisor_id: "sv-test".into(),
+            generation: 1,
+            owner_process_id: pid,
+            owner_locator: "test".into(),
+            status,
+            acquired_unix_ms: 1,
+            heartbeat_unix_ms: 1,
+            expires_unix_ms: expires_ms,
+            released_unix_ms: None,
+        }
+    }
+
+    #[test]
+    fn diagnosis_live_lease() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now + 60_000,
+            std::process::id(),
+        );
+        let (live, diagnosis) = supervisor_lease_live_diagnosis(&lease);
+        assert!(live, "expected live, got diagnosis: {diagnosis}");
+        assert_eq!(diagnosis, "live");
+    }
+
+    #[test]
+    fn diagnosis_expired_lease() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now.saturating_sub(1), // expired
+            std::process::id(),
+        );
+        let (live, diagnosis) = supervisor_lease_live_diagnosis(&lease);
+        assert!(!live, "expected not live");
+        assert!(
+            diagnosis.contains("expired"),
+            "diagnosis should mention expired: {diagnosis}"
+        );
+    }
+
+    #[test]
+    fn diagnosis_released_status() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Released,
+            now + 60_000,
+            std::process::id(),
+        );
+        let (live, diagnosis) = supervisor_lease_live_diagnosis(&lease);
+        assert!(!live, "expected not live for Released status");
+        assert!(
+            diagnosis.contains("released"),
+            "diagnosis should mention released: {diagnosis}"
+        );
+    }
+
+    #[test]
+    fn diagnosis_dead_pid() {
+        let now = current_unix_ms_u64();
+        // PID 0 is treated as dead by pid_exists_libc
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now + 60_000,
+            0,
+        );
+        let (live, diagnosis) = supervisor_lease_live_diagnosis(&lease);
+        assert!(!live, "expected not live for PID 0");
+        assert!(
+            diagnosis.contains("PID"),
+            "diagnosis should mention PID: {diagnosis}"
+        );
+    }
+
+    #[test]
+    fn diagnosis_multiple_failures() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Released,
+            now.saturating_sub(1), // expired
+            0,                     // dead PID
+        );
+        let (live, diagnosis) = supervisor_lease_live_diagnosis(&lease);
+        assert!(!live);
+        // Should mention all three failures
+        assert!(
+            diagnosis.contains("released"),
+            "missing status: {diagnosis}"
+        );
+        assert!(
+            diagnosis.contains("expired"),
+            "missing expired: {diagnosis}"
+        );
+        assert!(diagnosis.contains("PID"), "missing PID: {diagnosis}");
+    }
+
+    #[test]
+    fn is_supervisor_current_live_process() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now + 60_000,
+            std::process::id(),
+        );
+        assert!(is_supervisor_current(&lease));
+    }
+
+    #[test]
+    fn is_supervisor_current_expired() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now.saturating_sub(1),
+            std::process::id(),
+        );
+        assert!(!is_supervisor_current(&lease));
+    }
+
+    #[test]
+    fn is_supervisor_current_released() {
+        let now = current_unix_ms_u64();
+        let lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Released,
+            now + 60_000,
+            std::process::id(),
+        );
+        assert!(!is_supervisor_current(&lease));
     }
 }
 
