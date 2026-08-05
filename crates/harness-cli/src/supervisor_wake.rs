@@ -98,8 +98,10 @@ impl Default for WakePolicy {
 /// 2. **Zero-output degradation** → member has hit the threshold → `Degraded`.
 /// 3. **Delivery/message pending** → `DeliverPending`.
 /// 4. **Active Work version changed** → `Continue`.
-/// 5. **Idle + eligible team_claim Works** → `ClaimHint`.
-/// 6. **No predicate matches** → `Sleep` with exponential backoff.
+/// 5. **Zero-output probation + active Work** → one bounded continuation so
+///    the threshold can be observed instead of stalling after the first turn.
+/// 6. **Idle + eligible team_claim Works** → `ClaimHint`.
+/// 7. **No predicate matches** → `Sleep` with exponential backoff.
 ///
 /// Never wakes for Work in review/blocked/done/cancelled status.
 pub fn decide_wake(
@@ -139,12 +141,21 @@ pub fn decide_wake(
         }
     }
 
-    // 5. Idle + eligible ready team_claim Works → board-discovery hint.
+    // 5. A degradation threshold greater than one requires bounded probation
+    // turns. Without this predicate, the first empty provider turn would have
+    // no state-change wake and could never reach the configured threshold.
+    if member.zero_output_streak > 0 {
+        if let Some(active_id) = member.active_work_id.as_ref() {
+            return WakeDecision::Continue(active_id.clone());
+        }
+    }
+
+    // 6. Idle + eligible ready team_claim Works → board-discovery hint.
     if member.is_idle && !board.eligible_claim_work_ids.is_empty() {
         return WakeDecision::ClaimHint(board.eligible_claim_work_ids.clone());
     }
 
-    // 6. No predicate matches → sleep with exponential backoff.
+    // 7. No predicate matches → sleep with exponential backoff.
     WakeDecision::Sleep(backoff.current_duration(policy))
 }
 
@@ -394,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_output_streak_below_threshold_does_not_degrade() {
+    fn zero_output_streak_below_threshold_retries_active_work() {
         let policy = WakePolicy {
             zero_output_degradation_threshold: 3,
             ..WakePolicy::default()
@@ -411,10 +422,7 @@ mod tests {
         let board = board_view(&[]);
         let backoff = fresh_backoff();
         let decision = decide_wake(&member, &board, &policy, &backoff);
-        assert!(
-            matches!(decision, WakeDecision::Sleep(_)),
-            "2 zero-output turns below threshold of 3 should Sleep, got {decision:?}"
-        );
+        assert_eq!(decision, WakeDecision::Continue("work-1".into()));
     }
 
     #[test]

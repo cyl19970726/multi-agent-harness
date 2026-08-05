@@ -5926,7 +5926,30 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
 
     let mut stopped = None;
     let mut last_snapshot = serde_json::Value::Null;
+    let mut post_reset_nudge_sent = false;
     for _ in 0..500 {
+        // Predicate-gated wake intentionally sleeps after round 3 produces a
+        // real report without changing Work. One explicit Host nudge starts
+        // the next empty sequence; the bounded zero-output probation then
+        // drives rounds 5/6 to the circuit threshold without fixed polling.
+        if !post_reset_nudge_sent
+            && std::fs::read_to_string(&prompts)
+                .ok()
+                .is_some_and(|content| content.lines().count() >= 3)
+        {
+            let (status, nudge) = serve.post_json(
+                &format!("/v1/team-runs/{run_id}/messages"),
+                &serde_json::json!({
+                    "from_member_id": "host",
+                    "to_member_ids": [member_id],
+                    "kind": "message",
+                    "response_intent": "response_required",
+                    "body": "Continue the active lane after the productive reset round",
+                }),
+            );
+            assert_eq!(status, 200, "body: {nudge}");
+            post_reset_nudge_sent = true;
+        }
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         last_snapshot = snapshot.clone();
         stopped = snapshot["member_actions"]

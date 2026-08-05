@@ -20568,7 +20568,7 @@ fn run_kimi_member(
     // Supervisor wake-policy tracking.
     let wake_policy = supervisor_wake::WakePolicy::default();
     let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let zero_output_streak: u32 = 0;
+    let mut zero_output_streak: u32 = 0;
     let last_consumed_work_version: Option<u64> = None;
     let initial_wake = if resumed_native_session {
         ledger
@@ -20907,9 +20907,10 @@ fn run_kimi_member(
             )?;
             final_summary = summary;
 
-            if let Some(kind) =
-                unproductive_rounds.observe(&final_text, outcome.provider_error.as_deref())
-            {
+            let circuit_outcome =
+                unproductive_rounds.observe(&final_text, outcome.provider_error.as_deref());
+            zero_output_streak = unproductive_rounds.consecutive;
+            if let Some(kind) = circuit_outcome {
                 let mut reason = format!(
                     "Kimi provider circuit breaker opened after {KIMI_UNPRODUCTIVE_ROUND_LIMIT} consecutive unproductive rounds (last outcome: {}). No durable agent output was produced. Provider capacity remains unknown because Kimi ACP exposes no reviewed quota signal. Inspect the provider-native session, account access, and model-specific controls before explicitly reopening the member.",
                     kind.label()
