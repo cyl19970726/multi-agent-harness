@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   BookOpen,
   BriefcaseBusiness,
@@ -6,7 +6,6 @@ import {
   Building2,
   CheckCircle2,
   ChevronDown,
-  Clock,
   Coins,
   FolderGit2,
   Globe,
@@ -52,6 +51,7 @@ import { MemberRunFocus } from "../surfaces/MemberRuns";
 import { MissionsSurface } from "../surfaces/Missions";
 import { CompanyOsRouter, isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/CompanyOsRouter";
 import type { SelectionState, SurfaceId } from "./selection";
+import { freshnessDomains, type DomainFreshness, type FreshnessDomain } from "./freshness";
 
 interface WorkbenchShellProps {
   apiUrl: string;
@@ -80,6 +80,8 @@ interface WorkbenchShellProps {
   selection: SelectionState;
   sourceError: string | null;
   sourceLabel: string;
+  /** Per-domain convergence for the currently selected Space/Company scope. */
+  domainFreshness: DomainFreshness;
   /** True only when the snapshot is the live source; gates write actions. */
   actionsEnabled: boolean;
   /** POST a harness action then refresh the snapshot. */
@@ -150,6 +152,7 @@ export function WorkbenchShell({
   selection,
   sourceError,
   sourceLabel,
+  domainFreshness,
   actionsEnabled,
   onAction,
   pollEnabled,
@@ -191,6 +194,7 @@ export function WorkbenchShell({
           onRefresh={onRefresh}
           sourceError={sourceError}
           sourceLabel={sourceLabel}
+          domainFreshness={domainFreshness}
           prototypeMode={
             isCompanyOsSurface(selection.surface)
             && !(isLoading && actionsEnabled && !model.snapshot.company_os)
@@ -290,6 +294,7 @@ function TopBar({
   onRefresh,
   sourceError,
   sourceLabel,
+  domainFreshness,
   debugActive,
   onToggleDebug,
   pollEnabled,
@@ -310,13 +315,6 @@ function TopBar({
   const transportStreaming = sourceLabel === "Live";
   const transportOnline = ["Live", "Reconnecting", "Stale"].includes(sourceLabel);
   const isStreaming = !prototypeMode && transportStreaming;
-  const statusTone = sourceError || sourceLabel === "Stale"
-    ? "warn"
-    : prototypeMode || sourceLabel === "Reconnecting"
-      ? "info"
-      : transportOnline
-        ? "good"
-        : "info";
   const displayedSourceLabel = prototypeMode ? "prototype fixture" : sourceLabel;
   return (
     <header className="flex h-[58px] min-w-0 shrink-0 items-center gap-2 border-b border-border bg-card/80 px-3 backdrop-blur-md lg:gap-3">
@@ -361,16 +359,13 @@ function TopBar({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        <div
-          role="status"
-          aria-label={`Dashboard freshness: ${displayedSourceLabel}`}
-          data-dashboard-freshness={displayedSourceLabel.toLowerCase()}
-          className="flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-background/50 px-1.5 py-1.5 sm:px-2"
-        >
-          <StatusDot tone={statusTone} pulse={isStreaming} />
-          <span className="max-w-24 truncate text-[10px] text-muted-foreground sm:text-[11px]">{displayedSourceLabel}</span>
-        </div>
-        {!prototypeMode && transportOnline && <FreshnessChip generatedAt={model.generatedAt} />}
+        <DomainFreshnessStrip
+          freshness={domainFreshness}
+          prototypeMode={prototypeMode}
+          sourceError={sourceError}
+          runtimeLabel={displayedSourceLabel}
+          runtimePulse={isStreaming}
+        />
         {!prototypeMode && <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -594,58 +589,65 @@ function companyLabel(company: Company): string {
   return name ? `${name} (${company.id})` : company.id;
 }
 
-/** Beyond this age the snapshot is considered stale and the chip turns amber. */
-const STALE_AFTER_S = 30;
+const freshnessLabels: Record<FreshnessDomain, string> = {
+  works: "Works",
+  docs: "Docs",
+  organization: "Org",
+  runtime: "Runtime",
+};
 
-/**
- * Freshness chip: how long ago the snapshot was generated, recomputed every
- * second so a paused (or slow) feed visibly ages. Amber once the snapshot is
- * older than STALE_AFTER_S; muted/neutral while fresh. Renders nothing when the
- * snapshot carries no generated_at (the chip would have nothing honest to say).
- */
-function FreshnessChip({ generatedAt }: { generatedAt?: string }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  if (!generatedAt) return null;
-  const generatedMs = new Date(generatedAt).getTime();
-  if (Number.isNaN(generatedMs)) return null;
-
-  const ageS = Math.max(0, Math.round((now - generatedMs) / 1000));
-  const stale = ageS > STALE_AFTER_S;
+function DomainFreshnessStrip({
+  freshness,
+  prototypeMode,
+  runtimeLabel,
+  runtimePulse,
+  sourceError,
+}: {
+  freshness: DomainFreshness;
+  prototypeMode: boolean;
+  runtimeLabel: string;
+  runtimePulse: boolean;
+  sourceError: string | null;
+}) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          className={cn(
-            "hidden items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1.5 text-[11px] tabular-nums text-muted-foreground sm:flex",
-            stale && "border-status-warn/40 bg-status-warn/10 text-status-warn",
-          )}
-        >
-          <Clock className="size-3" />
-          <span>updated {formatAge(ageS)}</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">
-        {stale
-          ? `Snapshot is stale (older than ${STALE_AFTER_S}s) — reload or enable live poll`
-          : `Generated ${new Date(generatedMs).toLocaleTimeString()}`}
-      </TooltipContent>
-    </Tooltip>
+    <div
+      role="group"
+      aria-label="Scoped domain freshness"
+      className="flex min-w-0 items-center gap-1 rounded-md border border-border bg-background/50 px-1 py-1"
+    >
+      {freshnessDomains.map((domain) => {
+        const status = prototypeMode ? "offline" : freshness[domain];
+        const label = domain === "runtime" ? runtimeLabel : statusLabel(status);
+        const tone = sourceError || status === "stale"
+          ? "warn"
+          : status === "live"
+            ? "good"
+            : "info";
+        return (
+          <span
+            key={domain}
+            role="status"
+            aria-label={`${freshnessLabels[domain]} freshness: ${label}`}
+            data-dashboard-freshness={status}
+            data-freshness-domain={domain}
+            data-freshness-status={status}
+            className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[9px] text-muted-foreground sm:text-[10px]"
+          >
+            <StatusDot tone={tone} pulse={domain === "runtime" && runtimePulse} />
+            <span className="hidden xl:inline">{freshnessLabels[domain]}:</span>
+            <span>{label}</span>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
-/** Compact relative age: "just now", "12s ago", "3m ago", "2h ago". */
-function formatAge(ageS: number): string {
-  if (ageS < 2) return "just now";
-  if (ageS < 60) return `${ageS}s ago`;
-  const ageM = Math.floor(ageS / 60);
-  if (ageM < 60) return `${ageM}m ago`;
-  const ageH = Math.floor(ageM / 60);
-  return `${ageH}h ago`;
+function statusLabel(status: DomainFreshness[FreshnessDomain]): string {
+  if (status === "live") return "Live";
+  if (status === "stale") return "Stale";
+  if (status === "offline") return "Offline";
+  return "Reconnecting";
 }
 
 function AppRail({

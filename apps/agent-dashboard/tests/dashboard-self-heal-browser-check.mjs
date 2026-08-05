@@ -88,6 +88,7 @@ const state = {
   streams: new Set(),
   streamSerial: 0,
   registryEmpty: false,
+  switchPaths: [],
 };
 const titleFor = (space, company) => state.titles.get(scopeKey(space, company))
   ?? `authoritative ${space}/${company}`;
@@ -119,6 +120,7 @@ const api = createHttpServer((request, response) => {
   });
   if (url.pathname === "/v1/workflows") return jsonResponse(response, 200, []);
   if (/^\/v1\/(spaces|companies|projects)\/switch$/.test(url.pathname)) {
+    state.switchPaths.push(url.pathname);
     return jsonResponse(response, 200, { ok: true });
   }
   if (url.pathname === "/v1/snapshot" || /\/v1\/team-runs\/[^/]+\/snapshot$/.test(url.pathname)) {
@@ -213,7 +215,13 @@ async function waitFor(predicate, message, timeout = 8_000) {
 }
 async function freshness(page, value) {
   try {
-    await page.locator(`[data-dashboard-freshness="${value}"]`).waitFor({ timeout: 8_000 });
+    await waitFor(async () => {
+      const statuses = await page.locator("[data-freshness-domain]").evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-freshness-status")));
+      return statuses.length === 4 && (value === "stale" || value === "reconnecting"
+        ? statuses.some((status) => status === value)
+        : statuses.every((status) => status === value));
+    }, `all freshness domains become ${value}`);
   } catch (error) {
     const observed = await page.locator("[data-dashboard-freshness]").evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-dashboard-freshness")));
@@ -273,7 +281,11 @@ try {
   await freshness(page, "stale");
   await waitFor(() => Promise.resolve(state.reads.length >= beforeFailure + 1), "planned failed read");
   await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-  check(await page.locator('[data-dashboard-freshness="stale"]').count() === 1, "failed authoritative read remains visibly Stale");
+  check(
+    await page.locator('[data-freshness-domain="works"][data-freshness-status="stale"]').count() === 1
+      && await page.locator('[data-freshness-domain="runtime"][data-freshness-status="stale"]').count() === 1,
+    "failed authoritative Work read keeps Works and Runtime visibly Stale",
+  );
   await freshness(page, "live");
   await page.getByText("retry recovered projection", { exact: true }).waitFor({ timeout: 8_000 });
   check(state.reads.length >= beforeFailure + 2, "failed refresh retries and recovers without manual action");
@@ -330,6 +342,7 @@ try {
   await new Promise((resolveWait) => setTimeout(resolveWait, 650));
   check(!(await page.locator("body").innerText()).includes("late old company A"), "late Company A response cannot overwrite Company B");
   check(state.reads.some((read) => read.company === "company-b" && read.space === "space-a"), "Company switch scopes the authoritative request");
+  check(!state.switchPaths.includes("/v1/companies/switch"), "Company selection never mutates the server/CLI default");
 
   state.titles.set(scopeKey("space-b", "company-b"), "authoritative space B");
   await page.getByLabel("Active execution space").selectOption("space-b");
@@ -431,7 +444,7 @@ try {
     company: localStorage.getItem("harness.selectedCompanyId"),
   }));
   check(!clearedUrl.searchParams.has("space") && !clearedUrl.searchParams.has("company"), "empty registries clear stale URL selectors before unscoped compatibility read");
-  check(persisted.space === null && persisted.company === null, "empty registries remove stale selector persistence");
+  check(persisted.space === null && persisted.company === null, "Company remains tab-local and empty registries remove Space persistence");
   await emptyPage.getByText(/cleared the stale selection/).first().waitFor({ timeout: 8_000 });
   check(true, "empty-registry selector clearing remains operator-visible");
   await emptyContext.close();

@@ -10,7 +10,6 @@ import {
   postAction,
   ProjectionInvalidationTracker,
   streamSelectionKey,
-  switchCompany as switchCompanyApi,
   switchProject as switchProjectApi,
   switchSpace as switchSpaceApi,
   SnapshotFrameBuffer,
@@ -29,6 +28,14 @@ import {
 } from "./selection";
 import { useEventStream } from "./useEventStream";
 import { WorkbenchShell } from "./WorkbenchShell";
+import {
+  freshnessDomains,
+  freshnessDomainsForInvalidation,
+  uniformFreshness,
+  updateFreshness,
+  type DomainFreshness,
+  type FreshnessDomain,
+} from "./freshness";
 
 const apiDefault = "http://127.0.0.1:8787";
 /**
@@ -50,7 +57,6 @@ function apiFromLocation(): string {
  */
 const projectStorageKey = "harness.selectedProjectId";
 const spaceStorageKey = "harness.selectedSpaceId";
-const companyStorageKey = "harness.selectedCompanyId";
 /**
  * Seed the selected project from the URL (`?project=<id>`) first — a deep link
  * wins — then the last choice persisted in localStorage. Returns "" when neither
@@ -77,14 +83,10 @@ function companyFromLocation(): string {
     const fromUrl = new URLSearchParams(window.location.search).get("company");
     if (fromUrl && fromUrl.trim()) return fromUrl.trim();
   } catch {
-    // fall through to localStorage
+    // Fall through to the backend registry default. Company selection is
+    // deliberately URL/in-memory scoped and never shared through localStorage.
   }
-  try {
-    const stored = window.localStorage.getItem(companyStorageKey);
-    return stored && stored.trim() ? stored.trim() : "";
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 function spaceFromLocation(): string {
@@ -165,6 +167,13 @@ function activityExpiryMs(value: string): number {
   return value.startsWith("unix-ms:") ? Number(value.slice(8)) : Date.parse(value);
 }
 
+function freshnessAfterSnapshot(runtimeConnected: boolean): DomainFreshness {
+  return {
+    ...uniformFreshness("live"),
+    runtime: runtimeConnected ? "live" : "reconnecting",
+  };
+}
+
 export function App() {
   const [apiUrl, setApiUrl] = useState(apiFromLocation);
   // Selected Workspace. Seeded from URL/localStorage; "" until
@@ -191,6 +200,10 @@ export function App() {
   // edge-triggered; it never enables this permanent interval implicitly.
   const [pollEnabled, setPollEnabled] = useState(false);
   const [freshnessState, setFreshnessState] = useState<FreshnessState>("reconnecting");
+  const [domainFreshness, setDomainFreshness] = useState<DomainFreshness>(() =>
+    uniformFreshness("reconnecting"),
+  );
+  const [selectorRefreshGeneration, setSelectorRefreshGeneration] = useState(0);
   // Seed selection from the URL so a member view (?surface=member&member=:id,
   // i.e. the /members/:memberId workbench) is directly addressable and
   // deep-linkable without pulling in a router.
@@ -278,9 +291,12 @@ export function App() {
    * HTTP/SSE causal crossing, while the selection key rejects another
    * Execution Space or Company before any response can commit.
    */
-  const requestAuthoritativeResync = useCallback((): void => {
+  const requestAuthoritativeResync = useCallback((
+    affectedDomains: readonly FreshnessDomain[] = freshnessDomains,
+  ): void => {
     resyncDirtyRef.current = true;
     setFreshnessState("stale");
+    setDomainFreshness((current) => updateFreshness(current, affectedDomains, "stale"));
 
     const drain = () => {
       if (resyncInFlightRef.current || !resyncDirtyRef.current) return;
@@ -330,6 +346,8 @@ export function App() {
               resyncRetryAttemptRef.current = 0;
               setSource(liveSource);
               setSourceError(null);
+              setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
+              setSelectorRefreshGeneration((current) => current + 1);
             } else if (
               streamKey === selectedStreamRef.current
               && generation === resyncGenerationRef.current
@@ -407,6 +425,7 @@ export function App() {
     streamConnectedRef.current = false;
     streamScopeTrustedRef.current = true;
     setFreshnessState("reconnecting");
+    setDomainFreshness(uniformFreshness("reconnecting"));
   }, []);
 
   // TeamRun focus may use a deliberately bounded snapshot, but that response
@@ -491,6 +510,7 @@ export function App() {
         }
         if (adoptSnapshotResponse(result.request, result.snapshot)) {
           setSource(liveSource);
+          setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
         }
         try {
           const defs = await fetchWorkflowDefs(apiUrl);
@@ -521,6 +541,7 @@ export function App() {
           if (!result) return;
           if (adoptSnapshotResponse(result.request, result.snapshot)) {
             setSource(liveSource);
+            setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
           }
         } catch {
           // still offline; retry next tick
@@ -629,7 +650,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, moveStreamBoundary, selectedCompanyId, selectedProjectId, selectedSpaceId]);
+  }, [apiUrl, moveStreamBoundary, selectedCompanyId, selectedProjectId, selectedSpaceId, selectorRefreshGeneration]);
 
   // Persist + mirror the selected project so a reload (localStorage) or a shared
   // link (URL) returns to it.
@@ -654,16 +675,7 @@ export function App() {
     syncSpaceToLocation(selectedSpaceId);
   }, [selectedSpaceId]);
 
-  useEffect(() => {
-    try {
-      if (selectedCompanyId) {
-        window.localStorage.setItem(companyStorageKey, selectedCompanyId);
-      } else window.localStorage.removeItem(companyStorageKey);
-    } catch {
-      // private mode / blocked storage: in-memory selection still works
-    }
-    syncCompanyToLocation(selectedCompanyId);
-  }, [selectedCompanyId]);
+  useEffect(() => syncCompanyToLocation(selectedCompanyId), [selectedCompanyId]);
 
   // Switch the default Project Binding. In native Execution Space mode this
   // changes provider cwd/config/Skill context only, so coordination stays
@@ -723,42 +735,18 @@ export function App() {
       if (companyId === selectedCompanyId) return;
       setSelectorRecoveryNotice(null);
       moveStreamBoundary(streamSelectionKey(selectedSpaceId, selectedProjectId, companyId));
-      const request = beginMutationSnapshotRequest();
       setSelectedCompanyId(companyId);
       setIsLoading(true);
       setSnapshot(emptySnapshot);
-      if (source !== liveSource) {
-        finishMutationSnapshotRequest(request);
-        setIsLoading(false);
-        return;
-      }
-      void (async () => {
-        try {
-          await switchCompanyApi(apiUrl, companyId);
-          adoptSnapshotResponse(
-            request,
-            await fetchSnapshot(apiUrl, selectedProjectId, companyId, selectedSpaceId),
-          );
-          setSourceError(null);
-        } catch (error) {
-          setSourceError(error instanceof Error ? error.message : String(error));
-        } finally {
-          finishMutationSnapshotRequest(request);
-          setIsLoading(false);
-          if (resyncDirtyRef.current) resyncRunnerRef.current?.();
-        }
-      })();
+      // The selected Company is browser-tab scope. Changing it must never call
+      // /v1/companies/switch, which mutates the CLI/server default for every tab.
+      // The scoped load effect observes selectedCompanyId and performs the read.
     },
     [
-      adoptSnapshotResponse,
-      apiUrl,
-      beginMutationSnapshotRequest,
-      finishMutationSnapshotRequest,
       moveStreamBoundary,
       selectedCompanyId,
       selectedProjectId,
       selectedSpaceId,
-      source,
     ],
   );
 
@@ -827,6 +815,8 @@ export function App() {
       if (adoptSnapshotResponse(result.request, result.snapshot)) {
         setSource(liveSource);
         setFreshnessState("live");
+        setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
+        setSelectorRefreshGeneration((current) => current + 1);
       }
       try {
         setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
@@ -837,6 +827,7 @@ export function App() {
       setSourceError(error instanceof Error ? error.message : String(error));
       setSource("offline");
       setFreshnessState("reconnecting");
+      setDomainFreshness(uniformFreshness("offline"));
       // A failed manual refresh transitions away from the live connection even
       // before the stream hook's mode effect runs. Drop previews immediately so
       // offline auto-retry cannot overlay old thinking onto a fresh snapshot.
@@ -867,6 +858,7 @@ export function App() {
     disconnectedProbeAttemptRef.current = null;
     streamConnectedRef.current = !scopeMismatch;
     setFreshnessState(scopeMismatch ? "stale" : "reconnecting");
+    setDomainFreshness(uniformFreshness(scopeMismatch ? "stale" : "reconnecting"));
     if (!scopeMismatch) requestAuthoritativeResync();
     return !scopeMismatch;
   }, [requestAuthoritativeResync, selectedCompanyId, selectedProjectId, selectedSpaceId]);
@@ -882,8 +874,7 @@ export function App() {
         confirmedScopeRef.current,
       );
       if (decision.kind === "refresh") {
-        setFreshnessState("stale");
-        requestAuthoritativeResync();
+        requestAuthoritativeResync(freshnessDomainsForInvalidation(frame.invalidation));
       }
       return;
     }
@@ -892,6 +883,7 @@ export function App() {
     setSnapshot((current) => applyFrame(current, frame));
     if (!resyncDirtyRef.current && !resyncInFlightRef.current) {
       setFreshnessState("live");
+      setDomainFreshness((current) => updateFreshness(current, ["runtime"], "live"));
     }
   }, [requestAuthoritativeResync]);
 
@@ -917,6 +909,7 @@ export function App() {
     }
     streamConnectedRef.current = false;
     setFreshnessState("reconnecting");
+    setDomainFreshness(uniformFreshness("reconnecting"));
     snapshotFrames.current.clearLiveMemberActivity();
     setSnapshot((current) =>
       current.live_member_activity
@@ -973,7 +966,10 @@ export function App() {
     const onOnline = () => {
       if (isLive) requestAuthoritativeResync();
     };
-    const onOffline = () => setFreshnessState("reconnecting");
+    const onOffline = () => {
+      setFreshnessState("reconnecting");
+      setDomainFreshness(uniformFreshness("reconnecting"));
+    };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
@@ -1100,6 +1096,7 @@ export function App() {
         selection={selection}
         sourceError={sourceError ?? selectorRecoveryNotice}
         sourceLabel={sourceLabel}
+        domainFreshness={domainFreshness}
         actionsEnabled={isLive}
         onAction={(path, body, options) => runAction(path, body, options)}
         pollEnabled={pollEnabled}

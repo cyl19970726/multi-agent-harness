@@ -362,7 +362,7 @@ export type SseFrame =
   | { kind: "member_activity"; activity: LiveMemberActivity };
 
 export type ProjectionScope = "execution_space" | "company";
-export type ProjectionInvalidationReason = "append" | "truncate" | "replace";
+export type ProjectionInvalidationReason = "append" | "truncate" | "replace" | "delete";
 
 /** A freshness signal only. It never carries row truth and must trigger a
  * scoped authoritative snapshot read rather than local state synthesis. */
@@ -657,7 +657,7 @@ function projectionInvalidation(value: unknown): ProjectionInvalidation | null {
     || !row.ledger
     || !Number.isSafeInteger(row.revision)
     || Number(row.revision) < 1
-    || (row.reason !== "append" && row.reason !== "truncate" && row.reason !== "replace")
+    || (row.reason !== "append" && row.reason !== "truncate" && row.reason !== "replace" && row.reason !== "delete")
     || typeof row.stream_epoch !== "string"
     || !row.stream_epoch
   ) return null;
