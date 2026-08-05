@@ -231,6 +231,92 @@ Current v1 boundary:
 - A Standing Agent record is organization identity and authority context. It is
   not an Agent Team MemberRun, provider-native session, or runtime health row.
 
+## ADR 0052: AgentMember Identity Cutover CLI
+
+ADR 0052 (`docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md`)
+establishes durable AgentMember identities as the Agent Team Organization foundation.
+The cutover CLI (`harness org`) manages durable identities independently of runtime
+sessions, compatibility registry rows, or one-off MemberRuns. Use these commands
+when creating, converging, inspecting, or auditing durable AgentMember identities
+and their Host authority relationships.
+
+### Durable members
+
+```bash
+# Create a durable AgentMember identity (writes durable_agent_members.jsonl)
+harness org member create \
+  --name <name> \
+  --description <description> \
+  --role <role> \
+  [--id <id>] \
+  [--provider-profile <profile>] \
+  [--model <model>] \
+  [--workspace-policy <policy>] \
+  [--project-binding <project-id>] \
+  [--business-access-ceiling <ref>]... \
+  [--status active|paused|retired] \
+  [--created-by-member <member-id>]
+
+# Converge a compatibility AgentMember (members.jsonl) into a durable member
+harness org member converge \
+  --id <id> \
+  [--project-binding <project-id>] \
+  [--business-access-ceiling <ref>]... \
+  [--created-by-member <member-id>]
+
+# List all durable members (latest-row-wins projection)
+harness org member list
+
+# Show a single durable member by id
+harness org member show --id <id>
+```
+
+Durable member status: `Active`, `Paused`, `Retired`. Converge maps
+compatibility statuses deterministically (`Stale`/`Closed`/`Closing` → `Paused`;
+`Active`/`Starting`/`Idle`/`Busy`/`Offline` → `Active`). Re-running converge
+produces the same row; it never silently rewrites an existing identity.
+
+### Bootstrap, host resolution, and audit
+
+```bash
+# Bootstrap a root AgentTeam with a durable Host member (one atomic operation)
+harness org bootstrap-lead \
+  --team <team-id> \
+  --name <name> \
+  --description <description> \
+  --role <role> \
+  [--provider-profile <profile>] \
+  [--model <model>] \
+  [--workspace-policy <policy>] \
+  [--project-binding <project-id>]
+
+# Resolve the Host authority for an AgentTeam
+harness org host --team <team-id>
+
+# Validate organization topology and Host-authority state
+harness org cutover-audit
+```
+
+`bootstrap-lead` expects the team to already exist (created with `harness team create`).
+It sets the team's `host_member_id` and `owner_agent_id` to the durable member id.
+`host` resolves the authoritative Host member (source: `explicit` or
+`owner_agent_id_compatibility`). `cutover-audit` validates cycle-free topology,
+host-member existence, and no conflicting `owner_agent_id` / `host_member_id` pairs.
+
+### When to use cutover vs. company org
+
+| Surface | Scope | Store |
+|---------|-------|-------|
+| `harness org member` | Durable AgentMember identity for Agent Teams | `durable_agent_members.jsonl`, `teams.jsonl` |
+| `harness company org` | Company OS Standing Agents, Humans, OrgUnits, Memberships | Company Store (`company_os_*.jsonl`) |
+
+The cutover CLI lives at the Execution Space level and feeds the Agent Team
+kernel. Company OS organization records are a separate durable surface.
+A Standing Agent may link to an AgentMember via `--execution-agent-member-ref`,
+but the two surfaces are independently authored.
+
+Full design: `specs/nested-agent-team-organization/cutover-cli-design.md`.
+
 ## Governance model
 
 The first Company OS layer is governance:
