@@ -3768,6 +3768,119 @@ impl HarnessStore {
         Ok(message)
     }
 
+    /// Fail a TeamMessage delivery that can never be completed because the
+    /// target member has stopped / failed / been retired.
+    ///
+    /// Transitions from `Queued` (pre-bind failure) or `Claimed` (transport
+    /// disconnect) to `Failed`. A delivery already at `Failed` with the same
+    /// reason is idempotent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fail_team_message_delivery(
+        &self,
+        team_run_id: &str,
+        message_id: &str,
+        member_run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        reason: &str,
+        now_unix_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<TeamMessage> {
+        if reason.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "TeamMessage delivery failure reason is required".to_string(),
+            ));
+        }
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let lease = self
+            .latest_lease_for_run_unlocked(team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "team run {team_run_id} has no active Supervisor lease"
+                ))
+            })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "team run {team_run_id} Supervisor lease is not current"
+            )));
+        }
+
+        let mut message = latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        )
+        .remove(message_id)
+        .ok_or_else(|| StoreError::Conflict(format!("team message not found: {message_id}")))?;
+        if message.team_run_id != team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "message {message_id} belongs to {}, not {team_run_id}",
+                message.team_run_id
+            )));
+        }
+        let delivery = message
+            .deliveries
+            .iter_mut()
+            .find(|delivery| delivery.member_id == member_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "message {message_id} has no delivery for {member_run_id}"
+                ))
+            })?;
+
+        // Idempotent: already failed with same reason.
+        if delivery.status == TeamDeliveryStatus::Failed {
+            if delivery
+                .failure_reason
+                .as_deref()
+                .is_some_and(|existing| existing == reason)
+            {
+                return Ok(message);
+            }
+            return Err(StoreError::Conflict(format!(
+                "message {message_id} delivery for {member_run_id} was already failed with a different reason"
+            )));
+        }
+
+        // Allowed transitions: Queued→Failed (pre-bind), Claimed→Failed
+        // (post-bind / transport disconnect).
+        match delivery.status {
+            TeamDeliveryStatus::Queued => {}
+            TeamDeliveryStatus::Claimed => {
+                // Only the owning Supervisor generation may fail its own claim.
+                if delivery.claimed_by_supervisor_id.as_deref() != Some(supervisor_id)
+                    || delivery.claimed_generation != Some(supervisor_generation)
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "message {message_id} delivery for {member_run_id} was claimed by a different Supervisor generation"
+                    )));
+                }
+            }
+            _ => {
+                return Err(StoreError::Conflict(format!(
+                    "message {message_id} delivery for {member_run_id} is already {:?}",
+                    delivery.status
+                )));
+            }
+        }
+
+        delivery.status = TeamDeliveryStatus::Failed;
+        delivery.claim_id = None;
+        delivery.claimed_by_supervisor_id = None;
+        delivery.claimed_generation = None;
+        delivery.claimed_unix_ms = None;
+        delivery.claim_expires_unix_ms = None;
+        delivery.provider_receipt_id = None;
+        delivery.failure_reason = Some(reason.to_string());
+        delivery.updated_at = updated_at.to_string();
+        self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
+        Ok(message)
+    }
+
     pub fn append_member_action(&self, value: &MemberAction) -> StoreResult<()> {
         self.append_jsonl("member_actions.jsonl", value)
     }
@@ -6666,6 +6779,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("test-receipt".into()),
+                failure_reason: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -6726,6 +6840,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
+                failure_reason: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -6759,6 +6874,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
+                failure_reason: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -6825,6 +6941,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
+                failure_reason: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -6859,6 +6976,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
+                failure_reason: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -6962,6 +7080,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("codex-turn-1".into()),
+                failure_reason: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -6995,6 +7114,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
+                failure_reason: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7102,6 +7222,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
+                failure_reason: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7205,6 +7326,162 @@ mod tests {
         assert_eq!(
             acknowledged_again.deliveries[0].status,
             TeamDeliveryStatus::Acknowledged
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    /// When a member fails before binding (pre-bind), queued TeamMessage deliveries
+    /// transition to Failed so they do not stay permanently actionable in the inbox.
+    #[test]
+    fn fail_queued_delivery_clears_pre_bind_mail_and_is_idempotent() {
+        let root = team_test_root("pre-bind-mail-fail");
+        let store = HarnessStore::new(&root);
+        let run = AgentTeamRun {
+            id: "tr-fail-mail".into(),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            project_binding_id: None,
+            host_surface: "codex-app".into(),
+            host_thread_id: None,
+            host_actor: None,
+            host_control_mode: Default::default(),
+            objective: "fail orphaned mail".into(),
+            execution_root: None,
+            status: TeamRunStatus::Running,
+            member_run_ids: vec!["mr-orphan".into()],
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        store.append_team_run(&run).expect("append run");
+
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &run.id,
+                "supervisor-pre-bind",
+                300,
+                "test:pre-bind",
+                100,
+                5_000,
+            )
+            .expect("acquire Supervisor lease");
+
+        let message = TeamMessage {
+            id: "tm-orphan".into(),
+            team_run_id: run.id.clone(),
+            work_id: None,
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec!["mr-orphan".into()],
+            kind: TeamMessageKind::Message,
+            body: "orphaned work assignment".into(),
+            correlation_id: "corr-orphan".into(),
+            causation_id: None,
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "mr-orphan".into(),
+                policy: TeamDeliveryPolicy::Queue,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                failure_reason: None,
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        store
+            .append_team_message_checked(&message)
+            .expect("append queued message");
+
+        // Pre-bind failure: member never bound, delivery is still Queued.
+        let msgs = store.team_messages().expect("read messages");
+        let queued = msgs
+            .iter()
+            .find(|m| m.id == "tm-orphan")
+            .expect("tm-orphan present");
+        assert_eq!(
+            queued.deliveries[0].status,
+            TeamDeliveryStatus::Queued,
+            "starts queued"
+        );
+
+        // Fail the delivery.
+        let failed = store
+            .fail_team_message_delivery(
+                &run.id,
+                &message.id,
+                "mr-orphan",
+                &lease.supervisor_id,
+                lease.generation,
+                "pre-bind member terminated",
+                200,
+                "unix-ms:3",
+            )
+            .expect("fail queued delivery");
+
+        assert_eq!(failed.deliveries[0].status, TeamDeliveryStatus::Failed);
+        assert_eq!(
+            failed.deliveries[0].failure_reason.as_deref(),
+            Some("pre-bind member terminated")
+        );
+        assert!(failed.deliveries[0].claim_id.is_none());
+        assert!(failed.deliveries[0].provider_receipt_id.is_none());
+
+        // Idempotent: same reason succeeds.
+        let again = store
+            .fail_team_message_delivery(
+                &run.id,
+                &message.id,
+                "mr-orphan",
+                &lease.supervisor_id,
+                lease.generation,
+                "pre-bind member terminated",
+                201,
+                "unix-ms:4",
+            )
+            .expect("idempotent fail with same reason");
+
+        assert_eq!(again.deliveries[0].status, TeamDeliveryStatus::Failed);
+
+        // Different reason is rejected.
+        let conflict = store
+            .fail_team_message_delivery(
+                &run.id,
+                &message.id,
+                "mr-orphan",
+                &lease.supervisor_id,
+                lease.generation,
+                "different reason",
+                202,
+                "unix-ms:5",
+            )
+            .expect_err("different failure reason must be rejected");
+        assert!(conflict.to_string().contains("different reason"));
+
+        // Message survives store reopen.
+        drop(store);
+        let reopened = HarnessStore::new(&root);
+        let msgs_after = reopened.team_messages().expect("read after reopen");
+        let reloaded = latest_by_id(msgs_after, |m| m.id.clone())
+            .remove("tm-orphan")
+            .expect("tm-orphan survived reopen");
+        assert_eq!(reloaded.deliveries[0].status, TeamDeliveryStatus::Failed);
+        assert_eq!(
+            reloaded.deliveries[0].failure_reason.as_deref(),
+            Some("pre-bind member terminated")
         );
 
         std::fs::remove_dir_all(root).expect("remove temp store");
@@ -9307,6 +9584,7 @@ mod tests {
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
+                failure_reason: None,
                 updated_at: "unix-ms:3".into(),
             }],
             created_at: "unix-ms:3".into(),
