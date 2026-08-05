@@ -249,7 +249,10 @@ impl HarnessStore {
     /// is the Mission Log's ONLY write operation (ADR 0051) — there is no
     /// update or delete, so unlike Wave there is no compare-and-append
     /// variant to race against.
-    pub fn append_mission_log_entry(&self, mut entry: MissionLogEntry) -> StoreResult<MissionLogEntry> {
+    pub fn append_mission_log_entry(
+        &self,
+        mut entry: MissionLogEntry,
+    ) -> StoreResult<MissionLogEntry> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if entry.body.trim().is_empty() {
@@ -2801,7 +2804,11 @@ impl HarnessStore {
     /// within the returned slice (Unix `tail` ordering) so a reader sees them
     /// in the order they were written. Returns fewer than `n` rows if the
     /// Mission has fewer entries, and an empty Vec if it has none yet.
-    pub fn mission_log_tail(&self, mission_id: &str, n: usize) -> StoreResult<Vec<MissionLogEntry>> {
+    pub fn mission_log_tail(
+        &self,
+        mission_id: &str,
+        n: usize,
+    ) -> StoreResult<Vec<MissionLogEntry>> {
         let entries = self.mission_log_entries(mission_id)?;
         let start = entries.len().saturating_sub(n);
         Ok(entries[start..].to_vec())
@@ -4158,7 +4165,10 @@ mod tests {
             .expect("mission log entries");
         assert_eq!(entries.len(), 4);
         assert_eq!(
-            entries.iter().map(|entry| entry.revision).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|entry| entry.revision)
+                .collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
         assert_eq!(entries[0].kind, MissionLogEntryKind::Judgment);
@@ -4225,7 +4235,9 @@ mod tests {
             .append_mission_log_entry(base.clone())
             .expect_err("whitespace-only body must be rejected");
         assert!(
-            empty_body_error.to_string().contains("body must not be empty"),
+            empty_body_error
+                .to_string()
+                .contains("body must not be empty"),
             "error: {empty_body_error}"
         );
 
@@ -4236,7 +4248,9 @@ mod tests {
             .append_mission_log_entry(empty_actor)
             .expect_err("whitespace-only actor must be rejected");
         assert!(
-            empty_actor_error.to_string().contains("actor must not be empty"),
+            empty_actor_error
+                .to_string()
+                .contains("actor must not be empty"),
             "error: {empty_actor_error}"
         );
 
@@ -4247,7 +4261,9 @@ mod tests {
             .append_mission_log_entry(missing_mission)
             .expect_err("unknown mission must be rejected");
         assert!(
-            missing_mission_error.to_string().contains("mission not found"),
+            missing_mission_error
+                .to_string()
+                .contains("mission not found"),
             "error: {missing_mission_error}"
         );
 

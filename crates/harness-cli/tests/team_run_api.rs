@@ -6599,7 +6599,14 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
     let recover_out = run_harness(
         &home,
         home.base(),
-        &["--project", &project_id, "team-run", "recover", "--id", &run_id],
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &run_id,
+        ],
     );
     assert!(
         recover_out.status.success(),

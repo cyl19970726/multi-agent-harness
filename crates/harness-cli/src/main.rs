@@ -30,11 +30,11 @@ use harness_core::{
     TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
     TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
+    Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
+    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
@@ -9179,8 +9179,9 @@ fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             let mission_id = required(args, "--mission-id")?;
             let tail = value(args, "--tail")
                 .map(|raw| {
-                    raw.parse::<usize>()
-                        .map_err(|_| CliError::Usage("--tail must be a positive integer".to_string()))
+                    raw.parse::<usize>().map_err(|_| {
+                        CliError::Usage("--tail must be a positive integer".to_string())
+                    })
                 })
                 .transpose()?;
             let entries = match tail {
@@ -9193,7 +9194,11 @@ fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 println!("{}", format_mission_log_entries_text(&entries));
             }
         }
-        other => return Err(CliError::Usage(format!("unknown mission log command: {other}"))),
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown mission log command: {other}"
+            )))
+        }
     }
     Ok(())
 }
@@ -42693,7 +42698,14 @@ package:com.tencent.mm
             );
         }
         let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
-        for leaf in ["create", "show", "update-context", "create-team", "close", "log"] {
+        for leaf in [
+            "create",
+            "show",
+            "update-context",
+            "create-team",
+            "close",
+            "log",
+        ] {
             assert!(
                 subcommand_is_real(mission_body, leaf),
                 "mission {leaf} is documented in the cheatsheet but is not a \
@@ -42715,13 +42727,11 @@ package:com.tencent.mm
         // the retired leaves, so this test would fail loudly if one were ever
         // re-added to the cheatsheet without also being wired.
         let wave_body = function_body(MAIN_RS_SOURCE, "wave_command");
-        for leaf in ["list"] {
-            assert!(
-                subcommand_is_real(wave_body, leaf),
-                "wave {leaf} is documented in the cheatsheet but is not a \
-                 real match arm in wave_command"
-            );
-        }
+        assert!(
+            subcommand_is_real(wave_body, "list"),
+            "wave list is documented in the cheatsheet but is not a \
+             real match arm in wave_command"
+        );
         for retired in ["create", "update", "advance", "gate"] {
             assert!(
                 !CHEATSHEET_MISSION.contains(&format!("wave {retired}")),

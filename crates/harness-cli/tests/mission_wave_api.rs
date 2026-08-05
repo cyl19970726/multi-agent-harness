@@ -401,7 +401,14 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     // wave-plan-2 is seeded as a historical row (not created -- `wave create`
     // is retired) purely so the origin_wave_id navigation check below has a
     // real pre-cutover Wave id to cite.
-    seed_historical_wave(&home, &project_id, "wave-plan-2", "mission-host-plan", 2, "host");
+    seed_historical_wave(
+        &home,
+        &project_id,
+        "wave-plan-2",
+        "mission-host-plan",
+        2,
+        "host",
+    );
     let replan = run_json(
         &home,
         &project_id,
@@ -796,10 +803,29 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
     // Wave write commands are retired on every surface (ADR 0051), regardless
     // of Mission state or whether the referenced Wave exists at all.
     for (command, extra) in [
-        ("create", vec!["--mission-id", "mission-host", "--title", "Too late", "--objective", "Must be rejected"]),
-        ("update", vec!["--id", "wave-does-not-exist", "--context", "x"]),
-        ("advance", vec!["--id", "wave-does-not-exist", "--outcome", "x"]),
-        ("gate", vec!["--id", "wave-does-not-exist", "--status", "accepted"]),
+        (
+            "create",
+            vec![
+                "--mission-id",
+                "mission-host",
+                "--title",
+                "Too late",
+                "--objective",
+                "Must be rejected",
+            ],
+        ),
+        (
+            "update",
+            vec!["--id", "wave-does-not-exist", "--context", "x"],
+        ),
+        (
+            "advance",
+            vec!["--id", "wave-does-not-exist", "--outcome", "x"],
+        ),
+        (
+            "gate",
+            vec!["--id", "wave-does-not-exist", "--status", "accepted"],
+        ),
     ] {
         let mut args = vec!["--project", project_id.as_str(), "wave", command];
         args.extend(extra);
@@ -843,7 +869,14 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
     // Historical reads remain functional: seed one pre-cutover Wave row
     // directly (the only way a Wave can exist post-cutover) and prove
     // `wave list`/`show`/`history` still see it.
-    seed_historical_wave(&home, &project_id, "wave-host-historical", "mission-host", 1, "host");
+    seed_historical_wave(
+        &home,
+        &project_id,
+        "wave-host-historical",
+        "mission-host",
+        1,
+        "host",
+    );
     let waves = run_json(
         &home,
         &project_id,
@@ -948,7 +981,10 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         "wave create is retired: nothing populates this ledger for a new Mission"
     );
     assert_eq!(snapshot["mission_log"].as_array().map(Vec::len), Some(1));
-    assert_eq!(snapshot["mission_log"][0]["kind"].as_str(), Some("judgment"));
+    assert_eq!(
+        snapshot["mission_log"][0]["kind"].as_str(),
+        Some("judgment")
+    );
 
     // CLI list returns native Mission rows; wave_ids stays empty -- there is
     // no live write path left to populate it.
@@ -967,7 +1003,14 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     // cross-Mission / executor-kind validation on TeamRun creation still
     // runs against them -- only the *write* path retired, not reads or the
     // validation logic that resolves a Wave id.
-    seed_historical_wave(&home, &project_id, "wave-alpha", "mission-alpha", 1, "agent_team");
+    seed_historical_wave(
+        &home,
+        &project_id,
+        "wave-alpha",
+        "mission-alpha",
+        1,
+        "agent_team",
+    );
     seed_historical_wave(
         &home,
         &project_id,
@@ -999,7 +1042,14 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         &serde_json::json!({"id": "mission-beta", "title": "Other", "objective": "isolation"}),
     );
     assert_eq!(status, 200, "body: {body}");
-    seed_historical_wave(&home, &project_id, "wave-beta", "mission-beta", 1, "agent_team");
+    seed_historical_wave(
+        &home,
+        &project_id,
+        "wave-beta",
+        "mission-beta",
+        1,
+        "agent_team",
+    );
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -1208,7 +1258,14 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let entries = run_json(
         &home,
         &project_id,
-        &["mission", "log", "show", "--mission-id", "mission-alpha", "--json"],
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-alpha",
+            "--json",
+        ],
     );
     assert_eq!(
         entries
@@ -1228,7 +1285,10 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     );
     assert_eq!(status, 400, "body: {body}");
     assert!(
-        body["error"].as_str().unwrap_or_default().contains("retired"),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("retired"),
         "body: {body}"
     );
     let cli_gate = run_harness(
@@ -1523,7 +1583,10 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
     );
     assert_eq!(status, 400, "body: {body}");
     assert!(
-        body["error"].as_str().unwrap_or_default().contains("retired"),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("retired"),
         "body: {body}"
     );
 }
@@ -1622,7 +1685,11 @@ fn mission_log_cli_append_and_show_happy_path() {
         ("judgment", "First judgment.", None),
         ("replan", "Re-planned after review.", Some("operator-a")),
         ("recovery", "Recovered after a supervisor death.", None),
-        ("closeout_evidence", "Everything verified; closing.", Some("host")),
+        (
+            "closeout_evidence",
+            "Everything verified; closing.",
+            Some("host"),
+        ),
     ] {
         let mut args = vec![
             "mission",
@@ -1648,7 +1715,14 @@ fn mission_log_cli_append_and_show_happy_path() {
     let all_json = run_json(
         &home,
         &project_id,
-        &["mission", "log", "show", "--mission-id", "mission-log-happy", "--json"],
+        &[
+            "mission",
+            "log",
+            "show",
+            "--mission-id",
+            "mission-log-happy",
+            "--json",
+        ],
     );
     let all_json = all_json.as_array().expect("entries array");
     assert_eq!(all_json.len(), 4);
@@ -1710,7 +1784,9 @@ fn mission_log_cli_append_and_show_happy_path() {
     assert!(text_out.status.success());
     let text = String::from_utf8_lossy(&text_out.stdout).to_string();
     let first_pos = text.find("First judgment.").expect("revision 1 body");
-    let replan_pos = text.find("Re-planned after review.").expect("revision 2 body");
+    let replan_pos = text
+        .find("Re-planned after review.")
+        .expect("revision 2 body");
     let recovery_pos = text
         .find("Recovered after a supervisor death.")
         .expect("revision 3 body");
@@ -1744,10 +1820,7 @@ fn mission_log_cli_append_and_show_happy_path() {
     );
     assert!(terse_append.status.success());
     let terse_stdout = String::from_utf8_lossy(&terse_append.stdout);
-    assert_eq!(
-        terse_stdout.trim(),
-        "mission-log-happy\t#5\tjudgment"
-    );
+    assert_eq!(terse_stdout.trim(), "mission-log-happy\t#5\tjudgment");
 
     // Appending against a Mission that does not exist fails clearly instead
     // of silently creating an orphaned Log row.
