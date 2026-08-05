@@ -2897,6 +2897,10 @@ pub struct WorkCommandContext {
     pub causation_ref: Option<WorkCausationRef>,
     pub idempotency_key: String,
     pub created_at: String,
+    /// When true, skip the duplicate-title guard (recovery flows reuse existing
+    /// Work ids; explicit creation of a same-title Work is opt-in).
+    #[serde(default)]
+    pub duplicate_ok: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

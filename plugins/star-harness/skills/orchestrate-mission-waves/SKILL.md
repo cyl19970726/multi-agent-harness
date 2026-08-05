@@ -249,7 +249,11 @@ pre-check a snapshot and assume a later completion call is safe.
 - `idle`: assign or expose ready claimable Work.
 - `working`: queue new Work without interrupting the active turn.
 - `waiting interaction`: resolve the exact PendingInteraction before driving.
-- `crashed/disconnected`: retain Work owner; reconcile deliveries and resume.
+- `crashed/disconnected`: run `harness team-run recover --id <run>` to adopt/restart
+  the supervisor generation, reconcile stale deliveries, resume compatible native
+  sessions, and rebind incompatible Works. Never run `team-run create` during
+  recovery — recovery must rebind the existing run and Work ids, never mint
+  new ones (ADR 0050).
 - `closed`: explicitly Reopen, rebind, reassign, or cancel unfinished Work.
 - `retired`: never revive; reassign or cancel Work.
 
