@@ -1,6 +1,6 @@
 ---
 name: orchestrate-mission-waves
-description: Use when a Host Agent must create, resume, or re-plan a long-running Mission, coordinate one or more persistent Agent Teams through shared Works, preserve provider-native sessions across Waves, review submitted Work, or close the Mission. Use for Mission context, Wave judgment, Works allocation, Team composition, blocker handling, carry-over, and explicit Host acceptance. Do not use for a small one-shot task that fits safely in the Host context.
+description: Use when a Host Agent must create, resume, or re-plan a long-running Mission, coordinate one or more persistent Agent Teams through shared Works, preserve provider-native sessions across re-plans, review submitted Work, or close the Mission. Use for Mission context, Mission Log judgment, Works allocation, Team composition, blocker handling, carry-over, and explicit Host acceptance. Do not use for a small one-shot task that fits safely in the Host context.
 ---
 
 # Orchestrate Mission Waves
@@ -15,7 +15,7 @@ uncertain, run `harness cheatsheet` first — never rediscover flags via repeate
 
 ```text
 Mission        = durable intent, shared context, outcome, and closeout
-Wave           = versioned Host memo: changed facts, plan, judgment, re-plan
+Mission Log    = versioned Host judgment: appended entries (judgment/replan/recovery/closeout)
 AgentTeam      = independent reusable collaboration identity
 AgentTeamRun   = one live or historical execution of that Team
 Work           = durable responsibility, owner, status, result, acceptance
@@ -25,9 +25,10 @@ WorkDelivery   = reliable delivery of one Work version to a Member runtime
 Native Session = transcript, tools, commands, turns, internal subagents
 ```
 
-Never turn Wave into a task list, dependency graph, executor container,
-synchronization barrier, or transcript. Never use a Message as responsibility
-or status. Agent Team has no Assignment Message compatibility path.
+Never turn the Mission Log into a task list, dependency graph, executor
+container, synchronization barrier, or raw transcript dump. Never use a
+Message as responsibility or status. Agent Team has no Assignment Message
+compatibility path.
 
 The Host using this Skill is the Team Lead. Lead is a control-plane role, not
 an implicit MemberRun. Create a Lead MemberRun only when the Host deliberately
@@ -60,16 +61,18 @@ receipt, Work submission, and Host acceptance are different facts.
 ## Run The Host Loop
 
 1. **Observe.** Select the Execution Space and Project Binding explicitly.
-   Inspect Mission, Waves, linked Teams, Works, messages, pending interactions,
-   Member/Supervisor health, and native-session bindings.
+   Inspect Mission, the Mission Log, linked Teams, Works, messages, pending
+   interactions, Member/Supervisor health, and native-session bindings.
 2. **Orient.** Create or update Mission Markdown with the durable objective,
    constraints, decision boundary, and success standard.
-3. **Record judgment.** Create the current Wave as a concise memo containing
+3. **Record judgment.** Append a Mission Log entry (`harness mission log
+   append --mission-id <id> --kind judgment --body <markdown>`) containing
    changed facts, composition decisions, important Work ids, carry-over, and
-   evidence needed to advance.
+   evidence needed to advance. Log before you act on the judgment, never as
+   after-the-fact narration.
 4. **Form the Team.** Link an existing AgentTeam or create one. Start one
-   Mission-scoped TeamRun when persistent collaborators are useful. Do not make
-   the selected Wave own the run.
+   Mission-scoped TeamRun when persistent collaborators are useful. TeamRun
+   ownership is the Team Lead's; no Mission Log entry owns a run.
 5. **Create Works.** Put every schedulable responsibility on the shared board.
    Directly assign bounded lanes or create eligible unassigned Works for
    atomic Member claim. Give parallel code owners disjoint paths or require
@@ -82,14 +85,18 @@ receipt, Work submission, and Host acceptance are different facts.
    required by its completion criteria, and the resolvable native session.
    Request changes or accept through Work operations. Do not wait for unrelated
    active Works.
-8. **Re-plan.** At material decision points, record the judgment before
-   acting, not as after-the-fact narration. Revise the current Wave while
-   judgment is materially unchanged. Advance and create Wave N+1 when plan,
-   composition, responsibility, risk, or decision boundary changes
-   materially. Active Work keeps the same Work id, MemberRun, Workspace, and
-   native session.
-9. **Close.** Record an explicit Mission outcome. Closing a Mission or
-   advancing a Wave never closes the independent Team or its Members.
+8. **Re-plan.** At material decision points — a new Work tranche, a
+   composition change, recovery, or a model/provider switch — append the
+   Mission Log entry (`mission log append --kind judgment|replan|recovery`)
+   before mutating runs or Works, never as after-the-fact narration. Use
+   `--kind replan` when plan, composition, responsibility, risk, or decision
+   boundary changes materially; `--kind judgment` for an ordinary material
+   decision; `--kind recovery` while recovering a Mission, TeamRun, or Host
+   session. Active Work keeps the same Work id, MemberRun, Workspace, and
+   native session across every Log entry.
+9. **Close.** Append a `--kind closeout_evidence` Mission Log entry, then
+   record an explicit Mission outcome. Closing a Mission never closes the
+   independent Team or its Members.
 
 ## Host Scheduling Policy
 
@@ -101,10 +108,13 @@ adds no new commands, only a discipline for the ones already listed.
   everything pending in priority order before sleeping again: (1) the
   review queue first — `review` is non-terminal and blocks its owner's
   downstream work; (2) blocked or crashed members; (3) the supply check
-  below; (4) idle-member x unassigned-Work matching; (5) record the
-  judgment (today, updating the current Wave revision); (6) recompute the
-  wait predicate and sleep. One wake processes every pending fact, not one
-  event at a time.
+  below; (4) idle-member x unassigned-Work matching; (5) record any
+  judgment not already logged inline at a material decision point above
+  (`mission log append --kind judgment`, per the log-before-act discipline
+  in **Re-plan** — a material decision inside steps 1-4, e.g. a recovery or
+  composition change, is logged before that mutation, not deferred here);
+  (6) recompute the wait predicate and sleep. One wake processes every
+  pending fact, not one event at a time.
 - **Supply watermark.** Keep ready claimable Works at or above the count of
   currently idle-capable Members. Start decomposing the next tranche once
   the current one is roughly two-thirds consumed; do not wait for the board
@@ -255,7 +265,8 @@ pre-check a snapshot and assume a later completion call is safe.
   the supervisor generation, reconcile stale deliveries, resume compatible native
   sessions, and rebind incompatible Works. Never run `team-run create` during
   recovery — recovery must rebind the existing run and Work ids, never mint
-  new ones (ADR 0050).
+  new ones (ADR 0050). `team-run recover` prints the linked Mission's Log tail
+  first, before any mutation, so read it before acting (ADR 0051).
 - `closed`: explicitly Reopen, rebind, reassign, or cancel unfinished Work.
 - `retired`: never revive; reassign or cancel Work.
 
@@ -286,7 +297,8 @@ accepts the parent Work.
 
 Before claiming completion, prove from durable state:
 
-- Mission intent, Wave judgments, linked Team, and TeamRun are reconstructable;
+- Mission intent, Mission Log judgment, linked Team, and TeamRun are
+  reconstructable;
 - every responsibility is a Work, not an Assignment Message or private Host
   memory;
 - WorkEvent versions and WorkDelivery receipt/recovery facts are consistent;
@@ -297,10 +309,11 @@ Before claiming completion, prove from durable state:
 - TeamRun completion is recorded only after all Works are `done` or
   `cancelled`;
 - native-session references support claims about Provider execution;
-- carried Works retain identity across Wave changes; and
-- the Host records an explicit Wave outcome and Mission closeout.
+- carried Works retain identity across re-plans; and
+- the Host records explicit Mission Log judgment and Mission closeout.
 
 When developing Star Harness itself and the product contract is in question,
 read canonical repository files `docs/product/agent-team-works.md`,
-`docs/decisions/0050-agent-team-work-board-and-message-boundary.md`, and
+`docs/decisions/0050-agent-team-work-board-and-message-boundary.md`,
+`docs/decisions/0051-single-intent-spine.md`, and
 `docs/product/mission-wave-host-plan.md`.
