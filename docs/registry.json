@@ -3770,12 +3770,13 @@
    "status": "stable",
    "lifecycle": "volatile",
    "canonicalFor": [
-    "Host user journey for Mission context, Wave revisions, and long-lived Agent Teams",
+    "Host user journey for Mission context, Mission Log judgment, and long-lived Agent Teams",
     "product acceptance and explicit non-goals for Host orchestration"
    ],
    "dependsOn": [
     "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
     "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
+    "docs/decisions/0051-single-intent-spine.md",
     "docs/dashboard/pages/mission-wave-canvas.md",
     "docs/dashboard/pages/team-run-war-room.md"
    ],
