@@ -3776,6 +3776,121 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
+    /// ADR 0051 changed `compare_and_close_mission` to skip the Wave-gate
+    /// check entirely for a Mission whose `wave_ids` is empty (the only
+    /// shape a NEW Mission can have now, since Wave create is retired). This
+    /// proves the OTHER branch is untouched: a Mission that already
+    /// accumulated `wave_ids` before the cutover still requires every one
+    /// of them to be an accepted, completed Wave -- its in-flight contract
+    /// does not silently change underneath it.
+    #[test]
+    fn mission_close_with_legacy_wave_ids_still_requires_accepted_gate() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-store-legacy-mission-close-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        let mission = Mission {
+            id: "mission-legacy".into(),
+            title: "Pre-cutover Mission".into(),
+            objective: "Already has Wave membership from before ADR 0051".into(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Running,
+            wave_ids: vec!["wave-legacy".into()],
+            agent_team_ids: Vec::new(),
+            outcome_summary: None,
+            completed_by: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        store.append_mission(&mission).expect("append mission");
+        let pending_wave = Wave {
+            id: "wave-legacy".into(),
+            mission_id: "mission-legacy".into(),
+            index: 1,
+            title: "Legacy Wave".into(),
+            objective: "Not yet accepted".into(),
+            context: String::new(),
+            revision: 1,
+            updated_by: Some("host".into()),
+            exit_criteria: None,
+            status: WaveStatus::Running,
+            executor_kind: WaveExecutorKind::Host,
+            executor_run_ids: Vec::new(),
+            accepted_run_id: None,
+            plan_note: None,
+            outcome_summary: None,
+            artifact_refs: Vec::new(),
+            gate_status: WaveGateStatus::Pending,
+            gate_note: None,
+            accepted_by: None,
+            accepted_at: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        store.append_wave(&pending_wave).expect("append wave");
+
+        let mut closed = mission.clone();
+        closed.status = MissionStatus::Completed;
+        closed.outcome_summary = Some("done".into());
+        closed.completed_by = Some("host".into());
+        closed.completed_at = Some("unix-ms:2".into());
+        closed.updated_at = "unix-ms:2".into();
+        let error = store
+            .compare_and_close_mission(&mission, &closed)
+            .expect_err("a pending legacy Wave must still block closeout");
+        assert!(
+            error.to_string().contains("cannot close: Wave"),
+            "error: {error}"
+        );
+
+        let mut accepted_wave = pending_wave.clone();
+        accepted_wave.status = WaveStatus::Completed;
+        accepted_wave.gate_status = WaveGateStatus::Accepted;
+        accepted_wave.accepted_by = Some("host".into());
+        accepted_wave.accepted_at = Some("unix-ms:2".into());
+        accepted_wave.updated_at = "unix-ms:2".into();
+        store
+            .compare_and_append_wave(&pending_wave, &accepted_wave)
+            .expect("accept the legacy wave");
+
+        // compare_and_append_wave folds the gate outcome into Mission.status
+        // as a side effect (line ~754 above), so the CAS baseline for close
+        // must be the freshly stored row, not the pre-gate local `mission`.
+        let after_gate = store
+            .latest_missions()
+            .expect("latest missions")
+            .into_iter()
+            .find(|row| row.id == "mission-legacy")
+            .expect("mission row after gate acceptance");
+        let mut closed_after_gate = after_gate.clone();
+        closed_after_gate.status = MissionStatus::Completed;
+        closed_after_gate.outcome_summary = Some("done".into());
+        closed_after_gate.completed_by = Some("host".into());
+        closed_after_gate.completed_at = Some("unix-ms:3".into());
+        closed_after_gate.updated_at = "unix-ms:3".into();
+        store
+            .compare_and_close_mission(&after_gate, &closed_after_gate)
+            .expect("an accepted legacy Wave allows closeout, same as before ADR 0051");
+        assert_eq!(
+            store
+                .latest_missions()
+                .expect("latest missions")
+                .into_iter()
+                .find(|row| row.id == "mission-legacy")
+                .expect("closed mission row")
+                .status,
+            MissionStatus::Completed
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
     #[test]
     fn native_wave_attempt_and_event_updates_are_concurrency_safe() {
         let root = std::env::temp_dir().join(format!(
