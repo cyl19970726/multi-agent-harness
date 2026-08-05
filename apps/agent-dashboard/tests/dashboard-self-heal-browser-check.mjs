@@ -149,7 +149,12 @@ const api = createHttpServer((request, response) => {
     const plan = state.responsePlan.shift() ?? { delay: 0, status: 200 };
     state.reads.push({ path: url.pathname, space, company, status: plan.status });
     if (url.pathname !== "/v1/snapshot") state.boundedReads += 1;
-    return setTimeout(() => jsonResponse(response, plan.status, plan.status === 200 ? captured : { error: "planned failure" }), plan.delay);
+    const respond = () => jsonResponse(response, plan.status, plan.status === 200 ? captured : { error: "planned failure" });
+    if (plan.gate) {
+      plan.gate.then(() => { if (plan.delay) setTimeout(respond, plan.delay); else respond(); });
+      return;
+    }
+    return setTimeout(respond, plan.delay);
   }
   if (url.pathname === "/v1/events") {
     const space = url.searchParams.get("space") || "space-a";
@@ -196,6 +201,12 @@ function closeStreams(space, company) {
   for (const stream of [...state.streams]) {
     if (stream.space === space && stream.company === company) stream.response.end();
   }
+}
+
+function gated(delay = 0) {
+  let resolve;
+  const gate = new Promise((r) => { resolve = r; });
+  return { gate, resolve, plan: { gate, delay, status: 200 } };
 }
 
 const vite = await createViteServer({
@@ -258,10 +269,12 @@ try {
   // and the response—not the invalidation payload—introduces the new row.
   const beforeExternal = state.reads.length;
   state.titles.set(scopeKey("space-a", "company-a"), "external Works append healed");
-  state.responsePlan.push({ delay: 350, status: 200 });
+  const g1 = gated();
+  state.responsePlan.push(g1.plan);
   emitInvalidation({ revision: 1 });
   await freshness(page, "stale");
   check(!(await page.locator("body").innerText()).includes("external Works append healed"), "invalidation is not synthesized as row truth");
+  g1.resolve();
   await freshness(page, "live");
   await page.getByText("external Works append healed", { exact: true }).waitFor({ timeout: 8_000 });
   check(state.reads.length === beforeExternal + 1, "one invalidation performs one authoritative read");
@@ -270,10 +283,12 @@ try {
   // captured response cannot win; pass 2 must install the newest snapshot.
   const beforeDirty = state.reads.length;
   state.titles.set(scopeKey("space-a", "company-a"), "dirty pass one");
-  state.responsePlan.push({ delay: 350, status: 200 });
+  const g2 = gated();
+  state.responsePlan.push(g2.plan);
   emitInvalidation({ revision: 2 });
   await freshness(page, "stale");
   await waitFor(() => Promise.resolve(state.reads.length === beforeDirty + 1), "first dirty read started");
+  g2.resolve();
   state.titles.set(scopeKey("space-a", "company-a"), "dirty follow-up newest");
   emitInvalidation({ revision: 4 }); // intentional gap
   await freshness(page, "live");
@@ -315,7 +330,8 @@ try {
   // A quiet but healthy stream gets one probe. Successful truth restores Live;
   // silence is not treated as permanent staleness.
   const beforeQuiet = state.reads.length;
-  state.responsePlan.push({ delay: 350, status: 200 });
+  const g5 = gated();
+  state.responsePlan.push(g5.plan);
   await page.evaluate(() => {
     const original = Date.now;
     const shifted = original() + 46_000;
@@ -323,6 +339,7 @@ try {
     window.__restoreDateNow = () => { Date.now = original; };
   });
   await freshness(page, "stale");
+  g5.resolve();
   await freshness(page, "live");
   await page.evaluate(() => window.__restoreDateNow?.());
   check(state.reads.length === beforeQuiet + 1, "quiet-open stream performs one probe, then returns Live after success");
