@@ -12311,6 +12311,7 @@ fn queued_team_delivery(member_id: &str) -> TeamMessageDelivery {
         claimed_unix_ms: None,
         claim_expires_unix_ms: None,
         provider_receipt_id: None,
+        failure_reason: None,
         updated_at: now_string(),
     }
 }
@@ -12652,6 +12653,7 @@ fn prepare_team_message_as(
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
+                failure_reason: None,
                 updated_at: now_string(),
             })
             .collect(),
@@ -16891,6 +16893,51 @@ impl TeamRunLedger {
         Ok(())
     }
 
+    /// Fail every TeamMessage delivery for `member_id` that is still
+    /// `Queued` or `Claimed`.
+    ///
+    /// Pre-bind failures never claim a message, so `Queued` deliveries
+    /// transition directly to `Failed`. Post-bind transport disconnects may
+    /// have `Claimed` deliveries; those are only failed when the claim
+    /// belongs to the current Supervisor generation.
+    fn fail_team_messages_for(&self, member_id: &str, reason: &str) -> CliResult<()> {
+        self.require_supervisor_lease()?;
+        let messages = self.team_messages()?;
+        for message in messages {
+            let Some(delivery) = message
+                .deliveries
+                .iter()
+                .find(|delivery| delivery.member_id == member_id)
+            else {
+                continue;
+            };
+            if !matches!(
+                delivery.status,
+                TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed
+            ) {
+                continue;
+            }
+            // For Claimed: only the owning Supervisor generation may fail it.
+            if delivery.status == TeamDeliveryStatus::Claimed
+                && (delivery.claimed_by_supervisor_id.as_deref() != Some(&self.supervisor_id)
+                    || delivery.claimed_generation != Some(self.supervisor_generation))
+            {
+                continue;
+            }
+            store_conflict_as_usage(self.store.fail_team_message_delivery(
+                &self.run_id,
+                &message.id,
+                member_id,
+                &self.supervisor_id,
+                self.supervisor_generation,
+                reason,
+                current_unix_ms_u64(),
+                &now_string(),
+            ))?;
+        }
+        Ok(())
+    }
+
     /// Messages with a still-queued delivery to `member_id` (excluding the
     /// member's own sends, which it obviously already "has").
     fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
@@ -16977,6 +17024,13 @@ fn stop_member_for_latched_close(
         &member_row.id,
         &format!(
             "member closed before provider acceptance: {}: {}",
+            close.requested_by, close.reason
+        ),
+    )?;
+    ledger.fail_team_messages_for(
+        &member_row.id,
+        &format!(
+            "member closed before message delivery: {}: {}",
             close.requested_by, close.reason
         ),
     )?;
@@ -17925,6 +17979,10 @@ fn run_member_orchestration(
                 }
                 if latest.native_session.is_none() {
                     journal_member_failure(ledger, &latest, &reason);
+                    // Pre-bind: mail queued for this member can never be
+                    // delivered. Fail every pending delivery so the backlog
+                    // reaches a resolved state (observable via inbox).
+                    let _ = ledger.fail_team_messages_for(&latest.id, &reason);
                     return MemberOutcome::new(&latest, MemberRunStatus::Failed, reason);
                 }
                 if let Err(failure_error) =
@@ -17935,6 +17993,17 @@ fn run_member_orchestration(
                         MemberRunStatus::Failed,
                         format!(
                             "provider transport disconnected, but its unreceived Work claim could not be failed safely: {failure_error}"
+                        ),
+                    );
+                }
+                // Post-bind transport disconnect: fail queued mail in the
+                // same atomic generation so the inbox is consistent.
+                if let Err(failure_error) = ledger.fail_team_messages_for(&latest.id, &reason) {
+                    return MemberOutcome::new(
+                        &latest,
+                        MemberRunStatus::Failed,
+                        format!(
+                            "provider transport disconnected, but its queued TeamMessage could not be failed safely: {failure_error}"
                         ),
                     );
                 }

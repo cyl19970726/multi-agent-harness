@@ -3117,6 +3117,10 @@ pub struct TeamMessageDelivery {
     /// treated as uncertain after a Supervisor crash.
     #[serde(default)]
     pub provider_receipt_id: Option<String>,
+    /// Why this delivery failed. Only set when status is
+    /// [`TeamDeliveryStatus::Failed`].
+    #[serde(default)]
+    pub failure_reason: Option<String>,
     pub updated_at: String,
 }
 
