@@ -52,7 +52,7 @@ a second task system or a second agent identity.
 - Free assignment between peer Members.
 - Treating provider chat, transcripts, hooks, or native subagents as the Work
   source of truth.
-- Requiring Mission/Wave for ordinary Organization work.
+- Requiring Mission or Mission Log for ordinary Organization work.
 - A universal business-permission language in the first implementation.
 - Dual-write compatibility between the target Work kernel and the existing
   Company WorkItem / Agent Team Work responsibility models after cutover.
@@ -198,16 +198,19 @@ Acceptance:
 - No UI shall infer hierarchy, assignment, or runtime health from names or
   first-row fallback.
 
-### R9 — Optional Mission/Wave
+### R9 — Optional Mission and Mission Log
 
-As a Host, I want Mission/Wave only when long-horizon planning or material
-replanning is useful.
+As a Host, I want Mission and its append-only Log only when long-horizon intent
+or material judgment history is useful.
 
 Acceptance:
 
-- Ordinary Organization Work shall run without Mission/Wave.
-- A Work may link a Mission when durable intent spans multiple Teams or Waves.
-- Mission/Wave shall not own Work assignment or replace the shared board.
+- Ordinary Organization Work shall run without a Mission.
+- A Work may link a Mission when durable intent spans multiple Teams.
+- Material Host judgment and re-plan history shall be appended to the Mission
+  Log, not written to a new Wave.
+- Mission and Mission Log shall not own Work assignment or replace the shared
+  board.
 
 ### R10 — Continuous Work discovery and self-evolution
 

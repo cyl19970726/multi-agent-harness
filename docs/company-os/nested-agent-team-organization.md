@@ -203,12 +203,13 @@ Every relationship is explicit. UI must not infer ancestry, responsibility, or
 runtime health from matching names, provider sessions, document authorship, or
 first-row fallback.
 
-## Mission/Wave
+## Mission and Mission Log
 
-Mission/Wave remains optional. Use it when an outcome spans several Teams or
-the Host needs durable long-horizon plan and replan history. Work still owns
-responsibility and state; Mission/Wave never becomes the Organization tree or
-task board.
+Mission remains optional. Use it when an outcome spans several Teams or the
+Host needs durable long-horizon intent and closeout. Its append-only Mission
+Log records material judgment and re-plan history. Work still owns
+responsibility and state; Mission never becomes the Organization tree or task
+board.
 
 ## Implementation spec and decision
 

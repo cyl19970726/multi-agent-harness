@@ -112,13 +112,13 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Work | Work, WorkEvent, WorkDelivery, Milestone and typed business/Approval relations | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
 | Plugins / Gateways | GatewayPlugin manifest, GatewayAction, GatewayEvent, connector sync records, view-extension declarations, evidence refs | platform capabilities, external state synchronization, and presentation extensions; never approval or business truth |
-| Execution Space | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
+| Execution Space | Mission context, append-only Mission Log judgment, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
 | Project Binding / external source | ProjectBinding, ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how repositories, worktrees, GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are selected or mapped |
 
 There is no native `Project`, Task Graph, GoalPhase, or separate universal
-Standing Agent scheduler. Mission/Wave is the optional long-task coordination
-model. AgentMember is the durable agent identity; MemberRun and provider-native
-subagents remain execution details.
+Standing Agent scheduler. Mission plus its Mission Log is the optional
+long-task coordination model. AgentMember is the durable agent identity;
+MemberRun and provider-native subagents remain execution details.
 
 An external GitHub repository may own the software product contract for a real
 application. Company OS still owns the commercial model, operating modules,

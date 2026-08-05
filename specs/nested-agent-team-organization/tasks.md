@@ -73,9 +73,9 @@ owner_role: product-architecture
   - Verify desktop, tablet, 390px, and 320px states plus error/empty/loading.
   - _Requirements: R8_
 
-- [ ] 11. Keep Mission/Wave optional
+- [ ] 11. Keep Mission and Mission Log optional
   - Link Work to Mission only when requested by the Host.
-  - Prove ordinary nested Team work without Mission/Wave.
+  - Prove ordinary nested Team work without a Mission.
   - Prove a multi-Team Mission without changing Work ownership.
   - _Requirements: R9_
 

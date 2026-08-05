@@ -1628,6 +1628,66 @@ impl Validate for Wave {
 }
 
 // ---------------------------------------------------------------------------
+// Mission Log (ADR 0051)
+//
+// Mission absorbs Wave as an append-only Mission Log. A MissionLogEntry is
+// one immutable, monotonically revisioned Markdown record of Host judgment,
+// re-plan, recovery narration, or closeout evidence. Unlike Wave it has no
+// lifecycle, gate, or "advance" operation — there is nothing to accept or
+// reject, only entries to append and read. The Log is required reading, not
+// optional narration: the recovery entrypoint and session re-entry injection
+// are mandatory readers of its tail so a Host (or its replacement) resumes
+// from durable judgment instead of re-deriving intent from provider-native
+// state that a compaction can destroy.
+// ---------------------------------------------------------------------------
+
+/// The nature of one [`MissionLogEntry`]. There is deliberately no variant for
+/// routine narration — every entry is one of these four material kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionLogEntryKind {
+    /// A Host decision at a material point: a new Work tranche, a composition
+    /// change, or a model/provider switch.
+    Judgment,
+    /// A material change to the Host's plan since the previous entry.
+    Replan,
+    /// Narration written while recovering a Mission, TeamRun, or Host session.
+    Recovery,
+    /// The evidence or outcome that justifies Mission closeout.
+    CloseoutEvidence,
+}
+
+/// One immutable, append-only Mission Log row (ADR 0051). `revision` is
+/// monotonic per `mission_id` and store-assigned, exactly like `Wave.index`;
+/// callers never choose it. There is no `updated_at` because a
+/// [`MissionLogEntry`] is never revised in place — a correction is a new
+/// entry, not a mutation of an old one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionLogEntry {
+    pub id: String,
+    pub mission_id: String,
+    pub revision: u32,
+    pub kind: MissionLogEntryKind,
+    /// Markdown body. Must be non-empty: an append-only judgment log with a
+    /// blank entry is indistinguishable from Wave's write-only failure.
+    pub body: String,
+    /// The actor that authored this entry (a Host identity, "host", or an
+    /// explicit operator/agent id).
+    pub actor: String,
+    pub created_at: String,
+}
+
+impl Validate for MissionLogEntry {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "MissionLogEntry.id")?;
+        require_non_empty(&self.mission_id, "MissionLogEntry.mission_id")?;
+        require_non_empty(&self.body, "MissionLogEntry.body")?;
+        require_non_empty(&self.actor, "MissionLogEntry.actor")?;
+        require_non_empty(&self.created_at, "MissionLogEntry.created_at")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Dynamic workflow runtime objects (WP1)
 //
 // A `WorkflowRun` is a standalone object with its own id and lifecycle. Each

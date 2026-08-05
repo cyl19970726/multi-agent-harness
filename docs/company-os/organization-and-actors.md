@@ -201,12 +201,12 @@ The complete Agent Team pages are reused. Organization adds hierarchy,
 cross-Team Work roll-up, business relations, and Human/external context; it
 does not fork a second implementation of member activity or messaging.
 
-## Mission and Wave boundary
+## Mission and Mission Log boundary
 
-Mission/Wave remains optional. It is useful when a Host needs durable intent,
-multi-Team context, material re-plan history, or explicit closeout. Ordinary
-Organization scheduling uses Team Works directly and does not require a
-Mission, Wave, or Assignment Message.
+Mission remains optional. It is useful when a Host needs durable intent,
+multi-Team context, or explicit closeout; its append-only Mission Log records
+material judgment and re-plan history. Ordinary Organization scheduling uses
+Team Works directly and does not require a Mission or Assignment Message.
 
 ## Current implementation truth and migration
 

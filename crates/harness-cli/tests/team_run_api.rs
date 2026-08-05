@@ -170,6 +170,44 @@ fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
     .expect("seed wave");
 }
 
+/// Seed one additional historical Wave row directly, bypassing the retired
+/// `wave create` write path (ADR 0051). Unlike `seed_native_mission_wave`
+/// (which overwrites `waves.jsonl` with exactly one row) this appends, so
+/// tests needing more than one historical Wave -- or a Wave alongside one
+/// already seeded by `seed_native_mission_wave` -- can call it repeatedly.
+fn seed_historical_wave(
+    home: &TempHome,
+    project_id: &str,
+    id: &str,
+    mission_id: &str,
+    index: u64,
+    executor_kind: &str,
+) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("waves.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open wave ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "mission_id": mission_id,
+            "index": index,
+            "title": "Historical Wave",
+            "objective": "Seeded pre-cutover row for read/navigation coverage",
+            "executor_kind": executor_kind,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical wave");
+}
+
 /// Run `harness team-run ...` in the given project and return parsed stdout JSON.
 fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
     let mut full = vec!["--project", project_id, "team-run"];
@@ -977,7 +1015,7 @@ fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
 }
 
 #[test]
-fn mission_wave_cli_authoring_and_accepted_team_gate() {
+fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
     let home = TempHome::new("mission-wave-cli");
     let project_id = init_project(&home, "alpha");
     let mission = command_json(
@@ -993,32 +1031,22 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
             "--objective",
             "Prove the native authoring surface",
             "--desired-outcome",
-            "One accepted Wave",
+            "A completed retry attempt",
             "--json",
         ],
     );
     assert_eq!(mission["id"].as_str(), Some("mission-cli"));
-    let wave = command_json(
+    // `wave create` is retired (ADR 0051): seed a historical row directly so
+    // TeamRun creation can still explicitly cite an existing Wave id (that
+    // citation path is unaffected -- only Wave *write* commands retired).
+    seed_historical_wave(
         &home,
         &project_id,
-        &[
-            "wave",
-            "create",
-            "--id",
-            "wave-cli",
-            "--mission-id",
-            "mission-cli",
-            "--title",
-            "Reviewed TeamRun",
-            "--objective",
-            "Complete one assigned member attempt",
-            "--executor-kind",
-            "agent_team",
-            "--json",
-        ],
+        "wave-cli",
+        "mission-cli",
+        1,
+        "agent_team",
     );
-    assert_eq!(wave["index"].as_u64(), Some(1));
-    assert_eq!(wave["executor_kind"].as_str(), Some("agent_team"));
 
     let run = team_run_json(
         &home,
@@ -1075,10 +1103,17 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
         &["mission", "show", "--id", "mission-cli", "--json"],
     );
     assert_eq!(running_mission["status"].as_str(), Some("running"));
-    let gated = command_json(
+
+    // `wave gate` is retired (ADR 0051): there is nothing left to accept,
+    // revise, or block. The Host records closeout evidence in the Mission
+    // Log instead, then closes the Mission directly -- no Wave acceptance
+    // required.
+    let gate_error = run_harness(
         &home,
-        &project_id,
+        home.base(),
         &[
+            "--project",
+            &project_id,
             "wave",
             "gate",
             "--id",
@@ -1087,38 +1122,54 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
             "accepted",
             "--run-id",
             &run_id,
-            "--accepted-by",
+        ],
+    );
+    assert!(!gate_error.status.success());
+    assert!(String::from_utf8_lossy(&gate_error.stderr).contains("retired"));
+
+    let closeout = command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-cli",
+            "--kind",
+            "closeout_evidence",
+            "--body",
+            "artifact:smoke -- assigned run completed",
+            "--actor",
             "operator",
-            "--note",
-            "gate passed",
-            "--outcome",
-            "assigned run completed",
-            "--artifact",
-            "artifact:smoke",
             "--json",
         ],
     );
-    assert_eq!(gated["gate_status"].as_str(), Some("accepted"));
-    assert_eq!(gated["status"].as_str(), Some("completed"));
-    assert_eq!(gated["accepted_run_id"].as_str(), Some(run_id.as_str()));
-    assert_eq!(gated["accepted_by"].as_str(), Some("operator"));
-    assert_eq!(
-        gated["artifact_refs"],
-        serde_json::json!(["artifact:smoke"])
-    );
-
-    let mission = command_json(
+    assert_eq!(closeout["revision"].as_u64(), Some(1));
+    let closed = command_json(
         &home,
         &project_id,
-        &["mission", "show", "--id", "mission-cli", "--json"],
+        &[
+            "mission",
+            "close",
+            "--id",
+            "mission-cli",
+            "--outcome",
+            "assigned run completed",
+            "--completed-by",
+            "operator",
+            "--json",
+        ],
     );
-    assert_eq!(mission["wave_ids"], serde_json::json!(["wave-cli"]));
+    assert_eq!(closed["status"].as_str(), Some("completed"));
+    // No live path populates wave_ids for a seeded historical Wave.
+    assert_eq!(closed["wave_ids"], serde_json::json!([]));
 }
 
 #[test]
-fn post_mission_wave_and_lightweight_gate() {
+fn post_mission_and_retired_wave_write_routes() {
     let home = TempHome::new("mission-wave-http");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let (status, body) = serve.post_json(
         "/v1/missions",
@@ -1130,6 +1181,8 @@ fn post_mission_wave_and_lightweight_gate() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["id"].as_str(), Some("mission-http"));
+
+    // `POST /v1/waves` is retired (ADR 0051): the Mission Log absorbed it.
     let (status, body) = serve.post_json(
         "/v1/waves",
         &serde_json::json!({
@@ -1140,20 +1193,50 @@ fn post_mission_wave_and_lightweight_gate() {
             "executor_kind": "host"
         }),
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["index"].as_u64(), Some(1));
-    assert!(body.get("snapshot").is_none());
+    assert_eq!(status, 400, "body: {body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("retired") && error.contains("mission log append"),
+        "error: {error}"
+    );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
-    assert_eq!(snapshot["waves"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        snapshot["waves"].as_array().map(Vec::len),
+        Some(0),
+        "the rejected POST must not have appended a row"
+    );
+
+    // The Host records judgment on the Mission Log instead.
+    let logged = command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-http",
+            "--kind",
+            "judgment",
+            "--body",
+            "clarify scope before assigning",
+            "--json",
+        ],
+    );
+    assert_eq!(logged["revision"].as_u64(), Some(1));
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot["mission_log"].as_array().map(Vec::len), Some(1));
+
+    // `POST /v1/waves/{id}/gate` is retired too, regardless of whether the
+    // named Wave id exists.
     let (status, body) = serve.post_json(
         "/v1/waves/wave-http/gate",
         &serde_json::json!({"status": "revise", "note": "clarify scope"}),
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["gate_status"].as_str(), Some("revise"));
-    assert_eq!(body["result"]["status"].as_str(), Some("planned"));
-    assert_eq!(body["result"]["gate_note"].as_str(), Some("clarify scope"));
+    assert_eq!(status, 400, "body: {body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(error.contains("retired"), "error: {error}");
 }
 
 #[test]
@@ -1276,25 +1359,9 @@ fn linked_team_run_rejects_previous_attempt_from_another_wave() {
                 "--json",
             ],
         );
-        let _ = command_json(
-            &home,
-            &project_id,
-            &[
-                "wave",
-                "create",
-                "--id",
-                wave_id,
-                "--mission-id",
-                mission_id,
-                "--title",
-                wave_id,
-                "--objective",
-                "test lineage",
-                "--executor-kind",
-                "agent_team",
-                "--json",
-            ],
-        );
+        // `wave create` is retired (ADR 0051): seed the historical row
+        // directly so TeamRun creation can still cite it via --wave-id.
+        seed_historical_wave(&home, &project_id, wave_id, mission_id, 1, "agent_team");
     }
     let first = team_run_json(
         &home,
@@ -4826,7 +4893,7 @@ fn post_team_run_transition_and_compatibility_lineage() {
     assert_eq!(body["ok"].as_bool(), Some(false), "body: {body}");
 
     // Illegal attempt move: planning → completed; an attempt must reach
-    // reviewing before it can become completion-eligible for a Wave gate.
+    // reviewing before it can become completion-eligible.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{wave1_id}/transition"),
         &serde_json::json!({"status": "completed"}),
@@ -7540,5 +7607,224 @@ fn team_run_board_summary_is_bounded_and_reports_counts_and_member_state() {
         String::from_utf8_lossy(&missing.stderr).contains("team run not found"),
         "stderr: {}",
         String::from_utf8_lossy(&missing.stderr)
+    );
+}
+
+/// ADR 0051 mandatory reader: `team-run recover` must print the linked
+/// Mission's Log tail before its recovery report, so a recovering Host
+/// re-reads judgment before it re-derives intent from provider-native state.
+/// A freshly created run's members default to `MemberCoordinationStatus::Active`
+/// (`classify_member_recovery_path`'s first check), so recovery is a clean
+/// no-op pass here -- this test is only about what gets printed and in what
+/// order, not about the member-reopen/rebind machinery covered elsewhere.
+#[test]
+fn team_run_recover_prints_mission_log_tail_before_the_report() {
+    let home = TempHome::new("team-run-recover-mission-log");
+    let project_id = init_project(&home, "alpha");
+
+    command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-recover",
+            "--title",
+            "Recovering mission",
+            "--objective",
+            "Prove team-run recover reads judgment first",
+            "--json",
+        ],
+    );
+    for (kind, body) in [
+        ("judgment", "First judgment before recovery."),
+        ("replan", "Re-planned after review."),
+        ("recovery", "Most recent judgment entry."),
+    ] {
+        command_json(
+            &home,
+            &project_id,
+            &[
+                "mission",
+                "log",
+                "append",
+                "--mission-id",
+                "mission-recover",
+                "--kind",
+                kind,
+                "--body",
+                body,
+                "--json",
+            ],
+        );
+    }
+
+    let create_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Recoverable run",
+            "--mission-id",
+            "mission-recover",
+            "--member",
+            "lead:coordinator:kimi#Coordinate the delivery",
+        ],
+    );
+    assert!(
+        create_out.status.success(),
+        "team-run create failed: {}",
+        String::from_utf8_lossy(&create_out.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&create_out.stdout)
+        .trim()
+        .to_string();
+    assert!(run_id.starts_with("team-run-"), "run id: {run_id}");
+
+    let recover_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &run_id,
+        ],
+    );
+    assert!(
+        recover_out.status.success(),
+        "team-run recover failed: {}",
+        String::from_utf8_lossy(&recover_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&recover_out.stdout).to_string();
+    let log_header_pos = stdout
+        .find("mission log (last 3)")
+        .unwrap_or_else(|| panic!("mission log tail header missing: {stdout}"));
+    let report_pos = stdout
+        .find("recovery complete")
+        .unwrap_or_else(|| panic!("recovery report missing: {stdout}"));
+    assert!(
+        log_header_pos < report_pos,
+        "mission log tail must print before the recovery report: {stdout}"
+    );
+    // Exactly 3 entries exist, so tail(3) shows all three, oldest first.
+    let judgment_pos = stdout
+        .find("First judgment before recovery.")
+        .unwrap_or_else(|| panic!("revision 1 body missing from tail: {stdout}"));
+    let replan_pos = stdout
+        .find("Re-planned after review.")
+        .unwrap_or_else(|| panic!("revision 2 body missing from tail: {stdout}"));
+    let recovery_pos = stdout
+        .find("Most recent judgment entry.")
+        .unwrap_or_else(|| panic!("revision 3 body missing from tail: {stdout}"));
+    assert!(
+        judgment_pos < replan_pos && replan_pos < recovery_pos,
+        "tail must render oldest-of-the-tail first: {stdout}"
+    );
+    assert!(stdout.contains("[judgment]"), "stdout: {stdout}");
+    assert!(stdout.contains("[replan]"), "stdout: {stdout}");
+    assert!(stdout.contains("[recovery]"), "stdout: {stdout}");
+
+    // A team-run linked to a Mission with no Log entries yet prints the
+    // explicit sentinel instead of an empty section.
+    command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-recover-empty",
+            "--title",
+            "Fresh mission",
+            "--objective",
+            "No judgment recorded yet",
+            "--json",
+        ],
+    );
+    let empty_create_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Recoverable run with no log",
+            "--mission-id",
+            "mission-recover-empty",
+            "--member",
+            "lead:coordinator:kimi#Coordinate the delivery",
+        ],
+    );
+    assert!(empty_create_out.status.success());
+    let empty_run_id = String::from_utf8_lossy(&empty_create_out.stdout)
+        .trim()
+        .to_string();
+    let empty_recover_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &empty_run_id,
+        ],
+    );
+    assert!(empty_recover_out.status.success());
+    let empty_stdout = String::from_utf8_lossy(&empty_recover_out.stdout);
+    assert!(
+        empty_stdout.contains("no mission log yet"),
+        "stdout: {empty_stdout}"
+    );
+
+    // A team-run with no linked Mission at all prints no mission-log section
+    // -- the mandatory reader is conditional on `run.mission_id`, not
+    // unconditional narration.
+    let unlinked_create_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Standalone run with no Mission",
+            "--member",
+            "lead:coordinator:kimi#Coordinate the delivery",
+        ],
+    );
+    assert!(unlinked_create_out.status.success());
+    let unlinked_run_id = String::from_utf8_lossy(&unlinked_create_out.stdout)
+        .trim()
+        .to_string();
+    let unlinked_recover_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &unlinked_run_id,
+        ],
+    );
+    assert!(unlinked_recover_out.status.success());
+    let unlinked_stdout = String::from_utf8_lossy(&unlinked_recover_out.stdout);
+    assert!(
+        !unlinked_stdout.contains("mission log"),
+        "a run with no linked Mission must not print a mission-log section: {unlinked_stdout}"
     );
 }

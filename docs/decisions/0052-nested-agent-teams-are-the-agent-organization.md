@@ -94,11 +94,11 @@ Message may link Work but never establishes or changes responsibility. Work
 assignment creates WorkDelivery. Runtime Supervisor retains durable delivery,
 busy/idle/recovery, interrupt, resume, Close, and exactly-one-driver semantics.
 
-### Mission/Wave remains optional
+### Mission and Mission Log remain optional
 
-Mission/Wave continues to own durable outcome and Host plan/replan history for
-long-horizon work. It is not required for ordinary Organization work and never
-owns task assignment.
+Mission continues to own durable intent and outcome for long-horizon work. Its
+append-only Mission Log records Host judgment and re-plan history. Neither is
+required for ordinary Organization work, and neither owns task assignment.
 
 ## Amendments to earlier decisions
 
@@ -154,10 +154,10 @@ administration. Peers may create unassigned Work and communicate; Hosts assign.
 Rejected. The current AI task is replaceable and should not own Company
 identity or silently accept Agent results.
 
-### Require Mission/Wave for Organization work
+### Require Mission for Organization work
 
-Rejected. Mission/Wave is valuable for long-horizon judgment, not ordinary
-queue and hierarchy management.
+Rejected. Mission and its Log are valuable for long-horizon intent and
+judgment, not ordinary queue and hierarchy management.
 
 ## Validation
 

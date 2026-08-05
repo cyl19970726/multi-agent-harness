@@ -2,7 +2,7 @@
 
 status: stable  
 owner: lead-operations  
-last reviewed: 2026-07-27
+last reviewed: 2026-08-05
 
 This map records the current `target/debug/harness` command surface. It separates
 implemented CLI from API/store-backed capability that does not yet have a
@@ -23,8 +23,8 @@ dedicated CLI.
 | --- | --- | --- | --- |
 | Execution Space / Project Binding routing | `init`, `space init/list/current/switch/show/migrate-from-project`, `project add/list/current/switch/remove/show/migrate` | Implemented | `--space` selects Mission/Wave/Agent Team/Workflow storage; `--project` independently selects provider cwd, instructions/Skills, Git/worktree and permission boundaries. Raw store overrides and project-derived execution stores are compatibility paths only. |
 | Company Store routing | `company init/list/current/switch/show/migrate-from-project`, global `--company <id>` for `company ...`, `HARNESS_COMPANY` | Implemented | ADR 0042 Phase 2 first slice. `harness company ...` uses the selected Company Store when explicit/current Company exists; execution commands still use Project routing. |
-| Mission | `mission create/list/show/update-context/create-team/link-team/unlink-team/close` | Implemented | Current durable intent surface. |
-| Wave | `wave create/list/show/history/update/advance/gate` | Implemented | Lightweight host plan/judgment record. |
+| Mission | `mission create/list/show/update-context/create-team/link-team/unlink-team/close`, `mission log append/show` | Implemented | Current durable intent surface. `mission log append --mission-id <id> --kind judgment\|replan\|recovery\|closeout_evidence --body <markdown>` and `mission log show --mission-id <id> [--tail <n>]` are the ADR 0051 append-only Mission Log that absorbed Wave as the Host's judgment record. |
+| Wave | `wave list/show/history` | Implemented (historical reads only) | `wave create/update/advance/gate` retired by the ADR 0051 Mission Log cutover — the CLI, HTTP (`/v1/waves`...), and MCP (`wave_create`...) surfaces all return the same retirement error pointing at `mission log append`. Existing Wave rows remain readable as historical context; no data migration. |
 | Agent Team definition | `team create/list/show/rename/add-member/remove-member/close/archive` | Implemented | Defines reusable teams independent of Mission/Wave. |
 | Durable Agent Organization identity | `org member create/converge/list/show`, `org bootstrap-lead`, `org host`, `org cutover-audit` | Implemented foundation | ADR 0052 CLI/store slice. Durable AgentMember is separate from MemberRun/native Session. `converge` is explicit and deterministic; `cutover-audit` refuses compatibility-only, missing, or conflicting Host authority. HTTP/MCP/UI and full Organization/Work cutover remain pending. |
 | Agent Team run | `team-run create/list/status/work/inbox/host-inbox/bind-host/ack/reconcile-delivery/add-member/rename-member/close-member/reopen-member/deactivate-member/start/send/resolve-interaction/events/complete/cancel` | Implemented | Runtime control plane for shared Works, persistent MemberRuns, WorkDelivery, and typed conversation. `team-run work` exposes list/show/create/assign/claim/start/block/submit/request-changes/accept/cancel. Close freezes coordination and releases a managed runtime; Reopen resumes the same MemberRun/native session; Deactivate retires permanently. |
@@ -34,7 +34,7 @@ dedicated CLI.
 | Dynamic Workflow | `workflow list/run/run-script/get-output/patch/gc-worktrees/reap-workers/reap` | Implemented | WorkflowRun/WorkflowStep remain their own execution truth. |
 | Dashboard | `dashboard snapshot` | Implemented | Produces operator projection. |
 | Serve/API | `serve [--addr] [--once]`, `mcp`, `daemon start/status/stop`, `hook record` | Implemented | Local HTTP/API/MCP/daemon surfaces. |
-| Historical migration | `legacy-goal-task export`, `legacy-goal-task verify` | Retired compatibility | Export/verify only. Current planning must use Mission/Wave. |
+| Historical migration | `legacy-goal-task export`, `legacy-goal-task verify` | Retired compatibility | Export/verify only. Current planning must use Mission plus the Mission Log; Wave remains readable only as historical context. |
 | Retired command families | old `goal`, `phase`, `task`, proposal/review/design surfaces | Retired compatibility | These fail explicitly and must not be used for new work. |
 
 ## Company OS CLI map

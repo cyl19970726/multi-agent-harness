@@ -183,14 +183,15 @@ but it must preserve these object boundaries. A chat bubble is not a Work row;
 a runtime badge is not organizational authority; a child Team is not a native
 subagent group.
 
-## Mission and Wave
+## Mission and Mission Log
 
-Mission/Wave remains a useful optional control plane for durable outcome,
-multi-Team context, material re-plan, and closeout. It is not required for
-ordinary Organization Work and is not replaced by the Works board:
+Mission plus its append-only Mission Log remains a useful optional control
+plane for durable outcome, multi-Team context, material re-plan, and closeout.
+It is not required for ordinary Organization Work and is not replaced by the
+Works board:
 
 - Mission explains the durable objective;
-- Wave records the Host's current plan and judgment;
+- Mission Log records the Host's material judgment and re-plan history;
 - Work records current responsibility and state; and
 - Message records conversation.
 

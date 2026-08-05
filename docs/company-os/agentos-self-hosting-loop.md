@@ -111,9 +111,9 @@ Team may assign discovered Work to direct children. The root Lead therefore
 receives integrated outcomes and material escalation instead of becoming the
 only source of new tasks.
 
-Mission/Wave is optional. Use it when the Lead needs durable long-horizon
-intent, material re-plan history, multi-Team context, or closeout. The Works
-board remains the scheduling surface.
+Mission is optional. Use it when the Lead needs durable long-horizon intent,
+multi-Team context, or closeout. Its append-only Mission Log records material
+judgment and re-plan history. The Works board remains the scheduling surface.
 
 ## Runtime recovery during dogfood
 

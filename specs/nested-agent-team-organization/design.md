@@ -305,12 +305,12 @@ Continue to use Works, Activity, Members, mailboxes, and truthful capacity.
 Organization adds breadcrumbs and recursive drilldown; it does not create a
 second War Room implementation.
 
-## Mission/Wave boundary
+## Mission and Mission Log boundary
 
-Mission/Wave is optional. It is appropriate for durable outcomes spanning
-multiple Teams or material Host replanning. Work still owns responsibility.
-Wave still owns Host plan/judgment. Mission never becomes the Organization
-root or the Work board.
+Mission is optional. It is appropriate for durable outcomes spanning multiple
+Teams. Its append-only Mission Log records material Host judgment and
+replanning. Work still owns responsibility. Mission never becomes the
+Organization root or the Work board.
 
 ## Migration strategy
 

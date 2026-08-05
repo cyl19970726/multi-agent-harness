@@ -317,6 +317,29 @@ export interface Wave {
   updated_at?: string;
 }
 
+/** Kind of a {@link MissionLogEntry} (ADR 0051). */
+export type MissionLogEntryKind =
+  | "judgment"
+  | "replan"
+  | "recovery"
+  | "closeout_evidence";
+
+/**
+ * One immutable, append-only Mission Log row (ADR 0051). Mission absorbs
+ * Wave as this append-only judgment log: `revision` is monotonic per
+ * `mission_id` and store-assigned. There is no update or delete — a
+ * correction is a new entry, not a mutation of an old one.
+ */
+export interface MissionLogEntry {
+  id: string;
+  mission_id: string;
+  revision: number;
+  kind: MissionLogEntryKind | string;
+  body: string;
+  actor: string;
+  created_at: string;
+}
+
 /** Lifecycle of a {@link TeamRun} (mirrors the harness team-run status). */
 export type TeamRunStatus =
   | "planning"
@@ -901,8 +924,13 @@ export interface DashboardSnapshot {
   workflow_steps?: WorkflowStep[];
   /** Native durable Mission rows. */
   missions?: Mission[];
-  /** Native ordered Wave rows. */
+  /** Native ordered Wave rows. Historical only — ADR 0051 retired Wave
+   * write commands; new Host judgment is recorded on mission_log below. */
   waves?: Wave[];
+  /** Append-only Mission Log rows (ADR 0051): the Host's versioned judgment,
+   * replacing Wave as the write path. Every row is a permanent entry, not a
+   * latest-wins projection. */
+  mission_log?: MissionLogEntry[];
   /** Agent Team runs (team-console): host-orchestrated member groups. */
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
