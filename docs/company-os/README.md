@@ -37,8 +37,9 @@ and page-building skills for each owned surface. Use:
 scripts/install-skill.sh --agent both --suite company-os
 ```
 
-Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands
-are implemented. The current Organization compatibility CLI covers both the flat
+Dedicated Docs, Work, Organization, and Approval baseline CLI commands
+are implemented. Finance baseline CLI commands are parked at the contract layer
+(see issue #323); Commitment/Payment code remains dormant.
 `harness company org ...` surface and nested `actor/unit/membership` groups for
 inspection and **bootstrap-only** Human administrative authoring of Humans,
 Standing Agents, OrgUnits, Memberships, declared actor status, and
@@ -49,15 +50,11 @@ does not yet implement the recursive AgentTeam organization in
 records remain current implementation truth during an explicit cutover; they
 must not be presented as the target identity model.
 
-Finance CLI v1 intentionally preserves the current Store/API governance
-boundary. The flat `harness company finance ...` surface keeps the existing
-Human administrative initial proposed-Commitment import path, while approval
-requests, approval decisions, Commitment transitions, and Payment
-records/transitions use the governed Action dispatcher. The nested
-`commitment/payment` surface adds the baseline Action-backed operator shape used
-by the broader Company OS operator smoke. Budget, invoice, refund, reporting,
-and deeper settlement lifecycle remain gated until backed by commands and
-acceptance checks.
+Finance CLI v1 is parked at the contract layer (2026-08-05, issue #323).
+The flat `harness company finance ...` surface and nested `commitment/payment`
+commands remain implemented but are no longer part of the active operator suite.
+Commitment/Payment code stays dormant until full decommission; the smoke script
+is preserved as historical evidence.
 
 Current Company OS storage remains append-only JSONL ledgers plus latest
 projections. SQL is planned as a derived read/query/index layer for Docs query,

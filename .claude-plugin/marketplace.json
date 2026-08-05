@@ -8,23 +8,6 @@
   },
   "plugins": [
     {
-      "name": "star-workflow",
-      "displayName": "Dynamic Workflow",
-      "description": "Author a standalone Starlark Dynamic Workflow (loops, conditionals, data-driven fan-out, verify-repair, budgets, verdicts) and run it with `harness workflow run-script`.",
-      "version": "0.1.0",
-      "category": "orchestration",
-      "keywords": [
-        "workflow",
-        "orchestration",
-        "starlark",
-        "multi-agent"
-      ],
-      "source": {
-        "source": "github",
-        "repo": "cyl19970726/multi-agent-harness"
-      }
-    },
-    {
       "name": "star-harness",
       "displayName": "Star Harness",
       "description": "Mission/Wave orchestration and autonomous Agent Team collaboration for Codex, Claude Code, and Kimi.",

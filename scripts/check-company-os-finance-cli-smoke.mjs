@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+// RETIRED at contract layer 2026-08-05 (issue #323).
+// Commitment/Payment code remains dormant; script preserved as
+// historical evidence. Remove when code is fully decommissioned.
+
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";

@@ -8,7 +8,6 @@ const suiteSkills = [
   "company-business-project-bootstrap",
   "company-docs-operator",
   "company-work-operator",
-  "company-finance-operator",
   "company-org-operator",
   "company-module-designer",
   "company-page-builder",
@@ -19,7 +18,6 @@ const suiteSkills = [
 const operatorSkills = [
   "company-docs-operator",
   "company-work-operator",
-  "company-finance-operator",
   "company-org-operator",
 ];
 
@@ -28,8 +26,8 @@ const failures = [];
 expectSuiteSize();
 
 function expectSuiteSize() {
-  if (suiteSkills.length !== 9) {
-    failures.push(`company-os suite must contain exactly 9 skills, found ${suiteSkills.length}`);
+  if (suiteSkills.length !== 8) {
+    failures.push(`company-os suite must contain exactly 8 skills, found ${suiteSkills.length}`);
   }
 }
 
@@ -90,15 +88,15 @@ for (const skill of suiteSkills) {
   expect(skillContracts.includes(`../../skills/${skill}/SKILL.md`), `skill-contracts.md missing ${skill}`);
 }
 expect(
-  skillContracts.includes("Docs, Work, Organization, Approval, and Finance baseline dedicated CLI implemented; governed OrgChangeProposal and deeper Finance lifecycle remain planned"),
-  "skill-contracts.md must record baseline Docs/Work/Org/Approval/Finance CLI implementation",
+  skillContracts.includes("Docs, Work, Organization, and Approval baseline dedicated CLI implemented; governed OrgChangeProposal remains planned; Finance contract-layer retired (see issue #323)"),
+  "skill-contracts.md must record baseline Docs/Work/Org/Approval CLI implementation with Finance retirement",
 );
 
 const readme = read("docs/company-os/README.md");
 expect(readme.includes("Skill and CLI Contracts"), "Company OS README missing skill-contracts reference");
 expect(readme.includes("--suite company-os"), "Company OS README missing suite install command");
 expect(
-  readme.includes("Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands"),
+  readme.includes("Dedicated Docs, Work, Organization, and Approval baseline CLI commands"),
   "Company OS README must record baseline Company OS CLI implementation",
 );
 

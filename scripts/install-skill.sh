@@ -51,7 +51,7 @@ done
 expand_suite() {
   case "$1" in
     company-os)
-      echo "company-business-project-bootstrap company-docs-operator company-work-operator company-finance-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os"
+      echo "company-business-project-bootstrap company-docs-operator company-work-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os"
       ;;
     *)
       echo "unknown suite: $1 (available: company-os)" >&2

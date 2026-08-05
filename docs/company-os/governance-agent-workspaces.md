@@ -35,7 +35,7 @@ of these fields may be inferred from a provider session or rendered page.
 | --- | --- | --- |
 | Docs Governance | Where does new company knowledge belong and how should it remain healthy? | Document/Module structure proposals, TypedRecord/Relation design, result integration |
 | Work Governance | What durable commitment exists and how should responsibility be routed? | WorkItem intake, classification, Milestone, responsibility, Approval/Finance impact, execution route |
-| Finance Governance | What monetary effect is requested and what evidence/authority permits it? | Budget/Commitment/Invoice/Payment/Refund commands and control exceptions |
+| Finance Governance (parked — see issue #323) | What monetary effect is requested and what evidence/authority permits it? | Budget/Commitment/Invoice/Payment/Refund commands and control exceptions |
 | Org / HR Governance | What durable company capability is missing and how should the organization change? | OrgChangeProposal, Agent provisioning, permission placement, evaluation and retirement |
 
 The corresponding optional operator skills are:
@@ -44,7 +44,7 @@ The corresponding optional operator skills are:
 | --- | --- |
 | Docs Governance | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) |
 | Work Governance | [`company-work-operator`](../../skills/company-work-operator/SKILL.md) |
-| Finance Governance | [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) |
+| Finance Governance (parked — see issue #323) | [`company-finance-operator`](../../skills/parked-company-finance-operator-20260805/SKILL.md) |
 | Org / HR Governance | [`company-org-operator`](../../skills/company-org-operator/SKILL.md) |
 
 These skill references belong in `skill_refs[]`. They do not replace
@@ -56,8 +56,8 @@ evidence, authority, Skills, maintained Docs, linked work, and required gates.
 The shared Standing Agent workspace is now implemented as an Organization
 profile plus native WorkItem/Assignment activity and composable context rail.
 It deliberately reuses the visual shell of an execution MemberRun without
-reusing TeamRun, Wave, attempt, or provider-lifecycle semantics. The four
-governance roles still need governed organization-change provisioning and
+reusing TeamRun, Wave, attempt, or provider-lifecycle semantics. The three active governance roles (Finance Governance is parked pending deferred
+Finance decommission, see issue #323) still need governed organization-change provisioning and
 role-specific queues. Private thinking never appears. Skills reduce execution
 variance but never grant authority or replace product Actions.
 

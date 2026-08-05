@@ -1,5 +1,5 @@
 ---
-name: company-finance-operator
+name: parked-company-finance-operator-20260805
 description: Operate Company OS Finance through governed Store/API/Action contracts. Use when a Governance Agent or business Agent needs to inspect, propose, approve-link, transition, or reconcile Commitments, Payments, invoices, refunds, and monetary evidence without confusing financial state with Work or Docs.
 ---
 

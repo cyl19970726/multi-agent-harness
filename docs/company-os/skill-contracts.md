@@ -1,7 +1,7 @@
 # Skill and CLI Contracts: Company OS Operator Suite
 
 ```text
-status: mixed — Company OS operator suite installable; Docs, Work, Organization, Approval, and Finance baseline dedicated CLI implemented; governed OrgChangeProposal and deeper Finance lifecycle remain planned
+status: mixed — Company OS operator suite installable; Docs, Work, Organization, and Approval baseline dedicated CLI implemented; governed OrgChangeProposal remains planned; Finance contract-layer retired (see issue #323); Commitment/Payment code remains dormant
 owner_role: product + platform
 canonical_for: optional Agent capability inputs, outputs, and governance boundaries
 ```
@@ -25,14 +25,13 @@ The suite currently expands to:
 | [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
 | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
 | [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
-| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence linked into Docs page contracts | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
 | [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
 | [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
 | [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
 | [`dogfood-company-os`](../../skills/dogfood-company-os/SKILL.md) | Repeated, evidence-backed Company OS self-hosting across Docs, Work, Organization, external delivery, execution, and result return | procedural composition skill |
 | [`connect-github-company-os`](../../skills/connect-github-company-os/SKILL.md) | GitHub repository/source observation and software-delivery evidence correlated to Company OS records without replacing company truth | procedural connector skill |
 
-This nine-Skill suite includes the dogfood and GitHub connector packages
+This eight-Skill suite includes the dogfood and GitHub connector packages
 because its bootstrap and operator Skills delegate work to them. Installation
 must preflight the complete suite and fail before writing either agent target
 when any delegated Skill package is missing.
