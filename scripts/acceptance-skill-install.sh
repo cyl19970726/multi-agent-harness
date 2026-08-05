@@ -71,6 +71,24 @@ done
 [ "$(ls "$PROJ/.claude/skills/star-workflow/examples" 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] \
   && ok "star-workflow examples copied" || bad "star-workflow examples missing"
 
+echo "== A1c: --agent kimi prints the documented divergence =="
+KIMI_OUT="$(bash "$REPO_ROOT/scripts/install-skill.sh" --agent kimi 2>&1)" || true
+if printf '%s' "$KIMI_OUT" | grep -q "Kimi CLI does not currently expose a generic plugin-management command"; then
+  ok "--agent kimi documents the cwd/--skills-dir model"
+else
+  bad "--agent kimi missing the divergence description"
+fi
+if printf '%s' "$KIMI_OUT" | grep -q "kimi.plugin.json descriptor is prepared for a future native"; then
+  ok "--agent kimi points at the plugin descriptor"
+else
+  bad "--agent kimi missing the plugin descriptor pointer"
+fi
+if printf '%s' "$KIMI_OUT" | grep -q "plugins/star-harness/README.md"; then
+  ok "--agent kimi points at the plugin README"
+else
+  bad "--agent kimi missing the plugin README pointer"
+fi
+
 echo "== A1b: install the Company OS operator suite into a clean project =="
 COMPANY_PROJ="$WORK/company-proj"
 mkdir -p "$COMPANY_PROJ"

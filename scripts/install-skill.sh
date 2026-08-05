@@ -9,10 +9,15 @@
 #   Codex      reads skills from     <base>/.agents/skills/<name>/
 #
 # Usage:
-#   scripts/install-skill.sh [--agent claude|codex|both] [--scope project|user] \
+#   scripts/install-skill.sh [--agent claude|codex|both|kimi] [--scope project|user] \
 #       [--dest <base-dir>] [--skill <name> ...] [--suite <name> ...]
 #
 #   --agent   which agent's skill dir to install into       (default: claude)
+#             claude | codex | both  → copy skills to the respective fixed dirs.
+#             kimi                   → prints the Kimi Code skill model and exits;
+#                                      Kimi loads skills from cwd/--skills-dir, not
+#                                      a fixed install directory. See the Star Harness
+#                                      plugin README for details.
 #   --scope   project = <cwd>, user = $HOME                  (default: project)
 #   --dest    explicit base dir (overrides --scope)
 #   --skill   install an explicit skill directory (repeatable; default: star-workflow)
@@ -112,12 +117,40 @@ install_into() {
   echo "✓ installed $name for $label → $target"
 }
 
+if [ "$AGENT" = "kimi" ]; then
+  cat >&2 <<'KIMIEOF'
+Kimi Code skill model (divergence from Claude Code / Codex)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Kimi CLI does not currently expose a generic plugin-management command.
+It discovers skills from one of two locations:
+
+  1. The current working directory (cwd) when a session starts.
+  2. An explicit --skills-dir <path> argument.
+
+There is no fixed per-agent install directory like ~/.kimi/skills/.
+To use Star Harness skills with Kimi:
+
+  • Place the skill directories directly in your project root.
+  • Start a Kimi Code session inside that directory.
+  • Or pass --skills-dir <path> pointing at the skills root.
+
+For the Star Harness plugin (orchestrate-mission-waves,
+collaborate-as-agent-team-member, hooks, MCP), see:
+  plugins/star-harness/README.md
+  plugins/star-harness/kimi.plugin.json
+
+The kimi.plugin.json descriptor is prepared for a future native Kimi
+plugin installer; do not claim it is globally installed today.
+KIMIEOF
+  exit 0
+fi
+
 for name in $SKILLS; do
   case "$AGENT" in
     claude) install_into ".claude/skills" "Claude Code" "$name" ;;
     codex)  install_into ".agents/skills" "Codex" "$name" ;;
     both)   install_into ".claude/skills" "Claude Code" "$name"; install_into ".agents/skills" "Codex" "$name" ;;
-    *) echo "--agent must be claude|codex|both" >&2; exit 2 ;;
+    *) echo "--agent must be claude|codex|both|kimi" >&2; exit 2 ;;
   esac
 done
 
