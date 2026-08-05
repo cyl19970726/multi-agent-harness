@@ -119,6 +119,13 @@ const api = createHttpServer((request, response) => {
     companies: state.registryEmpty ? [] : ["company-a", "company-b"].map((id) => ({ id, name: id, store_root: `/tmp/${id}`, is_current: id === "company-a" })),
   });
   if (url.pathname === "/v1/workflows") return jsonResponse(response, 200, []);
+  if (url.pathname === "/v1/meta") return jsonResponse(response, 200, {
+    git_rev: "unknown",
+    built_at: null,
+    store_root: "/tmp/dashboard-self-heal",
+    latest_op_seq: 0,
+    server_version: "test",
+  });
   if (/^\/v1\/(spaces|companies|projects)\/switch$/.test(url.pathname)) {
     state.switchPaths.push(url.pathname);
     return jsonResponse(response, 200, { ok: true });

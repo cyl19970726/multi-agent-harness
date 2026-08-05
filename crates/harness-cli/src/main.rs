@@ -14182,10 +14182,20 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 })
                 .transpose()?;
             let brief = has_flag(args, "--brief");
-            let cursors = since
-                .is_some()
-                .then(|| work_operation_cursors(store, &team_run_id))
-                .transpose()?;
+            // The cursor is intentionally a per-TeamRun total order. A Team
+            // can span several runs, so accepting `--since` with `--team-id`
+            // would silently compare unrelated run-local positions.
+            let cursors = if since.is_some() {
+                let run_id = team_run_id.as_deref().ok_or_else(|| {
+                    CliError::Usage(
+                        "--since requires --team-run-id; Team-scoped list cursors are not yet a durable cross-run order"
+                            .to_string(),
+                    )
+                })?;
+                Some(work_operation_cursors(store, run_id)?)
+            } else {
+                None
+            };
             let mut works = store
                 .latest_works()?
                 .into_iter()

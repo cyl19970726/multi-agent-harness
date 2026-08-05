@@ -7419,6 +7419,32 @@ fn work_list_since_returns_only_works_changed_after_cursor() {
         "nothing changed since the latest cursor: {empty}"
     );
     assert_eq!(empty["next_since"].as_u64(), Some(next_since));
+
+    // `--since` is a TeamRun-local WorkOperation cursor. A durable Team can
+    // span several runs, so the CLI must refuse to mislabel those unrelated
+    // run-local positions as one Team-wide order.
+    let team_scoped_since = run_harness(
+        &fixture.home,
+        fixture.home.base(),
+        &[
+            "--project",
+            &fixture.project_id,
+            "team-run",
+            "work",
+            "list",
+            "--team-id",
+            "team-cross-run",
+            "--since",
+            "0",
+        ],
+    );
+    assert!(!team_scoped_since.status.success());
+    assert!(
+        String::from_utf8_lossy(&team_scoped_since.stderr)
+            .contains("--since requires --team-run-id"),
+        "Team-scoped cursor refusal must be actionable: {}",
+        String::from_utf8_lossy(&team_scoped_since.stderr)
+    );
 }
 
 #[test]
