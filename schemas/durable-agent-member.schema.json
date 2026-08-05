@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/durable-agent-member.schema.json",
+  "title": "DurableAgentMember",
+  "description": "ADR 0052 Organization identity. Runtime state belongs to MemberRun and provider-native Session.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "description",
+    "role",
+    "provider_profile",
+    "model",
+    "workspace_policy",
+    "project_binding_id",
+    "business_access_ceiling_refs",
+    "status",
+    "created_by_member_id",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "role": { "type": "string", "minLength": 1 },
+    "provider_profile": { "type": ["string", "null"], "minLength": 1 },
+    "model": { "type": ["string", "null"], "minLength": 1 },
+    "workspace_policy": { "type": ["string", "null"], "minLength": 1 },
+    "project_binding_id": { "type": ["string", "null"], "minLength": 1 },
+    "business_access_ceiling_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "paused", "retired"]
+    },
+    "created_by_member_id": { "type": ["string", "null"], "minLength": 1 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

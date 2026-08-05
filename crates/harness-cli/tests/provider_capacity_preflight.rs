@@ -521,13 +521,21 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         "worktree_ref",
         "native_session",
         "started_at",
-        "provider_profile",
     ] {
         assert_eq!(
             after[field], before[field],
             "the capacity gate must not rewrite {field}: {after}"
         );
     }
+    assert_eq!(
+        after["provider_profile"]["provider_version"].as_str(),
+        Some("0.145.0-alpha.18"),
+        "the compatibility gate must record the installed reviewed version before capacity refusal: {after}"
+    );
+    assert_eq!(
+        after["provider_profile"]["compatibility_status"].as_str(),
+        Some("current")
+    );
 
     // 1. WorkDelivery was never claimed: it is still queued and deliverable.
     let deliveries = work_deliveries(&home, &project_id);
@@ -578,12 +586,11 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         member["provider_capacity"]["evidence_source"],
         serde_json::json!("provider_quota_api")
     );
-    // The capacity verdict did not write, borrow, or invent a compatibility
-    // verdict: compatibility is still whatever the adapter last observed
-    // (nothing, because the adapter never ran).
+    // Compatibility was independently proven current before capacity was
+    // checked; the exhausted verdict neither borrows nor overwrites it.
     assert_eq!(
         member["provider_profile"]["compatibility_status"],
-        serde_json::json!("unknown"),
+        serde_json::json!("current"),
         "an exhausted account must not be recorded as an incompatible adapter"
     );
     // 5. The provider was never asked to open a thread.

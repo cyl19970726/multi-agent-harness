@@ -4057,6 +4057,7 @@
    ],
    "dependsOn": [
     "docs/documentation-governance.md",
+    "docs/research/ai-first-multi-device-docs-infrastructure.md",
     "docs/research/agent-team-shared-task-list.md"
    ],
    "machineConsumers": [
@@ -4074,6 +4075,53 @@
     {
      "kind": "decision",
      "ref": "docs/documentation-governance.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/research/ai-first-multi-device-docs-infrastructure.md",
+   "ownerRole": "docs-governance",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "bounded research proposal for Agent-first multi-device Docs service, revision, remote access, and infrastructure boundaries"
+   ],
+   "dependsOn": [
+    "docs/company-os/document-system.md",
+    "docs/company-os/docs-operating-surface-matrix.md",
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/product/agent-team-works.md",
+    "docs/decisions/0029-agent-programmable-document-runtime.md",
+    "docs/decisions/0035-company-os-sql-read-model.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
+    "specs/nested-agent-team-organization/design.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "PR #302 b23b7ac over origin/master 52c0864",
+    "official upstream repositories reviewed 2026-08-04"
+   ],
+   "reorgTrigger": "ADR 0052 AgentMember/AgentTeam/Work fields, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050/0052.",
+   "authorityClass": "research",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0035-company-os-sql-read-model.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+    },
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
     }
    ]
   },
@@ -4831,6 +4879,340 @@
      "kind": "test",
      "ref": "crates/harness-cli/tests/company_store_cli.rs"
     }
+   ]
+  },
+  {
+   "path": "docs/company-os/nested-agent-team-organization.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "AgentMember-based recursive Organization target",
+    "unified Work administration and Supervising Operator boundary"
+   ],
+   "dependsOn": [
+    "docs/company-os/organization-and-actors.md",
+    "docs/company-os/collaboration-and-agent-work.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
+    "specs/nested-agent-team-organization/requirements.md",
+    "specs/nested-agent-team-organization/design.md",
+    "specs/nested-agent-team-organization/tasks.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-04",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Agent identity, recursive Team topology, Work administration, Supervising Operator, or Organization UI boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
+    }
+   ]
+  },
+  {
+   "path": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
+   "ownerRole": "product-architecture",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "AgentMember as durable Organization agent identity",
+    "recursive AgentTeam topology and unified Work target decision"
+   ],
+   "dependsOn": [
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/decisions/0027-company-os-primary-model.md",
+    "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+    "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-10-04",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "The durable Agent identity, recursive Team hierarchy, Work kernel, local Host authority, or Supervising Operator boundary changes.",
+   "authorityClass": "canonical_contract",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "specs/nested-agent-team-organization/requirements.md",
+   "ownerRole": "product-architecture",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "nested Agent Team Organization product requirements and acceptance"
+   ],
+   "dependsOn": [
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-25",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Product behavior, actors, Work authority, recursive delegation, UI acceptance, or non-goals change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+    {
+     "kind": "decision",
+     "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
+    }
+   ]
+  },
+  {
+   "path": "specs/nested-agent-team-organization/design.md",
+   "ownerRole": "product-architecture",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "nested Agent Team Organization technical design and migration boundary"
+   ],
+   "dependsOn": [
+    "specs/nested-agent-team-organization/requirements.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-25",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Target schemas, authority table, delivery, recovery, CLI/API, UI, migration, or tests change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "specs/nested-agent-team-organization/tasks.md",
+   "ownerRole": "product-architecture",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "nested Agent Team Organization implementation and dogfood task sequence"
+   ],
+   "dependsOn": [
+    "specs/nested-agent-team-organization/requirements.md",
+    "specs/nested-agent-team-organization/design.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Implementation sequencing, migration gates, UI contract, provider recovery acceptance, or dogfood scope changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "design_only",
+   "truthRefs": []
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "recursive Organization, global Works, Member Focus, Team War Room, and Docs-to-Work handoff visual and interaction acceptance entry"
+   ],
+   "dependsOn": [
+    "docs/company-os/frontend-information-architecture.md",
+    "docs/company-os/nested-agent-team-organization.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Surface scope, baseline viewports, evidence policy, or placement (company-os-v6) changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "field-level data provenance and IMPLEMENTED/TARGET/RESEARCH classes for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "specs/nested-agent-team-organization/design.md",
+    "docs/company-os/implementation-truth-matrix.md",
+    "docs/product/agent-team-works.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Any rendered field, source contract, provenance class, or frozen discrepancy changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "navigation, click, scroll, filter, loading, empty, and error rules for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+    "docs/company-os/frontend-information-architecture.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Interaction rules, motion policy, or responsive rules for any of the five surfaces change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Wave 0 Expected text wireframes for the five recursive-org UI surfaces at desktop, tablet, 390, and 320"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Any Expected layout, label, or viewport frame changes; replaced by approved Expected PNGs when captured.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "per-state, per-viewport acceptance rows for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Page priorities, states, viewports, baselines, or acceptance mechanism changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/expected-vs-actual.md",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "expected-vs-actual gap map and production-component seam freeze for the five recursive-org UI surfaces"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Gap analysis, likely-to-change component list, non-goals, or acceptance criteria change.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/visual-contract.json",
+   "ownerRole": "product-design",
+   "status": "planned",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "machine-readable visual acceptance case list for the recursive-org-docs-works-v1 slice"
+   ],
+   "dependsOn": [
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
+    "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance",
+    "visual acceptance"
+   ],
+   "reviewAfter": "2026-08-18",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:docs-governance"
+   ],
+   "reorgTrigger": "Cases, viewports, expected references, artifact policy, or wave0 policy changes.",
+   "authorityClass": "design_intent",
+   "implementationState": "design_only",
+   "truthRefs": [
    ]
   }
  ]

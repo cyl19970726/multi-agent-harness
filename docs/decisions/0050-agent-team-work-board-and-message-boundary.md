@@ -1,7 +1,7 @@
 # ADR 0050: Agent Team Works And Message Boundary
 
 ```text
-status: accepted; breaking cutover in progress
+status: accepted; amended by ADR 0052; breaking cutover in progress
 owner_role: architecture
 canonical_for: Work as the Agent Team scheduling primitive, no Assignment
   Message ownership, shared Kanban, claim authority, and Mission boundary
@@ -19,19 +19,23 @@ Members could not atomically claim known ready work.
 The failure reconstruction and Claude Code comparison are preserved in
 [Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
 
-The product also needs one simple execution-board object that Company WorkItem
-can reference. Collapsing their storage or lifecycle would create competing
-owner/status/approval truths, so the relation must remain explicit.
+The product also needs one simple execution-board object that the Company
+operating surface can use. This ADR originally kept Company WorkItem as a
+permanently separate lifecycle. ADR 0052 supersedes that permanence and adopts
+one target Work responsibility kernel while preserving Approval, Finance,
+Document, Mission, and provider-native truth as distinct relations.
 
 ## Decision
 
 ### Work is the base responsibility object
 
-Agent Team adds a TeamRun-scoped `Work` object and a shared `Works` projection.
-Company WorkItem remains a separate governed business object and may link one
-or more execution Works through `source_work_item_ref`. A Team Work transition
-does not mutate WorkItem authority, approval, finance, or closure. Kanban is a
-view over Work, not another source of truth.
+Agent Team adds a `Work` object and a shared `Works` projection. In the initial
+implementation it is TeamRun-scoped and Company WorkItem remains a separate
+governed compatibility object. ADR 0052 changes the target scope to persistent
+AgentTeam and converges duplicate responsibility state through an explicit
+migration. Until cutover, a Team Work transition does not mutate Company
+WorkItem, Approval, Finance, or closure. Kanban is a view over Work, not another
+source of truth.
 
 ### Assignment is a Work operation
 
@@ -121,9 +125,10 @@ ownership. They do not replace Mission closeout or Wave decision history.
   separate and observable.
 - Dashboard adds Works as a primary Team surface and task state no longer has
   to be inferred from Activity.
-- Organization may select nested Teams as an execution mechanism while keeping
-  StandingAgent, AgentMember, TeamRun, and authority identities distinct.
-- Company WorkItem can link execution Works without inheriting their lifecycle.
+- Organization becomes a recursive projection of persistent AgentTeams under
+  ADR 0052; the current StandingAgent join remains compatibility truth only.
+- Current Company WorkItem can link execution Works during transition, but the
+  target does not retain two responsibility lifecycles.
 - Existing Assignment-message schemas, CLI writes, projections, warnings,
   fixtures, Skills, Plugin copies, and dogfood stores require a breaking cleanup.
 

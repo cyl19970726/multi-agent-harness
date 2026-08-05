@@ -1,0 +1,12 @@
+{
+  "id": "team-child-1",
+  "name": "Child Delivery Team",
+  "description": "Executes delegated Work beneath the root team.",
+  "owner_agent_id": "agent-host-1",
+  "status": "active",
+  "member_ids": ["agent-child-1", "agent-child-2"],
+  "parent_team_id": "team-root-1",
+  "host_member_id": "agent-host-1",
+  "created_at": "2026-08-04T00:00:00Z",
+  "updated_at": "2026-08-04T00:00:00Z"
+}

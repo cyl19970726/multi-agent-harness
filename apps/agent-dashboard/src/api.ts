@@ -341,6 +341,7 @@ export async function fetchWorkflowDefs(baseUrl: string): Promise<WorkflowDef[]>
  */
 export type SseFrame =
   | { kind: "snapshot"; generatedAt?: string }
+  | { kind: "projection_invalidated"; invalidation: ProjectionInvalidation | null }
   | { kind: "agent_event"; event: AgentEvent }
   | { kind: "message"; message: Message }
   | { kind: "workflow_run"; run: WorkflowRun }
@@ -360,9 +361,31 @@ export type SseFrame =
   | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
 
+export type ProjectionScope = "execution_space" | "company";
+export type ProjectionInvalidationReason = "append" | "truncate" | "replace" | "delete";
+
+/** A freshness signal only. It never carries row truth and must trigger a
+ * scoped authoritative snapshot read rather than local state synthesis. */
+export interface ProjectionInvalidation {
+  scope: ProjectionScope;
+  scope_id: string;
+  ledger: string;
+  revision: number;
+  reason: ProjectionInvalidationReason;
+  stream_epoch: string;
+}
+
+export interface SseSnapshotMarker {
+  generatedAt?: string;
+  executionSpaceId?: string;
+  companyScopeId?: string;
+  streamEpoch?: string;
+}
+
 export interface EventStreamHandlers {
-  /** Connection established (the initial `snapshot` frame arrived). */
-  onSnapshot: (generatedAt?: string) => void;
+  /** Connection established (the initial `snapshot` frame arrived). Returning
+   * false rejects a scope-mismatched marker and asks the owner to reconnect. */
+  onSnapshot: (marker: SseSnapshotMarker) => boolean | void;
   /** An incremental delta frame arrived. */
   onFrame: (frame: SseFrame) => void;
   /** The stream errored or closed; caller decides on fallback/retry. */
@@ -381,6 +404,7 @@ export function openEventStream(
   handlers: EventStreamHandlers,
   project?: string | null,
   space?: string | null,
+  company?: string | null,
 ): () => void {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) {
@@ -389,7 +413,7 @@ export function openEventStream(
   // Scope durable coordination by Execution Space. `project` remains present
   // for compatibility and provider-bound live actions, but does not select the
   // event ledger on a native-space server.
-  const source = new EventSource(`${normalized}${withQuery("/v1/events", { space, project })}`);
+  const source = new EventSource(`${normalized}${withQuery("/v1/events", { space, project, company })}`);
 
   const parse = <T,>(event: MessageEvent): T | null => {
     try {
@@ -401,8 +425,25 @@ export function openEventStream(
   };
 
   source.addEventListener("snapshot", (event) => {
-    const data = parse<{ generated_at?: string }>(event as MessageEvent);
-    handlers.onSnapshot(data?.generated_at);
+    const data = parse<{
+      generated_at?: string;
+      execution_space_id?: string;
+      company_scope_id?: string;
+      stream_epoch?: string;
+    }>(event as MessageEvent);
+    handlers.onSnapshot({
+      generatedAt: data?.generated_at,
+      executionSpaceId: data?.execution_space_id,
+      companyScopeId: data?.company_scope_id,
+      streamEpoch: data?.stream_epoch,
+    });
+  });
+  source.addEventListener("projection_invalidated", (event) => {
+    const data = parse<unknown>(event as MessageEvent);
+    handlers.onFrame({
+      kind: "projection_invalidated",
+      invalidation: projectionInvalidation(data),
+    });
   });
   source.addEventListener("agent_event", (event) => {
     const data = parse<AgentEvent>(event as MessageEvent);
@@ -487,6 +528,10 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       return frame.generatedAt && frame.generatedAt !== snapshot.generated_at
         ? { ...snapshot, generated_at: frame.generatedAt }
         : snapshot;
+    case "projection_invalidated":
+      // The frame intentionally carries no row data. App owns the bounded
+      // authoritative refresh and never treats this token as business truth.
+      return snapshot;
     case "agent_event":
       return {
         ...snapshot,
@@ -599,6 +644,80 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
       };
     }
   }
+}
+
+function projectionInvalidation(value: unknown): ProjectionInvalidation | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (
+    (row.scope !== "execution_space" && row.scope !== "company")
+    || typeof row.scope_id !== "string"
+    || !row.scope_id
+    || typeof row.ledger !== "string"
+    || !row.ledger
+    || !Number.isSafeInteger(row.revision)
+    || Number(row.revision) < 1
+    || (row.reason !== "append" && row.reason !== "truncate" && row.reason !== "replace" && row.reason !== "delete")
+    || typeof row.stream_epoch !== "string"
+    || !row.stream_epoch
+  ) return null;
+  return row as unknown as ProjectionInvalidation;
+}
+
+export interface ConfirmedProjectionScope {
+  executionSpaceId?: string;
+  companyScopeId?: string;
+}
+
+export type InvalidationDecision =
+  | { kind: "ignore"; reason: "other_scope" | "duplicate" }
+  | { kind: "refresh"; gap: boolean; malformed: boolean };
+
+/** Per-stream-epoch monotonic invalidation memory. Revisions are process-local
+ * hints, so an epoch change clears every remembered ledger revision. */
+export class ProjectionInvalidationTracker {
+  private epoch: string | undefined;
+  private revisions = new Map<string, number>();
+
+  reset(streamEpoch?: string): void {
+    this.epoch = streamEpoch;
+    this.revisions.clear();
+  }
+
+  observe(
+    invalidation: ProjectionInvalidation | null,
+    scope: ConfirmedProjectionScope,
+  ): InvalidationDecision {
+    if (!invalidation) return { kind: "refresh", gap: false, malformed: true };
+    if (invalidation.stream_epoch !== this.epoch) this.reset(invalidation.stream_epoch);
+    const expectedScopeId = invalidation.scope === "execution_space"
+      ? scope.executionSpaceId
+      : scope.companyScopeId;
+    if (!expectedScopeId || invalidation.scope_id !== expectedScopeId) {
+      return { kind: "ignore", reason: "other_scope" };
+    }
+    const key = `${invalidation.scope}\u0000${invalidation.scope_id}\u0000${invalidation.ledger}`;
+    const previous = this.revisions.get(key);
+    if (previous !== undefined && invalidation.revision <= previous) {
+      return { kind: "ignore", reason: "duplicate" };
+    }
+    this.revisions.set(key, invalidation.revision);
+    return {
+      kind: "refresh",
+      gap: previous !== undefined && invalidation.revision > previous + 1,
+      malformed: false,
+    };
+  }
+}
+
+/** Stable identity for one requested EventSource. Both Company and Execution
+ * Space participate so late callbacks cannot cross either selection boundary. */
+export function streamSelectionKey(
+  space?: string | null,
+  project?: string | null,
+  company?: string | null,
+): string {
+  return JSON.stringify([space ?? "", project ?? "", company ?? ""]);
 }
 
 /**

@@ -7,13 +7,14 @@ import {
   fetchSnapshot,
   fetchTeamRunSnapshot,
   fetchWorkflowDefs,
-  matchesStreamProject,
   postAction,
-  switchCompany as switchCompanyApi,
+  ProjectionInvalidationTracker,
+  streamSelectionKey,
   switchProject as switchProjectApi,
   switchSpace as switchSpaceApi,
   SnapshotFrameBuffer,
   type SseFrame,
+  type SseSnapshotMarker,
   type SnapshotRequestToken,
 } from "../api";
 import { buildWorkbenchModel } from "../model/readModel";
@@ -27,6 +28,14 @@ import {
 } from "./selection";
 import { useEventStream } from "./useEventStream";
 import { WorkbenchShell } from "./WorkbenchShell";
+import {
+  freshnessDomains,
+  freshnessDomainsForInvalidation,
+  uniformFreshness,
+  updateFreshness,
+  type DomainFreshness,
+  type FreshnessDomain,
+} from "./freshness";
 
 const apiDefault = "http://127.0.0.1:8787";
 /**
@@ -48,7 +57,6 @@ function apiFromLocation(): string {
  */
 const projectStorageKey = "harness.selectedProjectId";
 const spaceStorageKey = "harness.selectedSpaceId";
-const companyStorageKey = "harness.selectedCompanyId";
 /**
  * Seed the selected project from the URL (`?project=<id>`) first — a deep link
  * wins — then the last choice persisted in localStorage. Returns "" when neither
@@ -75,14 +83,10 @@ function companyFromLocation(): string {
     const fromUrl = new URLSearchParams(window.location.search).get("company");
     if (fromUrl && fromUrl.trim()) return fromUrl.trim();
   } catch {
-    // fall through to localStorage
+    // Fall through to the backend registry default. Company selection is
+    // deliberately URL/in-memory scoped and never shared through localStorage.
   }
-  try {
-    const stored = window.localStorage.getItem(companyStorageKey);
-    return stored && stored.trim() ? stored.trim() : "";
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 function spaceFromLocation(): string {
@@ -153,9 +157,21 @@ const offlineLabel = "not connected";
 const emptySnapshot: DashboardSnapshot = {};
 /** Live-poll cadence: re-fetch /v1/snapshot roughly every 5s while polling. */
 const pollIntervalMs = 5000;
+/** One bounded authoritative probe per quiet connection epoch. SSE comments
+ * are invisible to EventSource, so a successful probe is sufficient to restore
+ * freshness even when no named event arrives. */
+const streamStaleAfterMs = 45_000;
+type FreshnessState = "live" | "reconnecting" | "stale";
 
 function activityExpiryMs(value: string): number {
   return value.startsWith("unix-ms:") ? Number(value.slice(8)) : Date.parse(value);
+}
+
+function freshnessAfterSnapshot(runtimeConnected: boolean): DomainFreshness {
+  return {
+    ...uniformFreshness("live"),
+    runtime: runtimeConnected ? "live" : "reconnecting",
+  };
 }
 
 export function App() {
@@ -178,17 +194,43 @@ export function App() {
   // empty (not-connected) workspace. The user-facing chip label is derived below.
   const [source, setSource] = useState<typeof liveSource | "offline">("offline");
   const [sourceError, setSourceError] = useState<string | null>(null);
+  const [selectorRecoveryNotice, setSelectorRecoveryNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  // Manual opt-in interval poll (FE-WP5). Independent of the automatic polling
-  // fallback that kicks in whenever the SSE stream is down.
+  // Manual opt-in interval poll (FE-WP5). Automatic recovery is bounded and
+  // edge-triggered; it never enables this permanent interval implicitly.
   const [pollEnabled, setPollEnabled] = useState(false);
+  const [freshnessState, setFreshnessState] = useState<FreshnessState>("reconnecting");
+  const [domainFreshness, setDomainFreshness] = useState<DomainFreshness>(() =>
+    uniformFreshness("reconnecting"),
+  );
+  const [selectorRefreshGeneration, setSelectorRefreshGeneration] = useState(0);
   // Seed selection from the URL so a member view (?surface=member&member=:id,
   // i.e. the /members/:memberId workbench) is directly addressable and
   // deep-linkable without pulling in a router.
   const [selection, setSelection] = useState<SelectionState>(() => selectionFromLocation(defaultSelection));
   // Updated before selection state so a callback from the old EventSource
   // cannot merge one Execution Space's frame into another during cleanup.
-  const selectedStreamRef = useRef(selectedSpaceId || selectedProjectId);
+  const selectedStreamRef = useRef(
+    streamSelectionKey(selectedSpaceId, selectedProjectId, selectedCompanyId),
+  );
+  const confirmedScopeRef = useRef<{
+    executionSpaceId?: string;
+    companyScopeId?: string;
+  }>({});
+  const invalidationTracker = useRef(new ProjectionInvalidationTracker());
+  const resyncGenerationRef = useRef(0);
+  const resyncInFlightRef = useRef(false);
+  const resyncDirtyRef = useRef(false);
+  const resyncRunnerRef = useRef<(() => void) | null>(null);
+  const resyncRetryTimerRef = useRef<number | null>(null);
+  const resyncRetryAttemptRef = useRef(0);
+  const staleConnectionAttemptRef = useRef<number | null>(null);
+  const disconnectedProbeAttemptRef = useRef<number | null>(null);
+  const streamConnectedRef = useRef(false);
+  const streamScopeTrustedRef = useRef(true);
+  const readProjectionKeyRef = useRef(
+    selection.surface === "team" && selection.teamId ? `team:${selection.teamId}` : "full",
+  );
   // Console mutations are serialized at the UI boundary. The server still
   // validates every transition, but overlapping POST responses have no safe
   // client-side ordering unless the product exposes an explicit operation id.
@@ -230,7 +272,7 @@ export function App() {
       const request = beginReadSnapshotRequest();
       if (!request) return null;
       try {
-        const next = selection.teamId
+        const next = selection.surface === "team" && selection.teamId
           ? await fetchTeamRunSnapshot(baseUrl, selection.teamId, project, company, space)
           : await fetchSnapshot(baseUrl, project, company, space);
         return { request, snapshot: next };
@@ -239,8 +281,178 @@ export function App() {
         throw error;
       }
     },
-    [beginReadSnapshotRequest, discardSnapshotRequest, selection.teamId],
+    [beginReadSnapshotRequest, discardSnapshotRequest, selection.surface, selection.teamId],
   );
+
+  /**
+   * Coalesce freshness signals into scoped authoritative reads. At most one
+   * request is in flight; a signal received during that request occupies one
+   * dirty slot and causes a follow-up read. SnapshotFrameBuffer still owns the
+   * HTTP/SSE causal crossing, while the selection key rejects another
+   * Execution Space or Company before any response can commit.
+   */
+  const requestAuthoritativeResync = useCallback((
+    affectedDomains: readonly FreshnessDomain[] = freshnessDomains,
+  ): void => {
+    resyncDirtyRef.current = true;
+    setFreshnessState("stale");
+    setDomainFreshness((current) => updateFreshness(current, affectedDomains, "stale"));
+
+    const drain = () => {
+      if (resyncInFlightRef.current || !resyncDirtyRef.current) return;
+      if (resyncRetryTimerRef.current !== null) {
+        window.clearTimeout(resyncRetryTimerRef.current);
+        resyncRetryTimerRef.current = null;
+      }
+      resyncInFlightRef.current = true;
+      void (async () => {
+        let committed = false;
+        let passes = 0;
+        let failed = false;
+        let superseded = false;
+        const drainGeneration = resyncGenerationRef.current;
+        try {
+          // One initial read plus one dirty follow-up. Further writes retain the
+          // dirty bit and schedule another bounded drain after this burst.
+          while (resyncDirtyRef.current && passes < 2) {
+            resyncDirtyRef.current = false;
+            passes += 1;
+            const streamKey = selectedStreamRef.current;
+            const generation = resyncGenerationRef.current;
+            const result = await fetchReadSnapshot(
+              apiUrl,
+              selectedProjectId,
+              selectedCompanyId,
+              selectedSpaceId,
+            );
+            if (!result) {
+              // A mutation currently owns the causal driver. Its finally block
+              // restarts this drain after the mutation response is settled.
+              resyncDirtyRef.current = true;
+              break;
+            }
+            if (generation !== resyncGenerationRef.current) {
+              discardSnapshotRequest(result.request);
+              superseded = true;
+              break;
+            }
+            if (streamKey !== selectedStreamRef.current) {
+              discardSnapshotRequest(result.request);
+              superseded = true;
+              break;
+            }
+            if (adoptSnapshotResponse(result.request, result.snapshot)) {
+              committed = true;
+              resyncRetryAttemptRef.current = 0;
+              setSource(liveSource);
+              setSourceError(null);
+              setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
+              setSelectorRefreshGeneration((current) => current + 1);
+            } else if (
+              streamKey === selectedStreamRef.current
+              && generation === resyncGenerationRef.current
+            ) {
+              // Another read outranked this response. Never raw-install it;
+              // retain a dirty signal until one authoritative read commits.
+              resyncDirtyRef.current = true;
+            }
+          }
+        } catch (error) {
+          if (drainGeneration !== resyncGenerationRef.current) {
+            superseded = true;
+          } else {
+            failed = true;
+            resyncDirtyRef.current = true;
+            setSourceError(error instanceof Error ? error.message : String(error));
+          }
+        } finally {
+          resyncInFlightRef.current = false;
+          if (
+            committed
+            && !failed
+            && !resyncDirtyRef.current
+            && drainGeneration === resyncGenerationRef.current
+          ) {
+            setFreshnessState(streamConnectedRef.current ? "live" : "reconnecting");
+          }
+          if (superseded) {
+            // A scope boundary cannot cancel fetch(), but it invalidates this
+            // whole drain. The newest signal has already installed its runner;
+            // hand the retained dirty bit to that runner without an old pass 2.
+            window.setTimeout(() => resyncRunnerRef.current?.(), 0);
+          } else if (failed && drainGeneration === resyncGenerationRef.current) {
+            const delay = Math.min(15_000, 1_000 * 2 ** resyncRetryAttemptRef.current);
+            resyncRetryAttemptRef.current += 1;
+            resyncRetryTimerRef.current = window.setTimeout(() => {
+              resyncRetryTimerRef.current = null;
+              resyncRunnerRef.current?.();
+            }, delay);
+          } else if (resyncDirtyRef.current && passes >= 2) {
+            window.setTimeout(() => resyncRunnerRef.current?.(), 100);
+          }
+        }
+      })();
+    };
+    // Install the latest closure even while an older scope owns the physical
+    // request. Its finally block can then hand off to this runner safely.
+    resyncRunnerRef.current = drain;
+    if (resyncInFlightRef.current) return;
+    drain();
+  }, [
+    adoptSnapshotResponse,
+    apiUrl,
+    discardSnapshotRequest,
+    fetchReadSnapshot,
+    selectedCompanyId,
+    selectedProjectId,
+    selectedSpaceId,
+  ]);
+
+  const moveStreamBoundary = useCallback((nextStreamKey: string): void => {
+    selectedStreamRef.current = nextStreamKey;
+    confirmedScopeRef.current = {};
+    invalidationTracker.current.reset();
+    snapshotFrames.current.reset();
+    resyncGenerationRef.current += 1;
+    resyncDirtyRef.current = false;
+    if (resyncRetryTimerRef.current !== null) {
+      window.clearTimeout(resyncRetryTimerRef.current);
+      resyncRetryTimerRef.current = null;
+    }
+    resyncRetryAttemptRef.current = 0;
+    staleConnectionAttemptRef.current = null;
+    disconnectedProbeAttemptRef.current = null;
+    streamConnectedRef.current = false;
+    streamScopeTrustedRef.current = true;
+    setFreshnessState("reconnecting");
+    setDomainFreshness(uniformFreshness("reconnecting"));
+  }, []);
+
+  // TeamRun focus may use a deliberately bounded snapshot, but that response
+  // must never become the backing model for Work/Docs/Org after navigation.
+  // Crossing either direction performs one authoritative read for the newly
+  // selected projection.
+  useEffect(() => {
+    const next = selection.surface === "team" && selection.teamId
+      ? `team:${selection.teamId}`
+      : "full";
+    if (next === readProjectionKeyRef.current) return;
+    readProjectionKeyRef.current = next;
+    // A bounded TeamRun snapshot and the full Dashboard snapshot are distinct
+    // causal projections even though they share one SSE scope. Supersede the
+    // complete old drain so its response and dirty pass 2 cannot cross this
+    // boundary using a stale selection closure.
+    resyncGenerationRef.current += 1;
+    resyncDirtyRef.current = false;
+    snapshotFrames.current.reset();
+    if (resyncRetryTimerRef.current !== null) {
+      window.clearTimeout(resyncRetryTimerRef.current);
+      resyncRetryTimerRef.current = null;
+    }
+    resyncRetryAttemptRef.current = 0;
+    setSnapshot(emptySnapshot);
+    if (source === liveSource) requestAuthoritativeResync();
+  }, [requestAuthoritativeResync, selection.surface, selection.teamId, source]);
 
   // Expiry is a data-lifecycle boundary, not merely a card-rendering choice.
   // Remove volatile previews from the shared client snapshot so Debug and every
@@ -296,10 +508,10 @@ export function App() {
           discardSnapshotRequest(result.request);
           return;
         }
-        if (!adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSnapshot(result.snapshot);
+        if (adoptSnapshotResponse(result.request, result.snapshot)) {
+          setSource(liveSource);
+          setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
         }
-        setSource(liveSource);
         try {
           const defs = await fetchWorkflowDefs(apiUrl);
           if (!cancelled) setWorkflowDefs(defs);
@@ -327,10 +539,10 @@ export function App() {
         try {
           const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
           if (!result) return;
-          if (!adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSnapshot(result.snapshot);
+          if (adoptSnapshotResponse(result.request, result.snapshot)) {
+            setSource(liveSource);
+            setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
           }
-          setSource(liveSource);
         } catch {
           // still offline; retry next tick
         }
@@ -352,7 +564,11 @@ export function App() {
         if (cancelled) return;
         setProjects(list);
         if (!selectedProjectId && current) {
-          selectedStreamRef.current = selectedSpaceId || current;
+          selectedStreamRef.current = streamSelectionKey(
+            selectedSpaceId,
+            current,
+            selectedCompanyId,
+          );
           setSelectedProjectId(current);
           syncProjectToLocation(current);
         }
@@ -366,52 +582,75 @@ export function App() {
     };
   }, [source, apiUrl]);
 
+  // Bootstrap truth selectors independently from snapshot success. A stale URL
+  // or localStorage id must not brick boot now that the runtime correctly 404s
+  // unknown spaces/companies. Reconcile both selectors atomically to registry
+  // `current`, then perform a fresh explicitly-scoped read.
   useEffect(() => {
-    if (source !== liveSource) return;
     let cancelled = false;
     void (async () => {
-      try {
-        const { spaces: list, current } = await fetchSpaces(apiUrl);
-        if (cancelled) return;
-        setSpaces(list);
-        if (!selectedSpaceId && current) {
-          selectedStreamRef.current = current;
-          setSelectedSpaceId(current);
-          syncSpaceToLocation(current);
-        }
-      } catch {
-        // Compatibility backend: execution remains project-scoped.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [source, apiUrl, selectedSpaceId]);
+      const [spaceResult, companyResult] = await Promise.allSettled([
+        fetchSpaces(apiUrl),
+        fetchCompanies(apiUrl),
+      ]);
+      if (cancelled) return;
+      const spaceData = spaceResult.status === "fulfilled" ? spaceResult.value : null;
+      const companyData = companyResult.status === "fulfilled" ? companyResult.value : null;
+      if (spaceData) setSpaces(spaceData.spaces);
+      if (companyData) setCompanies(companyData.companies);
 
-  // Load Company Store list once live. If no URL/localStorage company was
-  // selected, adopt the backend's active company. This selector controls only
-  // Company OS truth (`company_os`), not the project execution/SSE boundary.
-  useEffect(() => {
-    if (source !== liveSource) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { companies: list, current } = await fetchCompanies(apiUrl);
-        if (cancelled) return;
-        setCompanies(list);
-        if (!selectedCompanyId && current) {
-          setSelectedCompanyId(current);
-          syncCompanyToLocation(current);
-        }
-      } catch {
-        // Old backend / raw --store mode: leave company picker hidden and let
-        // snapshots fall back to the project store's company_os projection.
+      const spaceValid = !spaceData || !selectedSpaceId
+        || Boolean(spaceData?.spaces.some((space) => space.id === selectedSpaceId));
+      const companyValid = !companyData || !selectedCompanyId
+        || Boolean(companyData?.companies.some((company) => company.id === selectedCompanyId));
+      const fallbackSpace = spaceData?.spaces.some((space) => space.id === spaceData.current)
+        ? spaceData.current
+        : spaceData?.spaces[0]?.id ?? "";
+      const fallbackCompany = companyData?.companies.some((company) => company.id === companyData.current)
+        ? companyData.current
+        : companyData?.companies[0]?.id ?? "";
+      const nextSpace = !selectedSpaceId
+        ? fallbackSpace
+        : !spaceData
+          ? selectedSpaceId
+        : spaceValid
+          ? selectedSpaceId
+          : fallbackSpace;
+      const nextCompany = !selectedCompanyId
+        ? fallbackCompany
+        : !companyData
+          ? selectedCompanyId
+        : companyValid
+          ? selectedCompanyId
+          : fallbackCompany;
+      if (nextSpace === selectedSpaceId && nextCompany === selectedCompanyId) return;
+
+      const notices: string[] = [];
+      if (selectedSpaceId && nextSpace !== selectedSpaceId) {
+        notices.push(nextSpace
+          ? `Execution Space "${selectedSpaceId}" was not found; recovered to "${nextSpace}".`
+          : `Execution Space "${selectedSpaceId}" was not found; cleared the stale selection.`);
       }
+      if (selectedCompanyId && nextCompany !== selectedCompanyId) {
+        notices.push(nextCompany
+          ? `Company "${selectedCompanyId}" was not found; recovered to "${nextCompany}".`
+          : `Company "${selectedCompanyId}" was not found; cleared the stale selection.`);
+      }
+      moveStreamBoundary(streamSelectionKey(nextSpace, selectedProjectId, nextCompany));
+      if (nextSpace !== selectedSpaceId) {
+        setSelectedSpaceId(nextSpace);
+        syncSpaceToLocation(nextSpace);
+      }
+      if (nextCompany !== selectedCompanyId) {
+        setSelectedCompanyId(nextCompany);
+        syncCompanyToLocation(nextCompany);
+      }
+      if (notices.length > 0) setSelectorRecoveryNotice(notices.join(" "));
     })();
     return () => {
       cancelled = true;
     };
-  }, [source, apiUrl, selectedCompanyId]);
+  }, [apiUrl, moveStreamBoundary, selectedCompanyId, selectedProjectId, selectedSpaceId, selectorRefreshGeneration]);
 
   // Persist + mirror the selected project so a reload (localStorage) or a shared
   // link (URL) returns to it.
@@ -429,22 +668,14 @@ export function App() {
   useEffect(() => {
     try {
       if (selectedSpaceId) window.localStorage.setItem(spaceStorageKey, selectedSpaceId);
+      else window.localStorage.removeItem(spaceStorageKey);
     } catch {
       // in-memory state remains authoritative for this tab
     }
     syncSpaceToLocation(selectedSpaceId);
   }, [selectedSpaceId]);
 
-  useEffect(() => {
-    try {
-      if (selectedCompanyId) {
-        window.localStorage.setItem(companyStorageKey, selectedCompanyId);
-      }
-    } catch {
-      // private mode / blocked storage: in-memory selection still works
-    }
-    syncCompanyToLocation(selectedCompanyId);
-  }, [selectedCompanyId]);
+  useEffect(() => syncCompanyToLocation(selectedCompanyId), [selectedCompanyId]);
 
   // Switch the default Project Binding. In native Execution Space mode this
   // changes provider cwd/config/Skill context only, so coordination stays
@@ -452,7 +683,8 @@ export function App() {
   const handleSelectProject = useCallback(
     (projectId: string) => {
       if (projectId === selectedProjectId) return;
-      selectedStreamRef.current = selectedSpaceId || projectId;
+      setSelectorRecoveryNotice(null);
+      moveStreamBoundary(streamSelectionKey(selectedSpaceId, projectId, selectedCompanyId));
       setSelectedProjectId(projectId);
       if (source !== liveSource) return;
       if (selectedSpaceId) {
@@ -464,7 +696,6 @@ export function App() {
         return;
       }
 
-      snapshotFrames.current.reset();
       const request = beginMutationSnapshotRequest();
       setIsLoading(true);
       setSnapshot(emptySnapshot);
@@ -482,6 +713,7 @@ export function App() {
         } finally {
           finishMutationSnapshotRequest(request);
           setIsLoading(false);
+          if (resyncDirtyRef.current) resyncRunnerRef.current?.();
         }
       })();
     },
@@ -490,6 +722,7 @@ export function App() {
       apiUrl,
       beginMutationSnapshotRequest,
       finishMutationSnapshotRequest,
+      moveStreamBoundary,
       selectedCompanyId,
       selectedSpaceId,
       source,
@@ -500,50 +733,29 @@ export function App() {
   const handleSelectCompany = useCallback(
     (companyId: string) => {
       if (companyId === selectedCompanyId) return;
-      snapshotFrames.current.reset();
-      const request = beginMutationSnapshotRequest();
+      setSelectorRecoveryNotice(null);
+      moveStreamBoundary(streamSelectionKey(selectedSpaceId, selectedProjectId, companyId));
       setSelectedCompanyId(companyId);
       setIsLoading(true);
       setSnapshot(emptySnapshot);
-      if (source !== liveSource) {
-        finishMutationSnapshotRequest(request);
-        setIsLoading(false);
-        return;
-      }
-      void (async () => {
-        try {
-          await switchCompanyApi(apiUrl, companyId);
-          adoptSnapshotResponse(
-            request,
-            await fetchSnapshot(apiUrl, selectedProjectId, companyId, selectedSpaceId),
-          );
-          setSourceError(null);
-        } catch (error) {
-          setSourceError(error instanceof Error ? error.message : String(error));
-        } finally {
-          finishMutationSnapshotRequest(request);
-          setIsLoading(false);
-        }
-      })();
+      // The selected Company is browser-tab scope. Changing it must never call
+      // /v1/companies/switch, which mutates the CLI/server default for every tab.
+      // The scoped load effect observes selectedCompanyId and performs the read.
     },
     [
-      adoptSnapshotResponse,
-      apiUrl,
-      beginMutationSnapshotRequest,
-      finishMutationSnapshotRequest,
+      moveStreamBoundary,
       selectedCompanyId,
       selectedProjectId,
       selectedSpaceId,
-      source,
     ],
   );
 
   const handleSelectSpace = useCallback(
     (spaceId: string) => {
       if (spaceId === selectedSpaceId) return;
-      snapshotFrames.current.reset();
+      setSelectorRecoveryNotice(null);
+      moveStreamBoundary(streamSelectionKey(spaceId, selectedProjectId, selectedCompanyId));
       const request = beginMutationSnapshotRequest();
-      selectedStreamRef.current = spaceId;
       setSelectedSpaceId(spaceId);
       setIsLoading(true);
       setSnapshot(emptySnapshot);
@@ -569,6 +781,7 @@ export function App() {
         } finally {
           finishMutationSnapshotRequest(request);
           setIsLoading(false);
+          if (resyncDirtyRef.current) resyncRunnerRef.current?.();
         }
       })();
     },
@@ -577,6 +790,7 @@ export function App() {
       apiUrl,
       beginMutationSnapshotRequest,
       finishMutationSnapshotRequest,
+      moveStreamBoundary,
       selectedCompanyId,
       selectedProjectId,
       selectedSpaceId,
@@ -598,10 +812,12 @@ export function App() {
     try {
       const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
       if (!result) return;
-      if (!adoptSnapshotResponse(result.request, result.snapshot)) {
-        setSnapshot(result.snapshot);
+      if (adoptSnapshotResponse(result.request, result.snapshot)) {
+        setSource(liveSource);
+        setFreshnessState("live");
+        setDomainFreshness(freshnessAfterSnapshot(streamConnectedRef.current));
+        setSelectorRefreshGeneration((current) => current + 1);
       }
-      setSource(liveSource);
       try {
         setWorkflowDefs(await fetchWorkflowDefs(apiUrl));
       } catch {
@@ -610,6 +826,8 @@ export function App() {
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
       setSource("offline");
+      setFreshnessState("reconnecting");
+      setDomainFreshness(uniformFreshness("offline"));
       // A failed manual refresh transitions away from the live connection even
       // before the stream hook's mode effect runs. Drop previews immediately so
       // offline auto-retry cannot overlay old thinking onto a fresh snapshot.
@@ -621,42 +839,62 @@ export function App() {
     }
   }
 
-  // SSE connect: resync the full snapshot off /v1/snapshot. The SSE `snapshot`
-  // frame is timestamp-only (per docs/agent-runtime.md), so the authoritative
-  // full state still comes from a one-shot fetch when the stream (re)connects.
-  const handleSseConnect = useCallback((streamProject: string) => {
-    if (!matchesStreamProject(selectedStreamRef.current, streamProject)) return;
-    void (async () => {
-      try {
-        const result = await fetchReadSnapshot(apiUrl, selectedProjectId, selectedCompanyId, selectedSpaceId);
-        if (!result) return;
-        if (!adoptSnapshotResponse(result.request, result.snapshot)) {
-          setSnapshot(result.snapshot);
-        }
-        setSourceError(null);
-      } catch (error) {
-        setSourceError(error instanceof Error ? error.message : String(error));
-      }
-    })();
-  }, [adoptSnapshotResponse, apiUrl, fetchReadSnapshot, selectedCompanyId, selectedProjectId, selectedSpaceId]);
+  // The initial marker confirms both stream scopes and the serve-process epoch.
+  // Every connect/reconnect then performs one authoritative read; the marker is
+  // never mistaken for a full snapshot.
+  const handleSseConnect = useCallback((streamKey: string, marker: SseSnapshotMarker): boolean => {
+    if (selectedStreamRef.current !== streamKey) return false;
+    const scopeMismatch = Boolean(
+      (selectedSpaceId && marker.executionSpaceId && selectedSpaceId !== marker.executionSpaceId)
+      || (selectedCompanyId && marker.companyScopeId && selectedCompanyId !== marker.companyScopeId),
+    );
+    streamScopeTrustedRef.current = !scopeMismatch;
+    confirmedScopeRef.current = scopeMismatch ? {} : {
+      executionSpaceId: marker.executionSpaceId ?? selectedSpaceId ?? selectedProjectId,
+      companyScopeId: marker.companyScopeId ?? (selectedCompanyId || undefined),
+    };
+    invalidationTracker.current.reset(marker.streamEpoch);
+    staleConnectionAttemptRef.current = null;
+    disconnectedProbeAttemptRef.current = null;
+    streamConnectedRef.current = !scopeMismatch;
+    setFreshnessState(scopeMismatch ? "stale" : "reconnecting");
+    setDomainFreshness(uniformFreshness(scopeMismatch ? "stale" : "reconnecting"));
+    if (!scopeMismatch) requestAuthoritativeResync();
+    return !scopeMismatch;
+  }, [requestAuthoritativeResync, selectedCompanyId, selectedProjectId, selectedSpaceId]);
 
   // SSE delta: merge the frame into the in-memory snapshot (append/replace by
   // id, latest-wins) so the read model and Member action stream update WITHOUT
   // a full re-fetch.
-  const handleSseFrame = useCallback((streamProject: string, frame: SseFrame) => {
-    if (!matchesStreamProject(selectedStreamRef.current, streamProject)) return;
+  const handleSseFrame = useCallback((streamKey: string, frame: SseFrame) => {
+    if (selectedStreamRef.current !== streamKey || !streamScopeTrustedRef.current) return;
+    if (frame.kind === "projection_invalidated") {
+      const decision = invalidationTracker.current.observe(
+        frame.invalidation,
+        confirmedScopeRef.current,
+      );
+      if (decision.kind === "refresh") {
+        requestAuthoritativeResync(freshnessDomainsForInvalidation(frame.invalidation));
+      }
+      return;
+    }
+    staleConnectionAttemptRef.current = null;
     snapshotFrames.current.recordFrame(frame);
     setSnapshot((current) => applyFrame(current, frame));
-  }, []);
+    if (!resyncDirtyRef.current && !resyncInFlightRef.current) {
+      setFreshnessState("live");
+      setDomainFreshness((current) => updateFreshness(current, ["runtime"], "live"));
+    }
+  }, [requestAuthoritativeResync]);
 
   // Open the EventSource while live; it cleans up on unmount, on leaving live,
-  // and on apiUrl change. `sseMode` drives both the freshness chip and the
-  // polling fallback below.
-  const sseMode = useEventStream({
+  // and on apiUrl or either scope changing.
+  const eventStream = useEventStream({
     enabled: isLive,
     baseUrl: apiUrl,
     project: selectedProjectId,
     space: selectedSpaceId,
+    company: selectedCompanyId,
     onConnect: handleSseConnect,
     onFrame: handleSseFrame,
   });
@@ -664,30 +902,102 @@ export function App() {
   // Volatile member previews exist only for the current live connection. A
   // reconnect or polling fallback must not make old thinking look replayable.
   useEffect(() => {
-    if (sseMode === "sse") return;
+    if (eventStream.mode === "sse") {
+      streamConnectedRef.current = streamScopeTrustedRef.current;
+      if (!streamScopeTrustedRef.current) setFreshnessState("stale");
+      return;
+    }
+    streamConnectedRef.current = false;
+    setFreshnessState("reconnecting");
+    setDomainFreshness(uniformFreshness("reconnecting"));
     snapshotFrames.current.clearLiveMemberActivity();
     setSnapshot((current) =>
       current.live_member_activity
         ? { ...current, live_member_activity: undefined }
         : current,
     );
-  }, [sseMode]);
+    if (
+      isLive
+      && disconnectedProbeAttemptRef.current !== eventStream.connectionAttempt
+    ) {
+      disconnectedProbeAttemptRef.current = eventStream.connectionAttempt;
+      requestAuthoritativeResync();
+      // Transport state wins over the temporary Stale state used while the
+      // authoritative read is in flight.
+      setFreshnessState("reconnecting");
+    }
+  }, [eventStream.connectionAttempt, eventStream.mode, isLive, requestAuthoritativeResync]);
+
+  // EventSource does not expose SSE keepalive comments. A quiet open stream gets
+  // exactly one bounded authoritative probe per connection attempt. The probe
+  // itself is visibly Stale, but a successful read restores Live; silence alone
+  // is not treated as proof that a healthy stream is stale.
+  useEffect(() => {
+    if (!isLive || eventStream.mode !== "sse" || eventStream.lastActivityAt === null) return;
+    const lastActivityAt = eventStream.lastActivityAt;
+    const inspect = () => {
+      if (
+        Date.now() - lastActivityAt >= streamStaleAfterMs
+        && staleConnectionAttemptRef.current !== eventStream.connectionAttempt
+      ) {
+        staleConnectionAttemptRef.current = eventStream.connectionAttempt;
+        requestAuthoritativeResync();
+      }
+    };
+    inspect();
+    const timer = window.setInterval(inspect, 1_000);
+    return () => window.clearInterval(timer);
+  }, [
+    eventStream.connectionAttempt,
+    eventStream.lastActivityAt,
+    eventStream.mode,
+    isLive,
+    requestAuthoritativeResync,
+  ]);
+
+  // Browser lifecycle recovery is edge-triggered: one read on visibility
+  // regain or online, never a hidden permanent polling loop.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && isLive) {
+        requestAuthoritativeResync();
+      }
+    };
+    const onOnline = () => {
+      if (isLive) requestAuthoritativeResync();
+    };
+    const onOffline = () => {
+      setFreshnessState("reconnecting");
+      setDomainFreshness(uniformFreshness("reconnecting"));
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, [isLive, requestAuthoritativeResync]);
 
   useEffect(
     () => () => {
       snapshotFrames.current.clearLiveMemberActivity();
+      if (resyncRetryTimerRef.current !== null) {
+        window.clearTimeout(resyncRetryTimerRef.current);
+      }
     },
     [],
   );
 
-  // Interval poll of /v1/snapshot. Runs while live AND either the operator
-  // opted in (FE-WP5) OR the SSE stream is not currently connected (automatic
-  // fallback so the view keeps refreshing during an outage/reconnect). A failed
+  // Interval poll of /v1/snapshot is manual opt-in only. Automatic recovery is
+  // edge-triggered above and on stream reconnect, so an outage does not create
+  // permanent high-frequency polling. A failed
   // poll surfaces the error but keeps the last good snapshot — it does not tear
   // the view down to the empty workspace the way a manual "Load live" failure
   // does. The interval is cleared on unmount, when it is no longer needed, and
   // whenever apiUrl changes so we never poll a stale endpoint.
-  const shouldPoll = isLive && (pollEnabled || sseMode !== "sse");
+  const shouldPoll = isLive && pollEnabled;
   useEffect(() => {
     if (!shouldPoll) return;
     let cancelled = false;
@@ -700,10 +1010,7 @@ export function App() {
             discardSnapshotRequest(result.request);
             return;
           }
-          if (!adoptSnapshotResponse(result.request, result.snapshot)) {
-            setSnapshot(result.snapshot);
-          }
-          setSourceError(null);
+          if (adoptSnapshotResponse(result.request, result.snapshot)) setSourceError(null);
         } catch (error) {
           if (!cancelled) {
             setSourceError(error instanceof Error ? error.message : String(error));
@@ -742,9 +1049,7 @@ export function App() {
     try {
       const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, options, selectedSpaceId);
       if (response.snapshot) {
-        if (!adoptSnapshotResponse(request, response.snapshot)) {
-          setSnapshot(response.snapshot);
-        }
+        adoptSnapshotResponse(request, response.snapshot);
       } else {
         needsRefresh = true;
       }
@@ -754,19 +1059,21 @@ export function App() {
     } finally {
       finishMutationSnapshotRequest(request);
       mutationInFlightRef.current = false;
+      if (resyncDirtyRef.current) resyncRunnerRef.current?.();
     }
     if (needsRefresh) await refreshLive();
     return true;
   }
 
-  // Freshness chip label: which source mode is actually feeding the view.
-  // "live (SSE)" while the stream is connected, "polling" once we fall back,
-  // "not connected" when no live source is loaded.
+  // Product freshness, not merely socket state. A connected EventSource is not
+  // labelled Live while an invalidation/gap is awaiting authoritative state.
   const sourceLabel = !isLive
     ? offlineLabel
-    : sseMode === "sse"
-      ? "live (SSE)"
-      : "polling";
+    : freshnessState === "live"
+      ? "Live"
+      : freshnessState === "stale"
+        ? "Stale"
+        : "Reconnecting";
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -787,8 +1094,9 @@ export function App() {
         onRefresh={refreshLive}
         onSelectionChange={setSelection}
         selection={selection}
-        sourceError={sourceError}
+        sourceError={sourceError ?? selectorRecoveryNotice}
         sourceLabel={sourceLabel}
+        domainFreshness={domainFreshness}
         actionsEnabled={isLive}
         onAction={(path, body, options) => runAction(path, body, options)}
         pollEnabled={pollEnabled}

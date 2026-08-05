@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Columns3,
   ExternalLink,
   Inbox,
@@ -58,6 +59,7 @@ import {
   selectTeamCapacity,
   selectTeamRunContext,
 } from "../model/teamSelectors";
+import { buildAgentTeamOrgModel, orgTeamPath } from "../model/orgSelectors";
 import type { WorkbenchModel } from "../model/readModel";
 import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
 import type { MemberRun, TeamMessage, Wave, Work } from "../types";
@@ -66,6 +68,8 @@ import type { SelectionState } from "../app/selection";
 export interface TeamWarRoomProps {
   model: WorkbenchModel;
   teamRunId?: string;
+  /** Optional deep-linked Team Work row opened from the global aggregate. */
+  workId?: string;
   /** Optional navigation context. A Mission-scoped TeamRun is not owned by it. */
   missionId?: string;
   waveId?: string;
@@ -92,6 +96,7 @@ const TEAM_VIEWS = [
 export function TeamWarRoom({
   model,
   teamRunId,
+  workId,
   missionId,
   waveId,
   onSelectionChange,
@@ -112,13 +117,20 @@ export function TeamWarRoom({
   const [showAllMembers, setShowAllMembers] = useState(false);
   const [showFullActivity, setShowFullActivity] = useState(false);
   const [teamView, setTeamView] = useState<TeamView>("works");
-  const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>();
+  const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>(workId);
   const [starting, setStarting] = useState(false);
   const runStatus = context?.run.status;
 
   useEffect(() => {
     if (runStatus !== "planning") setStarting(false);
   }, [runStatus]);
+
+  useEffect(() => {
+    if (workId) {
+      setSelectedWorkId(workId);
+      setTeamView("works");
+    }
+  }, [workId]);
 
   if (!context) {
     return (
@@ -145,6 +157,12 @@ export function TeamWarRoom({
       (!navigationMission || item.mission_id === navigationMission.id),
   );
   const stableTeam = model.snapshot.teams?.find((item) => item.id === run.agent_team_id);
+  const organization = buildAgentTeamOrgModel(model.snapshot);
+  const organizationNode = stableTeam ? organization.nodesById.get(stableTeam.id) : undefined;
+  const organizationPath = organizationNode ? orgTeamPath(organization, organizationNode.team.id) : [];
+  const childTeams = organizationNode?.childTeamIds
+    .map((id) => organization.nodesById.get(id))
+    .filter((node): node is NonNullable<typeof node> => Boolean(node)) ?? [];
   const supervisor = model.snapshot.team_supervisor_leases?.find(
     (lease) => lease.team_run_id === run.id,
   );
@@ -318,14 +336,16 @@ export function TeamWarRoom({
           breadcrumb={
             <button
               type="button"
-              onClick={() => onSelectionChange(
-                navigationMission
+              onClick={() => onSelectionChange(organizationNode
+                ? { surface: "organization", orgView: "agent-teams", orgTeamId: organizationNode.team.id, teamId: undefined, memberRunId: undefined, teamWorkId: undefined }
+                : navigationMission
                   ? { surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined }
-                  : { surface: "team", teamId: undefined },
-              )}
+                  : { surface: "team", teamId: undefined })}
               className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
             >
-              {navigationMission?.title ?? "Agent Teams"} <span className="text-border">/</span> {navigationWave ? `Wave ${navigationWave.index}` : "Team"}
+              {organizationPath.length > 0
+                ? <>Organization <span className="text-border">/</span> {organizationPath.map((entry) => entry.team.name ?? entry.team.id).join(" / ")}</>
+                : <>{navigationMission?.title ?? "Agent Teams"} <span className="text-border">/</span> {navigationWave ? `Wave ${navigationWave.index}` : "Team"}</>}
             </button>
           }
           title={stableTeam?.name ?? "Agent Team"}
@@ -502,6 +522,26 @@ export function TeamWarRoom({
               setParticipantFilter("all");
             }}
           />
+        )}
+
+        {childTeams.length > 0 && (
+          <section className="mt-2 rounded-xl border border-border bg-card/65 px-3 py-2" aria-label="Child Agent Teams" data-team-child-count={childTeams.length}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Child Teams</span>
+              {childTeams.map((child) => (
+                <button
+                  key={child.team.id}
+                  type="button"
+                  disabled={!child.latestRunId}
+                  onClick={() => child.latestRunId && onSelectionChange({ surface: "team", teamId: child.latestRunId, memberRunId: undefined, teamWorkId: undefined })}
+                  className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground disabled:text-muted-foreground sm:min-h-8"
+                  title={child.latestRunId ? "Open child Team War Room" : "No TeamRun exists for this child Team"}
+                >
+                  {child.team.name ?? child.team.id}<ChevronRight className="size-3" />
+                </button>
+              ))}
+            </div>
+          </section>
         )}
 
         {["completed", "cancelled"].includes(status ?? "") && needsYou.unfinishedWorks.length > 0 && (

@@ -19,6 +19,16 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "parent_team_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Recursive Organization relation (ADR 0052): parent AgentTeam id. Absent or null means a root Team. Graph invariants (existing parent, direct host, acyclic) are enforced by the harness, not by this schema."
+    },
+    "host_member_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Recursive Organization relation (ADR 0052): durable AgentMember that Hosts this Team. A non-root Team must name one and it must be a direct Member of the parent Team; a Member hosts at most one Team in V1. Optional only so compatibility rows carrying owner_agent_id alone remain readable."
+    },
     "created_at": { "type": "string", "minLength": 1 },
     "updated_at": { "type": "string", "minLength": 1 }
   }

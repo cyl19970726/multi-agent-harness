@@ -66,6 +66,30 @@ export interface SelectionState {
   docPath?: string;
   /** The selected workflow run id (opens WorkflowRunDetail on the workflows surface). */
   workflowRunId?: string;
+  /**
+   * View inside the Work surface, addressed as `?workView=<id>`. The native
+   * Team Work aggregate is `team-works`; absent means the WorkItem views.
+   */
+  workView?: string;
+  /**
+   * View inside the Organization surface, addressed as `?orgView=<id>`.
+   * `agent-teams` is the recursive AgentTeam tree; absent means the OrgUnit
+   * organization.
+   */
+  orgView?: string;
+  /** Selected durable AgentTeam node in the recursive Organization view. */
+  orgTeamId?: string;
+  /** Comma-separated expanded AgentTeam ids; URL-owned tree disclosure state. */
+  orgExpanded?: string;
+  /** Selected native Team Work row in an owning Team War Room. */
+  teamWorkId?: string;
+  /** URL-backed filters for the cross-TeamRun Team Works aggregate. */
+  workTeamId?: string;
+  workHostId?: string;
+  workMemberId?: string;
+  workStatus?: string;
+  workSource?: string;
+  workDemand?: string;
 }
 
 /**
@@ -224,6 +248,40 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
     next.workflowRunId = workflowRun;
     if (!surface) next.surface = "workflows";
   }
+  // In-surface views stay URL-addressable so every contracted page state is
+  // reachable by deep link (docs/design/company-os-v6/recursive-org-docs-works-v1).
+  const workView = params.get("workView");
+  if (workView) {
+    next.workView = workView;
+    if (!surface) next.surface = "work";
+  }
+  const orgView = params.get("orgView");
+  if (orgView) {
+    next.orgView = orgView;
+    if (!surface) next.surface = "organization";
+  }
+  const orgTeam = params.get("orgTeam");
+  if (orgTeam) {
+    next.orgTeamId = orgTeam;
+    next.orgView = "agent-teams";
+    if (!surface) next.surface = "organization";
+  }
+  const orgExpanded = params.get("orgExpanded");
+  if (orgExpanded) next.orgExpanded = orgExpanded;
+  const teamWork = params.get("teamWork");
+  if (teamWork) next.teamWorkId = teamWork;
+  const filterParams = [
+    ["workTeam", "workTeamId"],
+    ["workHost", "workHostId"],
+    ["workMember", "workMemberId"],
+    ["workStatus", "workStatus"],
+    ["workSource", "workSource"],
+    ["workDemand", "workDemand"],
+  ] as const;
+  for (const [param, key] of filterParams) {
+    const value = params.get(param);
+    if (value) next[key] = value;
+  }
   return next;
 }
 
@@ -291,6 +349,17 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("wave", selection.waveId);
   setOrDelete("doc", selection.docPath);
   setOrDelete("workflowRun", selection.workflowRunId);
+  setOrDelete("workView", selection.workView);
+  setOrDelete("orgView", selection.orgView);
+  setOrDelete("orgTeam", selection.orgTeamId);
+  setOrDelete("orgExpanded", selection.orgExpanded);
+  setOrDelete("teamWork", selection.teamWorkId);
+  setOrDelete("workTeam", selection.workTeamId);
+  setOrDelete("workHost", selection.workHostId);
+  setOrDelete("workMember", selection.workMemberId);
+  setOrDelete("workStatus", selection.workStatus);
+  setOrDelete("workSource", selection.workSource);
+  setOrDelete("workDemand", selection.workDemand);
 
   const query = params.toString();
   const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
@@ -331,6 +400,17 @@ const selectionCompareKeys = [
   "agentTab",
   "docPath",
   "workflowRunId",
+  "workView",
+  "orgView",
+  "orgTeamId",
+  "orgExpanded",
+  "teamWorkId",
+  "workTeamId",
+  "workHostId",
+  "workMemberId",
+  "workStatus",
+  "workSource",
+  "workDemand",
 ] as const;
 
 function sameSelection(left: SelectionState, right: SelectionState): boolean {

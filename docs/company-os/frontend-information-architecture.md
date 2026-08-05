@@ -112,15 +112,15 @@ The user must be able to travel in both directions:
   finance records, and execution attempts;
 - a run page can show the source WorkItem and return to its originating document
   without claiming that the run itself owns company context;
-- a Standing Agent profile can show explicit assignments, maintained document
-  spaces, and participation history, but only through stable links.
+- an AgentMember profile can show owned Work, maintained document spaces,
+  child Team, runtime, and participation history, but only through explicit
+  stable links.
 
-The first Organization experience is governance-led: Human Owner, Lead Agent,
-the four Governance Agents, and the Business Agent branch beneath Org/HR. Solid
-lines show reporting and lifecycle management; optional dashed lines show work
-collaboration. The Organization overview and a compact Actor configuration
-surface are the near-term product. Dedicated Governance or Business Agent
-workspaces are deferred design references, not implementation prerequisites.
+The target Organization experience renders the root AgentTeam and recursively
+nested child Teams. Solid lines show explicit Host/direct-Member topology;
+Work collaboration is rendered from shared Works rather than inferred dashed
+relationships. The Organization overview reuses Team War Room and Member Focus
+instead of creating separate Governance-Agent workspaces.
 
 ## Actor and organization policy
 
@@ -136,13 +136,13 @@ The UI must retain distinct objects and language:
 | Actor | UI shows | UI must not imply |
 | --- | --- | --- |
 | Human member | role, organization, authority, availability, decisions, contributions | provider runtime, model, or session state |
-| Standing Agent | role, org placement, availability/capacity, permissions, document stewardship, explicit assignments, runtime | that process health equals availability or human approval |
+| AgentMember | role, Team path, owned Works, child Team, business-access ceiling, runtime | that process health equals authority or Human approval |
 | External participant | engagement scope, limited permissions, responsible sponsor, deliverables | internal membership or unrestricted access |
 | Service | system capability and audit identity | human agency or organizational accountability |
-| MemberRun | one execution attempt's participation and assigned lane | durable employment, Standing Agent identity, or a department seat |
+| MemberRun | one runtime/session binding for a durable Member | a second organizational identity or department seat |
 
-`AgentTeamRun` is a transient execution group. It must never appear as a
-standing department merely because a similar name or role exists.
+`AgentTeam` is the durable target organization relation; `AgentTeamRun` is one
+execution instance and must not be mistaken for a second department identity.
 
 ## Document-first interaction model
 

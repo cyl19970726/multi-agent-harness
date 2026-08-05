@@ -81,6 +81,7 @@ schema contracts are checked with valid and invalid fixtures.
 | Team run event | [team-run-event.schema.json](../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../schemas/agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](../schemas/agent-member.schema.json) |
+| Durable Organization Agent member | [durable-agent-member.schema.json](../schemas/durable-agent-member.schema.json) |
 | Message | [message.schema.json](../schemas/message.schema.json) |
 | Agent runtime | [agent-runtime.schema.json](../schemas/agent-runtime.schema.json) |
 | Agent event | [agent-event.schema.json](../schemas/agent-event.schema.json) |

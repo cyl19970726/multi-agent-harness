@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 pub mod company_os;
@@ -52,6 +53,12 @@ pub struct AgentProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Compatibility execution registry row.
+///
+/// This pre-ADR-0051 shape mixes organization identity with mutable provider,
+/// runtime, session, and task state. New Organization writes use
+/// [`DurableAgentMember`]; this row remains readable for explicit convergence
+/// and for the existing runtime surfaces until their cutover is complete.
 pub struct AgentMember {
     pub id: String,
     pub name: String,
@@ -456,8 +463,299 @@ pub struct AgentTeam {
     #[serde(default = "default_agent_team_status")]
     pub status: AgentTeamStatus,
     pub member_ids: Vec<String>,
+    /// Recursive Organization relation (ADR 0052): parent AgentTeam id.
+    /// `None` means a root team. Rows written before the recursive-topology
+    /// slice predate this field and read as roots.
+    #[serde(default)]
+    pub parent_team_id: Option<String>,
+    /// Recursive Organization relation (ADR 0052): durable AgentMember that
+    /// Hosts this team. A non-root team must name one and it must be a direct
+    /// member of the parent team; a member hosts at most one team in V1.
+    /// Optional only so compatibility rows carrying `owner_agent_id` alone
+    /// remain readable.
+    #[serde(default)]
+    pub host_member_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Durable Company/Organization identity of one Agent (ADR 0052).
+///
+/// Mutable execution state deliberately does not live here. A durable member
+/// binds to zero or more replaceable [`MemberRun`] generations, and each run
+/// may bind to a provider-native session owned by that provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableAgentMember {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub role: String,
+    #[serde(default)]
+    pub provider_profile: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub workspace_policy: Option<String>,
+    #[serde(default)]
+    pub project_binding_id: Option<String>,
+    #[serde(default)]
+    pub business_access_ceiling_refs: Vec<String>,
+    pub status: DurableAgentMemberStatus,
+    #[serde(default)]
+    pub created_by_member_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurableAgentMemberStatus {
+    Active,
+    Paused,
+    Retired,
+}
+
+/// A compatibility or target Team row does not resolve to one durable Host.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum HostAuthorityError {
+    #[error("AgentTeam {team_id} has no durable Host identity; set host_member_id explicitly")]
+    Missing { team_id: String },
+    #[error(
+        "AgentTeam {team_id} has conflicting Host authorities: owner_agent_id={owner_agent_id}, host_member_id={host_member_id}"
+    )]
+    Conflicting {
+        team_id: String,
+        owner_agent_id: String,
+        host_member_id: String,
+    },
+    #[error("AgentTeam {team_id} Host references missing durable AgentMember: {host_member_id}")]
+    UnknownMember {
+        team_id: String,
+        host_member_id: String,
+    },
+    #[error(
+        "AgentTeam {team_id} has not completed Host cutover: owner_agent_id must equal host_member_id {host_member_id}"
+    )]
+    CompatibilityAuthorityStillActive {
+        team_id: String,
+        host_member_id: String,
+    },
+}
+
+/// Deterministically map the legacy `owner_agent_id` wire field onto the
+/// target durable Host identity.
+///
+/// An explicit `host_member_id` wins only when the legacy field is the neutral
+/// `host` placeholder or the same identity. Two different concrete identities
+/// are refused instead of choosing one silently. A compatibility-only row can
+/// map a concrete legacy owner; the neutral placeholder cannot manufacture an
+/// identity and therefore maps to `None`.
+pub fn compat_host_member_id(team: &AgentTeam) -> Result<Option<&str>, HostAuthorityError> {
+    let owner = team.owner_agent_id.trim();
+    match team.host_member_id.as_deref().map(str::trim) {
+        Some("") => Err(HostAuthorityError::Missing {
+            team_id: team.id.clone(),
+        }),
+        Some(host) if owner == "host" || owner == host => Ok(Some(host)),
+        Some(host) => Err(HostAuthorityError::Conflicting {
+            team_id: team.id.clone(),
+            owner_agent_id: owner.to_string(),
+            host_member_id: host.to_string(),
+        }),
+        None if !owner.is_empty() && owner != "host" => Ok(Some(owner)),
+        None => Ok(None),
+    }
+}
+
+/// Resolve exactly one Host identity for a Team, including deterministic
+/// compatibility mapping. Use [`validate_host_authority_cutover`] before
+/// switching product authority to ensure every row is explicitly migrated.
+pub fn resolve_team_host_authority(team: &AgentTeam) -> Result<&str, HostAuthorityError> {
+    compat_host_member_id(team)?.ok_or_else(|| HostAuthorityError::Missing {
+        team_id: team.id.clone(),
+    })
+}
+
+/// Refuse Organization authority cutover unless every Team names an explicit,
+/// existing durable Host and the legacy wire field aliases that same identity.
+/// This makes the migration boundary visible and prevents dual Host authority.
+pub fn validate_host_authority_cutover(
+    teams: &BTreeMap<String, AgentTeam>,
+    members: &BTreeMap<String, DurableAgentMember>,
+) -> Result<(), HostAuthorityError> {
+    for team in teams.values() {
+        let Some(explicit_host) = team.host_member_id.as_deref().map(str::trim) else {
+            return Err(HostAuthorityError::CompatibilityAuthorityStillActive {
+                team_id: team.id.clone(),
+                host_member_id: team.owner_agent_id.clone(),
+            });
+        };
+        let resolved = resolve_team_host_authority(team)?;
+        if team.owner_agent_id.trim() != explicit_host {
+            return Err(HostAuthorityError::CompatibilityAuthorityStillActive {
+                team_id: team.id.clone(),
+                host_member_id: explicit_host.to_string(),
+            });
+        }
+        if !members.contains_key(resolved) {
+            return Err(HostAuthorityError::UnknownMember {
+                team_id: team.id.clone(),
+                host_member_id: resolved.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Recursive AgentTeam topology (ADR 0052, target contract slice).
+//
+// Organization is the persistent recursive projection of Agent Teams: every
+// non-root team names its `parent_team_id` and the durable `host_member_id`
+// that created and coordinates it. These pure functions validate the graph
+// invariants and answer recursive reads; they perform no I/O so the store,
+// CLI, and future API/UI surfaces share one authority.
+// ---------------------------------------------------------------------------
+
+/// Graph invariant violation in the recursive AgentTeam topology.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TeamTopologyError {
+    #[error("AgentTeam {team_id} references missing parent AgentTeam: {parent_team_id}")]
+    UnknownParent {
+        team_id: String,
+        parent_team_id: String,
+    },
+    #[error("non-root AgentTeam {team_id} must name a durable host_member_id")]
+    MissingHost { team_id: String },
+    #[error(
+        "AgentTeam {team_id} host {host_member_id} is not a direct member of parent AgentTeam {parent_team_id}"
+    )]
+    HostNotParentMember {
+        team_id: String,
+        host_member_id: String,
+        parent_team_id: String,
+    },
+    #[error("AgentMember {host_member_id} hosts more than one AgentTeam: {first_team_id}, {second_team_id}")]
+    MultipleHostedTeams {
+        host_member_id: String,
+        first_team_id: String,
+        second_team_id: String,
+    },
+    #[error("AgentTeam topology cycle detected at AgentTeam {team_id}")]
+    Cycle { team_id: String },
+}
+
+/// Validate the recursive AgentTeam graph invariants over the latest-row-wins
+/// team projection (ADR 0052):
+///
+/// 1. every `parent_team_id` resolves to an existing team;
+/// 2. every non-root team names a durable `host_member_id` that is a direct
+///    member of its parent team;
+/// 3. a member hosts at most one team (V1 primary-child-team rule, enforced
+///    across teams of any status);
+/// 4. the parent graph is acyclic.
+///
+/// Teams predating the topology slice carry neither field, read as roots, and
+/// never trip an invariant.
+pub fn validate_agent_team_topology(
+    teams: &BTreeMap<String, AgentTeam>,
+) -> Result<(), TeamTopologyError> {
+    for team in teams.values() {
+        let Some(parent_team_id) = team.parent_team_id.as_deref() else {
+            continue;
+        };
+        let parent = teams
+            .get(parent_team_id)
+            .ok_or_else(|| TeamTopologyError::UnknownParent {
+                team_id: team.id.clone(),
+                parent_team_id: parent_team_id.to_string(),
+            })?;
+        let host_member_id =
+            team.host_member_id
+                .as_deref()
+                .ok_or_else(|| TeamTopologyError::MissingHost {
+                    team_id: team.id.clone(),
+                })?;
+        if !parent.member_ids.iter().any(|id| id == host_member_id) {
+            return Err(TeamTopologyError::HostNotParentMember {
+                team_id: team.id.clone(),
+                host_member_id: host_member_id.to_string(),
+                parent_team_id: parent_team_id.to_string(),
+            });
+        }
+    }
+    let mut host_claims: BTreeMap<&str, &str> = BTreeMap::new();
+    for team in teams.values() {
+        let Some(host_member_id) = team.host_member_id.as_deref() else {
+            continue;
+        };
+        if let Some(first_team_id) = host_claims.insert(host_member_id, team.id.as_str()) {
+            return Err(TeamTopologyError::MultipleHostedTeams {
+                host_member_id: host_member_id.to_string(),
+                first_team_id: first_team_id.to_string(),
+                second_team_id: team.id.clone(),
+            });
+        }
+    }
+    for team in teams.values() {
+        let mut visited = BTreeSet::new();
+        let mut cursor = team.id.as_str();
+        while let Some(parent_team_id) = teams
+            .get(cursor)
+            .and_then(|current| current.parent_team_id.as_deref())
+        {
+            if !visited.insert(cursor) {
+                return Err(TeamTopologyError::Cycle {
+                    team_id: cursor.to_string(),
+                });
+            }
+            cursor = parent_team_id;
+        }
+    }
+    Ok(())
+}
+
+/// Direct child AgentTeam ids of `team_id`, sorted for deterministic reads.
+pub fn child_team_ids(teams: &BTreeMap<String, AgentTeam>, team_id: &str) -> Vec<String> {
+    teams
+        .values()
+        .filter(|team| team.parent_team_id.as_deref() == Some(team_id))
+        .map(|team| team.id.clone())
+        .collect()
+}
+
+/// `root_team_id` plus every descendant team id, depth-first with sorted
+/// children, so Organization tree renders share one deterministic order.
+/// Returns an empty vec when `root_team_id` does not resolve.
+pub fn team_subtree_ids(teams: &BTreeMap<String, AgentTeam>, root_team_id: &str) -> Vec<String> {
+    if !teams.contains_key(root_team_id) {
+        return Vec::new();
+    }
+    let mut ordered = Vec::new();
+    let mut stack = vec![root_team_id.to_string()];
+    while let Some(team_id) = stack.pop() {
+        ordered.push(team_id.clone());
+        let mut children = child_team_ids(teams, &team_id);
+        children.reverse();
+        stack.extend(children);
+    }
+    ordered
+}
+
+/// Ancestor chain of `team_id`, parent first up to the root. Stops before an
+/// unresolved parent so partial compatibility graphs still read; cycle-free
+/// input is guaranteed by [`validate_agent_team_topology`].
+pub fn team_ancestor_ids(teams: &BTreeMap<String, AgentTeam>, team_id: &str) -> Vec<String> {
+    let mut ancestors = Vec::new();
+    let mut cursor = team_id;
+    while let Some(parent_team_id) = teams
+        .get(cursor)
+        .and_then(|current| current.parent_team_id.as_deref())
+    {
+        ancestors.push(parent_team_id.to_string());
+        cursor = parent_team_id;
+    }
+    ancestors
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1180,6 +1478,17 @@ impl Validate for AgentMember {
         require_non_empty(&self.role, "AgentMember.role")?;
         require_non_empty(&self.provider, "AgentMember.provider")?;
         require_non_empty(&self.created_at, "AgentMember.created_at")
+    }
+}
+
+impl Validate for DurableAgentMember {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "DurableAgentMember.id")?;
+        require_non_empty(&self.name, "DurableAgentMember.name")?;
+        require_non_empty(&self.description, "DurableAgentMember.description")?;
+        require_non_empty(&self.role, "DurableAgentMember.role")?;
+        require_non_empty(&self.created_at, "DurableAgentMember.created_at")?;
+        require_non_empty(&self.updated_at, "DurableAgentMember.updated_at")
     }
 }
 
@@ -2324,9 +2633,10 @@ pub struct MemberRun {
     pub team_run_id: String,
     #[serde(default)]
     pub slot_id: Option<String>,
-    /// Optional stable link to a durable AgentMember / Company OS
-    /// StandingAgent identity. Absence means this remains a temporary execution
-    /// participant; callers must never infer the link from display fields.
+    /// Optional stable link to [`DurableAgentMember`]. Absence means this
+    /// remains a temporary execution participant; callers must never infer the
+    /// link from display fields, provider sessions, or the compatibility
+    /// [`AgentMember`] registry.
     #[serde(default)]
     pub agent_member_id: Option<String>,
     pub name: String,
@@ -2906,8 +3216,10 @@ impl TeamMessage {
     }
 }
 
-/// Agent Team Work is durable responsibility inside one TeamRun. WorkEvent is
-/// the append-only authority; this row is the latest rebuildable projection.
+/// Agent Team Work is durable responsibility inside one AgentTeam. A
+/// `team_run_id` is the current execution attempt, not the Work's lifetime.
+/// WorkEvent is the append-only authority; this row is the latest rebuildable
+/// projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkStatus {
@@ -2967,6 +3279,13 @@ pub struct WorkCommandContext {
 pub struct Work {
     pub id: String,
     pub team_run_id: String,
+    /// Durable AgentTeam scope (ADR 0052). `None` reads as a compatibility
+    /// TeamRun-scoped Work written before the Team-scope promotion slice.
+    /// When set, `team_run_id` names only the current execution attempt: the
+    /// Work's responsibility survives that TeamRun's completion and a later
+    /// execution attempt rebinds `team_run_id` without changing `team_id`.
+    #[serde(default)]
+    pub team_id: Option<String>,
     /// Same-TeamRun hierarchy only. Cross-Team delegation uses
     /// [`WorkDelegation`].
     #[serde(default)]
@@ -2990,6 +3309,11 @@ pub struct Work {
     pub prerequisite_work_ids: Vec<String>,
     pub priority: WorkPriority,
     pub created_by_actor: TeamActorRef,
+    /// Durable AgentMember identity of the creator (ADR 0052 provenance).
+    /// `None` for Host, Supervising Operator, or external intake; populated
+    /// from the bound MemberRun's stable identity when a Member creates Work.
+    #[serde(default)]
+    pub created_by_member_id: Option<String>,
     #[serde(default)]
     pub result_summary: Option<String>,
     #[serde(default)]
@@ -3034,6 +3358,22 @@ impl Work {
     pub fn is_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
         self.is_claim_ready(works)
     }
+
+    /// Whether this Work carries a durable AgentTeam scope (ADR 0052) rather
+    /// than only a compatibility TeamRun scope.
+    pub fn is_team_scoped(&self) -> bool {
+        self.team_id.is_some()
+    }
+
+    /// Assigned/unassigned is a derived view over `owner_member_id`, never a
+    /// stored lifecycle of its own (ADR 0050/0051).
+    pub fn is_assigned(&self) -> bool {
+        self.owner_member_id.is_some()
+    }
+
+    pub fn is_unassigned(&self) -> bool {
+        self.owner_member_id.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3052,6 +3392,341 @@ pub enum WorkEventKind {
     Cancelled,
     Updated,
     Rebound,
+    /// A compatibility TeamRun-scoped Work was explicitly promoted onto the
+    /// durable AgentTeam named by its current execution attempt.
+    TeamScopePromoted,
+    /// The execution attempt (`team_run_id`) of a Team-scoped Work moved to a
+    /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
+    /// owner, and provenance are unchanged (ADR 0052).
+    ExecutionRetargeted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkCutoverIssueKind {
+    LegacyTeamRunScope,
+    MissingExecutionRun,
+    TeamScopeMismatch,
+    MissingCompanyWorkItem,
+    ActiveCompanyWorkItemOverlap,
+    DuplicateCompanyWorkItemLink,
+    MissingCompanyWorkItemFence,
+    ConflictingCompanyWorkItemFence,
+    IncompleteCompanyWorkItemFence,
+    CompanyWorkItemChangedAfterFence,
+}
+
+/// Durable one-way refusal marker written into the Company Store before a
+/// source-linked Work becomes Team-scoped authority.
+///
+/// This is deliberately not a cross-store transaction claim. The Company
+/// Store persists this marker first and thereafter refuses every revision of
+/// the retired WorkItem. Only then may the Execution Store append the
+/// `TeamScopePromoted` WorkOperation. A crash between those appends leaves no
+/// mutable responsibility authority and an idempotent retry may finish the
+/// promotion using the same marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCutoverFence {
+    pub company_work_item_id: String,
+    pub work_id: String,
+    pub team_id: String,
+    /// Event intended by the command that first installed the fence. A crash
+    /// gap may allow compatibility Work versions to advance; completion may
+    /// therefore use a later `TeamScopePromoted` event after a refreshed retry.
+    pub promotion_event_id: String,
+    pub expected_work_version: u64,
+    pub company_work_item_status: WorkItemStatus,
+    pub company_work_item_updated_at: String,
+    /// Canonical typed snapshot of the retired WorkItem. Store APIs refuse all
+    /// later revisions, and verification compares the full value so manual
+    /// ledger mutation cannot hide behind an unchanged status/timestamp.
+    #[serde(default)]
+    pub company_work_item_snapshot: serde_json::Value,
+    pub idempotency_key: String,
+    pub created_at: String,
+}
+
+/// One reason the Company WorkItem -> persistent Team Work cutover cannot be
+/// accepted. The validator is deliberately read-only: it proves a snapshot is
+/// unambiguous but never dual-writes either responsibility system.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCutoverIssue {
+    pub kind: WorkCutoverIssueKind,
+    #[serde(default)]
+    pub work_id: Option<String>,
+    #[serde(default)]
+    pub company_work_item_id: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkCutoverReport {
+    pub valid: bool,
+    pub checked_work_count: usize,
+    pub team_scoped_work_count: usize,
+    pub source_linked_work_count: usize,
+    #[serde(default)]
+    pub fenced_source_count: usize,
+    pub issues: Vec<WorkCutoverIssue>,
+}
+
+/// Validate the breaking responsibility cutover required by ADR 0052.
+///
+/// A source-linked persistent Work is accepted only after the compatibility
+/// Company WorkItem is no longer live. This prevents two mutable owner/status
+/// records from surviving the cutover. Duplicate source links are refused
+/// because they would make one Company responsibility fan out into competing
+/// Work authorities.
+pub fn validate_work_cutover(
+    works: &[Work],
+    team_runs: &[AgentTeamRun],
+    company_work_items: &[WorkItem],
+) -> WorkCutoverReport {
+    validate_work_cutover_impl(works, team_runs, company_work_items, &[], &[], false)
+}
+
+/// Validate the concurrency-safe cutover protocol, including the durable
+/// Company refusal markers and their matching Work promotion events.
+pub fn validate_work_cutover_with_fences(
+    works: &[Work],
+    team_runs: &[AgentTeamRun],
+    company_work_items: &[WorkItem],
+    fences: &[WorkCutoverFence],
+    work_events: &[WorkEvent],
+) -> WorkCutoverReport {
+    validate_work_cutover_impl(
+        works,
+        team_runs,
+        company_work_items,
+        fences,
+        work_events,
+        true,
+    )
+}
+
+fn validate_work_cutover_impl(
+    works: &[Work],
+    team_runs: &[AgentTeamRun],
+    company_work_items: &[WorkItem],
+    fences: &[WorkCutoverFence],
+    work_events: &[WorkEvent],
+    enforce_fences: bool,
+) -> WorkCutoverReport {
+    let runs = team_runs
+        .iter()
+        .map(|run| (run.id.as_str(), run))
+        .collect::<BTreeMap<_, _>>();
+    let company_items = company_work_items
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<BTreeMap<_, _>>();
+    let works_by_id = works
+        .iter()
+        .map(|work| (work.id.as_str(), work))
+        .collect::<BTreeMap<_, _>>();
+    let events_by_id = work_events
+        .iter()
+        .map(|event| (event.id.as_str(), event))
+        .collect::<BTreeMap<_, _>>();
+    let mut fences_by_source = BTreeMap::<&str, Vec<&WorkCutoverFence>>::new();
+    for fence in fences {
+        fences_by_source
+            .entry(fence.company_work_item_id.as_str())
+            .or_default()
+            .push(fence);
+    }
+    let mut source_links = BTreeMap::<&str, Vec<&str>>::new();
+    let mut issues = Vec::new();
+
+    for work in works {
+        let Some(team_id) = work.team_id.as_deref() else {
+            issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::LegacyTeamRunScope,
+                work_id: Some(work.id.clone()),
+                company_work_item_id: work.source_work_item_ref.clone(),
+                detail: format!(
+                    "Work {} is still scoped only to TeamRun {}",
+                    work.id, work.team_run_id
+                ),
+            });
+            continue;
+        };
+        match runs.get(work.team_run_id.as_str()) {
+            None => issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::MissingExecutionRun,
+                work_id: Some(work.id.clone()),
+                company_work_item_id: work.source_work_item_ref.clone(),
+                detail: format!(
+                    "Work {} references missing execution TeamRun {}",
+                    work.id, work.team_run_id
+                ),
+            }),
+            Some(run) => {
+                let run_team_id = run
+                    .agent_team_id
+                    .as_deref()
+                    .or(run.definition_id.as_deref());
+                if run_team_id != Some(team_id) {
+                    issues.push(WorkCutoverIssue {
+                        kind: WorkCutoverIssueKind::TeamScopeMismatch,
+                        work_id: Some(work.id.clone()),
+                        company_work_item_id: work.source_work_item_ref.clone(),
+                        detail: format!(
+                            "Work {} is scoped to AgentTeam {} but execution TeamRun {} belongs to {:?}",
+                            work.id, team_id, work.team_run_id, run_team_id
+                        ),
+                    });
+                }
+            }
+        }
+
+        let Some(source_id) = work.source_work_item_ref.as_deref() else {
+            continue;
+        };
+        source_links.entry(source_id).or_default().push(&work.id);
+        match company_items.get(source_id) {
+            None => issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::MissingCompanyWorkItem,
+                work_id: Some(work.id.clone()),
+                company_work_item_id: Some(source_id.to_string()),
+                detail: format!(
+                    "Work {} references missing Company WorkItem {}",
+                    work.id, source_id
+                ),
+            }),
+            Some(item)
+                if !matches!(
+                    item.status,
+                    WorkItemStatus::Draft
+                        | WorkItemStatus::Completed
+                        | WorkItemStatus::Cancelled
+                        | WorkItemStatus::Archived
+                ) =>
+            {
+                issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap,
+                    work_id: Some(work.id.clone()),
+                    company_work_item_id: Some(source_id.to_string()),
+                    detail: format!(
+                        "Company WorkItem {} is {:?} while persistent Work {} is also authoritative",
+                        source_id, item.status, work.id
+                    ),
+                });
+            }
+            Some(_) => {}
+        }
+
+        if enforce_fences {
+            match fences_by_source.get(source_id).map(Vec::as_slice) {
+                None | Some([]) => issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::MissingCompanyWorkItemFence,
+                    work_id: Some(work.id.clone()),
+                    company_work_item_id: Some(source_id.to_string()),
+                    detail: format!(
+                        "persistent Work {} has no durable Company WorkItem refusal fence",
+                        work.id
+                    ),
+                }),
+                Some([fence])
+                    if fence.work_id == work.id
+                        && fence.team_id == team_id
+                        && (events_by_id
+                            .get(fence.promotion_event_id.as_str())
+                            .is_some_and(|event| {
+                                event.work_id == work.id
+                                    && event.kind == WorkEventKind::TeamScopePromoted
+                                    && event.expected_version == fence.expected_work_version
+                            })
+                            || work_events.iter().any(|event| {
+                                event.work_id == work.id
+                                    && event.kind == WorkEventKind::TeamScopePromoted
+                                    && event.expected_version >= fence.expected_work_version
+                            })) =>
+                {
+                    if let Some(item) = company_items.get(source_id) {
+                        if serde_json::to_value(item).ok().as_ref()
+                            != Some(&fence.company_work_item_snapshot)
+                        {
+                            issues.push(WorkCutoverIssue {
+                                kind: WorkCutoverIssueKind::CompanyWorkItemChangedAfterFence,
+                                work_id: Some(work.id.clone()),
+                                company_work_item_id: Some(source_id.to_string()),
+                                detail: format!(
+                                    "Company WorkItem {source_id} changed after its cutover fence"
+                                ),
+                            });
+                        }
+                    }
+                }
+                Some([fence]) if fence.work_id == work.id && fence.team_id == team_id => {
+                    issues.push(WorkCutoverIssue {
+                        kind: WorkCutoverIssueKind::IncompleteCompanyWorkItemFence,
+                        work_id: Some(work.id.clone()),
+                        company_work_item_id: Some(source_id.to_string()),
+                        detail: format!(
+                            "Company WorkItem {source_id} fence references missing or invalid promotion event {}",
+                            fence.promotion_event_id
+                        ),
+                    });
+                }
+                Some(_) => issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::ConflictingCompanyWorkItemFence,
+                    work_id: Some(work.id.clone()),
+                    company_work_item_id: Some(source_id.to_string()),
+                    detail: format!(
+                        "Company WorkItem {source_id} has multiple or mismatched cutover fences"
+                    ),
+                }),
+            }
+        }
+    }
+
+    if enforce_fences {
+        for fence in fences {
+            if !works_by_id.get(fence.work_id.as_str()).is_some_and(|work| {
+                work.team_id.as_deref() == Some(fence.team_id.as_str())
+                    && work.source_work_item_ref.as_deref()
+                        == Some(fence.company_work_item_id.as_str())
+            }) {
+                issues.push(WorkCutoverIssue {
+                    kind: WorkCutoverIssueKind::IncompleteCompanyWorkItemFence,
+                    work_id: Some(fence.work_id.clone()),
+                    company_work_item_id: Some(fence.company_work_item_id.clone()),
+                    detail: format!(
+                        "Company WorkItem {} is fenced for Work {}, but that Work is not yet the matching Team authority",
+                        fence.company_work_item_id, fence.work_id
+                    ),
+                });
+            }
+        }
+    }
+
+    for (source_id, linked_work_ids) in source_links {
+        if linked_work_ids.len() > 1 {
+            issues.push(WorkCutoverIssue {
+                kind: WorkCutoverIssueKind::DuplicateCompanyWorkItemLink,
+                work_id: None,
+                company_work_item_id: Some(source_id.to_string()),
+                detail: format!(
+                    "Company WorkItem {} is linked by multiple Works: {}",
+                    source_id,
+                    linked_work_ids.join(", ")
+                ),
+            });
+        }
+    }
+
+    WorkCutoverReport {
+        valid: issues.is_empty(),
+        checked_work_count: works.len(),
+        team_scoped_work_count: works.iter().filter(|work| work.is_team_scoped()).count(),
+        source_linked_work_count: works
+            .iter()
+            .filter(|work| work.source_work_item_ref.is_some())
+            .count(),
+        fenced_source_count: fences_by_source.len(),
+        issues,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3139,6 +3814,125 @@ pub struct WorkDeliveryUpdate {
     #[serde(default)]
     pub failure_reason: Option<String>,
     pub updated_at: String,
+}
+
+/// Why the exact bound Host must inspect durable Agent Team state.
+///
+/// This is deliberately separate from [`TeamMessageKind`] and
+/// [`WorkEventKind`]. Work remains the responsibility/status plane, while a
+/// Host attention row is only a durable notification that a particular Work
+/// state now needs Host action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostAttentionKind {
+    WorkReviewRequested,
+    WorkBlocked,
+    MemberStoppedWithOwnedReadyWork,
+    MemberFailedWithOwnedReadyWork,
+}
+
+/// Transport/intake state for one Host attention row.
+///
+/// `Delivered` proves only that the exact provider-native Host task accepted
+/// the notification. `Acknowledged` proves Host intake. Neither state accepts,
+/// rejects, resumes, or otherwise mutates the referenced Work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostAttentionStatus {
+    Actionable,
+    Claimed,
+    Delivered,
+    Acknowledged,
+}
+
+/// Durable notification derived from a Work-state or member-runtime fact.
+///
+/// Host binding is intentionally not copied into this row. Read projections
+/// resolve the latest [`AgentTeamRun`] binding, so an item created while
+/// unbound cannot leak to another task and becomes deliverable only after an
+/// explicit binding exists. Claim fields snapshot the exact binding that owns
+/// an in-flight delivery attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAttention {
+    pub id: String,
+    pub team_run_id: String,
+    pub kind: HostAttentionKind,
+    pub work_id: String,
+    pub work_version: u64,
+    /// Exact WorkEvent, TeamRunEvent, or provider control event that caused
+    /// this notification. Runtime integration should derive `id`
+    /// deterministically from this reference so retries remain idempotent.
+    pub source_event_ref: String,
+    #[serde(default)]
+    pub member_run_id: Option<String>,
+    pub status: HostAttentionStatus,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claimed_host_surface: Option<String>,
+    #[serde(default)]
+    pub claimed_host_thread_id: Option<String>,
+    #[serde(default)]
+    pub provider_receipt_id: Option<String>,
+    #[serde(default)]
+    pub last_failure_reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl HostAttention {
+    /// Delivered rows remain actionable until the exact Host explicitly ACKs
+    /// intake. A claim is also visible so another transport cannot double-wake
+    /// the same Host while the first attempt is in flight.
+    pub fn needs_host_action(&self) -> bool {
+        self.status != HostAttentionStatus::Acknowledged
+    }
+}
+
+impl Validate for HostAttention {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "HostAttention.id")?;
+        require_non_empty(&self.team_run_id, "HostAttention.team_run_id")?;
+        require_non_empty(&self.work_id, "HostAttention.work_id")?;
+        require_non_empty(&self.source_event_ref, "HostAttention.source_event_ref")?;
+        require_non_empty(&self.created_at, "HostAttention.created_at")?;
+        require_non_empty(&self.updated_at, "HostAttention.updated_at")?;
+        if let Some(member_run_id) = &self.member_run_id {
+            require_non_empty(member_run_id, "HostAttention.member_run_id")?;
+        }
+        if let Some(claim_id) = &self.claim_id {
+            require_non_empty(claim_id, "HostAttention.claim_id")?;
+        }
+        if let Some(surface) = &self.claimed_host_surface {
+            require_non_empty(surface, "HostAttention.claimed_host_surface")?;
+        }
+        if let Some(thread_id) = &self.claimed_host_thread_id {
+            require_non_empty(thread_id, "HostAttention.claimed_host_thread_id")?;
+        }
+        if let Some(receipt_id) = &self.provider_receipt_id {
+            require_non_empty(receipt_id, "HostAttention.provider_receipt_id")?;
+        }
+        if let Some(reason) = &self.last_failure_reason {
+            require_non_empty(reason, "HostAttention.last_failure_reason")?;
+        }
+        Ok(())
+    }
+}
+
+/// TeamRun-scoped read projection. `warning` is populated for an unbound run;
+/// exact native-thread queries never return such a projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAttentionInbox {
+    pub team_run_id: String,
+    pub host_surface: String,
+    #[serde(default)]
+    pub host_thread_id: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+    #[serde(default)]
+    pub attentions: Vec<HostAttention>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4523,6 +5317,8 @@ mod tests {
             Work {
                 id: id.into(),
                 team_run_id: "team-1".into(),
+                team_id: None,
+                created_by_member_id: None,
                 parent_work_id: None,
                 source_work_item_ref: None,
                 title: id.into(),
@@ -4565,6 +5361,173 @@ mod tests {
     }
 
     #[test]
+    fn work_cutover_rejects_live_company_overlap_and_accepts_archived_source() {
+        let run: AgentTeamRun = serde_json::from_value(serde_json::json!({
+            "id": "run-1",
+            "agent_team_id": "team-1",
+            "host_surface": "test",
+            "objective": "cut over",
+            "status": "running",
+            "member_run_ids": [],
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("team run");
+        let work: Work = serde_json::from_value(serde_json::json!({
+            "id": "work-1",
+            "team_run_id": "run-1",
+            "team_id": "team-1",
+            "source_work_item_ref": "company-work-1",
+            "title": "Persistent Work",
+            "context_markdown": "context",
+            "completion_criteria_markdown": "done",
+            "status": "open",
+            "claim_mode": "team_claim",
+            "eligible_member_ids": [],
+            "prerequisite_work_ids": [],
+            "priority": "normal",
+            "created_by_actor": {"kind": "host", "id": "host"},
+            "artifact_refs": [],
+            "check_refs": [],
+            "version": 1,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("Work");
+        let item = |status: &str| -> WorkItem {
+            serde_json::from_value(serde_json::json!({
+                "id": "company-work-1",
+                "title": "Compatibility WorkItem",
+                "objective": "cut over",
+                "status": status,
+                "source_document_ref": "document-1",
+                "source_record_refs": [],
+                "result_document_ref": null,
+                "result_record_refs": [],
+                "submitted_by": {"actor_type": "human", "actor_id": "human-1"},
+                "requested_by": null,
+                "accountable_owner": {"actor_type": "human", "actor_id": "human-1"},
+                "assignees": [],
+                "contributors": [],
+                "reviewer": null,
+                "approver": null,
+                "execution_mode": "agent_team",
+                "execution_refs": [],
+                "approval_refs": [],
+                "evidence_refs": [],
+                "artifact_refs": [],
+                "outcome_summary": null,
+                "due_at": null,
+                "priority": null,
+                "risk_level": null,
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1",
+                "completed_at": null
+            }))
+            .expect("WorkItem")
+        };
+        let promotion_event: WorkEvent = serde_json::from_value(serde_json::json!({
+            "id": "event-promote-work-1",
+            "team_run_id": "run-1",
+            "work_id": "work-1",
+            "sequence": 2,
+            "kind": "team_scope_promoted",
+            "expected_version": 0,
+            "resulting_version": 1,
+            "performed_by_actor": {"kind": "host", "id": "host"},
+            "idempotency_key": "promote-work-1",
+            "created_at": "unix-ms:1"
+        }))
+        .expect("promotion event");
+        let fence = WorkCutoverFence {
+            company_work_item_id: "company-work-1".into(),
+            work_id: work.id.clone(),
+            team_id: "team-1".into(),
+            promotion_event_id: promotion_event.id.clone(),
+            expected_work_version: promotion_event.expected_version,
+            company_work_item_status: WorkItemStatus::Archived,
+            company_work_item_updated_at: "unix-ms:1".into(),
+            company_work_item_snapshot: serde_json::to_value(item("archived"))
+                .expect("WorkItem snapshot"),
+            idempotency_key: promotion_event.idempotency_key.clone(),
+            created_at: "unix-ms:1".into(),
+        };
+
+        let active = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            std::slice::from_ref(&run),
+            &[item("in_progress")],
+            std::slice::from_ref(&fence),
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(!active.valid);
+        assert!(active
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap }));
+
+        let missing_fence = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            std::slice::from_ref(&run),
+            &[item("archived")],
+            &[],
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(missing_fence
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::MissingCompanyWorkItemFence }));
+
+        assert!(
+            validate_work_cutover(
+                std::slice::from_ref(&work),
+                std::slice::from_ref(&run),
+                &[item("archived")],
+            )
+            .valid
+        );
+        let archived = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            std::slice::from_ref(&run),
+            &[item("archived")],
+            std::slice::from_ref(&fence),
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(archived.valid, "unexpected issues: {:?}", archived.issues);
+        let mut silently_mutated = item("archived");
+        silently_mutated.title = "mutated without advancing updated_at".into();
+        let mutated = validate_work_cutover_with_fences(
+            std::slice::from_ref(&work),
+            &[],
+            &[silently_mutated],
+            std::slice::from_ref(&fence),
+            std::slice::from_ref(&promotion_event),
+        );
+        assert!(mutated
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::CompanyWorkItemChangedAfterFence }));
+
+        let duplicate = validate_work_cutover_with_fences(
+            &[
+                work.clone(),
+                Work {
+                    id: "work-2".into(),
+                    ..work
+                },
+            ],
+            &[],
+            &[item("archived")],
+            &[fence],
+            &[promotion_event],
+        );
+        assert!(duplicate
+            .issues
+            .iter()
+            .any(|issue| { issue.kind == WorkCutoverIssueKind::DuplicateCompanyWorkItemLink }));
+    }
+
+    #[test]
     fn legacy_work_delivery_update_defaults_to_unsequenced() {
         let update: WorkDeliveryUpdate = serde_json::from_value(serde_json::json!({
             "delivery_id": "delivery-legacy",
@@ -4574,6 +5537,277 @@ mod tests {
         }))
         .expect("legacy delivery update remains readable");
         assert_eq!(update.update_sequence, 0);
+    }
+
+    #[test]
+    fn host_attention_keeps_transport_intake_distinct_from_work_semantics() {
+        let mut attention = HostAttention {
+            id: "host-attention-work-event-1".into(),
+            team_run_id: "team-run-1".into(),
+            kind: HostAttentionKind::WorkReviewRequested,
+            work_id: "work-1".into(),
+            work_version: 3,
+            source_event_ref: "work-event-1".into(),
+            member_run_id: Some("member-run-1".into()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        assert!(attention.validate().is_ok());
+        assert!(attention.needs_host_action());
+
+        attention.status = HostAttentionStatus::Delivered;
+        attention.provider_receipt_id = Some("provider-receipt-1".into());
+        assert!(
+            attention.needs_host_action(),
+            "delivery is transport receipt, not Host intake or Work acceptance"
+        );
+        attention.status = HostAttentionStatus::Acknowledged;
+        assert!(!attention.needs_host_action());
+
+        let json = serde_json::to_value(&attention).expect("serialize Host attention");
+        assert_eq!(json["kind"], "work_review_requested");
+        assert_eq!(json["status"], "acknowledged");
+        assert!(json.get("team_message_id").is_none());
+        assert!(json.get("work_status").is_none());
+    }
+
+    fn topology_team(
+        id: &str,
+        member_ids: &[&str],
+        parent_team_id: Option<&str>,
+        host_member_id: Option<&str>,
+    ) -> AgentTeam {
+        AgentTeam {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            description: format!("{id} description"),
+            owner_agent_id: "host".to_string(),
+            status: AgentTeamStatus::Active,
+            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
+            parent_team_id: parent_team_id.map(str::to_string),
+            host_member_id: host_member_id.map(str::to_string),
+            created_at: "unix-ms:1".to_string(),
+            updated_at: "unix-ms:1".to_string(),
+        }
+    }
+
+    fn topology_map(teams: Vec<AgentTeam>) -> BTreeMap<String, AgentTeam> {
+        teams
+            .into_iter()
+            .map(|team| (team.id.clone(), team))
+            .collect()
+    }
+
+    #[test]
+    fn agent_team_topology_fields_default_to_root_for_legacy_rows() {
+        let team: AgentTeam = serde_json::from_value(serde_json::json!({
+            "id": "team-legacy",
+            "name": "Legacy",
+            "description": "Row written before the topology slice.",
+            "owner_agent_id": "host",
+            "member_ids": [],
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }))
+        .expect("legacy team row without topology fields remains readable");
+        assert_eq!(team.parent_team_id, None);
+        assert_eq!(team.host_member_id, None);
+        let teams = topology_map(vec![team]);
+        assert_eq!(validate_agent_team_topology(&teams), Ok(()));
+    }
+
+    fn durable_member(id: &str) -> DurableAgentMember {
+        DurableAgentMember {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: format!("Durable identity for {id}"),
+            role: "lead".to_string(),
+            provider_profile: Some("kimi/qwen3.8-max".to_string()),
+            model: Some("qwen/qwen3.8-max".to_string()),
+            workspace_policy: Some("project_binding".to_string()),
+            project_binding_id: Some("project-harness".to_string()),
+            business_access_ceiling_refs: vec!["company_os.read".to_string()],
+            status: DurableAgentMemberStatus::Active,
+            created_by_member_id: None,
+            created_at: "unix-ms:1".to_string(),
+            updated_at: "unix-ms:1".to_string(),
+        }
+    }
+
+    #[test]
+    fn host_authority_compatibility_mapping_is_deterministic_and_refuses_conflicts() {
+        let mut team = topology_team("root", &["lead"], None, None);
+        team.owner_agent_id = "lead".to_string();
+        assert_eq!(compat_host_member_id(&team), Ok(Some("lead")));
+
+        team.host_member_id = Some("lead".to_string());
+        assert_eq!(resolve_team_host_authority(&team), Ok("lead"));
+
+        team.host_member_id = Some("different-lead".to_string());
+        assert_eq!(
+            resolve_team_host_authority(&team),
+            Err(HostAuthorityError::Conflicting {
+                team_id: "root".to_string(),
+                owner_agent_id: "lead".to_string(),
+                host_member_id: "different-lead".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn host_authority_cutover_requires_explicit_member_backed_single_authority() {
+        let mut team = topology_team("root", &["lead"], None, Some("lead"));
+        let mut teams = topology_map(vec![team.clone()]);
+        let members = BTreeMap::from([("lead".to_string(), durable_member("lead"))]);
+
+        assert!(matches!(
+            validate_host_authority_cutover(&teams, &members),
+            Err(HostAuthorityError::CompatibilityAuthorityStillActive { .. })
+        ));
+
+        team.owner_agent_id = "lead".to_string();
+        teams.insert(team.id.clone(), team);
+        assert_eq!(validate_host_authority_cutover(&teams, &members), Ok(()));
+
+        assert!(matches!(
+            validate_host_authority_cutover(&teams, &BTreeMap::new()),
+            Err(HostAuthorityError::UnknownMember { .. })
+        ));
+    }
+
+    #[test]
+    fn agent_team_topology_accepts_valid_recursive_forest() {
+        let teams = topology_map(vec![
+            topology_team("root", &["lead", "cto"], None, Some("lead")),
+            topology_team("child", &["worker"], Some("root"), Some("cto")),
+            topology_team("grandchild", &["leaf"], Some("child"), Some("worker")),
+            topology_team("legacy-flat", &[], None, None),
+        ]);
+        assert_eq!(validate_agent_team_topology(&teams), Ok(()));
+        assert_eq!(child_team_ids(&teams, "root"), vec!["child".to_string()]);
+        assert_eq!(child_team_ids(&teams, "grandchild"), Vec::<String>::new());
+        assert_eq!(
+            team_subtree_ids(&teams, "root"),
+            vec![
+                "root".to_string(),
+                "child".to_string(),
+                "grandchild".to_string()
+            ]
+        );
+        assert_eq!(
+            team_ancestor_ids(&teams, "grandchild"),
+            vec!["child".to_string(), "root".to_string()]
+        );
+        assert_eq!(team_ancestor_ids(&teams, "root"), Vec::<String>::new());
+        assert_eq!(team_subtree_ids(&teams, "missing"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_missing_parent() {
+        let teams = topology_map(vec![topology_team(
+            "child",
+            &[],
+            Some("missing"),
+            Some("cto"),
+        )]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::UnknownParent {
+                team_id: "child".to_string(),
+                parent_team_id: "missing".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_non_root_without_host() {
+        let teams = topology_map(vec![
+            topology_team("root", &["cto"], None, None),
+            topology_team("child", &[], Some("root"), None),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::MissingHost {
+                team_id: "child".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_host_outside_parent_membership() {
+        let teams = topology_map(vec![
+            topology_team("root", &["lead"], None, Some("lead")),
+            topology_team("child", &[], Some("root"), Some("outsider")),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::HostNotParentMember {
+                team_id: "child".to_string(),
+                host_member_id: "outsider".to_string(),
+                parent_team_id: "root".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_member_hosting_two_teams() {
+        let teams = topology_map(vec![
+            topology_team("root", &["cto"], None, None),
+            topology_team("child-a", &[], Some("root"), Some("cto")),
+            topology_team("child-b", &[], Some("root"), Some("cto")),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&teams),
+            Err(TeamTopologyError::MultipleHostedTeams {
+                host_member_id: "cto".to_string(),
+                first_team_id: "child-a".to_string(),
+                second_team_id: "child-b".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn agent_team_topology_rejects_cycles() {
+        let self_parent = topology_map(vec![topology_team(
+            "loop",
+            &["lead"],
+            Some("loop"),
+            Some("lead"),
+        )]);
+        assert_eq!(
+            validate_agent_team_topology(&self_parent),
+            Err(TeamTopologyError::Cycle {
+                team_id: "loop".to_string(),
+            })
+        );
+
+        let mut cycle = topology_map(vec![
+            // a's host ha is a direct member of parent b; b's host hb is a
+            // direct member of parent a — direct-host passes, so the acyclic
+            // invariant is what must reject the pair.
+            topology_team("a", &["hb"], Some("b"), Some("ha")),
+            topology_team("b", &["ha"], Some("a"), Some("hb")),
+        ]);
+        assert_eq!(
+            validate_agent_team_topology(&cycle),
+            Err(TeamTopologyError::Cycle {
+                team_id: "a".to_string(),
+            })
+        );
+        // Breaking one parent link restores a valid two-level tree.
+        cycle.get_mut("b").expect("team b").parent_team_id = None;
+        assert_eq!(validate_agent_team_topology(&cycle), Ok(()));
+        assert_eq!(
+            team_subtree_ids(&cycle, "b"),
+            vec!["b".to_string(), "a".to_string()]
+        );
     }
 }
 

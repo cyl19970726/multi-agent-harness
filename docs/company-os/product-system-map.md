@@ -16,14 +16,14 @@ Star Harness is an AI Company OS for turning durable company context into
 governed work and returning accepted outcomes to company memory. Its two
 primary product systems are **Docs** and **Organization**. Work and Finance are
 first-class operating systems connected to them. AgentOS is the programmable
-operating layer that lets Standing Agents use skills, MCP tools, plugins,
+operating layer that lets durable AgentMembers use skills, MCP tools, plugins,
 connectors, custom pages, and execution substrates without turning those tools
 into company authority. Mission/Wave, Agent Team, Dynamic Workflow, Host
 execution, providers, plugins, and MCP are the shared execution foundation
 rather than a second company model.
 
 The product-level subject is an **Agent Company Workspace**: a company-like
-operating boundary where humans, Standing Agents, Docs, Work, Organization,
+operating boundary where humans, AgentMembers, Docs, Work, Organization,
 Finance, plugins/gateways, and external repositories are coordinated. The
 technical Store boundary for that subject is the **Company Store**. ADR 0042
 separates that Company Store from standalone **Execution Spaces** and
@@ -33,7 +33,7 @@ repository/worktree **Project Bindings**.
 flowchart LR
   D["Docs<br/>company memory and business structure"]
   W["Work<br/>commitments, responsibility and outcomes"]
-  O["Organization<br/>humans, Standing Agents and authority"]
+  O["Organization<br/>humans · nested AgentTeams · AgentMembers"]
   F["Finance<br/>monetary state and evidence"]
   E["Execution Space<br/>Mission/Wave · Agent Team · Workflow · Host"]
   P["Project Bindings<br/>repos · worktrees · delivery refs"]
@@ -66,27 +66,25 @@ update all three. See
 
 ## Initial organization
 
-The first organization is governance-led and deliberately shallow:
+The first organization is a deliberately small recursive AgentTeam:
 
 ```text
-Human Owner
-└── Lead Agent
-    ├── Docs Governance Agent
-    ├── Work Governance Agent
-    ├── Finance Governance Agent
-    └── Org / HR Governance Agent
-        ├── Trademark Agent
-        ├── Development Agent
-        ├── Content Agent
-        └── future Business Agents
+Supervising Operator
+  <-> Lead AgentMember (root Team Host)
+        ├── Docs Member
+        ├── Work / Product Member
+        └── CTO Member
+            └── optional child AgentTeam
+                ├── implementation Member
+                └── reviewer Member
 ```
 
-Lead manages the four Governance Agents. Org/HR owns the lifecycle and reporting
-placement of Business Agents. Docs, Work, and Finance Governance Agents
-collaborate with Business Agents through records and governed Actions; they are
-not their organizational manager. A one-off need should normally use an
-existing Actor, Agent Team, Workflow, Host execution, or external collaborator
-instead of creating a Standing Agent.
+The Lead assigns and accepts Work only in its direct Team. A Member may Host a
+child Team, delegate child Work, and remain accountable for its parent Work.
+Role names are company choices rather than required architecture. The
+Supervising Operator can inspect all Teams, create unassigned intake Work, and
+message the Lead, but it does not impersonate a Member or become the hidden
+scheduler. See [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 ## One company operation
 
@@ -110,20 +108,21 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Layer | Native product objects | Boundary |
 | --- | --- | --- |
 | Docs | Document, Block, TypedRecord, Relation, View, BusinessModule | durable knowledge and business structure |
-| Organization | ActorRef, HumanMember, AgentMember, external/service actors, OrgUnit | identity, reporting, permission, authority and explicit availability/capacity |
-| Work | WorkItem, Milestone, WorkType, Assignment, Approval links, execution/delivery refs | commitment, responsibility, lifecycle, evidence and result routing |
+| Organization | ActorRef, HumanMember, AgentMember, recursive AgentTeam, external/service actors; OrgUnit as optional business grouping | identity, direct-Team administration, authority and explicit availability/capacity |
+| Work | Work, WorkEvent, WorkDelivery, Milestone and typed business/Approval relations | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
 | Plugins / Gateways | GatewayPlugin manifest, GatewayAction, GatewayEvent, connector sync records, view-extension declarations, evidence refs | platform capabilities, external state synchronization, and presentation extensions; never approval or business truth |
-| Execution Space | Mission context, ordered Host-plan Wave revisions, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
+| Execution Space | Mission context, append-only Mission Log judgment, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
 | Project Binding / external source | ProjectBinding, ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how repositories, worktrees, GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are selected or mapped |
 
-There is no native `Project`, Task Graph, GoalPhase, or universal Agent object.
-Mission/Wave is the only new long-task coordination model. Temporary Agent Team
-members and provider-native subagents do not become Standing Agents.
+There is no native `Project`, Task Graph, GoalPhase, or separate universal
+Standing Agent scheduler. Mission plus its Mission Log is the optional
+long-task coordination model. AgentMember is the durable agent identity;
+MemberRun and provider-native subagents remain execution details.
 
 An external GitHub repository may own the software product contract for a real
 application. Company OS still owns the commercial model, operating modules,
-WorkItems, Organization, Finance, and launch readiness around that application.
+Works, Organization, Finance, and launch readiness around that application.
 The integration contract is [External Project Product Sources](external-project-product-sources.md).
 Under ADR 0042, the Git repository is a Project Binding and/or external source,
 not the owner of the Company Store. One Agent Company Workspace may contain
@@ -153,11 +152,11 @@ readiness/bootstrap probe, but it should not hard-code platform page flows,
 API quirks, or business-specific automation. Whether an operation is invoked
 through an existing tool such as `gh`, MCP, a plugin CLI, API, browser
 automation, or phone automation is an implementation choice; the durable effect
-must return to Docs, WorkItems, Organization actors, metrics, evidence, and
+must return to Docs, Works, Organization actors, metrics, evidence, and
 Finance/Approval records when protected actions or money are involved.
 
 The first AgentOS connector to implement should be **GitHub** because this
-repository is the dogfood system. Development WorkItems need a reliable bridge
+repository is the dogfood system. Development Works need a reliable bridge
 to issues, branches, pull requests, review status, checks, preview/deployment
 evidence, and software PRD source snapshots. Social, WeCom, ecommerce, and
 logistics plugins should follow the same action + connector + view pattern
@@ -167,13 +166,13 @@ after the GitHub path proves the contract.
 
 | Area | Current truth | Next product gap |
 | --- | --- | --- |
-| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; CLI/API/Dashboard route all three identities independently; explicit copy-and-verify migrations preserve source data; blended snapshots join Standing Agent identity to execution participation without copying rows | governed retirement of legacy project-derived compatibility stores and a durable cross-process Team Supervisor |
+| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; current blended snapshots still join compatibility StandingAgent rows to execution participation | recursive AgentMember organization cutover, legacy-store retirement, and durable cross-process Team Supervisor |
 | Docs substrate | native schemas, stores, APIs, standard views, and Store-live evidence exist | deeper document authoring and governed module evolution |
-| Organization substrate | actor kinds, OrgUnit membership, and mixed-actor UI exist | governance-led reporting records, governed organization mutation, and the target Organization Overview |
-| Work read model | native Milestone/WorkType/business-line projection and six responsive Store-live views exist | governed intake, reassignment, Milestone mutation, saved views, and delivery adapters |
+| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 recursive AgentTeam topology, truthful hierarchy, and shared Member/Team views |
+| Work read model | Team Works plus current Company WorkItem/Milestone projections exist | one persistent Team-scoped Work kernel, recursive Global Works, and explicit compatibility cutover |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
-| Governance Agents | canonical roles and decision contracts exist | durable definitions, permissions, queues, and Org/HR lifecycle Actions |
-| AgentOS self-hosting | AgentOS Lead and governance Standing Agents plus a real autonomy WorkItem exist in Company Store; baseline Org/Docs/Work pages are captured | stable Standing Agent Inbox transport, relation-correct selected pages, governed Org mutation, needs-attention loop, and durable Runtime Supervisor |
+| Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by recursive Teams instead of a fixed governance hierarchy |
+| AgentOS self-hosting | AgentOS Lead and compatibility StandingAgent/WorkItem rows plus real execution evidence exist | Lead -> CTO -> child Team dogfood over one Work kernel, relation-correct UI, and durable Runtime Supervisor |
 | Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
 | AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
 
@@ -188,7 +187,7 @@ separates baseline, Expected, Actual, historical, and deferred-reference assets.
 4. [Organization and actors](organization-and-actors.md)
 5. [Work Operating System](work-operating-system.md)
 6. [Document system](document-system.md) and [financial relations](financial-relations.md)
-7. [Governance Agent workspaces](governance-agent-workspaces.md)
+7. [Nested Agent Team organization](nested-agent-team-organization.md)
 8. [External project product sources](external-project-product-sources.md)
 9. [External Gateway and Plugin Intake](external-gateway-and-plugins.md)
 10. [Frontend information architecture](frontend-information-architecture.md)

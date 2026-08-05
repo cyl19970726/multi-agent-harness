@@ -354,8 +354,23 @@ impl KimiAcpClient {
     /// named model is a real execution constraint, not display metadata: an
     /// unknown/unavailable alias fails before the first prompt.
     fn apply_requested_controls(&mut self) -> CliResult<()> {
+        let mut model_changed_without_refreshed_options = false;
         if let Some(model) = self.model.clone() {
-            self.apply_config_option("model", "model", &model)?;
+            let advertised_model = current_config_value(&self.config_options, "model");
+            let model_changed = advertised_model.as_deref() != Some(model.as_str());
+            let refreshed_options = self.apply_config_option("model", "model", &model)?;
+            model_changed_without_refreshed_options = model_changed && !refreshed_options;
+            if model_changed_without_refreshed_options {
+                // `configOptions` belongs to the model that advertised it. If
+                // changing the model did not return a refreshed option set,
+                // the old model's thinking default and supported values are
+                // no longer evidence. Keep an explicit requested effort for
+                // the provider to validate, but never project the stale
+                // default as effective on the new model.
+                self.config_options.retain(|option| {
+                    option.get("id").and_then(|value| value.as_str()) != Some("thinking")
+                });
+            }
             self.effective_model = Some(model);
         } else {
             self.effective_model = current_config_value(&self.config_options, "model");
@@ -363,6 +378,8 @@ impl KimiAcpClient {
         if let Some(effort) = self.effort.clone() {
             self.apply_config_option("thinking", "reasoning effort", &effort)?;
             self.effective_effort = Some(effort);
+        } else if model_changed_without_refreshed_options {
+            self.effective_effort = None;
         } else {
             self.effective_effort = current_config_value(&self.config_options, "thinking");
         }
@@ -374,7 +391,7 @@ impl KimiAcpClient {
         config_id: &str,
         label: &str,
         requested: &str,
-    ) -> CliResult<()> {
+    ) -> CliResult<bool> {
         if let Some(false) = config_option_supports(&self.config_options, config_id, requested) {
             self.kill_quiet();
             return Err(CliError::Usage(format!(
@@ -401,7 +418,16 @@ impl KimiAcpClient {
                 "kimi acp rejected requested {label} {requested}: {error}"
             )));
         }
-        Ok(())
+        let refreshed_options = frame
+            .pointer("/result/configOptions")
+            .and_then(|value| value.as_array())
+            .cloned();
+        if let Some(options) = refreshed_options {
+            self.config_options = options;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Write one JSON-RPC request frame and return the receiver its response

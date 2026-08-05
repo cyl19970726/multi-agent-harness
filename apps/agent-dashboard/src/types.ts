@@ -97,6 +97,32 @@ export interface AgentMember {
   provider_child_thread_count?: number;
 }
 
+/**
+ * Durable Company/Organization identity (ADR 0052). Runtime/session state is
+ * intentionally absent and remains on MemberRun / the compatibility
+ * AgentMember projection.
+ */
+export interface DurableAgentMember {
+  id: string;
+  name: string;
+  description: string;
+  role: string;
+  provider_profile?: string | null;
+  model?: string | null;
+  workspace_policy?: string | null;
+  project_binding_id?: string | null;
+  business_access_ceiling_refs?: string[];
+  status: "active" | "paused" | "retired" | string;
+  created_by_member_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CompanyOsSnapshotProjection {
+  durable_agent_members?: DurableAgentMember[];
+  [key: string]: unknown;
+}
+
 /** Provider launch/runtime config carried on an AgentMember (mirrors the Rust
  * AgentProviderConfig). All optional; the Config tab renders what is set and
  * shows "Not configured" otherwise. */
@@ -128,6 +154,18 @@ export interface AgentTeam {
   owner_agent_id?: string;
   status?: "active" | "closed" | "archived";
   member_ids?: string[];
+  /**
+   * Recursive Organization relation (ADR 0052): parent AgentTeam id. Absent
+   * or null means a root Team. Wire name frozen by the topology slice
+   * (schemas/agent-team.schema.json); rows pre-dating it read as roots.
+   */
+  parent_team_id?: string | null;
+  /**
+   * Recursive Organization relation (ADR 0052): durable AgentMember that
+   * Hosts this Team. Optional on compatibility rows; never inferred from
+   * `owner_agent_id` — that legacy field is rendered separately.
+   */
+  host_member_id?: string | null;
 }
 
 export interface Message {
@@ -867,8 +905,11 @@ export interface HarnessMeta {
 
 export interface DashboardSnapshot {
   generated_at?: string;
-  company_os?: unknown;
+  company_os?: CompanyOsSnapshotProjection;
   teams?: AgentTeam[];
+  /** Optional direct projection for forward compatibility; current server
+   * authority is `company_os.durable_agent_members`. */
+  durable_agent_members?: DurableAgentMember[];
   members?: AgentMember[];
   messages?: Message[];
   events?: AgentEvent[];

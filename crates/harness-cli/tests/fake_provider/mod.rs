@@ -107,7 +107,11 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
 ask="${FAKE_KIMI_ASK:-0}"
-version="${FAKE_KIMI_VERSION:-0.0.0}"
+version="${FAKE_KIMI_VERSION:-0.31.0}"
+if [ "$1" = "--version" ]; then
+  printf '%s\n' "$version"
+  exit 0
+fi
 if [ -n "${FAKE_KIMI_ENV_MARKER:-}" ]; then
   env | grep '^HARNESS_' | sort > "$FAKE_KIMI_ENV_MARKER"
 fi
@@ -125,7 +129,7 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[],"agentInfo":{"name":"fake-kimi","version":"%s"}}}\n' "$id" "$version"
       ;;
     *'"method":"session/new"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
       ;;
     *'"method":"session/load"'*)
@@ -136,7 +140,7 @@ while IFS= read -r line; do
       if [ "${FAKE_KIMI_LOAD_REPLAY:-0}" = "1" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"STALE_HISTORY_REPLAY"}}}}\n' "$session_id"
       fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
       ;;
     *'"method":"session/resume"'*)
       if [ "${FAKE_KIMI_RESUME_UNSUPPORTED:-0}" = "1" ]; then
@@ -147,10 +151,23 @@ while IFS= read -r line; do
       if [ -n "${FAKE_KIMI_ATTACH_MARKER:-}" ]; then
         printf 'resume %s\n' "$session_id" >> "$FAKE_KIMI_ATTACH_MARKER"
       fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id"
       ;;
     *'"method":"session/set_config_option"'*)
+      if [ -n "${FAKE_KIMI_CONTROL_MARKER:-}" ]; then
+        printf '%s\n' "$line" >> "$FAKE_KIMI_CONTROL_MARKER"
+      fi
       case "$line" in
+        *'"configId":"model"'*'"value":"qwen/qwen3.8-max"'*)
+          # A model-switch receipt carries the NEW model's option set. Its
+          # thinking values intentionally exclude the old K3-only `max` so
+          # tests can prove stale controls are not inherited across models.
+          if [ "${FAKE_KIMI_MODEL_SWITCH_NO_REFRESH:-0}" = "1" ]; then
+            printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+          else
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"type":"select","id":"model","currentValue":"qwen/qwen3.8-max","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"on","options":[{"value":"on","name":"On"},{"value":"off","name":"Off"}]}]}}\n' "$id"
+          fi
+          ;;
         *'"configId":"model"'*'"value":"k2.5"'*)
           printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
           ;;
@@ -198,12 +215,37 @@ while IFS= read -r line; do
         continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hidden reasoning"}}}}\n' "$session_id"
+      if [ "${FAKE_KIMI_KEEP_WORK_ACTIVE:-0}" = "1" ] && [ "$prompt_count" = "1" ]; then
+        # Mirror a real member's first durable action: after the provider has
+        # accepted the prompt, start its assigned Work. An outputless terminal
+        # response then makes the supervisor continue that same responsibility
+        # immediately, reproducing the quota-loop failure deterministically.
+        sleep 0.1
+        work_json=$("$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run work list \
+          --team-run-id "$HARNESS_TEAM_RUN_ID" \
+          --member-run-id "$HARNESS_MEMBER_RUN_ID")
+        work_id=$(printf '%s\n' "$work_json" | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | sed -n '1p')
+        work_version=$(printf '%s\n' "$work_json" | sed -n 's/.*"version": \([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+        "$HARNESS_BIN" --project "$HARNESS_PROJECT_ID" team-run work start \
+          --team-run-id "$HARNESS_TEAM_RUN_ID" \
+          --work-id "$work_id" \
+          --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+          --expected-version "$work_version" >/dev/null
+      fi
+      if [ "${FAKE_KIMI_QUOTA_ERROR:-0}" = "1" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: quota exceeded"}}\n' "$id"
+        continue
+      fi
       if [ -n "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}" ]; then
         # One non-retryable provider failure after partial content streamed:
         # the terminal session/prompt response is a JSON-RPC error. Harness
         # must record a provider_error round, not a partial Handoff.
         : > "${FAKE_KIMI_PROMPT_ERROR_ONCE_MARKER}"
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 403: usage limit reached"}}\n' "$id"
+        continue
+      fi
+      if [ "${FAKE_KIMI_EMPTY_TERMINAL:-0}" = "1" ] && [ "${FAKE_KIMI_REAL_ON_PROMPT:-0}" != "$prompt_count" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
         continue
       fi
       if [ -n "${FAKE_KIMI_PEER_ACK_CONFIG:-}" ] && [ -s "${FAKE_KIMI_PEER_ACK_CONFIG}" ] && [ "$prompt_count" = "2" ]; then
@@ -444,7 +486,15 @@ if [ "$1" = "app-server" ]; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
-            exit 0
+            # FAKE_CODEX_EXIT_ONCE_MARKER (optional): only the first spawned
+            # process exits, so a test can model a single transport loss and
+            # then let the resumed process keep running turns.
+            if [ -z "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ] || [ ! -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; then
+              if [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
+                : > "${FAKE_CODEX_EXIT_ONCE_MARKER}"
+              fi
+              exit 0
+            fi
           fi
         elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
@@ -698,6 +748,10 @@ pub fn install_pi_rpc_shim(
     let script = format!(
         r##"#!/usr/bin/env python3
 import sys, json, os, subprocess
+
+if '--version' in sys.argv[1:]:
+    print('0.83.0')
+    raise SystemExit(0)
 
 RESULT = os.environ.get('FAKE_PI_RESULT', 'DONE')
 

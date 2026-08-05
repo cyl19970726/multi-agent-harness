@@ -221,6 +221,37 @@ profiles snapshot `host_driven`, and the Codex adapter no longer activates a
 native Goal beside Harness turns. A detected dual-driver adapter remains
 nonconforming and `review_required` until repaired and canaried.
 
+`review_required`, `incompatible`, and `unavailable` persistent Adapter
+snapshots are execution refusals, not warnings. The gate runs before initial
+start, native-session resume/reopen, recovery rebind, and a live Supervisor's
+rebound Work drive. It must run before a provider process/session is started,
+before a WorkDelivery is claimed, and before Work responsibility is rebound.
+Historical native-session locators remain readable and are never promoted or
+replayed by the refusal. The Host promotion path is explicit: inspect
+`harness member providers --fail-on-review`, regenerate protocol schemas, run
+deterministic acceptance plus a live canary for the exact version and mode,
+then add that exact version to the Adapter's reviewed set before retrying the
+same durable MemberRun and Work.
+
+## Live Projection Recovery Boundary
+
+The Runtime SSE contract is a bounded full-snapshot-on-reconnect protocol. It
+does not implement a durable cursor and does not accept or claim
+`Last-Event-ID` replay. Each connection begins with a `snapshot` marker carrying
+the selected Execution Space, optional Company scope, and a process-local
+`stream_epoch`. The client then fetches the authoritative scoped snapshot.
+
+Incremental typed frames are convenience deltas inside that connection.
+`projection_invalidated` is a scoped refresh hint carrying `scope`, `scope_id`,
+`ledger`, an epoch-local `revision`, and one of
+`append | replace | truncate | delete`. Atomic same-size replacement and direct
+deletion invalidate the affected projection even when a byte offset cannot see
+new content. On open, reconnect, visibility recovery, invalidation, or scope
+change, the client refetches the authoritative selected snapshot and rejects
+late responses from an older scope/generation. Revisions are monotonic only for
+one `(stream_epoch, scope, scope_id, ledger)` key and must never be persisted or
+presented as durable resume tokens.
+
 ## Host And Member Rules
 
 The Host:

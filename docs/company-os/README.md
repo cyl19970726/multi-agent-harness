@@ -11,9 +11,10 @@ cores are:
 
 1. **Docs** — the company memory, business structure, decision surface, and
    default place where work begins and returns.
-2. **A mixed organization** — durable Standing Agents, human members, and
-   limited external participants arranged into accountable teams and, when
-   needed, nested organizational units.
+2. **A recursive mixed organization** — humans, durable `AgentMember`
+   identities, external participants, and services. Agent hierarchy is the
+   topology of persistent, nested `AgentTeam`s: a Member can remain a member of
+   its parent Team while hosting a child Team of its own.
 
 This is not a rename of the execution harness. Mission/Wave, Dynamic Workflow,
 Agent Team, provider sessions, plugins, and host execution remain the execution
@@ -37,14 +38,16 @@ scripts/install-skill.sh --agent both --suite company-os
 ```
 
 Dedicated Docs, Work, Organization, Approval, and Finance baseline CLI commands
-are implemented. Organization CLI v1 covers both the flat
+are implemented. The current Organization compatibility CLI covers both the flat
 `harness company org ...` surface and nested `actor/unit/membership` groups for
 inspection and **bootstrap-only** Human administrative authoring of Humans,
 Standing Agents, OrgUnits, Memberships, declared actor status, and
 permission/capability refs. That boundary is not target delegated authority and
 cannot substitute for a governed Approval, scoped grant, or broker dispatch. It
-does not yet provide the governed OrgChangeProposal lifecycle for adding actors
-or expanding authority.
+does not yet implement the recursive AgentTeam organization in
+[Nested Agent Team organization](nested-agent-team-organization.md). Those
+records remain current implementation truth during an explicit cutover; they
+must not be presented as the target identity model.
 
 Finance CLI v1 intentionally preserves the current Store/API governance
 boundary. The flat `harness company finance ...` surface keeps the existing
@@ -77,34 +80,34 @@ optional for execution.
 
 ```text
 Document / business record
-  -> WorkItem and, when required, Approval
-  -> accountable Actors choose or perform execution
+  -> Work and, when required, Approval
+  -> accountable Members or Humans choose or perform execution
   -> outcome, artifacts, evidence, and metrics
   -> update the originating document and related records
   -> improve the document architecture and organization
 ```
 
-A WorkItem may be performed by a human, a Standing Agent, an external
-participant, or an execution substrate such as a Mission/Wave, Agent Team, or
-Dynamic Workflow. The execution reference is proof of how work ran; it is not a
-substitute for responsibility, approval, or the business context held in Docs.
+`Work` is the shared responsibility kernel. It may be owned by an AgentMember,
+performed by a human or external participant, or linked to an execution
+substrate such as Mission/Wave, Agent Team, or Dynamic Workflow. Existing
+Company `WorkItem` rows are compatibility implementation truth until the
+explicit Work-kernel migration; new architecture must not create a second
+independent responsibility model.
 
 For AgentOS itself, this is a continuous self-hosting loop rather than one
 mandatory sequence. Docs, Work, and Organization may each reveal the next gap
 and may each receive an accepted result. The current Codex task can act as a
 Supervising Operator, while the Company-owned AgentOS Lead remains an
-independent durable Standing Agent. See the
+independent durable AgentMember and root Team Host. See the
 [AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md) and
-[ADR 0046](../decisions/0046-supervised-agentos-self-hosting-loop.md).
+[ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
-The current product slice prioritizes the Docs + WorkItem + Organization loop.
+The current product slice prioritizes the Docs + Work + Organization loop.
 Agents may discover gaps in documents, code, external gateway events, or Work
-views; create or route WorkItems; assign them to existing Organization Actors;
-and return accepted outcomes to Docs. Upper Standing Agents may drive lower
-Standing Agents through explicit organization and WorkItem records. Creating a
-new durable Agent remains an Org/HR-governed capability change, not a runtime
-side effect. Finance is conditional and enters only when a WorkItem requests a
-monetary effect.
+views; create unassigned or self-owned Work; and return accepted outcomes to
+Docs. A Team Host assigns Work inside its direct Team. A Member may host a child
+Team and delegate its owned Work downward while remaining accountable upward.
+Finance is conditional and enters only when Work requests a monetary effect.
 
 Before claiming any part of this loop is implemented, read the
 [implementation truth matrix](implementation-truth-matrix.md). It maps Docs,
@@ -145,7 +148,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | --- | --- |
 | Product thesis and whole-system orientation | [Vision](vision.md), [Product system map](product-system-map.md), [Concept model](concept-model.md) |
 | Docs and business modules | [Document system](document-system.md), [Docs operating surface matrix](docs-operating-surface-matrix.md), [Module design](module-design.md) |
-| Organization and collaboration | [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md) |
+| Organization and collaboration | [Nested Agent Team organization](nested-agent-team-organization.md), [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md), [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md) |
 | AgentOS self-hosting | [AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md), [ADR 0046](../decisions/0046-supervised-agentos-self-hosting-loop.md) |
 | Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
 | Finance | [Financial relations](financial-relations.md) |

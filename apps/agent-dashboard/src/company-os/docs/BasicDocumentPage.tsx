@@ -113,12 +113,19 @@ function EmptyDocumentState({ className }: { className?: string }) {
  * entry names its own reasons, so the panel never implies a provenance it does not have.
  */
 function RelatedWorkBlock({ links }: { links?: CompanyOsDocumentPageData["relatedWork"] }) {
-  if (!links?.length) return null;
+  const count = links?.length ?? 0;
   return (
-    <section className="space-y-2" data-docs-related-work="true" data-docs-related-work-count={links.length}>
-      <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Related work</h2>
+    <section className="space-y-2" data-docs-related-work="true" data-docs-related-work-count={count}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Related work</h2>
+        <div className="flex flex-wrap gap-1.5">
+          <Button size="sm" disabled title="A governed Document-to-Work creation transport is not connected" data-docs-create-work="unavailable">Create Work from selection</Button>
+          <Button size="sm" variant="secondary" disabled title="An explicit Work relation transport is not connected" data-docs-link-work="unavailable">Link existing Work</Button>
+        </div>
+      </div>
       <p className="text-[11px] leading-4 text-muted-foreground">Deduplicated from WorkItem source, context, and result references. Each item states why it is listed.</p>
-      <RelationChips links={links} />
+      {links?.length ? <RelationChips links={links} /> : <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">No linked Work</p>}
+      <p className="text-[10px] leading-4 text-muted-foreground">A Document revision never completes Work, and Work done never approves this Document.</p>
     </section>
   );
 }
