@@ -4042,7 +4042,7 @@
     "docs/decisions/0029-agent-programmable-document-runtime.md",
     "docs/decisions/0035-company-os-sql-read-model.md",
     "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md",
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
     "specs/nested-agent-team-organization/design.md"
    ],
    "machineConsumers": [
@@ -4068,7 +4068,7 @@
     },
     {
      "kind": "decision",
-     "ref": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+     "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
     }
    ]
   },

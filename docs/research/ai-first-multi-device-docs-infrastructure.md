@@ -59,7 +59,7 @@ This document does not change the canonical contracts in
 It proposes an implementation direction for later review.
 
 It consumes the accepted target contract from
-[ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md)
+[ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md)
 and [Nested Agent Team Organization](../company-os/nested-agent-team-organization.md):
 
 ```text
