@@ -20320,11 +20320,25 @@ fn run_pi_team_member(
     let mut prompt_text;
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
+    // Supervisor wake-policy tracking.
+    let wake_policy = supervisor_wake::WakePolicy::default();
+    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
+    let zero_output_streak: u32 = 0;
+    let last_consumed_work_version: Option<u64> = None;
 
-    match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-        ledger.require_supervisor_lease()?;
-        pi_client.ensure_transport_alive()
-    })? {
+    match wait_for_idle_member_wake(
+        ledger,
+        &mut member_row,
+        &live_control,
+        || {
+            ledger.require_supervisor_lease()?;
+            pi_client.ensure_transport_alive()
+        },
+        zero_output_streak,
+        last_consumed_work_version,
+        &wake_policy,
+        &mut wake_backoff,
+    )? {
         IdleMemberWake::Work(claimed) => {
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
@@ -20380,6 +20394,13 @@ fn run_pi_team_member(
                 &member_row,
                 MemberRunStatus::Idle,
                 "Pi member test runtime retired while idle".to_string(),
+            ));
+        }
+        IdleMemberWake::Degraded(reason) => {
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Blocked,
+                format!("Pi member degraded: {reason}"),
             ));
         }
     }
@@ -20526,11 +20547,21 @@ fn run_pi_team_member(
             )?;
         }
 
-        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            pi_client.ensure_transport_alive()
-        })? {
+        match wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                pi_client.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )? {
             IdleMemberWake::Work(claimed) => {
+                wake_backoff.reset();
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -20586,6 +20617,13 @@ fn run_pi_team_member(
                     &member_row,
                     MemberRunStatus::Idle,
                     "Pi member test runtime retired while idle".to_string(),
+                ));
+            }
+            IdleMemberWake::Degraded(reason) => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Blocked,
+                    format!("Pi member degraded: {reason}"),
                 ));
             }
         }
