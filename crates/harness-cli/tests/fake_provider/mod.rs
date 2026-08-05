@@ -697,18 +697,24 @@ pub fn install_pi_rpc_shim(
     // Use Python for reliable JSON handling (avoids shell escaping hell).
     let script = format!(
         r##"#!/usr/bin/env python3
-import sys, json, os
+import sys, json, os, subprocess
 
 RESULT = os.environ.get('FAKE_PI_RESULT', 'DONE')
 
 with open('{cwd_marker}', 'w') as f:
     f.write(os.getcwd())
 
+args_marker = os.environ.get('FAKE_PI_ARGS_MARKER')
+if args_marker:
+    with open(args_marker, 'w') as f:
+        f.write(json.dumps(sys.argv[1:]))
+
 os.makedirs(os.path.dirname('{session_file_path}'), exist_ok=True)
 with open('{session_file_path}', 'w') as f:
     f.write(json.dumps({{"type":"agent_start"}}) + '\n')
 
 TEXT = '## RESULT\n' + RESULT + '\n## SUMMARY\nFake pi done.'
+prompt_count = 0
 
 for line in sys.stdin:
     line = line.strip()
@@ -739,6 +745,29 @@ for line in sys.stdin:
     elif t == 'set_auto_compaction':
         resp = {{'id': cid, 'type': 'response', 'command': 'set_auto_compaction', 'success': True}}
     elif t == 'prompt':
+        prompt_count += 1
+        if prompt_count == 1 and os.environ.get('FAKE_PI_SUBMIT_WORK') == '1':
+            harness = os.environ['HARNESS_BIN']
+            team_run = os.environ['HARNESS_TEAM_RUN_ID']
+            member_run = os.environ['HARNESS_MEMBER_RUN_ID']
+            works = json.loads(subprocess.check_output([
+                harness, 'team-run', 'work', 'list',
+                '--team-run-id', team_run, '--member-run-id', member_run,
+            ], text=True))
+            work = works[0]['id']
+            version = int(works[0]['version'])
+            subprocess.run([
+                harness, 'team-run', 'work', 'start',
+                '--team-run-id', team_run, '--work-id', work,
+                '--member-run-id', member_run, '--expected-version', str(version),
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                harness, 'team-run', 'work', 'submit',
+                '--team-run-id', team_run, '--work-id', work,
+                '--member-run-id', member_run, '--expected-version', str(version + 1),
+                '--result', 'Fake Pi submitted the initial Work',
+                '--check-ref', 'check:fake-pi-round-1',
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         resp = {{'id': cid, 'type': 'response', 'command': 'prompt', 'success': True}}
         print(json.dumps(resp), flush=True)
         for event in [
@@ -774,9 +803,7 @@ for line in sys.stdin:
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&shim_path)
-            .expect("stat shim")
-            .permissions();
+        let mut perms = fs::metadata(&shim_path).expect("stat shim").permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&shim_path, perms).expect("chmod shim");
     }

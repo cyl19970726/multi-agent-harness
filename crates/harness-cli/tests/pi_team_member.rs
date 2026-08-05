@@ -43,18 +43,26 @@ fn run_with_fake_pi(
         .env("PATH", path)
         .env("PI_BIN", fake_bin.join("pi").to_string_lossy().to_string())
         .env("FAKE_PI_RESULT", result_word)
+        .env("FAKE_PI_SUBMIT_WORK", "1")
+        .env(
+            "FAKE_PI_ARGS_MARKER",
+            home.base()
+                .join("pi-args.json")
+                .to_string_lossy()
+                .to_string(),
+        )
         .env(
             "FAKE_PI_SESSION_DIR",
-            home.base().join("pi-sessions").to_string_lossy().to_string(),
+            home.base()
+                .join("pi-sessions")
+                .to_string_lossy()
+                .to_string(),
         )
         .env(
             "FAKE_PI_CWD_MARKER",
             home.base().join("pi-cwd.txt").to_string_lossy().to_string(),
         )
-        .env(
-            "HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS",
-            "100",
-        )
+        .env("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .output()
         .expect("run harness")
 }
@@ -62,8 +70,8 @@ fn run_with_fake_pi(
 /// Read store JSONL rows (latest-wins-per-id projection).
 fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
     let path = home.spaces_dir().join(project_id).join(file);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut ids: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
@@ -73,9 +81,12 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
             continue;
         }
         let row: serde_json::Value =
-            serde_json::from_str(trimmed)
-                .unwrap_or_else(|e| panic!("{file} row not JSON: {e}"));
-        let id = row["id"].as_str().expect("row id").to_string();
+            serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("{file} row not JSON: {e}"));
+        let id = row["id"]
+            .as_str()
+            .or_else(|| row["delivery_id"].as_str())
+            .expect("row id or delivery_id")
+            .to_string();
         ids.retain(|known| known != &id);
         ids.push(id.clone());
         by_id.insert(id, row);
@@ -86,7 +97,7 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
 }
 
 #[test]
-fn pi_rpc_team_member_completes_round() {
+fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
     let home = TempHome::new("pi-team-member-round");
     let project_id = init_project(&home, "pi-test");
 
@@ -116,10 +127,53 @@ fn pi_rpc_team_member_completes_round() {
         "team-run create failed: stderr={}",
         String::from_utf8_lossy(&create_out.stderr),
     );
-    let run_id = String::from_utf8_lossy(&create_out.stdout).trim().to_string();
+    let run_id = String::from_utf8_lossy(&create_out.stdout)
+        .trim()
+        .to_string();
     assert!(
         run_id.starts_with("team-run-"),
         "expected team-run-* id, got: {run_id}"
+    );
+
+    let member = store_rows(&home, &project_id, "member_runs.jsonl")
+        .into_iter()
+        .find(|member| member["team_run_id"] == run_id)
+        .expect("Pi MemberRun");
+    let member_id = member["id"].as_str().expect("member id").to_string();
+    let work_list_out = run_with_fake_pi(
+        &home,
+        &fake_bin,
+        "DONE",
+        &["team-run", "work", "list", "--team-run-id", &run_id],
+    );
+    assert!(work_list_out.status.success(), "list initial Work");
+    let works: Vec<serde_json::Value> =
+        serde_json::from_slice(&work_list_out.stdout).expect("Work list JSON");
+    let work_id = works[0]["id"].as_str().expect("Work id").to_string();
+    let message_out = run_with_fake_pi(
+        &home,
+        &fake_bin,
+        "DONE",
+        &[
+            "team-run",
+            "send",
+            "--id",
+            &run_id,
+            "--from",
+            "host",
+            "--to",
+            &member_id,
+            "--kind",
+            "message",
+            "--response-required",
+            "--body",
+            "Review the follow-up after the initial Work round",
+        ],
+    );
+    assert!(
+        message_out.status.success(),
+        "queue Host follow-up failed: {}",
+        String::from_utf8_lossy(&message_out.stderr)
     );
 
     // Start the team run — this exercises the full orchestration loop
@@ -155,11 +209,85 @@ fn pi_rpc_team_member_completes_round() {
         cwd_marker.exists(),
         "fake pi shim should have been called and recorded cwd"
     );
-    let recorded_cwd =
-        std::fs::read_to_string(&cwd_marker).expect("read cwd marker");
+    let recorded_cwd = std::fs::read_to_string(&cwd_marker).expect("read cwd marker");
     assert!(
         !recorded_cwd.trim().is_empty(),
         "recorded cwd should not be empty"
+    );
+
+    let args: Vec<String> = serde_json::from_str(
+        &std::fs::read_to_string(home.base().join("pi-args.json")).expect("read Pi args"),
+    )
+    .expect("Pi args JSON");
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--thinking".to_string(), "off".to_string()]),
+        "persistent Pi launch must force thinking off: {args:?}"
+    );
+
+    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let member_actions = actions
+        .iter()
+        .filter(|action| action["member_run_id"] == member_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        member_actions
+            .iter()
+            .filter(|action| action["action_type"] == "turn_completed")
+            .count(),
+        2,
+        "initial Work and Host follow-up must complete in two rounds: {member_actions:?}"
+    );
+    assert!(
+        member_actions
+            .iter()
+            .all(|action| action["action_type"] != "disconnected"),
+        "a follow-up must not re-complete the original WorkDelivery: {member_actions:?}"
+    );
+
+    let work_show_out = run_with_fake_pi(
+        &home,
+        &fake_bin,
+        "DONE",
+        &["team-run", "work", "show", "--work-id", &work_id],
+    );
+    assert!(work_show_out.status.success(), "show initial Work");
+    let work_show: serde_json::Value =
+        serde_json::from_slice(&work_show_out.stdout).expect("Work show JSON");
+    let delivery = &work_show["deliveries"][0];
+    assert_eq!(delivery["status"], "provider_received");
+    assert!(
+        delivery["provider_receipt_id"]
+            .as_str()
+            .is_some_and(|receipt| receipt.ends_with(":round-1")),
+        "initial Work must receive exactly the first-round receipt: {delivery:?}"
+    );
+
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let follow_up = messages
+        .iter()
+        .find(|message| message["body"] == "Review the follow-up after the initial Work round")
+        .expect("Host follow-up");
+    assert_eq!(follow_up["deliveries"][0]["status"], "delivered");
+    assert!(
+        follow_up["deliveries"][0]["provider_receipt_id"]
+            .as_str()
+            .is_some_and(|receipt| receipt.ends_with(":round-2")),
+        "queued Host mail must receive the second-round provider receipt: {follow_up:?}"
+    );
+
+    let member = store_rows(&home, &project_id, "member_runs.jsonl")
+        .into_iter()
+        .find(|member| member["id"] == member_id)
+        .expect("latest Pi MemberRun");
+    assert_eq!(member["native_session"]["provider"], "pi");
+    assert_eq!(member["native_session"]["execution_mode"], "pi_rpc");
+    assert_eq!(
+        member["native_session"]["native_session_id"],
+        home.base()
+            .join("pi-sessions/fake-session.jsonl")
+            .to_string_lossy()
+            .as_ref()
     );
 }
 
@@ -174,17 +302,11 @@ fn pi_rpc_provider_profile_validation() {
     );
 
     // Verify that pi_rpc is a valid mode for Agent Team
-    let out = run_with_fake_pi(
-        &home,
-        &fake_bin,
-        "DONE",
-        &["member", "providers"],
-    );
+    let out = run_with_fake_pi(&home, &fake_bin, "DONE", &["member", "providers"]);
     assert!(out.status.success(), "member providers failed");
 
     let providers: Vec<serde_json::Value> =
-        serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
-            .expect("member providers JSON");
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("member providers JSON");
     let pi = providers
         .iter()
         .find(|p| p.get("provider").and_then(|v| v.as_str()) == Some("pi"))
@@ -196,13 +318,35 @@ fn pi_rpc_provider_profile_validation() {
         "pi team member mode should be pi_rpc"
     );
     assert_eq!(
-        team_profile.get("supports_cancel").and_then(|v| v.as_bool()),
+        team_profile
+            .get("supports_cancel")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "pi should support cancel"
     );
     assert_eq!(
-        team_profile.get("supports_resume").and_then(|v| v.as_bool()),
+        team_profile
+            .get("supports_resume")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "pi should support resume"
+    );
+    assert_eq!(
+        team_profile
+            .get("ordinary_message_boundary")
+            .and_then(|v| v.as_str()),
+        Some("next_round")
+    );
+    assert_eq!(
+        team_profile
+            .get("interaction_mode")
+            .and_then(|v| v.as_str()),
+        Some("end_round_and_follow_up")
+    );
+    assert_eq!(
+        team_profile
+            .get("thinking_transient_only")
+            .and_then(|v| v.as_bool()),
+        Some(true)
     );
 }

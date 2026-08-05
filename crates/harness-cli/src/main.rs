@@ -49,8 +49,8 @@ mod execution_space;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
-mod pi_rpc;
 mod native_session;
+mod pi_rpc;
 mod project;
 mod resident;
 #[cfg(unix)]
@@ -9857,7 +9857,10 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
     if let Some(mode) = member.execution_mode.as_deref() {
         let allowed = matches!(
             (member.provider.as_str(), mode),
-            ("codex", "codex_app_server") | ("kimi", "kimi_acp") | ("claude", "claude_agent_sdk") | ("pi", "pi_rpc")
+            ("codex", "codex_app_server")
+                | ("kimi", "kimi_acp")
+                | ("claude", "claude_agent_sdk")
+                | ("pi", "pi_rpc")
         );
         if !allowed {
             return Err(CliError::Usage(format!(
@@ -10003,15 +10006,17 @@ fn team_member_provider_profile_for_mode(
             adapter_contract_version: Some("pi-rpc-v1".to_string()),
             reviewed_provider_versions: vec!["0.83.0".to_string()],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
-            adapter_reviewed_at: Some("2026-08-11".to_string()),
+            adapter_reviewed_at: Some("2026-08-05".to_string()),
             compatibility_note: Some(
                 "Pi RPC-mode persistent Agent Team member. Session is a JSONL file; \
-                 resume via --session <path>. Built-in tools: read, write, edit, \
-                 bash, grep, find, ls. Agent_settled is the turn-completion signal."
+                 resume via --session <path> after a fail-closed thinking scan. \
+                 Persistent Team sessions force --thinking off. Built-in tools: \
+                 read, write, edit, bash, grep, find, ls. Agent_settled is the \
+                 turn-completion signal."
                     .to_string(),
             ),
-            interaction_mode: ProviderInteractionMode::PauseAndResume,
-            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::NextRound,
             plan_mode: ProviderFeatureMode::Emulated,
             goal_mode: ProviderFeatureMode::Emulated,
             tool_event_fidelity: ProviderEventFidelity::Structured,
@@ -20195,19 +20200,34 @@ fn run_pi_team_member(
         ))
     })?;
 
-    // Map reasoning_effort to pi --thinking levels.
-    let thinking = member
+    if member_row
         .provider_controls
         .reasoning_effort
         .requested
         .as_deref()
-        .map(|effort| match effort {
-            "off" => "off",
-            "low" => "low",
-            "medium" => "medium",
-            "high" | "xhigh" | "max" => "high",
-            _ => "off",
-        });
+        .is_some_and(|effort| effort != "off")
+    {
+        member_row
+            .provider_controls
+            .reasoning_effort
+            .mark_unsupported(
+                "Pi persistent sessions replay provider thinking from native JSONL; the Team adapter forces --thinking off to satisfy the transient-only product policy",
+            );
+    } else if member_row
+        .provider_controls
+        .reasoning_effort
+        .requested
+        .as_deref()
+        == Some("off")
+    {
+        member_row
+            .provider_controls
+            .reasoning_effort
+            .mark_effective(
+                Some("off".to_string()),
+                "enforced by the reviewed Pi RPC launch contract",
+            );
+    }
 
     let pi_bin = resolve_pi_bin();
 
@@ -20218,18 +20238,14 @@ fn run_pi_team_member(
         pi_rpc::PiSpawnOptions {
             cwd,
             model: member.model.as_deref(),
-            thinking,
-            resume_session_file: member
-                .native_session
-                .as_ref()
-                .and_then(|session| {
-                    let path = &session.native_session_id;
-                    if Path::new(path).is_file() {
-                        Some(path.as_str())
-                    } else {
-                        None
-                    }
-                }),
+            resume_session_file: member.native_session.as_ref().and_then(|session| {
+                let path = &session.native_session_id;
+                if Path::new(path).is_file() {
+                    Some(path.as_str())
+                } else {
+                    None
+                }
+            }),
             session_dir: &session_dir,
             member_name: &member.name,
             collaboration_env: &collaboration_env,
@@ -20253,7 +20269,6 @@ fn run_pi_team_member(
     let mut prompt_text;
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
-    let mut final_summary = String::new();
 
     match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
         ledger.require_supervisor_lease()?;
@@ -20333,7 +20348,7 @@ fn run_pi_team_member(
                 |event| {
                     if let Some(preview) = pi_rpc::PiRpcClient::project_live(event) {
                         if let Some(sink) = &live_sink {
-                            let _ = sink(LiveMemberActivityPreview {
+                            sink(LiveMemberActivityPreview {
                                 team_run_id: ledger.run_id.clone(),
                                 member_run_id: member_id_clone.clone(),
                                 provider: member_provider.clone(),
@@ -20356,8 +20371,6 @@ fn run_pi_team_member(
         };
 
         ledger.require_supervisor_lease()?;
-        accepted_messages.clear();
-
         // Update native session ref with current session file.
         member_row.native_session = Some(native_session_ref(
             &member_row,
@@ -20366,10 +20379,15 @@ fn run_pi_team_member(
         ));
         ledger.save_member_run(&member_row)?;
 
+        let receipt = format!("pi:{}:round-{round}", pi_client.session_file());
         if let Some(claimed) = active_work.as_ref() {
-            let receipt = format!("pi:{}:round-{round}", pi_client.session_file());
             ledger.complete_work_delivery(claimed, &receipt)?;
         }
+        drop(active_work.take());
+        for message in &accepted_messages {
+            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
+        }
+        accepted_messages.clear();
 
         if turn.interrupted {
             let interruption_summary = if turn.close_requested_by_harness {
@@ -20455,7 +20473,6 @@ fn run_pi_team_member(
                 "updated",
                 &format!("member {} idle after round {round}", member.name),
             )?;
-            final_summary = round_summary;
         }
 
         match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
@@ -20484,12 +20501,8 @@ fn run_pi_team_member(
                     &member_row,
                     Some(&work),
                 )?;
-                prompt_text = active_work_continuation_prompt(
-                    objective,
-                    &member_row,
-                    &work,
-                    &work_envelope,
-                );
+                prompt_text =
+                    active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
                 active_work = None;
             }
             IdleMemberWake::Messages(messages) => {
@@ -20508,6 +20521,7 @@ fn run_pi_team_member(
                     ));
                 }
                 accepted_messages = messages;
+                active_work = None;
             }
             IdleMemberWake::Closed => {
                 return Ok(MemberOutcome::new(
@@ -32979,10 +32993,7 @@ impl ProviderAdapter for PiAdapter {
         ))
     }
 
-    fn spawn_ephemeral(
-        &self,
-        _ctx: &EphemeralSpawnContext<'_>,
-    ) -> CliResult<EphemeralSpawn> {
+    fn spawn_ephemeral(&self, _ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
         Err(CliError::Usage(
             "pi ephemeral spawn is not yet implemented; use the persistent Team Member path"
                 .to_string(),
@@ -39678,11 +39689,11 @@ package:com.tencent.mm
         let message = error.to_string();
         // Assert the EXACT message: the supported list is now derived from the
         // provider registry, so this guards against ordering/spacing/list drift
-        // (which a substring check would silently miss). kimi is the third
-        // registered provider (goal-provider-neutral S4).
+        // (which a substring check would silently miss). Pi is the fourth
+        // registered provider.
         assert_eq!(
             message,
-            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi"
+            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi, pi"
         );
 
         let _ = std::fs::remove_dir_all(root);

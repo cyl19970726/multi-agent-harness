@@ -7,7 +7,7 @@ print(f"=== Pi RPC Canary ===")
 print(f"Temp: {tmp}")
 
 proc = subprocess.Popen(
-    ["pi", "--mode", "rpc", "--no-context-files", "--no-extensions",
+    ["pi", "--mode", "rpc", "--no-context-files", "--no-extensions", "--thinking", "off",
      "--session-dir", tmp],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     text=True
@@ -122,6 +122,25 @@ else:
 print(f"final_text: {final_text[:300]}")
 assert "RESULT" in final_text or "SUMMARY" in final_text, f"missing report: {final_text}"
 print("PASS: report format validated")
+
+def contains_persisted_thinking(value):
+    if isinstance(value, dict):
+        if value.get("type") == "thinking" or "thinkingSignature" in value:
+            return True
+        return any(contains_persisted_thinking(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_persisted_thinking(item) for item in value)
+    return False
+
+with open(session_file, encoding="utf-8") as native_session:
+    for line_number, line in enumerate(native_session, 1):
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        assert not contains_persisted_thinking(entry), (
+            f"native session line {line_number} persisted thinking"
+        )
+print("PASS: native session contains no persisted thinking")
 
 # Cleanup
 proc.stdin.close()

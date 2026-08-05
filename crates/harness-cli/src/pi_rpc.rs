@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,6 @@ use std::os::unix::process::CommandExt;
 use crate::{kill_worker_tree, CliError, CliResult};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
-const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) struct PiRpcClient {
     child: Child,
@@ -51,7 +50,6 @@ pub(crate) struct PiRpcClient {
 pub(crate) struct PiSpawnOptions<'a> {
     pub cwd: &'a Path,
     pub model: Option<&'a str>,
-    pub thinking: Option<&'a str>,
     pub resume_session_file: Option<&'a str>,
     pub session_dir: &'a Path,
     pub member_name: &'a str,
@@ -65,9 +63,7 @@ pub(crate) struct PiTurnOutcome {
 }
 
 fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
-    let t = tail
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let t = tail.lock().unwrap_or_else(|error| error.into_inner());
     let trimmed = t.trim();
     if trimmed.is_empty() {
         String::new()
@@ -88,6 +84,9 @@ fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
 
 impl PiRpcClient {
     pub(crate) fn spawn(pi_bin: &str, options: PiSpawnOptions<'_>) -> CliResult<Self> {
+        if let Some(session_file) = options.resume_session_file {
+            ensure_session_has_no_persisted_thinking(Path::new(session_file))?;
+        }
         let mut command = Command::new(pi_bin);
         command
             .arg("--mode")
@@ -96,6 +95,12 @@ impl PiRpcClient {
             .arg(options.session_dir)
             .arg("--no-context-files")
             .arg("--no-extensions")
+            // Pi persists provider thinking blocks in its native JSONL session
+            // and replays that file on --session. The Harness product contract
+            // permits thinking only in the transient sanitized live channel, so
+            // the persistent Team adapter must force provider thinking off.
+            .arg("--thinking")
+            .arg("off")
             .current_dir(options.cwd)
             .envs(options.collaboration_env.iter().cloned())
             .stdin(Stdio::piped())
@@ -104,9 +109,6 @@ impl PiRpcClient {
 
         if let Some(model) = options.model {
             command.arg("--model").arg(model);
-        }
-        if let Some(thinking) = options.thinking {
-            command.arg("--thinking").arg(thinking);
         }
         if let Some(session_file) = options.resume_session_file {
             command.arg("--session").arg(session_file);
@@ -124,15 +126,20 @@ impl PiRpcClient {
             ))
         })?;
 
-        let stdin = BufWriter::new(child.stdin.take().ok_or_else(|| {
-            CliError::Usage("pi rpc stdin unavailable".to_string())
-        })?);
-        let stdout = child.stdout.take().ok_or_else(|| {
-            CliError::Usage("pi rpc stdout unavailable".to_string())
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            CliError::Usage("pi rpc stderr unavailable".to_string())
-        })?;
+        let stdin = BufWriter::new(
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| CliError::Usage("pi rpc stdin unavailable".to_string()))?,
+        );
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CliError::Usage("pi rpc stdout unavailable".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| CliError::Usage("pi rpc stderr unavailable".to_string()))?;
 
         let pending: Arc<Mutex<HashMap<String, Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -190,7 +197,8 @@ impl PiRpcClient {
         };
 
         // Handshake: get_state to discover session file.
-        let state = client.request_blocking("get_state", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
+        let state =
+            client.request_blocking("get_state", serde_json::json!({}), HANDSHAKE_TIMEOUT)?;
         let data = state.get("data").ok_or_else(|| {
             CliError::Usage(format!(
                 "pi get_state response missing data{}",
@@ -230,14 +238,9 @@ impl PiRpcClient {
     }
 
     pub(crate) fn ensure_transport_alive(&mut self) -> CliResult<()> {
-        let reader_ended = self
-            .reader
-            .as_ref()
-            .is_some_and(JoinHandle::is_finished);
+        let reader_ended = self.reader.as_ref().is_some_and(JoinHandle::is_finished);
         let child_ended = self.child.try_wait().map_err(|error| {
-            CliError::Usage(format!(
-                "failed to inspect pi rpc process: {error}"
-            ))
+            CliError::Usage(format!("failed to inspect pi rpc process: {error}"))
         })?;
         if reader_ended || child_ended.is_some() {
             return Err(CliError::Usage(format!(
@@ -283,10 +286,7 @@ impl PiRpcClient {
             match self.incoming.recv_timeout(Duration::from_millis(500)) {
                 Ok(frame) => {
                     last_idle = Instant::now();
-                    let event_type = frame
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let event_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                     // Check for cancellation.
                     let (close, interrupt) = should_cancel();
@@ -331,7 +331,7 @@ impl PiRpcClient {
                         }));
                         // Give a short grace window, then kill the process tree.
                         std::thread::sleep(Duration::from_secs(2));
-                        let _ = kill_worker_tree(&mut self.child);
+                        kill_worker_tree(&mut self.child);
                         return Err(CliError::Usage(format!(
                             "pi rpc prompt timed out after {}s idle{}",
                             idle_timeout.as_secs(),
@@ -356,10 +356,7 @@ impl PiRpcClient {
         // Drain any remaining events until the channel is empty
         // (non-blocking) in case agent_settled was preceded by events.
         while let Ok(frame) = self.incoming.try_recv() {
-            let event_type = frame
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let event_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if event_type == "turn_end" {
                 let extracted = Self::extract_turn_end_text(&frame);
                 if !extracted.trim().is_empty() {
@@ -409,31 +406,19 @@ impl PiRpcClient {
                 let args = event.get("args").unwrap_or(&serde_json::Value::Null);
                 match tool {
                     "bash" => {
-                        let cmd = args
-                            .get("command")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
+                        let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
                         Some(format!("Bash: {}", cmd))
                     }
                     "edit" => {
-                        let path = args
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
+                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
                         Some(format!("Edit: {}", path))
                     }
                     "write" => {
-                        let path = args
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
+                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
                         Some(format!("Write: {}", path))
                     }
                     "read" => {
-                        let path = args
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
+                        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
                         Some(format!("Read: {}", path))
                     }
                     "grep" => Some("Grep".to_string()),
@@ -506,10 +491,54 @@ impl PiRpcClient {
     }
 }
 
+fn ensure_session_has_no_persisted_thinking(path: &Path) -> CliResult<()> {
+    let file = std::fs::File::open(path).map_err(|error| {
+        CliError::Usage(format!(
+            "failed to inspect Pi session {} before resume: {error}",
+            path.display()
+        ))
+    })?;
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.map_err(|error| {
+            CliError::Usage(format!(
+                "failed to inspect Pi session {} before resume: {error}",
+                path.display()
+            ))
+        })?;
+        let value = serde_json::from_str::<serde_json::Value>(&line).map_err(|error| {
+            CliError::Usage(format!(
+                "refusing to resume Pi session {} because line {} is not valid JSON: {error}",
+                path.display(),
+                index + 1
+            ))
+        })?;
+        if value_contains_persisted_thinking(&value) {
+            return Err(CliError::Usage(format!(
+                "refusing to resume Pi session {} because line {} contains persisted provider thinking; start a fresh Pi MemberRun with thinking disabled",
+                path.display(),
+                index + 1
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn value_contains_persisted_thinking(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(value_contains_persisted_thinking),
+        serde_json::Value::Object(object) => {
+            object.get("type").and_then(serde_json::Value::as_str) == Some("thinking")
+                || object.contains_key("thinkingSignature")
+                || object.values().any(value_contains_persisted_thinking)
+        }
+        _ => false,
+    }
+}
+
 impl Drop for PiRpcClient {
     fn drop(&mut self) {
         // Kill the process group, then join reader.
-        let _ = kill_worker_tree(&mut self.child);
+        kill_worker_tree(&mut self.child);
         // Give the reader thread a moment to notice EOF and exit.
         if let Some(handle) = self.reader.take() {
             // Don't block indefinitely; the process kill above should make
@@ -520,5 +549,48 @@ impl Drop for PiRpcClient {
                     let _ = handle.join();
                 });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_session_has_no_persisted_thinking, value_contains_persisted_thinking};
+
+    #[test]
+    fn detects_persisted_thinking_blocks_without_rejecting_level_metadata() {
+        assert!(value_contains_persisted_thinking(&serde_json::json!({
+            "type": "message",
+            "message": {"content": [{"type": "thinking", "thinking": "private"}]}
+        })));
+        assert!(value_contains_persisted_thinking(&serde_json::json!({
+            "type": "message",
+            "message": {"content": [{"type": "text", "thinkingSignature": "sig"}]}
+        })));
+        assert!(!value_contains_persisted_thinking(&serde_json::json!({
+            "type": "thinking_level_change",
+            "thinkingLevel": "off"
+        })));
+    }
+
+    #[test]
+    fn rejects_a_native_session_that_would_replay_thinking() {
+        let dir = std::env::temp_dir().join(format!(
+            "harness-pi-rpc-thinking-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("session.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"session\"}\n{\"type\":\"message\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"private\"}]}}\n",
+        )
+        .expect("write session");
+        let error = ensure_session_has_no_persisted_thinking(&path).unwrap_err();
+        assert!(error.to_string().contains("persisted provider thinking"));
+        std::fs::remove_dir_all(dir).expect("remove temp dir");
     }
 }
