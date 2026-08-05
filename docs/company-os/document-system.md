@@ -80,7 +80,7 @@ flowchart LR
   C --> D["Document / typed record"]
   D --> W["WorkItem and, when required, Approval"]
   W --> A["Actors: human, Standing Agent, external participant"]
-  A --> E["Execution reference\nMission/Wave, Agent Team, Workflow, direct work"]
+  A --> E["Execution reference\nMission/Mission Log, Agent Team, Workflow, direct work"]
   E --> R["Outcome, artifact, evidence, decision, metric"]
   R --> C
   C --> M["Agent-maintained Docs structure\nmodule, template, relation, view"]
@@ -205,8 +205,9 @@ reviews, and approvals remain explicit and may refer to humans, Standing
 Agents, constrained external participants, or an execution reference.
 
 The executor may be direct human or Agent work, or a reference to a
-Mission/Wave, Agent Team, Dynamic Workflow, or host execution. Those objects
-keep their own lifecycle semantics. A completed run updates the WorkItem and
+Mission, Agent Team, Dynamic Workflow, or host execution. Mission keeps its own
+lifecycle semantics through its append-only Mission Log; other executor objects
+keep their independent semantics. A completed run updates the WorkItem and
 its source document only through an explicit result/update action; it must not
 silently become the company's final decision or record.
 
@@ -401,7 +402,7 @@ require the appropriate explicit Approval, often including a human approver.
 
 ## Boundaries
 
-- Mission/Wave and other executor objects remain canonical for their execution
+- Mission and other executor objects remain canonical for their execution
   semantics; Docs store stable references to them rather than absorbing them.
 - No view, dashboard, or Agent activity feed may invent a relation, assignment,
   approval, financial total, or source document that has not been recorded.
@@ -414,7 +415,8 @@ require the appropriate explicit Approval, often including a human approver.
   when a Store-live Action contract proves that authority. It can also apply
   the narrow scoped `relation.append` repair for missing Document ↔ TypedRecord
   links. Other document changes still belong to governed Docs, Work,
-  Organization, or Finance Actions according to ownership.
+  Organization, or Finance Actions according to ownership. (Finance vocabulary in
+  this document is parked pending contract-layer retirement; see issue #323.)
 
 See [Module Design](module-design.md) for the mandatory design contract when a
 new business domain needs its own document structure.

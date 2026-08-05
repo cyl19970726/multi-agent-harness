@@ -100,7 +100,7 @@
       "id": "organization",
       "implementationState": "partial",
       "truthRefs": {
-        "contract": ["docs/company-os/organization-and-actors.md", "docs/decisions/0045-company-owned-standing-agent-execution-relation.md"],
+        "contract": ["docs/company-os/organization-and-actors.md", "docs/company-os/nested-agent-team-organization.md", "docs/decisions/0045-company-owned-standing-agent-execution-relation.md", "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"],
         "schema": ["schemas/company-os/actors.schema.json", "schemas/member-run.schema.json"],
         "store": ["crates/harness-store/src/company_os.rs"],
         "api": ["crates/harness-cli/src/company_os_api.rs"],
@@ -108,8 +108,8 @@
         "skills": ["skills/company-org-operator/SKILL.md"],
         "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "crates/harness-cli/tests/mission_wave_api.rs", "scripts/check-company-os-org-cli-smoke.mjs", "pnpm check:dashboard"]
       },
-      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref -> AgentMember.id -> MemberRun.agent_member_id join with no same-id fallback or lifecycle writeback", "read-only Agent Team assignment and assignment-less participation projection", "Organization-to-profile and Standing-Agent-to-MemberRun navigation", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the bootstrap-only Human administrative authoring boundary"],
-      "blockingGaps": ["implemented availability and capacity ownership", "Workflow participation and direct durable-agent messaging projection", "durable cross-client Team Supervisor runtime health", "governed organization-change proposal/approval lifecycle", "governance-led Organization Actual"]
+      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref -> MemberRun.agent_member_id join with no same-id fallback or lifecycle writeback", "read-only Agent Team assignment and assignment-less participation projection", "Organization-to-profile and Standing-Agent-to-MemberRun navigation", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the bootstrap-only Human administrative authoring boundary", "ADR 0052 DurableAgentMember identity ledger: additive bootstrap-lead, member create|converge|list|show, host, and cutover-audit foundation; deterministic compatibility mapping from StandingAgent identity without same-id fallback; MemberRun.agent_member_id binding verifies member continuity through distinct runtime generations"],
+      "blockingGaps": ["implemented availability and capacity ownership", "Workflow participation and direct durable-agent messaging projection", "durable cross-client Team Supervisor runtime health", "governed organization-change proposal/approval lifecycle", "governance-led Organization Actual", "full ADR 0052 recursive Team topology verification (Lead → CTO → child Team dogfood)", "AgentMember convergence from StandingAgent compatibility identity without dual-write", "Work-kernel convergence from Company WorkItem/Team Work dual store"]
     },
     {
       "id": "work",
@@ -117,7 +117,9 @@
       "truthRefs": {
         "contract": [
           "docs/company-os/work-items-and-approvals.md",
-          "docs/company-os/work-operating-system.md"
+          "docs/company-os/work-operating-system.md",
+          "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+          "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
         ],
         "schema": [
           "schemas/company-os/work.schema.json"
@@ -137,7 +139,7 @@
         ]
       },
       "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions", "Lead request to Work Governance submission to Business Agent completion and Docs return", "non-financial work creates no Commitment or Approval"],
-      "blockingGaps": ["additional business-specific lifecycle policies"]
+      "blockingGaps": ["additional business-specific lifecycle policies", "ADR 0052 unified Work kernel convergence from Company WorkItem/Team Work dual store", "recursive delegation and child-Work topology under Agent Team organization", "Work source/provenance for continuous-discovery loop across Company and Team boundaries"]
     },
     {
       "id": "finance",
