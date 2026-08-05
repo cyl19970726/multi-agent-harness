@@ -1039,7 +1039,14 @@ fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
     // `wave create` is retired (ADR 0051): seed a historical row directly so
     // TeamRun creation can still explicitly cite an existing Wave id (that
     // citation path is unaffected -- only Wave *write* commands retired).
-    seed_historical_wave(&home, &project_id, "wave-cli", "mission-cli", 1, "agent_team");
+    seed_historical_wave(
+        &home,
+        &project_id,
+        "wave-cli",
+        "mission-cli",
+        1,
+        "agent_team",
+    );
 
     let run = team_run_json(
         &home,
