@@ -3,7 +3,7 @@ name: orchestrate-mission-waves
 description: Use when a Host Agent must create, resume, or re-plan a long-running Mission, coordinate one or more persistent Agent Teams through shared Works, preserve provider-native sessions across re-plans, review submitted Work, or close the Mission. Use for Mission context, Mission Log judgment, Works allocation, Team composition, blocker handling, carry-over, and explicit Host acceptance. Do not use for a small one-shot task that fits safely in the Host context.
 ---
 
-# Orchestrate Mission Waves
+# Orchestrate Missions
 
 This skill is a procedural capability, not product authority. Use the Harness CLI
 as the complete authority path. Treat this Skill as a thin operating guide;
