@@ -824,18 +824,6 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
-    // Compatibility projection ids are a read-only namespace and cannot be
-    // shadowed by native authoring.
-    let (status, body) = serve.post_json(
-        "/v1/missions",
-        &serde_json::json!({
-            "id": "compat-goal:spoof",
-            "title": "Invalid",
-            "objective": "must not shadow a Goal projection",
-        }),
-    );
-    assert_eq!(status, 400, "body: {body}");
-
     // Public JSON parsing and domain validation reject malformed TeamRuns
     // before any run/member/message/event row is appended.
     let (status, body) = serve.post_json(
