@@ -175,7 +175,9 @@
     },
     "started_at": { "type": "string", "minLength": 1 },
     "last_event_at": { "type": ["string", "null"], "minLength": 1 },
-    "finished_at": { "type": ["string", "null"], "minLength": 1 }
+    "finished_at": { "type": ["string", "null"], "minLength": 1 },
+    "zero_output_streak": { "type": "integer", "minimum": 0 },
+    "last_consumed_work_version": { "type": ["integer", "null"], "minimum": 1 }
   },
   "$defs": {
     "providerControlValue": {

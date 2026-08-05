@@ -11685,6 +11685,8 @@ fn build_member_run_for_team(
         started_at: now_string(),
         last_event_at: None,
         finished_at: None,
+        zero_output_streak: 0,
+        last_consumed_work_version: None,
     })
 }
 
@@ -18158,8 +18160,8 @@ fn run_codex_member(
     // Supervisor wake-policy tracking.
     let wake_policy = supervisor_wake::WakePolicy::default();
     let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let zero_output_streak: u32 = 0;
-    let last_consumed_work_version: Option<u64> = None;
+    let mut zero_output_streak = member_row.zero_output_streak;
+    let mut last_consumed_work_version = member_row.last_consumed_work_version;
     // Same recovery contract as the Kimi driver: when this drive resumes a
     // recorded native session after a disconnect, continue the receipted or
     // in-progress Work on that session instead of replaying its delivery.
@@ -18227,6 +18229,7 @@ fn run_codex_member(
             )?;
             prompt_text =
                 work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
+            last_consumed_work_version = Some(claimed.work.version);
             active_work = Some(*claimed);
         }
         IdleMemberWake::ActiveWorkContinuation(work) => {
@@ -18240,6 +18243,7 @@ fn run_codex_member(
             )?;
             prompt_text =
                 active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
+            last_consumed_work_version = Some(work.version);
             active_work = None;
         }
         IdleMemberWake::Messages(messages) => {
@@ -18373,20 +18377,26 @@ fn run_codex_member(
             }
         } else {
             let final_text = turn.final_text;
-            if final_text.trim().is_empty() {
-                return Err(CliError::Usage(format!(
-                    "codex member {} completed without an agent message",
-                    member.name
-                )));
-            }
-            let result = parse_round_result(&final_text);
-            let action_status = if result == MemberRoundResult::Done {
-                MemberActionStatus::Succeeded
+            let is_zero_output = final_text.trim().is_empty() && turn.tool_call_count == 0;
+            if is_zero_output {
+                zero_output_streak = zero_output_streak.saturating_add(1);
             } else {
-                MemberActionStatus::Failed
+                zero_output_streak = 0;
+            }
+
+            let (action_status, round_summary) = if final_text.trim().is_empty() {
+                (MemberActionStatus::Failed, "(empty turn)".to_string())
+            } else {
+                let result = parse_round_result(&final_text);
+                let status = if result == MemberRoundResult::Done {
+                    MemberActionStatus::Succeeded
+                } else {
+                    MemberActionStatus::Failed
+                };
+                let summary = extract_report_section(&final_text, "SUMMARY")
+                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+                (status, summary)
             };
-            let round_summary = extract_report_section(&final_text, "SUMMARY")
-                .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
             let action = ledger.append_action(
                 &member.id,
                 "turn_completed",
@@ -18403,6 +18413,8 @@ fn run_codex_member(
                 &format!("{} completed provider round {round}", member.name),
             )?;
 
+            member_row.zero_output_streak = zero_output_streak;
+            member_row.last_consumed_work_version = last_consumed_work_version;
             member_row.status = MemberRunStatus::Idle;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
@@ -18443,6 +18455,7 @@ fn run_codex_member(
                 )?;
                 prompt_text =
                     work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
+                last_consumed_work_version = Some(claimed.work.version);
                 active_work = Some(*claimed);
                 active_assignment = None;
                 accepted_messages.clear();
@@ -18461,6 +18474,7 @@ fn run_codex_member(
                 active_work = None;
                 active_assignment = None;
                 accepted_messages.clear();
+                last_consumed_work_version = Some(work.version);
             }
             IdleMemberWake::Messages(messages) => {
                 prompt_text = format!(
@@ -18510,6 +18524,9 @@ struct CodexTeamTurn {
     interrupted: bool,
     interrupt_requested_by_harness: bool,
     close_requested_by_harness: bool,
+    /// Number of tool-call items started during this turn. Agent-message,
+    /// reasoning, and plan items are excluded because they are text-only.
+    tool_call_count: u32,
 }
 
 struct CodexTeamTurnContext<'a> {
@@ -18661,6 +18678,7 @@ fn run_codex_app_server_turn(
     let mut last_live_activity = Instant::now() - LIVE_MEMBER_ACTIVITY_THROTTLE;
     let mut interrupt_requested = false;
     let mut close_requested = false;
+    let mut tool_call_count: u32 = 0;
     loop {
         ledger.require_supervisor_lease()?;
         while let Ok(command) = controls.try_recv() {
@@ -18807,6 +18825,16 @@ fn run_codex_app_server_turn(
                     }
                     Some("item/started") | Some("item/completed") => {
                         let event_type = if method == Some("item/started") {
+                            // Count tool-call items (exclude agent_message, reasoning, plan, and empty).
+                            let item = params.get("item");
+                            let item_type =
+                                item.and_then(|i| i.get("type")).and_then(|v| v.as_str());
+                            let is_text_item =
+                                matches!(item_type, Some("agent_message" | "reasoning" | "plan"))
+                                    || item_type.unwrap_or("").is_empty();
+                            if !is_text_item {
+                                tool_call_count = tool_call_count.saturating_add(1);
+                            }
                             "item.started"
                         } else {
                             "item.completed"
@@ -18855,6 +18883,7 @@ fn run_codex_app_server_turn(
                             interrupted,
                             interrupt_requested_by_harness: interrupt_requested,
                             close_requested_by_harness: close_requested,
+                            tool_call_count,
                         });
                     }
                     _ if frame.get("id").is_some() && method.is_some() => {
@@ -20674,8 +20703,8 @@ fn run_kimi_member(
     // Supervisor wake-policy tracking.
     let wake_policy = supervisor_wake::WakePolicy::default();
     let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let mut zero_output_streak: u32 = 0;
-    let last_consumed_work_version: Option<u64> = None;
+    let mut zero_output_streak = member_row.zero_output_streak;
+    let mut last_consumed_work_version = member_row.last_consumed_work_version;
     let initial_wake = if resumed_native_session {
         ledger
             .interrupted_active_work_for(&member_row.id)?
@@ -20737,6 +20766,7 @@ fn run_kimi_member(
             )?;
             prompt_text =
                 work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
+            last_consumed_work_version = Some(claimed.work.version);
             active_work =
                 (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
             active_assignment = None;
@@ -20757,6 +20787,7 @@ fn run_kimi_member(
                     "RUNTIME RECOVERY\nThe previous Kimi ACP transport disconnected after this Work reached the provider. Continue in the same native session without replaying ownership or duplicating visible effects.\n\n{prompt_text}"
                 );
             }
+            last_consumed_work_version = Some(work.version);
             active_work = None;
             active_assignment = None;
         }
@@ -21016,6 +21047,9 @@ fn run_kimi_member(
             let circuit_outcome =
                 unproductive_rounds.observe(&final_text, outcome.provider_error.as_deref());
             zero_output_streak = unproductive_rounds.consecutive;
+            member_row.zero_output_streak = zero_output_streak;
+            member_row.last_consumed_work_version = last_consumed_work_version;
+            ledger.save_member_run(&member_row)?;
             if let Some(kind) = circuit_outcome {
                 let mut reason = format!(
                     "Kimi provider circuit breaker opened after {KIMI_UNPRODUCTIVE_ROUND_LIMIT} consecutive unproductive rounds (last outcome: {}). No durable agent output was produced. Provider capacity remains unknown because Kimi ACP exposes no reviewed quota signal. Inspect the provider-native session, account access, and model-specific controls before explicitly reopening the member.",
@@ -21082,6 +21116,7 @@ fn run_kimi_member(
                 )?;
                 prompt_text =
                     work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
+                last_consumed_work_version = Some(claimed.work.version);
                 active_work =
                     (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
                 active_assignment = None;
@@ -21098,6 +21133,7 @@ fn run_kimi_member(
                 )?;
                 prompt_text =
                     active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
+                last_consumed_work_version = Some(work.version);
                 active_work = None;
                 active_assignment = None;
                 accepted_messages.clear();
@@ -21308,8 +21344,8 @@ fn run_pi_team_member(
     // and Kimi instead of retaining the superseded fixed-poll call shape.
     let wake_policy = supervisor_wake::WakePolicy::default();
     let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let zero_output_streak: u32 = 0;
-    let last_consumed_work_version: Option<u64> = None;
+    let mut zero_output_streak = member_row.zero_output_streak;
+    let mut last_consumed_work_version = member_row.last_consumed_work_version;
 
     match wait_for_idle_member_wake(
         ledger,
@@ -21326,6 +21362,7 @@ fn run_pi_team_member(
     )? {
         IdleMemberWake::Work(claimed) => {
             wake_backoff.reset();
+            last_consumed_work_version = Some(claimed.work.version);
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
                 context.execution_space_id.as_deref(),
@@ -21339,6 +21376,7 @@ fn run_pi_team_member(
             active_work = Some(*claimed);
         }
         IdleMemberWake::ActiveWorkContinuation(work) => {
+            last_consumed_work_version = Some(work.version);
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
                 context.execution_space_id.as_deref(),
@@ -21489,20 +21527,25 @@ fn run_pi_team_member(
             }
         } else {
             let final_text = turn.final_text;
-            if final_text.trim().is_empty() {
-                return Err(CliError::Usage(format!(
-                    "pi member {} completed without an agent message",
-                    member.name
-                )));
-            }
-            let result = parse_round_result(&final_text);
-            let action_status = if result == MemberRoundResult::Done {
-                MemberActionStatus::Succeeded
+            let is_zero_output = final_text.trim().is_empty() && turn.tool_call_count == 0;
+            if is_zero_output {
+                zero_output_streak += 1;
             } else {
-                MemberActionStatus::Failed
+                zero_output_streak = 0;
+            }
+            let (action_status, round_summary) = if is_zero_output {
+                (MemberActionStatus::Failed, "(empty turn)".to_string())
+            } else {
+                let result = parse_round_result(&final_text);
+                let action_status = if result == MemberRoundResult::Done {
+                    MemberActionStatus::Succeeded
+                } else {
+                    MemberActionStatus::Failed
+                };
+                let round_summary = extract_report_section(&final_text, "SUMMARY")
+                    .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+                (action_status, round_summary)
             };
-            let round_summary = extract_report_section(&final_text, "SUMMARY")
-                .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
             let action = ledger.append_action(
                 &member.id,
                 "turn_completed",
@@ -21519,6 +21562,8 @@ fn run_pi_team_member(
                 &format!("{} completed provider round {round}", member.name),
             )?;
 
+            member_row.zero_output_streak = zero_output_streak;
+            member_row.last_consumed_work_version = last_consumed_work_version;
             member_row.status = MemberRunStatus::Idle;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
@@ -21548,6 +21593,7 @@ fn run_pi_team_member(
         )? {
             IdleMemberWake::Work(claimed) => {
                 wake_backoff.reset();
+                last_consumed_work_version = Some(claimed.work.version);
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -21561,6 +21607,7 @@ fn run_pi_team_member(
                 active_work = Some(*claimed);
             }
             IdleMemberWake::ActiveWorkContinuation(work) => {
+                last_consumed_work_version = Some(work.version);
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -40175,6 +40222,8 @@ mod tests {
             started_at: "unix-ms:1".into(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         }
     }
 
@@ -44645,6 +44694,8 @@ mod sse_tests {
             started_at: now_string(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         };
         let run = AgentTeamRun {
             id: "team-cwd".into(),
@@ -45013,6 +45064,8 @@ mod tests_team_run_recover {
             started_at: "unix-ms:1".into(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         }
     }
 

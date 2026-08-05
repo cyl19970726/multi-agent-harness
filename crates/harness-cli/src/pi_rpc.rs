@@ -60,6 +60,7 @@ pub(crate) struct PiTurnOutcome {
     pub final_text: String,
     pub interrupted: bool,
     pub close_requested_by_harness: bool,
+    pub tool_call_count: u32,
 }
 
 fn stderr_suffix(tail: &Arc<Mutex<String>>) -> String {
@@ -280,6 +281,7 @@ impl PiRpcClient {
         let mut last_idle = Instant::now();
         let mut interrupted = false;
         let mut close_requested = false;
+        let mut tool_call_count: u32 = 0;
         let mut final_text = String::new();
 
         loop {
@@ -302,6 +304,10 @@ impl PiRpcClient {
 
                     match event_type {
                         "agent_settled" => break,
+                        "tool_execution_start" => {
+                            tool_call_count = tool_call_count.saturating_add(1);
+                            on_event(&frame);
+                        }
                         "turn_end" => {
                             // Extract text from the full message — replaces, since
                             // only the LAST turn's text matters for the report.
@@ -357,6 +363,9 @@ impl PiRpcClient {
         // (non-blocking) in case agent_settled was preceded by events.
         while let Ok(frame) = self.incoming.try_recv() {
             let event_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type == "tool_execution_start" {
+                tool_call_count = tool_call_count.saturating_add(1);
+            }
             if event_type == "turn_end" {
                 let extracted = Self::extract_turn_end_text(&frame);
                 if !extracted.trim().is_empty() {
@@ -371,6 +380,7 @@ impl PiRpcClient {
             final_text,
             interrupted,
             close_requested_by_harness: close_requested,
+            tool_call_count,
         })
     }
 

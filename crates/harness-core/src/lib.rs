@@ -2677,6 +2677,16 @@ pub struct MemberRun {
     pub workspace_snapshot: Option<MemberWorkspaceSnapshot>,
     #[serde(default)]
     pub owned_paths: Vec<String>,
+    /// Consecutive provider turns where the member produced no tool calls
+    /// AND no Work transitions. Persisted so the degradation streak survives
+    /// supervisor restart. Reset to 0 on any productive turn.
+    #[serde(default)]
+    pub zero_output_streak: u32,
+    /// The last Work version the member consumed (saw at turn-start). When
+    /// this equals the current Work version, the version-Continue arm in
+    /// decide_wake is suppressed to avoid re-waking on stale content.
+    #[serde(default)]
+    pub last_consumed_work_version: Option<u64>,
     pub started_at: String,
     #[serde(default)]
     pub last_event_at: Option<String>,
