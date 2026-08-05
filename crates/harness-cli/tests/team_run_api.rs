@@ -3633,12 +3633,12 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
 }
 
 #[test]
-fn review_required_kimi_032_blocks_initial_start_and_http_work_rebind_before_acp() {
+fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp() {
     let home = TempHome::new("team-run-kimi-review-required-start");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
-    let acp_marker = home.base().join("kimi-032-acp-started.log");
+    let acp_marker = home.base().join("kimi-033-acp-started.log");
     let acp_marker_value = acp_marker.display().to_string();
     let serve = ServeHandle::spawn_with_env(
         &home,
@@ -3646,7 +3646,7 @@ fn review_required_kimi_032_blocks_initial_start_and_http_work_rebind_before_acp
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_VERSION", "0.33.0"),
             ("FAKE_KIMI_ENV_MARKER", acp_marker_value.as_str()),
         ],
     );
@@ -3684,7 +3684,7 @@ fn review_required_kimi_032_blocks_initial_start_and_http_work_rebind_before_acp
         error.contains("PROVIDER_COMPATIBILITY_BLOCKED"),
         "{blocked}"
     );
-    assert!(error.contains("0.32.0"), "{blocked}");
+    assert!(error.contains("0.33.0"), "{blocked}");
     assert!(
         error.contains("harness member providers --fail-on-review"),
         "{blocked}"
@@ -3740,7 +3740,8 @@ fn review_required_kimi_032_blocks_initial_start_and_http_work_rebind_before_acp
 }
 
 #[test]
-fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_session() {
+fn installed_kimi_upgrade_to_unreviewed_blocks_reopen_and_recovery_without_reusing_native_session()
+{
     let home = TempHome::new("team-run-kimi-review-required-reopen");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -3845,7 +3846,7 @@ fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_sess
         .expect("Work before drift");
     drop(reviewed_serve);
 
-    let blocked_acp_marker = home.base().join("kimi-032-blocked-acp.log");
+    let blocked_acp_marker = home.base().join("kimi-033-blocked-acp.log");
     let blocked_acp_marker_value = blocked_acp_marker.display().to_string();
     let drifted_serve = ServeHandle::spawn_with_env(
         &home,
@@ -3853,7 +3854,7 @@ fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_sess
         &[],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_VERSION", "0.33.0"),
             ("FAKE_KIMI_ENV_MARKER", blocked_acp_marker_value.as_str()),
         ],
     );
@@ -3867,7 +3868,7 @@ fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_sess
     );
     assert!(reopened["error"].as_str().is_some_and(|error| error
         .contains("PROVIDER_COMPATIBILITY_BLOCKED")
-        && error.contains("0.32.0")));
+        && error.contains("0.33.0")));
     assert!(
         !blocked_acp_marker.exists(),
         "reopen spawned or attached ACP before compatibility refusal"
@@ -3887,7 +3888,7 @@ fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_sess
         ],
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
-            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_VERSION", "0.33.0"),
             ("FAKE_KIMI_ENV_MARKER", blocked_acp_marker_value.as_str()),
         ],
     );
@@ -3898,7 +3899,7 @@ fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_sess
     let recovery_error = String::from_utf8_lossy(&recovery.stderr);
     assert!(
         recovery_error.contains("PROVIDER_COMPATIBILITY_BLOCKED")
-            && recovery_error.contains("0.32.0"),
+            && recovery_error.contains("0.33.0"),
         "stderr: {recovery_error}"
     );
     assert!(
@@ -3936,6 +3937,72 @@ fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_sess
         after_work.active_member_run_id,
         before_work.active_member_run_id
     );
+
+    // Positive counterpart: 0.32.0 IS adapter-reviewed (see
+    // reviewed_provider_versions), so after the unreviewed 0.33.0 refusal
+    // above, reopening the same closed member under 0.32.0 must succeed and
+    // resume the preserved native session — the deterministic form of the
+    // live canary that admitted 0.32.0 (capabilities like cancel/goal-mode
+    // remain unclaimed and are covered by the unit test).
+    drop(drifted_serve);
+    let admitted_acp_marker = home.base().join("kimi-032-admitted-acp.log");
+    let admitted_acp_marker_value = admitted_acp_marker.display().to_string();
+    let admitted_serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_ENV_MARKER", admitted_acp_marker_value.as_str()),
+        ],
+    );
+    let (status, reopened) = admitted_serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
+        &serde_json::json!({"reopened_by": "host", "reason": "reviewed 0.32.0 admits reopen with continuity"}),
+    );
+    assert_eq!(
+        status, 202,
+        "reviewed 0.32.0 reopen must be accepted: {reopened}"
+    );
+    assert_eq!(
+        reopened["result"]["history_continuity"].as_str(),
+        Some("provider_native_session"),
+        "reviewed reopen must resume the preserved native session: {reopened}"
+    );
+    // The reopen is accepted, but the drive belongs to a supervisor; the
+    // original one lived in the dropped reviewed_serve. Recover under the
+    // reviewed 0.32.0 env to adopt the run and resume the member (the same
+    // path production used: a live supervisor generation drives the resume).
+    let recovery = run_harness_with_env(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &run_id,
+            "--json",
+        ],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_ENV_MARKER", admitted_acp_marker_value.as_str()),
+        ],
+    );
+    assert!(
+        recovery.status.success(),
+        "reviewed 0.32.0 recovery must succeed, stderr: {}",
+        String::from_utf8_lossy(&recovery.stderr)
+    );
+    // Note: actual provider-process resume is driven by a long-running
+    // supervisor generation (production `team-run start`), which this test
+    // does not spawn; end-to-end drive for 0.32.0 is covered by the live
+    // canary recorded in PR #327 (post-reopen member completed provider
+    // rounds). This test asserts the gate-level contract: admit, continuity,
+    // recoverability.
 }
 
 #[test]
