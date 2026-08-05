@@ -5433,6 +5433,31 @@
    "implementationState": "partial",
    "truthRefs": [
    ]
+  },
+  {
+   "path": "plugins/star-harness/skills/shared-references/SKILL.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness shared-references skill mirror"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md",
+    "skills/shared-references/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
   }
  ]
 }
