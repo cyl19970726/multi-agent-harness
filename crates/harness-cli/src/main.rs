@@ -10202,10 +10202,8 @@ fn refreshed_team_member_provider_profile(
         .provider_profile
         .as_ref()
         .map(|stored| stored.execution_mode.clone());
-    let mut profile = team_member_provider_profile_for_mode(
-        &member.provider,
-        stored_mode.as_deref(),
-    );
+    let mut profile =
+        team_member_provider_profile_for_mode(&member.provider, stored_mode.as_deref());
     let detected = team_member_provider_version_output(&member.provider);
     let probe_error = detected.as_ref().err().cloned();
     apply_provider_version(&mut profile, detected.ok());
@@ -40293,9 +40291,20 @@ package:com.tencent.mm
 
         let mut future = team_member_provider_profile("kimi");
         apply_provider_version(&mut future, Some("0.32.0".to_string()));
+        // 0.32.0 is adapter-reviewed for prompt delivery/resume/mail, but
+        // cancel and native goal mode stay unclaimed (fail-closed per
+        // capability, not inherited from 0.31.x).
         assert!(!future.supports_cancel);
+        assert_eq!(future.goal_mode, ProviderFeatureMode::Emulated);
         assert_eq!(
             future.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut unreviewed = team_member_provider_profile("kimi");
+        apply_provider_version(&mut unreviewed, Some("0.33.0".to_string()));
+        assert_eq!(
+            unreviewed.compatibility_status,
             ProviderCompatibilityStatus::ReviewRequired
         );
     }
