@@ -5214,6 +5214,250 @@
    "implementationState": "design_only",
    "truthRefs": [
    ]
+  },
+  {
+   "path": "plugins/star-harness/README.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness plugin entry point and scope"
+   ],
+   "dependsOn": [
+    "docs/company-os/external-gateway-and-plugins.md"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Plugin scope, commands, or skill mirroring changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/commands/dashboard.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness dashboard command specification"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Dashboard command spec changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/commands/mission-new.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness mission-new command specification"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Mission command spec changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/commands/new-run.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness new-run command specification"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "New-run command spec changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/commands/status.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness status command specification"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Status command spec changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/commands/team-start.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness team-start command specification"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Team-start command spec changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/commands/team-status.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness team-status command specification"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Team-status command spec changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/skills/collaborate-as-agent-team-member/SKILL.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness collaborate-as-agent-team-member skill mirror"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md",
+    "skills/collaborate-as-agent-team-member/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/skills/orchestrate-mission-waves/SKILL.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness orchestrate-mission-waves skill mirror"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md",
+    "skills/orchestrate-mission-waves/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
+  },
+  {
+   "path": "plugins/star-harness/skills/shared-references/SKILL.md",
+   "ownerRole": "platform",
+   "status": "stable",
+   "lifecycle": "stable",
+   "canonicalFor": [
+    "Star Harness shared-references skill mirror"
+   ],
+   "dependsOn": [
+    "plugins/star-harness/README.md",
+    "skills/shared-references/SKILL.md"
+   ],
+   "machineConsumers": [
+    "check-doc-governance"
+   ],
+   "reviewAfter": "2026-09-03",
+   "lastVerifiedWith": [
+    "npx pnpm@9.15.4 check:star-harness-plugin"
+   ],
+   "reorgTrigger": "Skill mirroring or plugin skill contract changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+   ]
   }
  ]
 }

@@ -24,7 +24,7 @@ activity, or cross-functional process requires a design proposal.
 ```mermaid
 flowchart LR
   N["New or changing business need"] --> A["Docs Governance Agent: discover and draft"]
-  A --> I["Impact analysis: relations, actors, finance, controls"]
+  A --> I["Impact analysis: relations, actors, controls"]
   I --> P["Module Design proposal"]
   P --> G["Required review and Approval"]
   G -->|approved| C["Create or migrate spaces, templates, schemas, views, automations"]
@@ -35,7 +35,7 @@ flowchart LR
 The Docs Governance Agent is responsible for proposing a coherent
 structure, discovering collision with existing modules, and maintaining the
 document architecture. It is not authorized to unilaterally make high-risk
-governance decisions. The business owner, Finance, legal/security owners,
+governance decisions. The business owner, legal/security owners,
 Org/HR Governance Agent, and required human approvers participate when
 the proposed change affects their authority.
 
@@ -52,7 +52,6 @@ section may explicitly state “not applicable” only after analysis.
 | TypedRecords | The authoritative record types, key fields, stable identifiers, lifecycle states, source-of-truth rule, and retention needs. |
 | Relations and integration | Required links to projects, brands, people/Agents, WorkItems, outputs, evidence, other modules, and the direction/cardinality of important relations. State which links are references rather than copied values. |
 | Page composition | Which surfaces are basic rich documents, which use standard views, and which merit a custom page. For every custom page: primary question, declared data queries, approved components, navigation to underlying records, allowed Action Commands, fallback standard view, owner, and visual acceptance fixture. |
-| Finance | Whether the module creates budgets, commitments, invoices, payments, refunds, revenue, cost allocation, or financial evidence; which `FinancialRecord` types and relation keys are required; reconciliation and approval rules. |
 | Metrics and reporting | KPIs, definitions, source records, calculation ownership, refresh cadence, threshold/alert policy, and the views that expose them. |
 | Actors and organization | Accountable human or Agent owner, participating humans, Standing Agents, external parties, roles, capacity/escalation path, and any organization changes required. |
 | Work management | WorkItem templates, source-document rules, submitter/requester/accountable/executor/reviewer/approver responsibilities, execution-reference rules, and where results return. |
@@ -99,7 +98,7 @@ section may explicitly state “not applicable” only after analysis.
 | New low-risk page/template within an existing controlled space | Space owner review; follow local policy. |
 | New record type, shared relation, dashboard, or cross-space view | Document Architecture review plus affected data/module owners. |
 | New automation that creates WorkItems or updates records | Owner approval, visible audit trail, failure handling, and policy-scoped permission. |
-| Finance relation, financial record type, spending/payment workflow | Finance owner review and required financial approval controls. |
+| Finance relation, financial record type, spending/payment workflow | Finance owner review and required financial approval controls. Parked at contract layer pending deferred Finance decommission (see issue #323). |
 | Legal/IP, personal data, external sharing, or retention rule | Relevant legal/security/privacy owner review; required human approval when policy says so. |
 | New Standing Agent, organization unit, permission model, or autonomous authority | Organization Governance review and explicit human approval for authority or access changes. |
 | Migration, merge, or archive affecting existing shared content | Affected owners approve a reversible migration plan with provenance and rollback. |
@@ -114,9 +113,10 @@ the brand/Milestone, jurisdiction, classification, source documents, WorkItems,
 required approvals, submitted materials, and outcomes.
 
 The design must also create links to authoritative `FinancialRecord`s for the
-budget, commitment, invoice, payment, and any refund. The trademark page shows
+budget, commitment, invoice, payment, and any refund (parked at contract layer;
+see issue #323). The trademark page shows
 those linked records; Finance uses the same records for company and Milestone
-reporting. It names a business owner, IP/Trademark Agent, Finance reviewer,
+reporting. It names a business owner, IP/Trademark Agent,
 external counsel where applicable, and human approval for payments or legal
 filings under policy. When the module becomes established, its templates and
 relations become the reusable route for later trademark work.
@@ -127,8 +127,7 @@ has a stable question — "which applications need a decision, and what is their
 financial and legal state?" — and must place several sources together. The
 custom page reads application, WorkItem, Approval, and FinancialRecord views;
 it requests governed actions such as `trademark.submit_filing`; it never owns
-an application status or fee amount. If the package is unavailable, users
-return to the standard application and related-record views.
+an application status or fee amount.
 
 ## Relationship to the Document System
 

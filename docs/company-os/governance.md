@@ -22,10 +22,9 @@ authority.
 | --- | --- | --- |
 | Docs Governance Agent | Designs modules, document trees, typed records, templates, views, relations, retention, and migration proposals. | Business accountability or required human approval. |
 | Work Governance Agent | Classifies durable commitments, routes responsibility, checks required fields, and surfaces Approval/Finance/execution impact. | Business ownership, human approval, or executor-native planning. |
-| Finance Governance Agent | Validates monetary requests, evidence, budgets, controls, and authorized record transitions. | Human payment authority or permission to infer settlement. |
+| Finance Governance Agent | Parked at the contract layer pending deferred Finance decommission (see issue #323). Validates monetary requests, evidence, budgets, controls, and authorized record transitions. | Human payment authority or permission to infer settlement. |
 | Org / HR Governance Agent | Evaluates capability gaps and governs Business Agent proposal, provisioning, reporting, permissions, evaluation, and retirement. | Approval of its own privileges or mandatory Human gates. |
 | Lead | Owns business outcome; sponsors proposals, resolves trade-offs, and accepts completed change. | Mandatory independent review or human gate. |
-| Finance reviewer | Reviews financial design, budget/payment impact, controls, and separation of duties. | Accountable human payment approver. |
 | Legal reviewer | Reviews legal obligations, jurisdiction, evidence, retention, and external counsel boundaries. | Human or authorized-counsel sign-off required by policy. |
 | Human gate | Grants explicit authority for high-risk decisions reserved to people. | Evidence, review, or documented policy. |
 
@@ -51,14 +50,17 @@ and rollback plan, and success criteria.
 New business need or governance gap
   -> Docs Governance Agent maps documents, records, and relations
   -> Work Governance Agent maps durable commitments and delivery
-  -> Finance Governance Agent maps monetary effects and controls
   -> Org/HR Governance Agent maps actors, authority, and capacity
   -> Lead sponsors the selected design
-  -> Finance / Legal reviewers assess domain impact as required
+  -> Legal reviewer assesses domain impact as required
   -> Human gate approves when policy or risk requires it
   -> create or change the module / organization
   -> audit outcome and review it after use
 ```
+
+Finance governance review is parked at the contract layer (see issue #323). The
+commitment/payment code remains dormant; finance vocabulary enters
+`check_retired_vocabulary` only after code removal.
 
 The Governance Agents can prepare one coordinated proposal, but none can
 unilaterally approve its own additional access, authority, or reporting line.
@@ -72,7 +74,7 @@ objects, and later evidence of effectiveness.
 | R0 — reversible | Private draft page or non-sensitive view. | Accountable owner; audit event. |
 | R1 — operational | Reusable template, normal routing, or low-risk Agent role without new sensitive access. | Lead acceptance; relevant review when affected. |
 | R2 — controlled | New module, cross-module relation, external collaborator, or increased data/tool access. | Lead + affected reviewer(s) + human approval where policy applies. |
-| R3 — regulated / irreversible | Financial commitment/payment, legal filing, root or expanding authority delegation, privileged data access, or production-wide governance change. | Independent Finance/Legal review as applicable + named human gate; complete audit evidence. |
+| R3 — regulated / irreversible | Financial commitment/payment, legal filing, root or expanding authority delegation, privileged data access, or production-wide governance change. | Independent Legal review as applicable + named human gate; complete audit evidence. Finance review parked (see issue #323). |
 
 Risk is the greatest affected dimension (money, legal exposure, privacy,
 security, external commitment, or reversibility). Policies may elevate a tier;

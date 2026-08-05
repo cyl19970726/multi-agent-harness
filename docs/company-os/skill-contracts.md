@@ -1,7 +1,7 @@
 # Skill and CLI Contracts: Company OS Operator Suite
 
 ```text
-status: mixed — Company OS operator suite installable; Docs, Work, Organization, Approval, and Finance baseline dedicated CLI implemented; governed OrgChangeProposal and deeper Finance lifecycle remain planned
+status: mixed — Company OS operator suite installable; Docs, Work, Organization, and Approval baseline dedicated CLI implemented; governed OrgChangeProposal remains planned; Finance contract-layer retired (see issue #323); Commitment/Payment code remains dormant
 owner_role: product + platform
 canonical_for: optional Agent capability inputs, outputs, and governance boundaries
 ```
@@ -25,7 +25,6 @@ The suite currently expands to:
 | [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
 | [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
 | [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
-| [`company-finance-operator`](../../skills/company-finance-operator/SKILL.md) | Finance: Commitment, Payment, invoice, refund, monetary metrics and evidence linked into Docs page contracts | dedicated flat `harness company finance ...` plus nested `commitment/payment ...` baseline CLI implemented; budget/invoice/refund/reporting and settlement depth remain planned |
 | [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
 | [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
 | [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
@@ -34,7 +33,7 @@ The suite currently expands to:
 | [`orchestrate-mission-waves`](../../skills/orchestrate-mission-waves/SKILL.md) | Host Lead coordination: Mission, Mission Log, AgentTeam, Works, review, and explicit Host acceptance | team coordination skill (Host-facing) |
 | [`collaborate-as-agent-team-member`](../../skills/collaborate-as-agent-team-member/SKILL.md) | Persistent Agent Team Member: Works board, lifecycle, mailbox, blocker, submission, and native session | team coordination skill (Member-facing) |
 
-This eleven-Skill suite includes the dogfood and GitHub connector packages
+This ten-Skill suite includes the dogfood and GitHub connector packages
 because its bootstrap and operator Skills delegate work to them. Installation
 must preflight the complete suite and fail before writing either agent target
 when any delegated Skill package is missing.
@@ -142,225 +141,100 @@ and governed maintenance for `document create|rename|move|archive`,
 `typed-record append|update|validate`, `view create|update`, and
 `relation link|unlink|relink|repair-missing`.
 
-External software source sync is Company Store-routed and observes an external
-Git worktree. `--company` selects where Company OS truth is written;
-`--repo-path` selects the software source being observed.
+External software source sync is Company Store-routed (`--company`) and
+observes a Git worktree (`--repo-path`).
 
 ```bash
-harness --company <company-store-id> company docs source sync \
-  --definition <custom-page-definition-id> \
-  --module <business-module-id> \
-  --source-document <document-id> \
-  --actor <human-or-agent-id> \
-  --repo-path <local-git-worktree> \
-  --repo <owner/repo> \
-  --branch <branch> \
-  --project-id <external-software-project-id> \
-  --path docs/prd \
-  [--path docs/architecture] \
-  [--dry-run]
-harness company docs view create \
-  --definition <custom-page-definition-id> \
-  --module <business-module-id> \
-  --title <title> \
-  [--mode table|board|timeline] \
-  --source-kind typed_record \
-  [--query-json '{"filters":[{"field":"record_type","value":"trademark_application"}],"group_by":"lifecycle_status","sort_by":"updated_at"}'] \
-  --actor <human-or-agent-id>
-harness company docs relation link \
-  --definition <custom-page-definition-id> \
-  --from-document <document-id> \
-  --to-record <typed-record-id> \
-  --actor <human-or-agent-id>
-harness company docs relation unlink \
-  --definition <custom-page-definition-id> \
-  --relation <relation-id> \
-  --actor <human-or-agent-id> \
-  (--dry-run | --confirm)
-harness company docs relation repair-missing \
-  --definition <custom-page-definition-id> \
-  --actor <human-or-agent-id> \
-  (--dry-run | --confirm)
+harness --company <id> company docs source sync --definition <id> --module <id> --source-document <id> --actor <ref> --repo-path <path> --repo <owner/repo> --branch <branch> --project-id <id> [--path docs/prd] [--dry-run]
+harness company docs view create --definition <id> --module <id> --title <title> [--mode table|board|timeline] --source-kind typed_record [--query-json '…'] --actor <ref>
+harness company docs relation link --definition <id> --from-document <id> --to-record <id> --actor <ref>
+harness company docs relation unlink --definition <id> --relation <id> --actor <ref> (--dry-run|--confirm)
+harness company docs relation repair-missing --definition <id> --actor <ref> (--dry-run|--confirm)
 ```
 
-`docs query` is the first read command Agents should run before mutation. It is
-read-only over the current latest Company OS projection and returns the selected
-Document or module root, ordered Blocks, child Documents, templates,
-source-linked TypedRecords, Relations, Views, BusinessModule, page-definition
-and policy context, scoped health findings, available commands, and explicit
-side-effect boundaries. It does not create WorkItems, Approvals, Finance
-records, Organization changes, execution runs, or UI-only state.
-`docs source sync` is the first external software product-source mapping
-command. It reads a local Git worktree and writes Docs `TypedRecord` rows for
-`external_project`, `product_doc_source`, `product_doc_snapshot`, and
-`source_sync_run`, plus an idempotent `Document → source_for → TypedRecord`
-Relation for each row, preserving repo, branch, commit, path, content hash,
-headings, and source class. The command treats GitHub/webhook delivery as a
-transport, not authority: it does not create WorkItems, approve spending,
-change Organization, mutate Finance, overwrite commercial truth, execute
-GitHub actions, or claim software delivery completion. Use the top-level
-`--company` option to select the Company Store and command-level `--project-id`
-to name the external software source; these are intentionally different
-identifiers.
-`docs health` remains the broader read-only structural audit over the current
-Company OS projection.
-`docs document rename`, `docs document move`, and `docs document archive` are
-governed structure-maintenance commands. They update the latest Document row
-through `document.append`, preserve existing blocks and references, keep
-identity fields immutable, and support dry-run before dispatch. `move` may
-change `parent_document_id` inside the same DocumentSpace but cannot move a
-Document under itself or create a parent cycle. `archive` requires `--confirm`
-unless it is a dry-run. These commands are Docs-only; they do not create Work,
-Approval, Finance, Organization, Execution, or UI-only state.
-`docs block update`, `docs block archive`, and `docs block remove` are governed
-content-maintenance commands. `block update` writes a new latest Block row
-through `block.append` while preserving Block identity and keeping
-`Document.block_ids` unchanged. `block remove` writes only a Document update to
-remove the Block from visible order while preserving the Block row. `block
-archive` writes archived metadata into `Block.content` and removes the Block
-from visible order. Archive/remove require `--confirm` unless they are
-dry-runs. None of these commands physically delete records or imply Work,
-Approval, Finance, Organization, Execution, or UI-only state.
-`docs module create` and `docs page-definition create` are governance-level
-authoring commands: they use the administrative Company OS API envelope, require
-a Human `company_os.admin` authority, create the BusinessModule/fallback View
-and CustomPageDefinition/package/policy bundle, and do not authorize Work,
-Finance, Organization, or Execution effects. `docs module create` may also
-preserve explicit BusinessModule relation rules such as Document →
-TypedRecord `source_for`; this declares a policy but does not create any
-TypedRecord or Relation by itself.
-`docs document create --root` is the CLI bootstrap for a new DocumentSpace or
-top-level operating area inside the selected Company Store. It requires a Human
-admin authority and writes only a root Document; module, PageDefinition,
-TypedRecord, Relation, Work, Finance, and Organization records remain separate
-governed commands.
-`docs template create` constructs an explicit reusable
-`Document(kind=template)` instead of mutating an existing page's identity. With
-`--from-document`, it copies the source Document's ordered native Blocks into
-the new template through governed `block.append` plus `document.append`
-updates. The source Document keeps its original kind, block list, references
-and relations. `docs template status` updates only that template Document's
-`lifecycle_status` through governed `document.append`; it refuses non-template
-Documents and does not change existing child Documents that already recorded
-the template through `template_ref`. `docs document create` constructs a scoped child
-`document.append` command and can preserve a `template_ref` provenance pointer
-when `--template` is supplied. By default it records provenance only. With
-`--instantiate-template`, it also copies the template Document's ordered native
-Blocks into the child Document through governed `block.append` plus
-`document.append` updates. These template commands still do not create
-TypedRecords, WorkItems, Relations, Approvals, or Finance effects.
-When a module declares a Document → TypedRecord relation rule, agents still
-create the TypedRecord and concrete Relation through `typed-record append` and
-`relation link` as separate governed actions after the child Document exists.
-Later structured truth maintenance uses `typed-record update` and `relation
-unlink`; it must not rewrite source Documents, create WorkItems, or physically
-delete Relation rows.
-`docs block append` creates a Block and then appends the updated source
-Document so `Document.block_ids` stays navigable. It supports text shorthand
-and structured `--kind`/`--content-json` content for `rich_text`, `heading`,
-`callout`, and simple `table` Blocks. The Document Focus UI may expose slash
-commands for selecting those Block kinds, but the durable effect is still the
-same governed `block.append` plus `document.append` pair. Block reorder remains
-a governed `document.append` wrapper: it may change only `Document.block_ids`
-order and must preserve exactly the existing Block set. Drag/drop UI is still a
-presentation layer over that command, not a separate truth. `docs typed-record append`
-creates a source-linked TypedRecord inside a declared BusinessModule.
-`docs typed-record update` writes a new latest TypedRecord row through
-`typed_record.append`; it may change title, fields, and lifecycle status, but
-must preserve the record id, module id, record type, source Document ref,
-creator, and creation time. With `--merge-fields`, incoming JSON object keys
-overlay existing fields; without it, `--fields-json` replaces the full fields
-object. Dry-run returns the before/after record without dispatching a write.
-`docs view create` creates a standard View under a BusinessModule and may
-persist table/board/timeline mode plus source-kind and JSON query configuration
-for simple filter, grouping, and sorting. That configuration is presentation
-truth in the native `View`; it does not create a second record store or mutate
-the underlying TypedRecords. `docs
-relation link` constructs a standard `relation.append` ActionCommand with an
-active lifecycle state. `docs relation unlink` writes a new latest Relation row
-through `relation.append` with `lifecycle_status=archived`; it preserves the
-Relation id, endpoints, relation type, provenance, creator, and creation time,
-requires `--confirm` unless dry-run, and never physically deletes history.
-Active `docs query` and health projections ignore archived Relations, so a
-previously satisfied Document → TypedRecord policy may correctly resurface as a
-missing-relation finding after unlink. These
-ordinary write commands all dispatch through the same governed Action transport
-used by Store-live UI. They do not receive a general store-write client and
-require the normal `HARNESS_COMPANY_OS_TOKEN` write capability plus a matching
-`CustomPageDefinition` policy.
+Command contract:
+
+- **`docs query`** (read-first): returns the selected Document/module root,
+  ordered Blocks, children, templates, TypedRecords, Relations, Views, health
+  findings, and available commands. No Work/Approval/Finance/Org/Execution side
+  effects.
+- **`docs source sync`**: reads a Git worktree, writes `external_project`,
+  `product_doc_source`, `product_doc_snapshot`, `source_sync_run` TypedRecords
+  plus `Document → source_for → TypedRecord` Relations (repo/branch/commit/path
+  /hash/headings/source-class). GitHub/webhook is a transport, not authority.
+- **`docs health`**: read-only structural audit over the current projection.
+- **`docs document rename/move/archive`**: governed structure maintenance via
+  `document.append`. `move` may change `parent_document_id` within same space
+  (no parent cycles); `archive` requires `--confirm`. Docs-only, no side
+  effects.
+- **`docs block update/archive/remove`**: governed content maintenance via
+  `block.append`. Never physically deletes; no side effects.
+- **`docs module create` / `docs page-definition create`**: require
+  `company_os.admin`; create BusinessModule/View + CustomPageDefinition bundle.
+  May declare BusinessModule relation rules but creates no TypedRecords.
+- **`docs document create --root`**: bootstrap a DocumentSpace (admin only,
+  writes root Document only).
+- **`docs template create`**: constructs `Document(kind=template)`; with
+  `--from-document` copies source Blocks. `docs template status` updates
+  template lifecycle only. `docs document create --template` records
+  provenance; `--instantiate-template` also copies the template's Blocks.
+- **`docs block append`**: creates Block + updates `Document.block_ids`.
+  Supports `rich_text`, `heading`, `callout`, `table`. Reorder is governed
+  `document.append` wrapper preserving the Block set.
+- **`docs typed-record append/update`**: append creates a source-linked
+  TypedRecord; update writes a new latest row (preserves id, module, type,
+  source, creator, created). `--merge-fields` overlays; dry-run previews.
+- **`docs view create`**: creates a View (table/board/timeline + query config)
+  under a BusinessModule. Presentation truth only.
+- **`docs relation link/unlink`**: `link` creates active relation; `unlink`
+  writes `lifecycle_status=archived` (preserves history, requires `--confirm`).
+
+All write commands dispatch through governed Action transport; no
+general store-write client. They require `HARNESS_COMPANY_OS_TOKEN` plus a
+matching `CustomPageDefinition` policy.
 
 ## Shared operating rules
 
 These skills must:
 
 - treat CLI/API as the primary Agent interface and UI as Human review context;
-- identify assumptions, unknowns, affected owners, risk, and permissions
-  before proposing a durable change;
+- identify assumptions, unknowns, owners, risk, and permissions before
+  proposing a durable change;
 - treat Documents, TypedRecords, Relations, Views, WorkItems, Approvals,
-  FinancialRecords, and ActorRefs as canonical objects rather than inventing
-  page-local substitutes;
-- use the [Module Design](module-design.md), [Document System](document-system.md),
+  FinancialRecords, and ActorRefs as canonical objects;
+- use [Module Design](module-design.md), [Document System](document-system.md),
   [WorkItems and Approvals](work-items-and-approvals.md), and
-  [Governance](governance.md) contracts as constraints;
-- preserve provenance and give every proposed migration a rollback or safe
-  non-destructive path;
-- keep ordinary chat, provider transcripts, and private reasoning out of
-  durable output; and
-- make no claim that a proposal, code change, or visual comparison has passed
-  policy approval unless the relevant review and Approval records prove it.
+  [Governance](governance.md) as constraints;
+- preserve provenance with a rollback or safe non-destructive path;
+- keep chat, transcripts, and private reasoning out of durable output; and
+- never claim policy approval without review and Approval records.
 
-No skill gets a general store-write client. Any write it initiates uses
-declared, policy-checked commands, and any required Approval remains a real
-first-class decision.
+No skill gets a general store-write client. Any write uses declared,
+policy-checked commands; required Approval remains a first-class decision.
 
 ## Gateway plugin operator contract
 
-Gateway plugins are optional capability packages, not Company OS authority.
-They may include Skills, connector daemons/jobs, view declarations, and one or
-more operation transports. A transport can be an existing tool such as `gh`,
-an MCP tool, a plugin-owned CLI adapter, official API calls, browser
-automation, or phone automation. A plugin should expose a manifest naming:
+Gateway plugins are optional capability packages (Skills, connectors, view
+declarations, and transports: `mcp`, `plugin_cli`, `existing_cli`,
+`browser_automation`, `phone_automation`, `official_api`). Each must expose a
+manifest naming the external platform, supported transports and actions,
+emitted Company OS record/relation types, required Actor permissions and
+Human/Finance/Approval gates, idempotency/evidence/failure/rollback semantics,
+and view extensions with fallback standard Views.
 
-- external platform and supported transports (`mcp`, `plugin_cli`,
-  `existing_cli`, `phone_automation`, `browser_automation`, `official_api`, or
-  another reviewed transport);
-- supported actions and whether each action writes external state, reads
-  private data, or implies financial/legal/security risk;
-- Company OS record types and relation types it emits;
-- required Actor permissions and Human/Finance/Approval gates;
-- idempotency keys, evidence outputs, failure semantics, and rollback/retry
-  boundaries; and
-- view extensions and their fallback standard Views.
+Operation path: Agent reads Docs/Work/Org → platform Skill → selected transport
+→ structured observation/effect → governed Company OS writes → Docs/Work/Org
+views render. GitHub priority is connector sync via `gh`/API/webhook; a
+dedicated MCP server or plugin CLI is optional later.
 
-The operation path is:
+View extensions are presentation over Company OS truth (account overview, inbox
+queue, content calendar, performance table, merchant/order panel). They cannot
+own business facts, store alternate task lists, hide approvals, or mutate
+external systems without an explicit Action and policy gate.
 
-```text
-Agent reads Docs/Work/Org context
-  -> uses platform Skill
-  -> calls the selected transport: existing CLI, MCP tool, plugin CLI, API,
-     browser automation, or phone automation
-  -> plugin action/connector returns structured observation or effect
-  -> Company OS writes governed records / relations / WorkItems / evidence
-  -> Docs, Work, Org, and Agent detail views render those records
-```
-
-For GitHub specifically, the first priority is connector sync and views. Agents
-already have a mature `gh`/Git operation path, so the plugin should first use
-`gh` or GitHub API/webhook observation to sync issues, PRs, checks, reviews,
-and source snapshots into Company OS. A new MCP server or dedicated plugin CLI
-is optional later, not a prerequisite for the first GitHub connector slice.
-
-A plugin view extension is presentation over Company OS truth. It can provide
-an account overview, inbox queue, content calendar, post performance table,
-merchant/order/logistics panel, or Agent detail gateway panel. It cannot own
-business facts, store an alternate task list, hide required approvals, or
-mutate external systems without an explicit Action and policy gate.
-
-Private-message, merchant-chat, customer-data, account-settings, publication,
-delete, paid-promotion, order, payment, and logistics actions must declare
-their risk class. The default is prepare/sync/review first; submission,
-external reply, publish, paid promotion, payment, and destructive changes
-remain gated unless the account and Actor policy explicitly allow automation.
+Submission, external reply, payment, paid promotion, and destructive actions
+require declared risk class and are gated unless Actor policy explicitly allows
+automation.
 
 ## `company-docs-operator`
 
@@ -665,32 +539,25 @@ flowchart LR
   R -->|"revise"| M
 ```
 
-The module skill establishes *what the business system is*. The page-builder
-skill establishes *how an approved subset is presented and interacted with*.
-They remain separate because a visually successful page cannot validate a poor
-record/relation model, and an excellent module design does not itself justify
-custom code.
+The module skill establishes *what the business system is*; page-builder
+establishes *how an approved subset is presented*. They remain separate: a
+visually successful page cannot validate a poor record/relation model, and
+excellent design does not itself justify custom code.
 
 ## Trademark Management walkthrough
 
-For `CN-2026-018`, `company-module-designer` receives the brand request,
-existing Brand & IP context, the ¥3,000 filing need, and policy constraints. It
-proposes the `TrademarkApplication` record, relations to source documents,
-WorkItems, Approvals, legal evidence, and canonical `FinancialRecord`s; it
-names the Brand Owner, Trademark Agent, External Lawyer, and required reviews.
-Finance and legal/human approval remain decisions outside the skill.
+For `CN-2026-018`, `company-module-designer` receives the brand request and
+proposes `TrademarkApplication` records, relations, WorkItems, Approvals, and
+`FinancialRecord`s with named actors (Brand Owner, Trademark Agent, External
+Lawyer). Finance and legal approval remain decisions outside the skill.
 
-After that contract is reviewed, `company-page-builder` may receive a page
-brief for the Trademark Management home: "What applications require a decision
-or legal action, and what costs are committed or awaiting approval?" Its
-scoped reads include application status, deadlines, WorkItems, Approval state,
-and finance Views. Its allowed commands could create an application, link
-materials, create a WorkItem, or request an approval. It cannot file a mark,
-approve ¥3,000, or settle a payment.
+After review, `company-page-builder` receives a page brief: "What applications
+require a decision or legal action, and what costs are committed or awaiting
+approval?" Scoped reads include status, deadlines, WorkItems, Approval state,
+and finance Views. Allowed commands include create application, link materials,
+create WorkItem, request approval — not file a mark, approve ¥3,000, or settle
+a payment.
 
-The builder generates the expected management-home image, implements the
-registered view, captures it with an application awaiting the ¥3,000 approval,
-and compares it to the expected image. If the renderer fails, users still open
-the module document and standard application, finance, work, and approval
-Views. The details of the underlying operating loop remain those in the
-[trademark registration example](examples/trademark-registration.md).
+The builder produces the expected image, implements the registered view against
+a fixture, captures it, and compares; fallback is the standard module document
+and Views. Full detail: [trademark registration example](examples/trademark-registration.md).

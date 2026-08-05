@@ -134,7 +134,7 @@ Repository skills exist for the intended Company OS operator roles:
 - `skills/company-docs-operator`
 - `skills/company-work-operator`
 - `skills/company-org-operator`
-- `skills/company-finance-operator`
+- `skills/parked-company-finance-operator-20260805` (retired per ADR 0053)
 - `skills/company-module-designer`
 - `skills/company-page-builder`
 - `skills/company-business-project-bootstrap`

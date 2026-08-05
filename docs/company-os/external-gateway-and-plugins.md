@@ -112,6 +112,15 @@ The manifest is a capability declaration, not authority. Organization policy
 still decides which Actor may use which action on which account, and Work /
 Approval / Finance still own commitments, gates, and money state.
 
+The gateway manifest **schema** (the exact JSON shape shown above) is
+**explicitly-deferred**. The example here is a design sketch; a governed manifest
+schema with a canonical JSON Schema definition, validation rules, and a
+Store-backed manifest registry is a separate product increment that belongs to
+the external gateway roadmap, not the governance retirement wave. Until that
+schema is contracted, plugins declare their manifests as unstructured
+projection documents, and the harness accepts them as capability claims without
+schema enforcement.
+
 ## Social Content Gateway v0
 
 The social-content gateway covers platform accounts and publishing operations
@@ -312,7 +321,7 @@ Minimum first views:
 
 | Capability | Status |
 | --- | --- |
-| Docs/Work/Org/Finance operating substrate | partial, with dedicated CLI and Store-live projections |
+| Docs/Work/Org operating substrate (Finance parked — see issue #323) | partial, with dedicated CLI and Store-live projections |
 | GitHub/local repo source sync into Docs records | implemented for local worktree observation |
 | Social content gateway plugin contract | product contract; Store-backed TypedRecords/WorkItems are dogfood-ready; plugin manifest/action/connector/view implementation remains next |
 | Xiaohongshu phone readiness check | implemented as read-only core bootstrap; local device can be inspected through ADB when the Human authorizes the session |
@@ -329,3 +338,41 @@ The current Wanchengwanling dogfood Store has created the canonical WorkItem
 `work-wcw-agentos-wecom-gateway-v0` from
 `document-cli-11-agentos-dogfood-external-gateway-agentos` to implement this
 slice.
+
+## Naming: provider agent-gateway vs external gateway
+
+The term "gateway" appears in two distinct domains and must not be conflated:
+
+| Term | Scope | Description |
+| --- | --- | --- |
+| **Provider agent-gateway** | Execution substrate | The transport adapter that connects a provider (Kimi ACP, Codex App Server, Claude Agent SDK) to the Harness Host. It handles session lifecycle, tool dispatch, event routing, and provider-native protocol translation. It is an execution concern, not a Company OS concern. |
+| **External gateway** (this document) | Company OS | An intake and delivery adapter for external business channels (WeCom, GitHub, Xiaohongshu, email, payment systems). It normalizes external events into Company OS records without becoming authority. |
+
+The provider agent-gateway is governed by the execution foundation contracts
+([ADR 0032](../integration/native-session-storage.md),
+[agent-integration-model.md](../agent-integration-model.md)).
+The external gateway is governed by this document and the
+[Gateway plugin operator contract](skill-contracts.md#gateway-plugin-operator-contract).
+
+## Kimi ACP integration envelope
+
+Kimi members connect to the Harness Host through the `kimi_acp` persistent
+bidirectional mode. The integration envelope is:
+
+- **Transport:** Kimi ACP (Agent Communication Protocol) — the provider-native
+  bidirectional session protocol. The Harness Host opens and maintains the ACP
+  connection; Kimi's native runtime drives turn execution within it.
+- **Host Inbox hooks:** The Host delivers correlated TeamMessages,
+  PendingInteractions, and control signals (interrupt, close, reopen) through
+  the ACP session. The Kimi member does not poll a separate mailbox or
+  message-queue endpoint.
+- **cwd skill discovery:** The Kimi member resolves its working directory
+  through the standard `member worktree_ref` > TeamRun `execution_root` >
+  binding `project_root` chain. Skills are discovered from the normal
+  `.agents/skills/` and `skills/` roots under that cwd. No plugin command or
+  separate skill registry is involved.
+- **No plugin command:** The Kimi integration does not use a plugin-owned CLI
+  or a dedicated plugin transport. The Harness core handles ACP session
+  management; the Kimi provider handles tool execution and skill loading within
+  its own native runtime. Skills are project-scope files discovered by the
+  normal Kimi Code skill loader, not by a Harness plugin.

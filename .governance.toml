@@ -84,6 +84,7 @@ coverage_roots = [
     "docs/company-os",
     "docs/dashboard/pages",
     "docs/integration",
+    "plugins",
 ]
 coverage_exclude = []
 
@@ -95,6 +96,9 @@ terms = [
     "Vision/Goal/Task",
     "Goal/Task Workbench",
 ]
+# Finance vocabulary (Commitment, Payment, etc.) is not yet added to
+# retired_vocabulary.terms: the append-only code still exists. Add them
+# when the code is fully decommissioned (see issue #323).
 allowed_paths = [
     "docs/governance-engine.md",
 ]
