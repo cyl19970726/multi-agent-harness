@@ -98,6 +98,36 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
         .collect()
 }
 
+/// Seed one historical Wave row directly, bypassing the retired `wave
+/// create` write path (ADR 0051), so a TeamRun can still explicitly cite an
+/// existing Wave id via `--wave-id` (that citation path is unaffected --
+/// only Wave *write* commands retired).
+fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id: &str) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("waves.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open wave ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "mission_id": mission_id,
+            "index": 1,
+            "title": "Historical Wave",
+            "objective": "Seeded pre-cutover row for read/navigation coverage",
+            "executor_kind": "agent_team",
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical wave");
+}
+
 /// Read an append-only ledger when that object class is optional for the
 /// scenario. A Work-only provider round correctly creates no TeamMessage
 /// ledger at all.
@@ -746,26 +776,10 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     );
     assert!(mission.status.success(), "mission: {mission:?}");
     let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-    let wave = run_harness(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "wave",
-            "create",
-            "--mission-id",
-            &mission_id,
-            "--title",
-            "Mixed team",
-            "--objective",
-            "Have Codex implement and Kimi review",
-            "--executor-kind",
-            "agent_team",
-        ],
-    );
-    assert!(wave.status.success(), "wave: {wave:?}");
-    let wave_id = String::from_utf8_lossy(&wave.stdout).trim().to_string();
+    // `wave create` is retired (ADR 0051): seed a historical row directly so
+    // TeamRun creation can still explicitly cite an existing Wave id.
+    let wave_id = "wave-mixed-provider".to_string();
+    seed_historical_wave(&home, &project_id, &wave_id, &mission_id);
 
     let create = run_with_fake_kimi(
         &home,
