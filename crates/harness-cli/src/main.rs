@@ -19,10 +19,11 @@ use harness_core::{
     HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
     MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
     MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Mission, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionOption,
-    PendingInteractionRoute, PendingInteractionStatus, ProjectContext, ProjectKind,
-    ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
+    NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction,
+    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
+    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
     ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
@@ -30,7 +31,7 @@ use harness_core::{
     TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
     WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkflowArtifactFile,
     WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
@@ -9064,10 +9065,11 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "mission create|list|show|update-context|create-team|link-team|unlink-team|close",
+        "mission create|list|show|update-context|create-team|link-team|unlink-team|close|log",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
+        "log" => return mission_log_command(store, &args[1..]),
         "create" => {
             let mission = create_mission(
                 store,
@@ -9146,9 +9148,134 @@ fn mission_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Complete durable Mission intent only after every ordered Wave has an
-/// explicit Host advance outcome (stored in the compatible accepted-gate
-/// fields). Closeout is idempotent for the same outcome and immutable for a
+/// `mission log append|show` — the ADR 0051 Mission Log: Mission's
+/// append-only judgment record. This absorbs the versioned-memo role Wave
+/// used to play; there is no update/advance/gate here because an
+/// append-only log has nothing to mutate, only entries to add.
+fn mission_log_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "mission log append|show")?;
+    let json = has_flag(args, "--json");
+    match args[0].as_str() {
+        "append" => {
+            let entry = create_mission_log_entry(
+                store,
+                &required(args, "--mission-id")?,
+                &required(args, "--kind")?,
+                &required(args, "--body")?,
+                value(args, "--actor"),
+            )?;
+            if json {
+                print_json(&entry)?;
+            } else {
+                println!(
+                    "{}\t#{}\t{}",
+                    entry.mission_id,
+                    entry.revision,
+                    serde_snake_label(&entry.kind)
+                );
+            }
+        }
+        "show" => {
+            let mission_id = required(args, "--mission-id")?;
+            let tail = value(args, "--tail")
+                .map(|raw| {
+                    raw.parse::<usize>()
+                        .map_err(|_| CliError::Usage("--tail must be a positive integer".to_string()))
+                })
+                .transpose()?;
+            let entries = match tail {
+                Some(n) => store.mission_log_tail(&mission_id, n)?,
+                None => store.mission_log_entries(&mission_id)?,
+            };
+            if json {
+                print_json(&entries)?;
+            } else {
+                println!("{}", format_mission_log_entries_text(&entries));
+            }
+        }
+        other => return Err(CliError::Usage(format!("unknown mission log command: {other}"))),
+    }
+    Ok(())
+}
+
+/// Append one Mission Log entry. `revision` is store-assigned (monotonic per
+/// `mission_id`); callers never choose it. Mirrors `create_wave`'s
+/// validate-then-insert shape, but there is no compare-and-append variant
+/// because a Mission Log entry, once appended, is never revised in place.
+pub(crate) fn create_mission_log_entry(
+    store: &HarnessStore,
+    mission_id: &str,
+    kind: &str,
+    body: &str,
+    actor: Option<String>,
+) -> CliResult<MissionLogEntry> {
+    if mission_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission log entry mission id must not be empty".to_string(),
+        ));
+    }
+    if body.trim().is_empty() {
+        return Err(CliError::Usage(
+            "mission log entry body must not be empty".to_string(),
+        ));
+    }
+    let entry = MissionLogEntry {
+        id: generated_id("mission-log"),
+        mission_id: mission_id.to_string(),
+        revision: 0, // store-assigned on append
+        kind: parse_mission_log_kind(kind)?,
+        body: body.to_string(),
+        actor: actor.unwrap_or_else(|| "host".to_string()),
+        created_at: now_string(),
+    };
+    store_conflict_as_usage(store.append_mission_log_entry(entry))
+}
+
+pub(crate) fn parse_mission_log_kind(value: &str) -> CliResult<MissionLogEntryKind> {
+    match value {
+        "judgment" => Ok(MissionLogEntryKind::Judgment),
+        "replan" => Ok(MissionLogEntryKind::Replan),
+        "recovery" => Ok(MissionLogEntryKind::Recovery),
+        "closeout_evidence" => Ok(MissionLogEntryKind::CloseoutEvidence),
+        other => Err(CliError::Usage(format!(
+            "unknown mission log kind `{other}` (judgment|replan|recovery|closeout_evidence)"
+        ))),
+    }
+}
+
+/// Render Mission Log entries as plain text for a terminal reader — the
+/// non-JSON `mission log show` output and the mandatory-reader tail
+/// `team-run recover` prints before its recovery report. Entries are
+/// rendered in the order given (oldest-of-the-slice first, matching
+/// `HarnessStore::mission_log_tail`'s Unix-`tail` ordering); an empty slice
+/// renders the explicit sentinel so a reader is never left wondering whether
+/// the read failed or the Mission simply has no Log yet.
+fn format_mission_log_entries_text(entries: &[MissionLogEntry]) -> String {
+    if entries.is_empty() {
+        return "no mission log yet".to_string();
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "#{} [{}] {} @ {}\n{}",
+                entry.revision,
+                serde_snake_label(&entry.kind),
+                entry.actor,
+                entry.created_at,
+                entry.body
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Complete durable Mission intent. Prior to ADR 0051 this required every
+/// ordered Wave to have an explicit Host advance outcome; Wave write
+/// commands are now retired, so a native post-cutover Mission closes on its
+/// own outcome (the Host records `kind = closeout_evidence` in the Mission
+/// Log beforehand by convention — see `HarnessStore::compare_and_close_mission`).
+/// Closeout is idempotent for the same outcome and immutable for a
 /// conflicting second outcome. It never changes linked Team lifecycle.
 pub(crate) fn close_mission(
     store: &HarnessStore,
@@ -9194,37 +9321,11 @@ pub(crate) fn close_mission(
 }
 
 fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "wave create|list|show|history|update|advance|gate")?;
-    let json = has_flag(args, "--json");
+    require_subcommand(
+        args,
+        "wave list|show|history (create/update/advance/gate retired by ADR 0051; use `mission log append`)",
+    )?;
     match args[0].as_str() {
-        "create" => {
-            let wave = create_wave(
-                store,
-                value(args, "--id"),
-                &required(args, "--mission-id")?,
-                value(args, "--index")
-                    .map(|index| {
-                        index.parse::<u32>().map_err(|_| {
-                            CliError::Usage("--index must be a positive integer".to_string())
-                        })
-                    })
-                    .transpose()?,
-                &required(args, "--title")?,
-                &required(args, "--objective")?,
-                parse_wave_executor_kind(
-                    &value(args, "--executor-kind").unwrap_or_else(|| "host".to_string()),
-                )?,
-                value(args, "--exit-criteria"),
-                value(args, "--plan-note"),
-                value(args, "--context"),
-                value(args, "--updated-by"),
-            )?;
-            if json {
-                print_json(&wave)?;
-            } else {
-                println!("{}", wave.id);
-            }
-        }
         "list" => {
             let mission_id = value(args, "--mission-id");
             let waves = store
@@ -9251,39 +9352,29 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             }
             print_json(&history)?;
         }
-        "update" => print_json(&revise_wave(
-            store,
-            &required(args, "--id")?,
-            &required(args, "--context")?,
-            &value(args, "--updated-by").unwrap_or_else(|| "host".to_string()),
-        )?)?,
-        "advance" => print_json(&advance_wave(
-            store,
-            &required(args, "--id")?,
-            &required(args, "--outcome")?,
-            &value(args, "--advanced-by").unwrap_or_else(|| "host".to_string()),
-            many(args, "--artifact"),
-        )?)?,
-        "gate" => {
-            let wave = gate_wave(
-                store,
-                &required(args, "--id")?,
-                &required(args, "--status")?,
-                value(args, "--run-id"),
-                &value(args, "--accepted-by").unwrap_or_else(|| "host".to_string()),
-                value(args, "--note"),
-                value(args, "--outcome"),
-                many(args, "--artifact"),
-            )?;
-            if json {
-                print_json(&wave)?;
-            } else {
-                println!("{}\t{}", wave.id, serde_snake_label(&wave.gate_status));
-            }
+        command if retired_wave_write_command(command) => {
+            return Err(retired_wave_write_error(command))
         }
         other => return Err(CliError::Usage(format!("unknown wave command: {other}"))),
     }
     Ok(())
+}
+
+/// Wave write commands retired by the ADR 0051 Mission Log cutover. `wave
+/// list`/`show`/`history` remain functional as historical reads; `create`,
+/// `update`, `advance`, and `gate` no longer accept a new write on ANY
+/// surface — CLI, HTTP (`/v1/waves`...), or MCP (`wave_create`...) — so
+/// there is exactly one place (this function plus [`retired_wave_write_error`])
+/// that states the retirement, matching the top-level `retired_command`
+/// shim the old Goal stack used.
+pub(crate) fn retired_wave_write_command(command: &str) -> bool {
+    matches!(command, "create" | "update" | "advance" | "gate")
+}
+
+pub(crate) fn retired_wave_write_error(command: &str) -> CliError {
+    CliError::Usage(format!(
+        "`harness wave {command}` was retired with the Mission Log cutover (ADR 0051): Mission absorbs Wave as an append-only judgment log. Use `harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>` instead. `wave list`, `wave show`, and `wave history` remain available for historical Wave rows."
+    ))
 }
 
 /// Create one native Mission.
@@ -9399,302 +9490,15 @@ pub(crate) fn revise_mission_team_link(
     Ok(mission)
 }
 
-/// Create a native Wave and append the owning Mission's latest row with the
-/// Wave id exactly once. The read model is intentionally ordered by index,
-/// rather than a hidden scheduler-owned plan.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_wave(
-    store: &HarnessStore,
-    id: Option<String>,
-    mission_id: &str,
-    index: Option<u32>,
-    title: &str,
-    objective: &str,
-    executor_kind: WaveExecutorKind,
-    exit_criteria: Option<String>,
-    plan_note: Option<String>,
-    context: Option<String>,
-    updated_by: Option<String>,
-) -> CliResult<Wave> {
-    if mission_id.trim().is_empty() || title.trim().is_empty() || objective.trim().is_empty() {
-        return Err(CliError::Usage(
-            "wave mission id, title, and objective must not be empty".to_string(),
-        ));
-    }
-    if exit_criteria
-        .as_ref()
-        .is_some_and(|criteria| criteria.trim().is_empty())
-        || plan_note
-            .as_ref()
-            .is_some_and(|note| note.trim().is_empty())
-    {
-        return Err(CliError::Usage(
-            "wave exit criteria and plan note must not be empty when supplied".to_string(),
-        ));
-    }
-    if index == Some(0) {
-        return Err(CliError::Usage("wave index must be at least 1".to_string()));
-    }
-    let id = id.unwrap_or_else(|| generated_id("wave"));
-    if id.trim().is_empty() {
-        return Err(CliError::Usage("wave id must not be empty".to_string()));
-    }
-    let now = now_string();
-    let wave = Wave {
-        id,
-        mission_id: mission_id.to_string(),
-        index: index.unwrap_or(0),
-        title: title.to_string(),
-        objective: objective.to_string(),
-        context: context.unwrap_or_default(),
-        revision: 1,
-        updated_by: Some(updated_by.unwrap_or_else(|| "host".to_string())),
-        exit_criteria,
-        status: WaveStatus::Planned,
-        executor_kind,
-        executor_run_ids: Vec::new(),
-        accepted_run_id: None,
-        plan_note,
-        outcome_summary: None,
-        artifact_refs: Vec::new(),
-        gate_status: WaveGateStatus::Pending,
-        gate_note: None,
-        accepted_by: None,
-        accepted_at: None,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    store_conflict_as_usage(store.insert_wave_and_update_mission(wave, index, &now_string()))
-}
-
-pub(crate) fn revise_wave(
-    store: &HarnessStore,
-    wave_id: &str,
-    context: &str,
-    updated_by: &str,
-) -> CliResult<Wave> {
-    if context.trim().is_empty() || updated_by.trim().is_empty() {
-        return Err(CliError::Usage(
-            "wave context and updated-by actor must not be empty".to_string(),
-        ));
-    }
-    let mut wave = latest_wave(store, wave_id)?;
-    if matches!(
-        wave.status,
-        WaveStatus::Completed | WaveStatus::Cancelled | WaveStatus::Failed
-    ) {
-        return Err(CliError::Usage(format!(
-            "wave {wave_id} is terminal and cannot be revised"
-        )));
-    }
-    let expected = wave.clone();
-    wave.context = context.to_string();
-    wave.revision = wave.revision.max(1).saturating_add(1);
-    wave.updated_by = Some(updated_by.to_string());
-    wave.status = WaveStatus::Running;
-    wave.updated_at = now_string();
-    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
-    Ok(wave)
-}
-
-/// Record the Host's decision to advance its operational plan. Active members,
-/// assignments, and provider sessions intentionally remain untouched.
-pub(crate) fn advance_wave(
-    store: &HarnessStore,
-    wave_id: &str,
-    outcome: &str,
-    advanced_by: &str,
-    artifact_refs: Vec<String>,
-) -> CliResult<Wave> {
-    if outcome.trim().is_empty()
-        || advanced_by.trim().is_empty()
-        || artifact_refs.iter().any(|value| value.trim().is_empty())
-    {
-        return Err(CliError::Usage(
-            "wave advance outcome, actor, and artifact refs must not be empty".to_string(),
-        ));
-    }
-    let mut wave = latest_wave(store, wave_id)?;
-    if wave.status == WaveStatus::Completed && wave.gate_status == WaveGateStatus::Accepted {
-        return Ok(wave);
-    }
-    let expected = wave.clone();
-    let now = now_string();
-    wave.status = WaveStatus::Completed;
-    wave.gate_status = WaveGateStatus::Accepted;
-    wave.outcome_summary = Some(outcome.to_string());
-    wave.artifact_refs = artifact_refs;
-    wave.accepted_by = Some(advanced_by.to_string());
-    wave.accepted_at = Some(now.clone());
-    wave.updated_by = Some(advanced_by.to_string());
-    wave.updated_at = now;
-    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
-    Ok(wave)
-}
-
-/// Apply the lightweight Wave gate. This is deliberately separate from the
-/// legacy Goal/Proposal evidence chain; it validates only executor attempt
-/// identity and the accepted outcome, preserving all recorded attempts.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn gate_wave(
-    store: &HarnessStore,
-    wave_id: &str,
-    gate: &str,
-    run_id: Option<String>,
-    accepted_by: &str,
-    note: Option<String>,
-    outcome: Option<String>,
-    artifact_refs: Vec<String>,
-) -> CliResult<Wave> {
-    let mut wave = latest_wave(store, wave_id)?;
-    if accepted_by.trim().is_empty()
-        || note.as_ref().is_some_and(|value| value.trim().is_empty())
-        || outcome
-            .as_ref()
-            .is_some_and(|value| value.trim().is_empty())
-        || artifact_refs.iter().any(|value| value.trim().is_empty())
-    {
-        return Err(CliError::Usage(
-            "wave gate actor, note, outcome, and artifact refs must not be empty when supplied"
-                .to_string(),
-        ));
-    }
-    if wave.gate_status == WaveGateStatus::Accepted {
-        if gate == "accepted" && run_id.as_deref() == wave.accepted_run_id.as_deref() {
-            return Ok(wave);
-        }
-        return Err(CliError::Usage(format!(
-            "wave {wave_id} already accepted{}; create a later Wave for new work",
-            wave.accepted_run_id
-                .as_deref()
-                .map(|run_id| format!(" by run {run_id}"))
-                .unwrap_or_else(|| " as direct Host execution".to_string())
-        )));
-    }
-    let expected = wave.clone();
-
-    // A Wave gate is a decision about a settled attempt set. Applying revise
-    // or blocked while an attempt is still live creates contradictory state:
-    // the next TeamRun transition would otherwise overwrite Wave.status while
-    // leaving gate_status untouched. The Wave CAS below also protects this
-    // check from a concurrent attempt registration or lifecycle transition.
-    if wave.executor_kind == WaveExecutorKind::AgentTeam {
-        if let Some(active) = latest_team_runs_in_append_order(store)?
-            .into_iter()
-            .find(|attempt| {
-                wave.executor_run_ids.contains(&attempt.id)
-                    && matches!(
-                        attempt.status,
-                        TeamRunStatus::Planning
-                            | TeamRunStatus::Running
-                            | TeamRunStatus::Waiting
-                            | TeamRunStatus::Reviewing
-                    )
-            })
-        {
-            return Err(CliError::Usage(format!(
-                "wave {wave_id} still has active attempt {} in status {}; finish or cancel it before applying a gate",
-                active.id,
-                serde_snake_label(&active.status)
-            )));
-        }
-    }
-
-    match gate {
-        "accepted" => {
-            if outcome.is_none() {
-                return Err(CliError::Usage(
-                    "wave gate accepted requires an explicit outcome".to_string(),
-                ));
-            }
-            let accepted_run_id = if wave.executor_kind == WaveExecutorKind::Host {
-                if run_id.is_some() {
-                    return Err(CliError::Usage(
-                        "a host Wave records its direct outcome without --run-id".to_string(),
-                    ));
-                }
-                None
-            } else {
-                let run_id = run_id.ok_or_else(|| {
-                    CliError::Usage("a non-host Wave gate accepted requires --run-id".to_string())
-                })?;
-                if !wave.executor_run_ids.contains(&run_id) {
-                    return Err(CliError::Usage(format!(
-                        "run {run_id} is not an eligible attempt of wave {wave_id}"
-                    )));
-                }
-                Some(run_id)
-            };
-            if wave.executor_kind == WaveExecutorKind::AgentTeam {
-                let run_id = accepted_run_id.as_deref().expect("validated TeamRun id");
-                let run = latest_team_run(store, run_id)?;
-                if run.mission_id.as_deref() != Some(wave.mission_id.as_str())
-                    || run.wave_id.as_deref() != Some(wave.id.as_str())
-                {
-                    return Err(CliError::Usage(format!(
-                        "team run {run_id} does not belong to mission {} wave {}",
-                        wave.mission_id, wave.id
-                    )));
-                }
-                if run.status != TeamRunStatus::Completed {
-                    return Err(CliError::Usage(format!(
-                        "team run {run_id} is {}, not completed",
-                        serde_snake_label(&run.status)
-                    )));
-                }
-            }
-            wave.gate_status = WaveGateStatus::Accepted;
-            wave.status = WaveStatus::Completed;
-            wave.accepted_run_id = accepted_run_id;
-            wave.accepted_by = Some(accepted_by.to_string());
-            wave.accepted_at = Some(now_string());
-        }
-        "revise" => {
-            wave.gate_status = WaveGateStatus::Revise;
-            wave.status = WaveStatus::Planned;
-        }
-        "blocked" => {
-            wave.gate_status = WaveGateStatus::Blocked;
-            wave.status = WaveStatus::Blocked;
-        }
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown wave gate status `{other}` (accepted|revise|blocked)"
-            )))
-        }
-    }
-    if note.is_some() {
-        wave.gate_note = note;
-    }
-    if outcome.is_some() {
-        wave.outcome_summary = outcome;
-    }
-    if !artifact_refs.is_empty() {
-        for artifact in artifact_refs {
-            if !wave.artifact_refs.contains(&artifact) {
-                wave.artifact_refs.push(artifact);
-            }
-        }
-    }
-    wave.updated_at = now_string();
-    store_conflict_as_usage(store.compare_and_append_wave(&expected, &wave))?;
-    Ok(wave)
-}
-
+/// Read one native Wave by id. Wave write commands (`create`/`update`/
+/// `advance`/`gate`) retired with the ADR 0051 Mission Log cutover; this
+/// stays because `wave show` and legacy row lookups remain historical reads.
 fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
     store
         .latest_waves()?
         .into_iter()
         .find(|wave| wave.id == id)
         .ok_or_else(|| CliError::Usage(format!("wave not found: {id}")))
-}
-
-pub(crate) fn parse_wave_executor_kind(value: &str) -> CliResult<WaveExecutorKind> {
-    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown wave executor kind `{value}` (agent_team|dynamic_workflow|host)"
-        ))
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -24172,37 +23976,35 @@ fn handle_http_action(
             false,
         )?)?);
     }
+    // Wave write endpoints retired with the ADR 0051 Mission Log cutover
+    // (same retirement as the `wave create|update|advance|gate` CLI
+    // commands — see `retired_wave_write_error`). HTTP and MCP share the
+    // same retirement so no surface keeps a live Wave-write dual path.
+    // GET-style Wave/Mission reads are unaffected; only the four POST
+    // mutation routes below are gone.
     if path == "/v1/waves" {
-        return create_wave_value(store, body);
+        return Err(retired_wave_write_error("create"));
     }
-    if let Some(wave_id) = path
+    if path
         .strip_prefix("/v1/waves/")
         .and_then(|rest| rest.strip_suffix("/gate"))
+        .is_some()
     {
-        return gate_wave_value(store, wave_id, body);
+        return Err(retired_wave_write_error("gate"));
     }
-    if let Some(wave_id) = path
+    if path
         .strip_prefix("/v1/waves/")
         .and_then(|rest| rest.strip_suffix("/context"))
+        .is_some()
     {
-        return Ok(serde_json::to_value(revise_wave(
-            store,
-            wave_id,
-            &required_json_string(body, "context")?,
-            &optional_json_string(body, "updated_by")?.unwrap_or_else(|| "host".to_string()),
-        )?)?);
+        return Err(retired_wave_write_error("update"));
     }
-    if let Some(wave_id) = path
+    if path
         .strip_prefix("/v1/waves/")
         .and_then(|rest| rest.strip_suffix("/advance"))
+        .is_some()
     {
-        return Ok(serde_json::to_value(advance_wave(
-            store,
-            wave_id,
-            &required_json_string(body, "outcome")?,
-            &optional_json_string(body, "advanced_by")?.unwrap_or_else(|| "host".to_string()),
-            optional_json_string_array(body, "artifact_refs")?,
-        )?)?);
+        return Err(retired_wave_write_error("advance"));
     }
     if path == "/v1/team-runs" {
         return create_team_run_value(store, project_context, body);
@@ -25060,59 +24862,6 @@ fn close_mission_value(
         mission_id,
         &required_json_string(body, "outcome")?,
         &optional_json_string(body, "completed_by")?.unwrap_or_else(|| "host".to_string()),
-    )?)?)
-}
-
-/// POST /v1/waves — add one ordered, executor-specific Wave to a native
-/// Mission. Its membership is recorded on both append-only ledgers.
-fn create_wave_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let index = match body.get("index") {
-        None => None,
-        Some(value) => {
-            let raw = value.as_u64().ok_or_else(|| {
-                CliError::Usage("JSON field index must be a positive integer".to_string())
-            })?;
-            Some(u32::try_from(raw).map_err(|_| {
-                CliError::Usage("JSON field index must fit a positive u32".to_string())
-            })?)
-        }
-    };
-    Ok(serde_json::to_value(create_wave(
-        store,
-        optional_json_string(body, "id")?,
-        &required_json_string(body, "mission_id")?,
-        index,
-        &required_json_string(body, "title")?,
-        &required_json_string(body, "objective")?,
-        parse_wave_executor_kind(
-            &optional_json_string(body, "executor_kind")?.unwrap_or_else(|| "host".to_string()),
-        )?,
-        optional_json_string(body, "exit_criteria")?,
-        optional_json_string(body, "plan_note")?,
-        optional_json_string(body, "context")?,
-        optional_json_string(body, "updated_by")?,
-    )?)?)
-}
-
-/// POST /v1/waves/{id}/gate — write a lightweight acceptance, revise, or
-/// blocked result without deleting executor-attempt lineage.
-fn gate_wave_value(
-    store: &HarnessStore,
-    wave_id: &str,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    Ok(serde_json::to_value(gate_wave(
-        store,
-        wave_id,
-        &required_json_string(body, "status")?,
-        optional_json_string(body, "run_id")?,
-        &optional_json_string(body, "accepted_by")?.unwrap_or_else(|| "host".to_string()),
-        optional_json_string(body, "note")?,
-        optional_json_string(body, "outcome")?,
-        optional_json_string_array(body, "artifact_refs")?,
     )?)?)
 }
 
