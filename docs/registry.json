@@ -1640,6 +1640,58 @@
    ]
   },
   {
+   "path": "docs/integration/pi.md",
+   "ownerRole": "provider-integration",
+   "status": "stable",
+   "lifecycle": "volatile",
+   "canonicalFor": [
+    "Pi RPC persistent Agent Team mode",
+    "Pi next-round Work and TeamMessage delivery receipts",
+    "Pi native-session resume and persisted-thinking rejection",
+    "Pi provider capability and control boundaries"
+   ],
+   "dependsOn": [
+    "docs/agent-runtime.md",
+    "docs/integration/README.md",
+    "docs/integration/native-session-storage.md",
+    "docs/member-continuation-model.md",
+    "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
+    "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+    "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
+    "crates/harness-cli/src/pi_rpc.rs",
+    "crates/harness-cli/src/main.rs"
+   ],
+   "machineConsumers": [
+    "check-doc-links",
+    "check-doc-governance",
+    "acceptance:mission-wave"
+   ],
+   "reviewAfter": "2026-08-12",
+   "lastVerifiedWith": [
+    "cargo test -p harness-cli --test pi_team_member",
+    "cargo test -p harness-cli pi_rpc::tests",
+    "cargo test -p harness-cli --test pi_canary --features pi-canary",
+    "harness governance check"
+   ],
+   "reorgTrigger": "Pi RPC protocol, delivery receipts, thinking persistence, resume, compatibility review, or control mapping changes.",
+   "authorityClass": "implementation_reference",
+   "implementationState": "partial",
+   "truthRefs": [
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/pi_rpc.rs"
+    },
+    {
+     "kind": "api",
+     "ref": "crates/harness-cli/src/main.rs"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/harness-cli/tests/pi_team_member.rs"
+    }
+   ]
+  },
+  {
    "path": "docs/integration/provider-capacity.md",
    "ownerRole": "provider-integration",
    "status": "stable",

@@ -45,6 +45,7 @@ docs/integration/claude.md       # Claude Code integration
 docs/integration/kimi.md     # Kimi (Moonshot) integration
 docs/integration/kimi-agent-team.md
                                  # Kimi ACP persistent Team runtime and delivery
+docs/integration/pi.md       # Pi RPC persistent Team runtime and delivery
 docs/integration/<name>.md   # future provider implementation
 ```
 
@@ -140,6 +141,7 @@ Provider
 | Codex message delivery | [codex-message-delivery.md](codex-message-delivery.md) | implemented in slices | Persistent member mailbox, dispatcher, queue policy, and delivery proof. |
 | Claude Code | [claude.md](claude.md) | adapter implemented; locked SDK 0.3.220 reports Claude Code 2.1.220 current | `claude_agent_sdk` is the only new Claude Team mode and 2.1.220 is adapter-reviewed; `claude_cli` remains Workflow/historical only. |
 | Kimi (Moonshot) | [kimi.md](kimi.md) · [ACP Team runtime](kimi-agent-team.md) | adapter implemented; installed 0.31.1 current for reviewed slices | `kimi_acp` is the Team mode. Prompt delivery, K3/max controls, generation-crossing same-session resume, bounded full-access receipts, next-round batched mail, and the ACP `session/cancel` notification are reviewed. |
+| Pi | [pi.md](pi.md) | adapter implemented; 0.83.0 reviewed | `pi_rpc` is the persistent Team mode. Work and ordinary mail use distinct next-round receipts; persistent sessions force thinking off and resume fails closed if native JSONL contains thinking. |
 | Provider live acceptance | [live-agent-team-acceptance-2026-07-21.md](live-agent-team-acceptance-2026-07-21.md) | accepted + blocked live evidence | Historical acceptance plus the 2026-07-30 two-pass Codex/Claude/Kimi persistent-Team matrix: Host/Peer mail, real Codex Steer/Interrupt, Kimi next-round receipts, Supervisor restart on the same native sessions, Organization projection, and explicit Close. |
 | OpenClaw / cloud agent | not yet created | idea | Future remote or cloud-hosted provider implementation. |
 | Permission Agent | not yet created | idea | Future approval/safety specialist or provider-side permission service. |
