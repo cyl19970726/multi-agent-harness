@@ -133,6 +133,7 @@ fn host_context(event_id: &str, key: &str, at: &str) -> WorkCommandContext {
         causation_ref: None,
         idempotency_key: key.into(),
         created_at: at.into(),
+        duplicate_ok: false,
     }
 }
 
@@ -149,6 +150,7 @@ fn member_context(member_run_id: &str, event_id: &str, key: &str, at: &str) -> W
         causation_ref: None,
         idempotency_key: key.into(),
         created_at: at.into(),
+        duplicate_ok: false,
     }
 }
 

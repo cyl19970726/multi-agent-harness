@@ -297,6 +297,16 @@ pub fn start_scoped_sse_watcher(
                 EXECUTION_INVALIDATION_FILES.iter().copied(),
                 &mut execution_invalidations,
             );
+            // Typed ledgers normally merge append rows directly. They still
+            // need authoritative snapshot invalidation when an external writer
+            // atomically replaces, truncates, or deletes the whole file.
+            seed_invalidation_files(
+                "execution_space",
+                &project_id,
+                &store_root,
+                WATCHED_FILES.iter().copied(),
+                &mut execution_invalidations,
+            );
         }
         for (company_id, store_root) in company_rescan() {
             seed_invalidation_files(
@@ -325,16 +335,32 @@ pub fn start_scoped_sse_watcher(
                     EXECUTION_INVALIDATION_FILES.iter().copied(),
                     &mut execution_invalidations,
                     &manager,
+                    true,
+                );
+                poll_invalidation_files(
+                    "execution_space",
+                    &project_id,
+                    &store_root,
+                    WATCHED_FILES.iter().copied(),
+                    &mut execution_invalidations,
+                    &manager,
+                    false,
                 );
             }
             for (company_id, store_root) in company_rescan() {
+                let company_ledgers = company_ledger_names_with_known(
+                    &store_root,
+                    &company_id,
+                    &company_invalidations,
+                );
                 poll_invalidation_files(
                     "company",
                     &company_id,
                     &store_root,
-                    company_ledger_names(&store_root),
+                    company_ledgers,
                     &mut company_invalidations,
                     &manager,
+                    true,
                 );
             }
         }
@@ -401,6 +427,7 @@ const EXECUTION_INVALIDATION_FILES: &[&str] = &[
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InvalidationFileState {
+    exists: bool,
     identity: u128,
     modified_nanos: u128,
     observed_len: u64,
@@ -417,6 +444,20 @@ fn company_ledger_names(store_root: &Path) -> Vec<String> {
         .filter(|name| name.starts_with("company_os_") && name.ends_with(".jsonl"))
         .collect::<Vec<_>>();
     names.sort();
+    names
+}
+
+fn company_ledger_names_with_known(
+    store_root: &Path,
+    company_id: &str,
+    states: &HashMap<(String, String, String), InvalidationFileState>,
+) -> Vec<String> {
+    let mut names = company_ledger_names(store_root);
+    names.extend(states.keys().filter_map(|(scope, scope_id, ledger)| {
+        (scope == "company" && scope_id == company_id).then(|| ledger.clone())
+    }));
+    names.sort();
+    names.dedup();
     names
 }
 
@@ -443,6 +484,7 @@ fn seed_invalidation_files<I, S>(
                 filename.to_string(),
             ),
             InvalidationFileState {
+                exists: true,
                 identity: file_identity(&metadata),
                 modified_nanos: modified_nanos(&metadata),
                 observed_len: metadata.len(),
@@ -459,13 +501,22 @@ fn poll_invalidation_files<I, S>(
     filenames: I,
     states: &mut HashMap<(String, String, String), InvalidationFileState>,
     manager: &SseManager,
+    invalidate_appends: bool,
 ) where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     for filename in filenames {
         let filename = filename.as_ref();
-        poll_invalidation_file(scope, scope_id, store_root, filename, states, manager);
+        poll_invalidation_file(
+            scope,
+            scope_id,
+            store_root,
+            filename,
+            states,
+            manager,
+            invalidate_appends,
+        );
     }
 }
 
@@ -476,16 +527,30 @@ fn poll_invalidation_file(
     filename: &str,
     states: &mut HashMap<(String, String, String), InvalidationFileState>,
     manager: &SseManager,
+    invalidate_appends: bool,
 ) {
     let path = store_root.join(filename);
-    let Ok(metadata) = fs::metadata(&path) else {
-        return;
-    };
     let key = (
         scope.to_string(),
         scope_id.to_string(),
         filename.to_string(),
     );
+    let Ok(metadata) = fs::metadata(&path) else {
+        if states.get(&key).is_some_and(|state| state.exists) {
+            states.insert(
+                key,
+                InvalidationFileState {
+                    exists: false,
+                    identity: 0,
+                    modified_nanos: 0,
+                    observed_len: 0,
+                    consumed_len: 0,
+                },
+            );
+            emit_invalidation(scope, scope_id, filename, "delete", manager);
+        }
+        return;
+    };
     let identity = file_identity(&metadata);
     let modified_nanos = modified_nanos(&metadata);
     let observed_len = metadata.len();
@@ -495,19 +560,21 @@ fn poll_invalidation_file(
         states.insert(
             key,
             InvalidationFileState {
+                exists: true,
                 identity,
                 modified_nanos,
                 observed_len,
                 consumed_len,
             },
         );
-        if consumed_len > 0 {
+        if consumed_len > 0 && invalidate_appends {
             emit_invalidation(scope, scope_id, filename, "append", manager);
         }
         return;
     };
 
-    let replacement = identity != previous.identity
+    let replacement = !previous.exists
+        || identity != previous.identity
         || (observed_len == previous.observed_len
             && modified_nanos != previous.modified_nanos
             && observed_len > 0);
@@ -518,6 +585,7 @@ fn poll_invalidation_file(
         states.insert(
             key,
             InvalidationFileState {
+                exists: true,
                 identity,
                 modified_nanos,
                 observed_len,
@@ -539,13 +607,14 @@ fn poll_invalidation_file(
     states.insert(
         key,
         InvalidationFileState {
+            exists: true,
             identity,
             modified_nanos,
             observed_len,
             consumed_len,
         },
     );
-    if consumed_len > previous.consumed_len {
+    if invalidate_appends && consumed_len > previous.consumed_len {
         emit_invalidation(scope, scope_id, filename, "append", manager);
     }
 }
@@ -1732,6 +1801,7 @@ mod tests {
             "work_operations.jsonl",
             &mut states,
             &manager,
+            true,
         );
         assert!(rx.try_recv().is_err(), "torn row must not invalidate yet");
         file.write_all(b"\n").expect("complete row");
@@ -1743,6 +1813,7 @@ mod tests {
             "work_operations.jsonl",
             &mut states,
             &manager,
+            true,
         );
         match rx.try_recv() {
             Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
@@ -1769,6 +1840,7 @@ mod tests {
             "work_operations.jsonl",
             &mut states,
             &manager,
+            true,
         );
         match rx.try_recv() {
             Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
@@ -1786,6 +1858,7 @@ mod tests {
             "work_operations.jsonl",
             &mut states,
             &manager,
+            true,
         );
         match rx.try_recv() {
             Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
@@ -1794,6 +1867,118 @@ mod tests {
             }
             other => panic!("truncation missing invalidation: {other:?}"),
         }
+
+        std::fs::remove_file(&path).expect("delete ledger");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "work_operations.jsonl",
+            &mut states,
+            &manager,
+            true,
+        );
+        match rx.try_recv() {
+            Ok(SseEventFrame::ProjectionInvalidated(frame)) => {
+                assert_eq!(frame.reason, "delete");
+                assert_eq!(frame.revision, 4);
+            }
+            other => panic!("deletion missing invalidation: {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn typed_ledger_replace_delete_and_recreate_invalidate_without_append_noise() {
+        let root = unique_dir("typed-projection-invalidation");
+        std::fs::create_dir_all(&root).expect("create root");
+        let path = root.join("missions.jsonl");
+        std::fs::write(&path, "{\"id\":\"before\"}\n").expect("seed typed ledger");
+
+        let manager = SseManager::new();
+        let rx = manager.subscribe(TEST_PID);
+        let mut states = HashMap::new();
+        seed_invalidation_files(
+            "execution_space",
+            TEST_PID,
+            &root,
+            ["missions.jsonl"],
+            &mut states,
+        );
+
+        // Ordinary appends use typed frames and must not force a full refetch.
+        let mut file = OpenOptions::new().append(true).open(&path).expect("append");
+        file.write_all(b"{\"id\":\"append\"}\n")
+            .expect("append row");
+        file.flush().expect("flush append");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "missions.jsonl",
+            &mut states,
+            &manager,
+            false,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "typed append should stay incremental"
+        );
+        drop(file);
+
+        let replacement = root.join("missions.jsonl.replace");
+        let len = std::fs::metadata(&path).expect("metadata").len();
+        let mut bytes = vec![b' '; len.saturating_sub(1) as usize];
+        bytes.push(b'\n');
+        std::fs::write(&replacement, bytes).expect("write same-size replacement");
+        std::fs::rename(&replacement, &path).expect("atomic replace");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "missions.jsonl",
+            &mut states,
+            &manager,
+            false,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SseEventFrame::ProjectionInvalidated(ProjectionInvalidation { reason, .. }))
+                if reason == "replace"
+        ));
+
+        std::fs::remove_file(&path).expect("delete typed ledger");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "missions.jsonl",
+            &mut states,
+            &manager,
+            false,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SseEventFrame::ProjectionInvalidated(ProjectionInvalidation { reason, .. }))
+                if reason == "delete"
+        ));
+
+        std::fs::write(&path, "{\"id\":\"after!\"}\n").expect("recreate typed ledger");
+        poll_invalidation_file(
+            "execution_space",
+            TEST_PID,
+            &root,
+            "missions.jsonl",
+            &mut states,
+            &manager,
+            false,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SseEventFrame::ProjectionInvalidated(ProjectionInvalidation { reason, .. }))
+                if reason == "replace"
+        ));
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }

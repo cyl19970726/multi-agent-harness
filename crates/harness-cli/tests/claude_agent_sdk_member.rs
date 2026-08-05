@@ -94,7 +94,28 @@ fn write_fake_runner(
     follow_up_after_first_turn: bool,
     shape: FakeTurnShape,
 ) -> std::path::PathBuf {
+    write_fake_runner_with_version(dir, follow_up_after_first_turn, shape, "2.1.220")
+}
+
+fn write_fake_runner_with_version(
+    dir: &Path,
+    follow_up_after_first_turn: bool,
+    shape: FakeTurnShape,
+    provider_version: &str,
+) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).unwrap();
+    let sdk_package = dir.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json");
+    std::fs::create_dir_all(sdk_package.parent().expect("SDK package parent")).unwrap();
+    std::fs::write(
+        &sdk_package,
+        serde_json::json!({
+            "name": "@anthropic-ai/claude-agent-sdk",
+            "version": "0.2.70",
+            "claudeCodeVersion": provider_version,
+        })
+        .to_string(),
+    )
+    .unwrap();
     let path = dir.join("fake-runner.mjs");
     let follow_up = if follow_up_after_first_turn {
         "true"
@@ -140,7 +161,7 @@ for await (const line of rl) {{
     emit("member_started", {{ memberRunId: cfg.memberRunId }});
     emit("session_bound", {{
       sessionId: "fake-native-session-0001",
-      providerVersion: "2.1.220-test",
+      providerVersion: "{provider_version}",
     }});
   }} else if (command === "deliver") {{
     turns += 1;
@@ -646,13 +667,45 @@ fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
         "member profile should record the agent-sdk execution mode.\n{body}"
     );
     assert!(
-        body.contains("2.1.220-test"),
+        body.contains("2.1.220"),
         "the profile and native session must use the SDK-reported execution-mode version.\n{body}"
     );
     assert!(
         body.contains("\"status\": \"idle\""),
         "provider turn completion must not terminalize the MemberRun.\n{body}"
     );
+}
+
+#[test]
+fn review_required_agent_sdk_package_is_refused_before_fake_runner_execution() {
+    let home = TempHome::new("agent-sdk-review-required");
+    init_project(&home, "proj");
+    let root = home.base().join("proj");
+    let runner = write_fake_runner_with_version(
+        &home.base().join("runner"),
+        false,
+        FakeTurnShape::Report,
+        "2.1.221",
+    );
+
+    let run_id = create_run(&home, &root);
+    let out = start_with_fake_runner(&home, &root, &runner, "500", &run_id);
+    assert!(!out.status.success(), "unreviewed SDK unexpectedly started");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("PROVIDER_COMPATIBILITY_BLOCKED") && stderr.contains("2.1.221"),
+        "stderr: {stderr}"
+    );
+
+    let status = run_harness(
+        &home,
+        &root,
+        &["team-run", "status", "--id", &run_id, "--json"],
+    );
+    assert!(status.status.success(), "status failed: {status:?}");
+    let body = String::from_utf8_lossy(&status.stdout);
+    assert!(!body.contains("fake-native-session-0001"), "{body}");
+    assert!(body.contains("\"status\": \"planning\""), "{body}");
 }
 
 #[test]

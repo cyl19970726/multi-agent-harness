@@ -5563,6 +5563,7 @@ mod tests {
                     causation_ref: None,
                     idempotency_key: format!("create-work-{run_id}"),
                     created_at: "unix-ms:2".into(),
+                    duplicate_ok: false,
                 },
             )
             .expect("seed Work");

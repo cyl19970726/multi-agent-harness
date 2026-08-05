@@ -876,7 +876,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     );
     assert_eq!(
         kimi["provider_profile"]["provider_version"].as_str(),
-        Some("0.0.0")
+        Some("0.31.0")
     );
     assert_collaboration_env(
         &home,

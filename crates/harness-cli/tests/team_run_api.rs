@@ -3566,6 +3566,557 @@ fn kimi_acp_member_can_be_cancelled_cooperatively() {
 }
 
 #[test]
+fn review_required_kimi_032_blocks_initial_start_and_http_work_rebind_before_acp() {
+    let home = TempHome::new("team-run-kimi-review-required-start");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let acp_marker = home.base().join("kimi-032-acp-started.log");
+    let acp_marker_value = acp_marker.display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_ENV_MARKER", acp_marker_value.as_str()),
+        ],
+    );
+    let (status, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Refuse an unreviewed persistent provider",
+            "members": [
+                {"name": "kimi-old", "role": "builder", "provider": "kimi", "initial_work": "Preserve this Work"},
+                {"name": "kimi-replacement", "role": "builder", "provider": "kimi"}
+            ]
+        }),
+    );
+    assert_eq!(status, 200, "body: {created}");
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id");
+    let replacement_id = created["result"]["member_runs"][1]["id"]
+        .as_str()
+        .expect("replacement id");
+    let work = &created["result"]["works"][0];
+    let work_id = work["id"].as_str().expect("work id");
+    let original_member_id = work["active_member_run_id"]
+        .as_str()
+        .expect("original member");
+    let original_version = work["version"].as_u64().expect("work version");
+
+    let (status, blocked) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 400, "body: {blocked}");
+    let error = blocked["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("PROVIDER_COMPATIBILITY_BLOCKED"),
+        "{blocked}"
+    );
+    assert!(error.contains("0.32.0"), "{blocked}");
+    assert!(
+        error.contains("harness member providers --fail-on-review"),
+        "{blocked}"
+    );
+    assert!(
+        !acp_marker.exists(),
+        "review_required start spawned ACP before the gate"
+    );
+
+    let (status, rebound) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/works/{work_id}/rebind"),
+        &serde_json::json!({
+            "expected_version": original_version,
+            "member_run_id": replacement_id,
+            "idempotency_key": "reject-kimi-032-rebind"
+        }),
+    );
+    assert_eq!(status, 400, "body: {rebound}");
+    assert!(rebound["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("PROVIDER_COMPATIBILITY_BLOCKED")));
+    assert!(
+        !acp_marker.exists(),
+        "review_required rebind spawned ACP before the gate"
+    );
+
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let latest_work = store
+        .latest_works()
+        .expect("latest Works")
+        .into_iter()
+        .find(|candidate| candidate.id == work_id)
+        .expect("Work");
+    assert_eq!(latest_work.version, original_version);
+    assert_eq!(
+        latest_work.active_member_run_id.as_deref(),
+        Some(original_member_id)
+    );
+    let delivery = store
+        .latest_work_deliveries()
+        .expect("latest deliveries")
+        .into_iter()
+        .find(|delivery| delivery.work_id == work_id)
+        .expect("WorkDelivery");
+    assert_eq!(delivery.status, harness_core::WorkDeliveryStatus::Queued);
+    assert_eq!(delivery.attempt, 0);
+    assert!(delivery.provider_receipt_id.is_none());
+    assert!(store
+        .member_runs()
+        .expect("member rows")
+        .into_iter()
+        .all(|member| member.native_session.is_none()));
+}
+
+#[test]
+fn installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_session() {
+    let home = TempHome::new("team-run-kimi-review-required-reopen");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let reviewed_acp_marker = home.base().join("kimi-031-reviewed-acp.log");
+    let reviewed_acp_marker_value = reviewed_acp_marker.display().to_string();
+
+    let reviewed_serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_ENV_MARKER", reviewed_acp_marker_value.as_str()),
+        ],
+    );
+    let (_, created) = reviewed_serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Bind one reviewed Kimi session, then preserve it across drift",
+            "members": [{"name": "kimi-history", "role": "builder", "provider": "kimi", "initial_work": "Create one reviewed native history"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let work_id = created["result"]["works"][0]["id"]
+        .as_str()
+        .expect("work id")
+        .to_string();
+    let (status, started) = reviewed_serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "reviewed control must start: {started}");
+
+    let mut native_session_id = None;
+    for _ in 0..300 {
+        let (_, snapshot) = reviewed_serve.get_json("/v1/snapshot");
+        native_session_id = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .and_then(|member| member["native_session"]["native_session_id"].as_str())
+            .map(str::to_string);
+        if native_session_id.is_some() && reviewed_acp_marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let native_session_id = native_session_id.expect("reviewed Kimi native session");
+    assert!(
+        reviewed_acp_marker.exists(),
+        "reviewed 0.31 ACP never started"
+    );
+
+    let (status, closed) = reviewed_serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"requested_by": "host", "reason": "prepare drift regression"}),
+    );
+    assert_eq!(status, 200, "close failed: {closed}");
+    let mut stopped = false;
+    for _ in 0..200 {
+        let (_, snapshot) = reviewed_serve.get_json("/v1/snapshot");
+        stopped = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("stopped")
+                    && member["coordination_status"].as_str() == Some("closed")
+            });
+        if stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(stopped, "reviewed member did not close");
+
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let before_member = store
+        .member_runs()
+        .expect("member rows")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("member before drift");
+    let before_generation = before_member.runtime_generation;
+    let before_work = store
+        .latest_works()
+        .expect("Works")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("Work before drift");
+    drop(reviewed_serve);
+
+    let blocked_acp_marker = home.base().join("kimi-032-blocked-acp.log");
+    let blocked_acp_marker_value = blocked_acp_marker.display().to_string();
+    let drifted_serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_ENV_MARKER", blocked_acp_marker_value.as_str()),
+        ],
+    );
+    let (status, reopened) = drifted_serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
+        &serde_json::json!({"reopened_by": "host", "reason": "must refuse drift"}),
+    );
+    assert_eq!(
+        status, 400,
+        "drifted reopen unexpectedly succeeded: {reopened}"
+    );
+    assert!(reopened["error"].as_str().is_some_and(|error| error
+        .contains("PROVIDER_COMPATIBILITY_BLOCKED")
+        && error.contains("0.32.0")));
+    assert!(
+        !blocked_acp_marker.exists(),
+        "reopen spawned or attached ACP before compatibility refusal"
+    );
+
+    let recovery = run_harness_with_env(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &run_id,
+            "--json",
+        ],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.32.0"),
+            ("FAKE_KIMI_ENV_MARKER", blocked_acp_marker_value.as_str()),
+        ],
+    );
+    assert!(
+        !recovery.status.success(),
+        "recovery unexpectedly succeeded"
+    );
+    let recovery_error = String::from_utf8_lossy(&recovery.stderr);
+    assert!(
+        recovery_error.contains("PROVIDER_COMPATIBILITY_BLOCKED")
+            && recovery_error.contains("0.32.0"),
+        "stderr: {recovery_error}"
+    );
+    assert!(
+        !blocked_acp_marker.exists(),
+        "recovery spawned or resumed ACP before compatibility refusal"
+    );
+
+    let after_member = store
+        .member_runs()
+        .expect("member rows after drift")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("member after drift");
+    assert_eq!(after_member.runtime_generation, before_generation);
+    assert_eq!(
+        after_member.coordination_status,
+        before_member.coordination_status
+    );
+    assert_eq!(
+        after_member
+            .native_session
+            .as_ref()
+            .map(|session| session.native_session_id.as_str()),
+        Some(native_session_id.as_str())
+    );
+    let after_work = store
+        .latest_works()
+        .expect("Works after drift")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("Work after drift");
+    assert_eq!(after_work.version, before_work.version);
+    assert_eq!(
+        after_work.active_member_run_id,
+        before_work.active_member_run_id
+    );
+}
+
+#[test]
+fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_session() {
+    let home = TempHome::new("team-run-reviewed-stable-id-recovery");
+    let project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let acp_marker = home.base().join("reviewed-recovery-acp-started.log");
+    let acp_marker_value = acp_marker.display().to_string();
+
+    let created = team_run_json(
+        &home,
+        &project_id,
+        &[
+            "create",
+            "--objective",
+            "Recover one durable member generation without minting identities",
+            "--member",
+            "recoverer:builder:kimi",
+            "--json",
+        ],
+    );
+    let run_id = created["team_run"]["id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    let member_id = created["member_runs"][0]["id"]
+        .as_str()
+        .expect("member id")
+        .to_string();
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+
+    // Give this deterministic fixture the same durable Team provenance that a
+    // Mission-linked production TeamRun carries, then let the member create
+    // its own Work so both provenance fields are non-null before recovery.
+    let mut linked_run = store
+        .team_runs()
+        .expect("TeamRun rows")
+        .into_iter()
+        .rev()
+        .find(|run| run.id == run_id)
+        .expect("TeamRun");
+    linked_run.agent_team_id = Some("agent-team-stable-recovery".to_string());
+    linked_run.definition_id = linked_run.agent_team_id.clone();
+    linked_run.updated_at = "unix-ms:stable-recovery-team-link".to_string();
+    store.append_team_run(&linked_run).expect("link AgentTeam");
+
+    let work = member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &member_id,
+        &[
+            "work",
+            "create",
+            "--team-run-id",
+            &run_id,
+            "--as-member-run-id",
+            &member_id,
+            "--owner-member-run-id",
+            &member_id,
+            "--work-id",
+            "work-stable-recovery",
+            "--title",
+            "Preserve stable recovery provenance",
+            "--completion-criteria",
+            "One rebound revision and one fresh delivery",
+            "--event-id",
+            "work-event-stable-recovery-create",
+            "--idempotency-key",
+            "work-command-stable-recovery-create",
+            "--json",
+        ],
+    );
+    let original_version = work["version"].as_u64().expect("Work version");
+    let original_team_id = work["team_id"]
+        .as_str()
+        .expect("durable Work team_id")
+        .to_string();
+    let original_creator = work["created_by_member_id"]
+        .as_str()
+        .expect("durable Work creator")
+        .to_string();
+
+    let mut stopped_member = store
+        .member_runs()
+        .expect("MemberRun rows")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("MemberRun");
+    let original_generation = stopped_member.runtime_generation;
+    stopped_member.status = harness_core::MemberRunStatus::Stopped;
+    stopped_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
+    stopped_member.finished_at = Some("unix-ms:stable-recovery-stop".to_string());
+    stopped_member.last_event_at = stopped_member.finished_at.clone();
+    store
+        .append_member_run(&stopped_member)
+        .expect("record stopped generation");
+
+    let recover = |idempotent_retry: bool| {
+        let output = run_harness_with_env(
+            &home,
+            home.base(),
+            &[
+                "--project",
+                &project_id,
+                "team-run",
+                "recover",
+                "--id",
+                &run_id,
+                "--json",
+            ],
+            &[
+                ("KIMI_CODE_BIN", fake_kimi.as_str()),
+                ("FAKE_KIMI_VERSION", "0.31.0"),
+                ("FAKE_KIMI_ENV_MARKER", acp_marker_value.as_str()),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{} recovery failed: {}",
+            if idempotent_retry { "retry" } else { "initial" },
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("recovery JSON")
+    };
+
+    let first_report = recover(false);
+    assert_eq!(first_report["rebound_works"].as_u64(), Some(1));
+    assert_eq!(first_report["reopened"].as_u64(), Some(0));
+    assert!(
+        !acp_marker.exists(),
+        "recovery redelivery must not start the provider"
+    );
+
+    let rebound_work = store
+        .latest_works()
+        .expect("latest Works")
+        .into_iter()
+        .find(|work| work.id == "work-stable-recovery")
+        .expect("rebound Work");
+    assert_eq!(rebound_work.version, original_version + 1);
+    assert_eq!(
+        rebound_work.active_member_run_id.as_deref(),
+        Some(member_id.as_str())
+    );
+    assert_eq!(
+        rebound_work.team_id.as_deref(),
+        Some(original_team_id.as_str())
+    );
+    assert_eq!(
+        rebound_work.created_by_member_id.as_deref(),
+        Some(original_creator.as_str())
+    );
+    assert_eq!(
+        store
+            .latest_works()
+            .expect("latest Works")
+            .into_iter()
+            .filter(|work| work.id == "work-stable-recovery")
+            .count(),
+        1,
+        "recovery must revise, never recreate, Work"
+    );
+
+    let latest_member = store
+        .member_runs()
+        .expect("MemberRun rows")
+        .into_iter()
+        .rev()
+        .find(|member| member.id == member_id)
+        .expect("recovered MemberRun");
+    assert_eq!(latest_member.id, member_id);
+    assert_eq!(latest_member.runtime_generation, original_generation + 1);
+    assert!(latest_member.native_session.is_none());
+    assert_eq!(
+        store
+            .member_runs()
+            .expect("MemberRun rows")
+            .into_iter()
+            .map(|member| member.id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([member_id.clone()]),
+        "recovery must not mint a replacement durable MemberRun identity"
+    );
+
+    let rebound_events = store
+        .work_events()
+        .expect("WorkEvents")
+        .into_iter()
+        .filter(|event| {
+            event.work_id == "work-stable-recovery"
+                && event.kind == harness_core::WorkEventKind::Rebound
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rebound_events.len(), 1);
+    assert_eq!(
+        rebound_events[0].payload["previous_runtime_generation"],
+        original_generation
+    );
+    assert_eq!(
+        rebound_events[0].payload["replacement_runtime_generation"],
+        original_generation + 1
+    );
+    let fresh_deliveries = store
+        .latest_work_deliveries()
+        .expect("WorkDeliveries")
+        .into_iter()
+        .filter(|delivery| {
+            delivery.work_id == "work-stable-recovery"
+                && delivery.work_version == rebound_work.version
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(fresh_deliveries.len(), 1);
+    assert_eq!(fresh_deliveries[0].recipient_member_run_id, member_id);
+    assert_eq!(
+        fresh_deliveries[0].status,
+        harness_core::WorkDeliveryStatus::Queued
+    );
+    assert!(fresh_deliveries[0].provider_receipt_id.is_none());
+
+    let retry_report = recover(true);
+    assert_eq!(retry_report["rebound_works"].as_u64(), Some(0));
+    let after_retry = store
+        .latest_works()
+        .expect("latest Works")
+        .into_iter()
+        .find(|work| work.id == "work-stable-recovery")
+        .expect("Work after retry");
+    assert_eq!(after_retry.version, rebound_work.version);
+    assert_eq!(
+        store
+            .work_events()
+            .expect("WorkEvents")
+            .into_iter()
+            .filter(|event| {
+                event.work_id == "work-stable-recovery"
+                    && event.kind == harness_core::WorkEventKind::Rebound
+            })
+            .count(),
+        1,
+        "idempotent recovery must not duplicate the rebound revision"
+    );
+}
+
+#[test]
 fn host_close_terminates_kimi_0310_runtime_without_conflating_interrupt() {
     let home = TempHome::new("team-run-kimi-0310-close");
     let _project_id = init_project(&home, "alpha");

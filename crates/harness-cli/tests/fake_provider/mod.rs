@@ -107,7 +107,11 @@ pub fn install_kimi_acp_shim(base: &Path) -> PathBuf {
 # Fake `kimi acp` (Agent Team v0 tests): line-delimited JSON-RPC over stdio.
 result="${FAKE_KIMI_RESULT:-done}"
 ask="${FAKE_KIMI_ASK:-0}"
-version="${FAKE_KIMI_VERSION:-0.0.0}"
+version="${FAKE_KIMI_VERSION:-0.31.0}"
+if [ "$1" = "--version" ]; then
+  printf '%s\n' "$version"
+  exit 0
+fi
 if [ -n "${FAKE_KIMI_ENV_MARKER:-}" ]; then
   env | grep '^HARNESS_' | sort > "$FAKE_KIMI_ENV_MARKER"
 fi

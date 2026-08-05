@@ -80,6 +80,10 @@ impl CliError {
     fn is_supervisor_lease_lost(&self) -> bool {
         matches!(self, Self::SupervisorLeaseLost(_))
     }
+
+    fn is_provider_compatibility_blocked(&self) -> bool {
+        matches!(self, Self::Usage(message) if message.starts_with("PROVIDER_COMPATIBILITY_BLOCKED:"))
+    }
 }
 
 /// Whether a routed message is currently actionable as a manual acknowledgement.
@@ -10330,6 +10334,100 @@ fn apply_provider_version(
     });
 }
 
+/// Probe the executable that backs a persistent Agent Team member and refresh
+/// its version-specific compatibility snapshot without touching its native
+/// session. The caller decides whether and how to journal the refreshed row.
+fn refreshed_team_member_provider_profile(
+    member: &MemberRun,
+) -> CliResult<(ProviderIntegrationProfile, Option<String>)> {
+    let mut profile = member.provider_profile.clone().ok_or_else(|| {
+        CliError::Usage(format!(
+            "member run {} has no provider integration profile",
+            member.id
+        ))
+    })?;
+    let detected = team_member_provider_version_output(&member.provider);
+    let probe_error = detected.as_ref().err().cloned();
+    apply_provider_version(&mut profile, detected.ok());
+    Ok((profile, probe_error))
+}
+
+fn provider_compatibility_block_reason(
+    member: &MemberRun,
+    profile: &ProviderIntegrationProfile,
+    boundary: &str,
+    probe_error: Option<&str>,
+) -> Option<String> {
+    if member.is_external_interactive()
+        || profile.compatibility_status == ProviderCompatibilityStatus::Current
+    {
+        return None;
+    }
+    let version = profile.provider_version.as_deref().unwrap_or("unavailable");
+    let status = serde_snake_label(&profile.compatibility_status);
+    let probe = probe_error
+        .map(|error| format!(" Version probe failed: {error}."))
+        .unwrap_or_default();
+    Some(format!(
+        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `harness member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then add the exact version to the adapter's reviewed_provider_versions before retrying the same durable MemberRun and Work.",
+        member.id,
+        profile.provider,
+        version,
+        profile.execution_mode,
+        status,
+        probe,
+    ))
+}
+
+/// Last pre-dispatch compatibility fence. It runs before provider capacity,
+/// delivery claim, process spawn, or native-session attach, and returns a
+/// durable blocked outcome instead of entering the transport recovery loop.
+fn provider_compatibility_start_gate(
+    ledger: &TeamRunLedger,
+    member: &mut MemberRun,
+    boundary: &str,
+) -> CliResult<Option<MemberOutcome>> {
+    if member.is_external_interactive() {
+        return Ok(None);
+    }
+    let previous_profile = member.provider_profile.clone();
+    let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+    let reason =
+        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref());
+    member.provider_profile = Some(profile);
+    member.last_event_at = Some(now_string());
+    if reason.is_none() {
+        if member.provider_profile != previous_profile {
+            ledger.save_member_run(member)?;
+        }
+        return Ok(None);
+    }
+
+    let reason = reason.expect("non-current compatibility has a refusal reason");
+    member.status = MemberRunStatus::Blocked;
+    ledger.save_member_run(member)?;
+    let action = ledger.append_action(
+        &member.id,
+        "provider_compatibility_blocked",
+        MemberActionStatus::Failed,
+        "provider compatibility gate blocked persistent execution",
+        &reason,
+    )?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Host,
+        Some(member.id.clone()),
+        "action",
+        &action.id,
+        "created",
+        &format!("{} blocked before provider execution", member.name),
+    )?;
+    Ok(Some(MemberOutcome::new(
+        member,
+        MemberRunStatus::Blocked,
+        reason,
+    )))
+}
+
 fn native_session_ref(
     member: &MemberRun,
     native_session_id: impl Into<String>,
@@ -13282,7 +13380,7 @@ fn team_run_recover(
     json: bool,
 ) -> CliResult<serde_json::Value> {
     let run = latest_team_run(store, team_run_id)?;
-    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let mut members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect();
@@ -13301,6 +13399,42 @@ fn team_run_recover(
         lease.status == harness_core::TeamSupervisorLeaseStatus::Active
             && lease.expires_unix_ms > current_unix_ms_u64()
     });
+
+    // Recovery must not mutate a MemberRun generation, reconcile a delivery,
+    // or rebound Work until every candidate that would reopen/rebind has an
+    // adapter-reviewed installed version. Historical native-session locators
+    // remain untouched even when this gate records a refreshed profile.
+    for member in &mut members {
+        let recoverable_candidate = !member.coordination_is_active()
+            && !member.coordination_is_retired()
+            && (matches!(
+                member.status,
+                MemberRunStatus::Stopped | MemberRunStatus::Idle | MemberRunStatus::Queued
+            ) || (supervisor_current
+                && matches!(
+                    member.status,
+                    MemberRunStatus::Completed | MemberRunStatus::Failed
+                )));
+        if !recoverable_candidate || member.is_external_interactive() {
+            continue;
+        }
+        let previous_profile = member.provider_profile.clone();
+        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let refusal = provider_compatibility_block_reason(
+            member,
+            &profile,
+            "recover, reopen, or rebound durable Work",
+            probe_error.as_deref(),
+        );
+        member.provider_profile = Some(profile);
+        member.last_event_at = Some(now_string());
+        if member.provider_profile != previous_profile {
+            store.append_member_run(member)?;
+        }
+        if let Some(refusal) = refusal {
+            return Err(CliError::Usage(refusal));
+        }
+    }
 
     // ── Phase 1: orientation (read-only) ────────────────────────────
     if !json {
@@ -13442,6 +13576,7 @@ fn team_run_recover(
                 let mut reopened_member = (*member).clone();
                 reopened_member.runtime_generation =
                     reopened_member.runtime_generation.saturating_add(1);
+                reopened_member.started_at = now_str.clone();
                 reopened_member.coordination_status = MemberCoordinationStatus::Active;
                 reopened_member.status = if reopened_member.is_external_interactive() {
                     MemberRunStatus::Idle
@@ -13497,6 +13632,7 @@ fn team_run_recover(
                 let mut rebound_member = (*member).clone();
                 rebound_member.runtime_generation =
                     rebound_member.runtime_generation.saturating_add(1);
+                rebound_member.started_at = now_str.clone();
                 rebound_member.coordination_status = MemberCoordinationStatus::Active;
                 rebound_member.status = MemberRunStatus::Queued;
                 rebound_member.finished_at = None;
@@ -17059,8 +17195,7 @@ pub(crate) fn prepare_team_run_start(
             serde_snake_label(&run.status)
         )));
     }
-    let supervisor_registration = reserve_team_supervisor(store, run_id)?;
-    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let mut members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == run_id && member.coordination_is_active())
         .filter(|member| {
@@ -17070,6 +17205,32 @@ pub(crate) fn prepare_team_run_start(
             )
         })
         .collect();
+    // Fail the whole start/reattach before reserving a Supervisor or moving the
+    // TeamRun to running when any persistent adapter version is unreviewed.
+    // The refreshed profile is still durable operator evidence; native-session
+    // locators and Work/WorkDelivery rows are intentionally untouched.
+    for member in &mut members {
+        if member.is_external_interactive() {
+            continue;
+        }
+        let previous_profile = member.provider_profile.clone();
+        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let refusal = provider_compatibility_block_reason(
+            member,
+            &profile,
+            "start or resume persistent Agent Team execution",
+            probe_error.as_deref(),
+        );
+        member.provider_profile = Some(profile);
+        member.last_event_at = Some(now_string());
+        if member.provider_profile != previous_profile {
+            store.append_member_run(member)?;
+        }
+        if let Some(refusal) = refusal {
+            return Err(CliError::Usage(refusal));
+        }
+    }
+    let supervisor_registration = reserve_team_supervisor(store, run_id)?;
     let ledger = Arc::new(TeamRunLedger::new(
         store,
         run_id,
@@ -17439,6 +17600,28 @@ fn run_member_orchestration(
                 MemberRunStatus::Stopped,
                 "member runtime closed".to_string(),
             );
+        }
+        // Re-probe every transport generation. This is the last fence before
+        // capacity checks, WorkDelivery claim, process spawn, or native-session
+        // attach, so a binary upgraded to an unreviewed version cannot fall
+        // into the reconnect loop or replay a rebound Work.
+        let compatibility_boundary = if current.native_session.is_some() {
+            "resume persistent Agent Team execution"
+        } else {
+            "start persistent Agent Team execution"
+        };
+        match provider_compatibility_start_gate(ledger, &mut current, compatibility_boundary) {
+            Ok(Some(outcome)) => return outcome,
+            Ok(None) => {}
+            Err(error) if error.is_provider_compatibility_blocked() => {
+                current.status = MemberRunStatus::Blocked;
+                let reason = error.to_string();
+                let _ = ledger.save_member_run(&current);
+                return MemberOutcome::new(&current, MemberRunStatus::Blocked, reason);
+            }
+            Err(error) => {
+                return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string())
+            }
         }
         // Capacity preflight runs once, before the adapter claims anything.
         // A blocked member returns here, so its Assignment stays `queued` and
@@ -24668,11 +24851,44 @@ pub(crate) fn reopen_team_member_value(
         "provider_native_session"
     };
     if !external_interactive {
+        // Reopen is a coordination transition, but for an already-bound native
+        // session it is also the Host's explicit intent to resume that exact
+        // history. Freshly probe before the runtime generation changes so an
+        // installed upgrade cannot hide behind a formerly Current snapshot.
+        let probe_error = if member.native_session.is_some() {
+            let previous_profile = member.provider_profile.clone();
+            let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
+            member.provider_profile = Some(profile);
+            member.last_event_at = Some(now_string());
+            if member.provider_profile != previous_profile {
+                store.append_member_run(&member)?;
+            }
+            probe_error
+        } else {
+            None
+        };
         let profile = member.provider_profile.as_ref().ok_or_else(|| {
             CliError::Usage(format!(
                 "member run {member_run_id} has no provider profile and cannot prove resume support"
             ))
         })?;
+        if member.native_session.is_some()
+            || matches!(
+                profile.compatibility_status,
+                ProviderCompatibilityStatus::ReviewRequired
+                    | ProviderCompatibilityStatus::Incompatible
+                    | ProviderCompatibilityStatus::Unavailable
+            )
+        {
+            if let Some(reason) = provider_compatibility_block_reason(
+                &member,
+                profile,
+                "reopen or resume its provider-native session",
+                probe_error.as_deref(),
+            ) {
+                return Err(CliError::Usage(reason));
+            }
+        }
         if !profile.supports_resume {
             return Err(CliError::Usage(format!(
                 "member run {member_run_id} execution mode {} does not support resume",
@@ -24706,6 +24922,7 @@ pub(crate) fn reopen_team_member_value(
             "member run {member_run_id} runtime generation overflowed"
         ))
     })?;
+    member.started_at = now_string();
     member.coordination_status = MemberCoordinationStatus::Active;
     member.status = if external_interactive {
         MemberRunStatus::Idle
@@ -25271,6 +25488,41 @@ fn required_json_work_version(body: &serde_json::Value) -> CliResult<u64> {
     })
 }
 
+fn require_reviewed_member_before_work_rebind(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+) -> CliResult<()> {
+    let mut member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.team_run_id != team_run_id {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    if member.is_external_interactive() {
+        return Ok(());
+    }
+    let previous_profile = member.provider_profile.clone();
+    let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
+    let refusal = provider_compatibility_block_reason(
+        &member,
+        &profile,
+        "receive rebound durable Work",
+        probe_error.as_deref(),
+    );
+    member.provider_profile = Some(profile);
+    member.last_event_at = Some(now_string());
+    if member.provider_profile != previous_profile {
+        store.append_member_run(&member)?;
+    }
+    refusal
+        .map(|reason| Err(CliError::Usage(reason)))
+        .unwrap_or(Ok(()))
+}
+
 fn create_team_work_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -25337,6 +25589,13 @@ fn mutate_team_work_value(
             current.version
         )));
     }
+    let rebind_member_run_id = if operation == "rebind" {
+        let member_run_id = required_json_string(body, "member_run_id")?;
+        require_reviewed_member_before_work_rebind(store, team_run_id, &member_run_id)?;
+        Some(member_run_id)
+    } else {
+        None
+    };
     let context = http_host_work_context(body)?;
     let work = match operation {
         "assign" => store.assign_work(
@@ -25348,7 +25607,9 @@ fn mutate_team_work_value(
         "rebind" => store.rebind_work(
             work_id,
             expected_version,
-            &required_json_string(body, "member_run_id")?,
+            rebind_member_run_id
+                .as_deref()
+                .expect("rebind target validated before mutation"),
             context,
         )?,
         "block" => store.block_work_as_host(
@@ -40740,6 +41001,7 @@ package:com.tencent.mm
             causation_ref: None,
             idempotency_key: key.into(),
             created_at: "unix-ms:9".into(),
+            duplicate_ok: false,
         };
         let released = store
             .release_work_as_host(

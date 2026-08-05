@@ -360,6 +360,105 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
 }
 
 #[test]
+fn typed_ledger_replace_delete_and_reconnect_recover_only_the_selected_scope() {
+    let home = TempHome::new("sse-typed-replace-delete");
+    let project_a = init_project(&home, "alpha");
+    let project_b = init_project(&home, "beta");
+    create_space(&home, "space-alpha", &project_a);
+    create_space(&home, "space-beta", &project_b);
+    create_mission(
+        &home,
+        "space-alpha",
+        &project_a,
+        "mission-recovery",
+        "before",
+    );
+
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let query_a = format!("?space=space-alpha&project={project_a}");
+    let query_b = format!("?space=space-beta&project={project_b}");
+    let mut sse_a = serve.open_sse(&query_a);
+    let mut sse_b = serve.open_sse(&query_b);
+    let mission_path = home.spaces_dir().join("space-alpha").join("missions.jsonl");
+
+    // Atomic replacement preserves byte length but changes the typed ledger's
+    // identity. Incremental offsets alone cannot observe it, so Runtime must
+    // invalidate only space-alpha and the authoritative snapshot must converge.
+    let original = std::fs::read_to_string(&mission_path).expect("read mission ledger");
+    let replaced = original.replace("before", "after!");
+    assert_eq!(
+        replaced.len(),
+        original.len(),
+        "fixture must stay same-size"
+    );
+    let replacement_path = mission_path.with_extension("jsonl.replace");
+    std::fs::write(&replacement_path, &replaced).expect("write replacement ledger");
+    std::fs::rename(&replacement_path, &mission_path).expect("atomic replace ledger");
+
+    let replaced_frames = collect_sse_data(&mut sse_a, Duration::from_secs(6), 1);
+    let replacement = replaced_frames
+        .iter()
+        .find(|frame| frame["ledger"] == "missions.jsonl")
+        .unwrap_or_else(|| panic!("same-size typed replace was missed: {replaced_frames:?}"));
+    assert_eq!(replacement["scope"], "execution_space");
+    assert_eq!(replacement["scope_id"], "space-alpha");
+    assert_eq!(replacement["reason"], "replace");
+    assert!(
+        collect_sse_data(&mut sse_b, Duration::from_millis(700), 1).is_empty(),
+        "space-alpha replacement leaked to space-beta"
+    );
+    let (status, snapshot) = serve.get_json(&format!("/v1/snapshot{query_a}"));
+    assert_eq!(status, 200);
+    assert!(snapshot["missions"]
+        .as_array()
+        .expect("missions")
+        .iter()
+        .any(|mission| mission["id"] == "mission-recovery" && mission["objective"] == "after!"));
+
+    // Direct deletion is a real source transition, not an absence the watcher
+    // may silently ignore. The selected snapshot must immediately stop showing
+    // the deleted typed ledger's rows.
+    std::fs::remove_file(&mission_path).expect("delete mission ledger");
+    let deleted_frames = collect_sse_data(&mut sse_a, Duration::from_secs(6), 1);
+    let deletion = deleted_frames
+        .iter()
+        .find(|frame| frame["ledger"] == "missions.jsonl")
+        .unwrap_or_else(|| panic!("typed ledger deletion was missed: {deleted_frames:?}"));
+    assert_eq!(deletion["scope_id"], "space-alpha");
+    assert_eq!(deletion["reason"], "delete");
+    let (status, empty_snapshot) = serve.get_json(&format!("/v1/snapshot{query_a}"));
+    assert_eq!(status, 200);
+    assert!(empty_snapshot["missions"]
+        .as_array()
+        .expect("missions")
+        .iter()
+        .all(|mission| mission["id"] != "mission-recovery"));
+
+    // Reconnect carries no durable cursor. A fresh stream gets a new bounded
+    // snapshot marker, then ledger recreation emits another scoped invalidation
+    // and an authoritative refetch restores the projection.
+    drop(sse_a);
+    let mut reconnected = serve.open_sse(&query_a);
+    std::fs::write(&mission_path, original).expect("recreate mission ledger");
+    let recreated_frames = collect_sse_data(&mut reconnected, Duration::from_secs(6), 1);
+    let recreation = recreated_frames
+        .iter()
+        .find(|frame| frame["ledger"] == "missions.jsonl")
+        .unwrap_or_else(|| {
+            panic!("recreated ledger was missed after reconnect: {recreated_frames:?}")
+        });
+    assert_eq!(recreation["reason"], "replace");
+    assert_eq!(recreation["scope_id"], "space-alpha");
+    let (status, recovered) = serve.get_json(&format!("/v1/snapshot{query_a}"));
+    assert_eq!(status, 200);
+    assert!(recovered["missions"]
+        .as_array()
+        .expect("missions")
+        .iter()
+        .any(|mission| mission["id"] == "mission-recovery" && mission["objective"] == "before"));
+}
+
+#[test]
 fn unknown_execution_space_fails_closed_for_snapshot_and_events() {
     let home = TempHome::new("sse-unknown-space");
     let project_id = init_project(&home, "alpha");
