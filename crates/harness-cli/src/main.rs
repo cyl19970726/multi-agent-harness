@@ -14056,7 +14056,7 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
                 heartbeat_age_s,
                 supervisor_current
             ));
-            if !supervisor_current {
+            if !supervisor_current || !pid_alive {
                 let ready = works.iter().filter(|w| w.is_claim_ready(&works)).count();
                 lines.push(format!(
                     "[WARNING] no live supervisor: {} ready work(s) undelivered. Run: harness team-run start --id {}",
@@ -14801,7 +14801,7 @@ fn team_run_command(
                             heartbeat_age_s,
                             lease.expires_unix_ms
                         );
-                        if !supervisor_current {
+                        if !supervisor_current || !pid_alive {
                             let ready = works
                                 .iter()
                                 .filter(|work| work.is_claim_ready(&works))
@@ -32797,9 +32797,13 @@ fn pid_exists_libc(pid: u32) -> bool {
 
 /// Is the supervisor lease live — status Active, not expired, and owner PID exists.
 fn is_supervisor_current(lease: &harness_core::TeamSupervisorLease) -> bool {
+    // PID liveness is deliberately excluded here: this function gates
+    // control-plane decisions (close, reopen, recover-candidate) which
+    // must stay on lease expiry+status semantics.  PID-alive check lives
+    // in diagnostics (supervisor_lease_live_diagnosis, status output) and
+    // in the status warning condition separately.
     lease.status == harness_core::TeamSupervisorLeaseStatus::Active
         && lease.expires_unix_ms > current_unix_ms_u64()
-        && pid_exists_libc(lease.owner_process_id)
 }
 
 /// Returns (is_live, human-readable diagnosis). The diagnosis lists which of the
