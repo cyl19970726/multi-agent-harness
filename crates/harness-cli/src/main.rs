@@ -13254,9 +13254,7 @@ fn team_run_recover(
         .filter(|delivery| delivery.team_run_id == team_run_id)
         .collect();
     let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
-    let supervisor_current = supervisor
-        .as_ref()
-        .is_some_and(|lease| is_supervisor_current(lease));
+    let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
 
     // Mandatory reader: Mission Log tail (ADR 0051). This must remain before
     // provider probing or any recovery mutation so a recovering Host re-reads
@@ -14714,9 +14712,7 @@ fn team_run_command(
                 .filter(|message| has_actionable_delivered_manual_ack(message))
                 .count();
             let supervisor = store.latest_team_supervisor_lease(&id)?;
-            let supervisor_current = supervisor
-                .as_ref()
-                .is_some_and(|lease| is_supervisor_current(lease));
+            let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
             if json {
                 let members: Vec<serde_json::Value> = member_runs
                     .iter()
@@ -25471,7 +25467,7 @@ fn close_team_member_value(
 
     let live_lease = store
         .latest_team_supervisor_lease(team_run_id)?
-        .filter(|lease| is_supervisor_current(lease));
+        .filter(is_supervisor_current);
     // An external interactive member has no supervisor-owned runtime to
     // dispatch control to; closing it only records the terminal status.
     if live_lease.is_some() && !member.is_external_interactive() {

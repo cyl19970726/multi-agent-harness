@@ -289,6 +289,45 @@ harness team-run wait --id <team-run-id> \
   --after-seq <last-seq> --timeout-secs <bounded-seconds>
 ```
 
+### Supervisor Recovery Ladder (L0 → L4)
+
+When `team-run status` or `team-run recover` shows no live supervisor:
+
+**L0 — Diagnose** (always start here):
+```bash
+harness team-run status --id <team-run-id>
+# Look for: supervisor current=false, pid_alive=false, heartbeat_age_s
+# Use --json for machine-readable diagnosis
+harness team-run status --id <team-run-id> --json | jq '.supervisor'
+```
+
+**L1 — Restart writer** (covers transient crash, lease expiry):
+```bash
+harness team-run start --id <team-run-id>
+```
+
+**L2 — Kill wedged PID only** (when PID exists but not writing):
+```bash
+# Identify the stuck PID from status output
+kill <pid>
+# Then restart
+harness team-run start --id <team-run-id>
+```
+
+**L3 — Per-member close/reopen** (when restart alone fails):
+```bash
+harness team-run close-member --team-run-id <team-run-id> --member-run-id <member-run-id>
+harness team-run reopen-member --team-run-id <team-run-id> --member-run-id <member-run-id>
+harness team-run start --id <team-run-id>
+```
+
+**L4 — Nuclear recreate** (last resort, preserves Work ids via recover):
+```bash
+# Stop all provider processes. Then:
+harness team-run recover --id <team-run-id>
+harness team-run start --id <team-run-id>
+```
+
 ### Quick Board Reads
 
 For bounded Host context, prefer these compact reads over full `work list`:
