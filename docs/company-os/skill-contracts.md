@@ -31,8 +31,10 @@ The suite currently expands to:
 | [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
 | [`dogfood-company-os`](../../skills/dogfood-company-os/SKILL.md) | Repeated, evidence-backed Company OS self-hosting across Docs, Work, Organization, external delivery, execution, and result return | procedural composition skill |
 | [`connect-github-company-os`](../../skills/connect-github-company-os/SKILL.md) | GitHub repository/source observation and software-delivery evidence correlated to Company OS records without replacing company truth | procedural connector skill |
+| [`orchestrate-mission-waves`](../../skills/orchestrate-mission-waves/SKILL.md) | Host Lead coordination: Mission, Mission Log, AgentTeam, Works, review, and explicit Host acceptance | team coordination skill (Host-facing) |
+| [`collaborate-as-agent-team-member`](../../skills/collaborate-as-agent-team-member/SKILL.md) | Persistent Agent Team Member: Works board, lifecycle, mailbox, blocker, submission, and native session | team coordination skill (Member-facing) |
 
-This nine-Skill suite includes the dogfood and GitHub connector packages
+This eleven-Skill suite includes the dogfood and GitHub connector packages
 because its bootstrap and operator Skills delegate work to them. Installation
 must preflight the complete suite and fail before writing either agent target
 when any delegated Skill package is missing.
@@ -572,6 +574,84 @@ governed commands, a functioning standard-view fallback, and the artifact set
 above is reviewable. Final product acceptance additionally requires the
 appropriate code, security, accessibility, and module-owner checks; a skill
 cannot self-accept its own authority.
+
+## `orchestrate-mission-waves`
+
+### Job
+
+Use this skill when a Host Agent must create, resume, or re-plan a long-running
+Mission, coordinate one or more persistent Agent Teams through shared Works,
+preserve provider-native sessions across re-plans, review submitted Work, or
+close the Mission. Use for Mission context, Mission Log judgment, Works
+allocation, Team composition, blocker handling, carry-over, and explicit Host
+acceptance.
+
+This is a **team coordination skill**, not a Company OS operator skill. It
+operates on execution-plane objects (Mission, AgentTeam, AgentTeamRun, Work,
+TeamMessage) rather than company-plane objects (Document, WorkItem,
+Organization, Finance). Do not use it to operate Docs, manage Organization
+membership, approve spending, or create governed Company OS records.
+
+### Required input
+
+| Input | Requirement |
+| --- | --- |
+| Mission intent | Durable objective, completion criteria, constraints, and success standard. |
+| Current state | Mission Log, linked Teams, Works board, messages, pending interactions, Member/Supervisor health, and native-session bindings. |
+| Execution Space and Project Binding | Explicit `HARNESS_SPACE` and `HARNESS_PROJECT` selection. |
+| Decision boundary | Work to assign, Members to compose, and acceptance authority for submitted Work. |
+
+### Required output
+
+The skill produces a durable Mission Log judgment entry and the invoked Work
+operations. Every responsibility created is writeable Work; Messages explain
+coordination without becoming task state. The Host records explicit acceptance
+or requested changes for each reviewed Work.
+
+### Completion rule
+
+The skill is complete only when the Mission Log, Works board, TeamMessages, and
+WorkDelivery facts are reconstructable from durable store state. A conversation
+handoff or visual page alone is not a completed Host cycle. No Work is `done`
+without explicit Host acceptance.
+
+## `collaborate-as-agent-team-member`
+
+### Job
+
+Use this skill when a persistent Agent Team Member receives, claims, resumes,
+executes, blocks, or submits shared Work; reads its WorkDelivery and message
+Inbox; coordinates with the Host or peers; uses provider-native subagents; or
+survives review and runtime restart.
+
+This is a **team coordination skill**, not a Company OS operator skill. It
+operates on execution-plane objects (Works board, TeamMessage, native session)
+rather than company-plane objects (Document, WorkItem, Organization, Finance).
+A Member may create follow-up Work but does not create Company OS WorkItems,
+manage Organization membership, or approve spending.
+
+### Required input
+
+| Input | Requirement |
+| --- | --- |
+| Collaboration envelope | `HARNESS_TEAM_RUN_ID`, `HARNESS_MEMBER_RUN_ID`, `HARNESS_BIN`, and current Work identity from `HARNESS_WORK_ID`/`HARNESS_WORK_VERSION`. |
+| Work context | Title, Markdown context, completion criteria, owner, owned paths, permission ceiling, and Team roster. |
+| Provider session | Native session id and execution driver (`host_driven`, `provider_driven`, or `user_driven`). |
+
+### Required output
+
+The skill produces a durable result summary on Work submission, with
+artifact/check refs when the completion criteria require them. Message-linked
+conversation explains blockers, questions, or coordination without changing Work
+state. Provider-native session records remain the sole execution truth.
+
+### Completion rule
+
+The skill is complete only when the Member submitted Work carries a result
+summary, any required artifact/check refs, and the latest Work version matches
+the action performed. Host acceptance, not provider completion or submission,
+moves Work to `done`. A blocked Work must carry a structured reason; a
+submitted Work must never claim Host acceptance.
 
 ## Handoff between the skills
 
