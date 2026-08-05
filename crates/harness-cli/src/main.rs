@@ -14485,14 +14485,12 @@ fn team_run_command(
                         .map_err(|_| CliError::Usage("--budget-usd must be a number".to_string()))
                 })
                 .transpose()?;
-            let env_host_surface =
-                std::env::var("STAR_HARNESS_HOST_SURFACE")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty());
-            let env_host_thread_id =
-                std::env::var("STAR_HARNESS_HOST_THREAD_ID")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty());
+            let env_host_surface = std::env::var("STAR_HARNESS_HOST_SURFACE")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            let env_host_thread_id = std::env::var("STAR_HARNESS_HOST_THREAD_ID")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
             // Refuse ambiguous partial auto-bind: both must be present or
             // neither; a single env var is a misconfiguration, not intent.
             match (&env_host_surface, &env_host_thread_id) {
@@ -14511,8 +14509,8 @@ fn team_run_command(
             let host_surface = value(args, "--host-surface")
                 .or_else(|| env_host_surface.clone())
                 .unwrap_or_else(|| "cli".into());
-            let host_thread_id = value(args, "--host-thread-id")
-                .or_else(|| env_host_thread_id.clone());
+            let host_thread_id =
+                value(args, "--host-thread-id").or_else(|| env_host_thread_id.clone());
             let created = create_team_run(
                 store,
                 resolved.context.as_ref(),
@@ -15086,14 +15084,12 @@ fn team_run_command(
             let run = latest_team_run(store, &id)?;
             // L1: auto-bind from star-harness hook env when unambiguous.
             if run.host_thread_id.is_none() {
-                let env_surface =
-                    std::env::var("STAR_HARNESS_HOST_SURFACE")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty());
-                let env_thread_id =
-                    std::env::var("STAR_HARNESS_HOST_THREAD_ID")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty());
+                let env_surface = std::env::var("STAR_HARNESS_HOST_SURFACE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+                let env_thread_id = std::env::var("STAR_HARNESS_HOST_THREAD_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
                 match (&env_surface, &env_thread_id) {
                     (Some(_), None) => {
                         eprintln!("[WARNING] STAR_HARNESS_HOST_SURFACE is set but STAR_HARNESS_HOST_THREAD_ID is missing — refusing to auto-bind");
@@ -15106,13 +15102,8 @@ fn team_run_command(
                         next.host_surface = surface.clone();
                         next.host_thread_id = Some(thread_id.clone());
                         next.updated_at = now_string();
-                        if store
-                            .compare_and_append_team_run(&run, &next)
-                            .is_ok()
-                        {
-                            eprintln!(
-                                "[star-harness] Auto-bound host to {surface}:{thread_id}"
-                            );
+                        if store.compare_and_append_team_run(&run, &next).is_ok() {
+                            eprintln!("[star-harness] Auto-bound host to {surface}:{thread_id}");
                         }
                     }
                     (None, None) => {}
