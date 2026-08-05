@@ -288,6 +288,12 @@ The harness injects these environment variables when starting your runtime. The 
 
 `HARNESS_MEMBER_RUN_ID` and `HARNESS_TEAM_RUN_ID` are validated on every member-side Work command (`work claim`, `work start`, `work block`, `work submit`). The CLI rejects a call where the bound environment value does not match the command argument.
 
+**Wave vocabulary note.** The word **wave** (including `HARNESS_ORIGIN_WAVE_ID`
+above) is a planning-rhythm / batch label, not a governed object. Wave as a
+writable governed object was retired by ADR 0051. `wave list|show|history` are
+historical read-only commands. Use lowercase `wave` as a batch noun; never use
+capitalized `Wave` as an object name in new work.
+
 When developing Star Harness itself and the product contract is in question,
 read canonical repository files `docs/product/agent-team-works.md` and
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`.
