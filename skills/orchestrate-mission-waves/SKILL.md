@@ -7,7 +7,9 @@ description: Use when a Host Agent must create, resume, or re-plan a long-runnin
 
 Use the Harness CLI as the complete authority path. Treat this Skill as a thin
 operating guide; canonical architecture, schemas, store state, and native
-Provider records win any conflict.
+Provider records win any conflict. After a compaction or whenever CLI syntax is
+uncertain, run `harness cheatsheet` first — never rediscover flags via repeated
+`--help` calls or source greps.
 
 ## Keep One Small Mental Model
 

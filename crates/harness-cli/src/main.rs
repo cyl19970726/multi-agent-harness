@@ -1398,6 +1398,11 @@ fn run() -> CliResult<()> {
     if args.first().map(String::as_str) == Some("legacy-goal-task") {
         return legacy_goal_task_command(&mut args);
     }
+    // `cheatsheet` is store-LESS: it prints operating knowledge for the Host
+    // and must not require a store, project, or space.
+    if args.first().map(String::as_str) == Some("cheatsheet") {
+        return cheatsheet_command(&args[1..]);
+    }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
     // `args` so the subcommand parsers never see them). `serve` and `run-script`
     // started from different working directories converge on ONE store via the
@@ -34041,6 +34046,118 @@ fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
     Ok(())
 }
 
+fn cheatsheet_command(args: &[String]) -> CliResult<()> {
+    let scope = args.first().map(String::as_str).unwrap_or("all");
+    match scope {
+        "team" => print!("{}", CHEATSHEET_TEAM),
+        "work" => print!("{}", CHEATSHEET_WORK),
+        "mission" => print!("{}", CHEATSHEET_MISSION),
+        "all" => print!("{}", CHEATSHEET_ALL),
+        other => {
+            return Err(CliError::Usage(format!(
+            "unknown cheatsheet scope: {other}; usage: harness cheatsheet [team|work|mission|all]"
+        )))
+        }
+    }
+    Ok(())
+}
+
+// Each cheatsheet is a hand-curated plain-text one-pager of EXACT invocation
+// forms used by the orchestrate-mission-waves skill. Every flag is derived from
+// the real CLI definitions in this file. Length budgets are enforced by the
+// anti-drift test (cheatsheet_length_budgets).
+
+const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> [--agent-team-id <id>] [--budget-usd <n>]
+                    [--mission-id <id>] [--wave-id <id>] [--previous <id>]
+                    --member name:role:provider[/mode][:model][@paths]
+team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
+team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run status     --id <id> [--json]
+team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
+team-run send       --id <id> --from <actor> --to <csv> --kind message|handoff|control
+                    --body <text> [--response-required|--informational]
+                    [--work-id <id>] [--correlation-id <id>] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run ack        --id <id> (--message-id <csv>|--all-delivered)
+                    [--member-id <id>] [--json]
+team-run events     --id <id> [--after-seq <n>] [--json]
+team-run board-summary --id <id>
+team-run recover    --id <id> [--json]
+"#;
+
+const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title <text>
+                    --completion-criteria <text>
+                    [--owner-member-run-id <id> --claim-mode host_assign]
+                    [--claim-mode team_claim --eligible-member-id <id>]
+                    [--priority low|normal|high|urgent] [--context <md>]
+                    [--prerequisite-work-id <id>] [--idempotency-key <key>]
+work list            --team-run-id <id> [--brief] [--since <cursor>]
+                    [--status <status>] [--member-run-id <id>]
+work show            --work-id <id>
+work assign          --work-id <id> --expected-version <n>
+                    --member-run-id <id> [--idempotency-key <key>]
+work accept          --work-id <id> --expected-version <n>
+                    [--idempotency-key <key>]
+work request-changes --work-id <id> --expected-version <n>
+                    --reason <text> [--idempotency-key <key>]
+"#;
+
+const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
+                      [--desired-outcome <text>] [--context <text>] [--json]
+mission show          --id <id>
+mission update-context --id <id> --context <text>
+mission create-team   --id <id> --name <text> --description <text>
+                      [--lead <id>] [--member <id>] [--team-id <id>]
+mission close         --id <id> --outcome <text> [--completed-by <actor>]
+wave create  --mission-id <id> --title <text> --objective <text> [--id <id>]
+             [--index <n>] [--executor-kind host|agent_team|dynamic_workflow]
+             [--context <text>] [--json]
+wave show    --id <id>
+wave list    [--mission-id <id>]
+wave update  --id <id> --context <text>
+wave advance --id <id> --outcome <text> [--artifact <ref>]
+wave gate    --id <id> --status <status> [--note <text>]
+"#;
+
+const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> [--mission-id <id>] [--wave-id <id>]
+  --member name:role:provider[/mode][:model][@paths]
+team-run start --id <id> [--max-concurrency <n>]
+team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run status --id <id> [--json]
+team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
+team-run send --id <id> --from <actor> --to <csv>
+  --kind message|handoff|control --body <text> [--work-id <id>] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
+team-run events --id <id> [--json]
+team-run board-summary --id <id>
+team-run recover --id <id> [--json]
+
+work create --team-run-id <id> --title <text> --completion-criteria <text>
+  [--owner-member-run-id <id> --claim-mode host_assign]
+  [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
+work list --team-run-id <id> [--brief] [--since <cursor>]
+work show --work-id <id>
+work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
+work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
+
+mission create --title <text> --objective <text> [--id <id>]
+  [--context <text>] [--json]
+mission show --id <id>
+mission update-context --id <id> --context <text>
+mission create-team --id <id> --name <text> --description <text>
+  [--lead <id>] [--member <id>]
+mission close --id <id> --outcome <text>
+wave create --mission-id <id> --title <text> --objective <text>
+  [--executor-kind host|agent_team|dynamic_workflow] [--context <text>] [--json]
+wave show --id <id>
+wave list [--mission-id <id>]
+wave update --id <id> --context <text>
+wave advance --id <id> --outcome <text> [--artifact <ref>]
+wave gate --id <id> --status <status> [--note <text>]
+"#;
+
 fn print_help() {
     println!(
         r#"harness commands:
@@ -34099,6 +34216,7 @@ fn print_help() {
   serve [--addr 127.0.0.1:8787] [--once]
   mcp
   daemon start|status|stop
+  cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only
 through legacy-goal-task export|verify.
@@ -41880,6 +41998,239 @@ package:com.tencent.mm
             canonical_member_report_text("  legacy free-form report  "),
             "legacy free-form report"
         );
+    }
+
+    // --- cheatsheet anti-drift tests ---
+    //
+    // The CHEATSHEET_* consts above are hand-curated free text, not
+    // generated from a schema, so nothing stops them from drifting out of
+    // sync with the real argv-parsing code in this file. These tests treat
+    // main.rs's own source as the source of truth instead of checking the
+    // cheatsheet against a generic helper in isolation: every documented
+    // subcommand leaf must appear as a real match arm in the right
+    // dispatcher function, and every documented flag must appear as an
+    // argument to this file's own argv-parsing primitives
+    // (`value`/`many`/`has_flag`/`required`) somewhere in the file.
+    // `flag_checker_rejects_a_fabricated_flag` below proves the checker
+    // actually discriminates real flags from made-up ones.
+
+    /// This file's own source, embedded so the checks below can verify the
+    /// cheatsheet consts against the real argv-parsing code.
+    const MAIN_RS_SOURCE: &str = include_str!("main.rs");
+
+    /// Extract every distinct `--flag-name` token in `text`, including ones
+    /// glued to punctuation with no separating space (e.g. `[--to`,
+    /// `--all-delivered]`, `--kind|--other`). Scans byte-by-byte instead of
+    /// splitting on whitespace so no punctuation-adjacent flag is ever
+    /// silently skipped (the bug in the version this replaces: its
+    /// `starts_with("-[")` guard was backwards and dropped ~40% of the
+    /// flags in CHEATSHEET_ALL from coverage).
+    fn extract_flags(text: &str) -> std::collections::BTreeSet<&str> {
+        let bytes = text.as_bytes();
+        let mut flags = std::collections::BTreeSet::new();
+        let mut i = 0;
+        while i + 2 < bytes.len() {
+            if &bytes[i..i + 2] == b"--" && bytes[i + 2].is_ascii_lowercase() {
+                let start = i;
+                let mut end = i + 3;
+                while end < bytes.len() && (bytes[end].is_ascii_lowercase() || bytes[end] == b'-') {
+                    end += 1;
+                }
+                // A real flag name never ends in '-': trim a trailing run
+                // picked up from adjacent punctuation like
+                // "--response-required|--informational".
+                while end > start + 3 && bytes[end - 1] == b'-' {
+                    end -= 1;
+                }
+                flags.insert(&text[start..end]);
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+        flags
+    }
+
+    /// The exact source text of the named top-level function, bounded from
+    /// its `fn <name>(` signature to the function-closing `}` that starts a
+    /// line at column 0. rustfmt always places a top-level item's closing
+    /// brace there, and nothing inside a function body in this file --
+    /// even a `format!("...{}...")` string literal -- legitimately starts a
+    /// line with a bare `}`, so this stays correct without a full
+    /// brace-matching lexer.
+    fn function_body<'a>(source: &'a str, fn_name: &str) -> &'a str {
+        let needle = format!("\nfn {fn_name}(");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("fn {fn_name} not found in main.rs"));
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("end of fn {fn_name} not found"));
+        &source[start..end]
+    }
+
+    /// True if `"leaf" =>` appears as a match arm inside `body` -- i.e. the
+    /// subcommand is a real match arm, not just documented text.
+    fn subcommand_is_real(body: &str, leaf: &str) -> bool {
+        body.contains(&format!("\"{leaf}\" =>"))
+    }
+
+    /// True if `flag` is read by one of this file's own argv-parsing
+    /// primitives (`value`, `many`, `has_flag`, `required`) anywhere in
+    /// `source` -- i.e. the flag is really wired, not just typed into the
+    /// cheatsheet text. Matching against the whole file rather than one
+    /// dispatcher's body is deliberate: a few flags (e.g.
+    /// `--expected-version`) are read through a small named helper one
+    /// level removed from the dispatcher (`required_work_version`), and the
+    /// flag string only appears as a literal inside that helper.
+    fn flag_is_wired(source: &str, flag: &str) -> bool {
+        ["value", "many", "has_flag", "required"]
+            .iter()
+            .any(|func| source.contains(&format!("{func}(args, \"{flag}\")")))
+    }
+
+    #[test]
+    fn flag_checker_rejects_a_fabricated_flag() {
+        // Proves flag_is_wired()/subcommand_is_real() actually discriminate
+        // real CLI surface from made-up surface. The version this replaces
+        // synthesized `["--flag", "placeholder"]` and fed it straight back
+        // into value(), which trivially returns Some("placeholder") for ANY
+        // string -- it could never fail no matter what the cheatsheet
+        // claimed.
+        assert!(
+            !flag_is_wired(MAIN_RS_SOURCE, "--frobnicate-widget"),
+            "flag_is_wired must reject a flag that is not real"
+        );
+        let team_run_body = function_body(MAIN_RS_SOURCE, "team_run_command");
+        assert!(
+            !subcommand_is_real(team_run_body, "levitate"),
+            "subcommand_is_real must reject a leaf that is not a real match arm"
+        );
+        // And sanity-check the positive case on the same inputs, so a
+        // trivial "always return false" implementation cannot pass this test.
+        assert!(flag_is_wired(MAIN_RS_SOURCE, "--objective"));
+        assert!(subcommand_is_real(team_run_body, "create"));
+    }
+
+    #[test]
+    fn cheatsheet_subcommands_exist_in_dispatch() {
+        let team_run_body = function_body(MAIN_RS_SOURCE, "team_run_command");
+        for leaf in [
+            "create",
+            "start",
+            "add-member",
+            "status",
+            "wait",
+            "send",
+            "host-inbox",
+            "ack",
+            "events",
+            "board-summary",
+            "recover",
+        ] {
+            assert!(
+                subcommand_is_real(team_run_body, leaf),
+                "team-run {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in team_run_command"
+            );
+        }
+        let work_body = function_body(MAIN_RS_SOURCE, "team_run_work_command");
+        for leaf in [
+            "create",
+            "list",
+            "show",
+            "assign",
+            "accept",
+            "request-changes",
+        ] {
+            assert!(
+                subcommand_is_real(work_body, leaf),
+                "work {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in team_run_work_command"
+            );
+        }
+        let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
+        for leaf in ["create", "show", "update-context", "create-team", "close"] {
+            assert!(
+                subcommand_is_real(mission_body, leaf),
+                "mission {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in mission_command"
+            );
+        }
+        let wave_body = function_body(MAIN_RS_SOURCE, "wave_command");
+        for leaf in ["create", "show", "list", "update", "advance", "gate"] {
+            assert!(
+                subcommand_is_real(wave_body, leaf),
+                "wave {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in wave_command"
+            );
+        }
+    }
+
+    #[test]
+    fn cheatsheet_flags_are_wired() {
+        // Flags are read straight off the CHEATSHEET_* consts (not a
+        // hand-duplicated list) so editing a const can never silently skip
+        // this check.
+        for (scope, text) in [
+            ("team", CHEATSHEET_TEAM),
+            ("work", CHEATSHEET_WORK),
+            ("mission", CHEATSHEET_MISSION),
+            ("all", CHEATSHEET_ALL),
+        ] {
+            let flags = extract_flags(text);
+            assert!(
+                !flags.is_empty(),
+                "{scope} cheatsheet must document at least one flag"
+            );
+            for flag in &flags {
+                assert!(
+                    flag_is_wired(MAIN_RS_SOURCE, flag),
+                    "[{scope}] {flag} is documented in the cheatsheet but is not read by \
+                     value()/many()/has_flag()/required() anywhere in main.rs -- it may be \
+                     a typo, or a stale/renamed flag"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cheatsheet_length_budgets() {
+        // `all` <= 2000 chars; each scoped page <= 1200 chars.
+        assert!(
+            CHEATSHEET_ALL.len() <= 2000,
+            "CHEATSHEET_ALL length {} exceeds 2000",
+            CHEATSHEET_ALL.len()
+        );
+        assert!(
+            CHEATSHEET_TEAM.len() <= 1200,
+            "CHEATSHEET_TEAM length {} exceeds 1200",
+            CHEATSHEET_TEAM.len()
+        );
+        assert!(
+            CHEATSHEET_WORK.len() <= 1200,
+            "CHEATSHEET_WORK length {} exceeds 1200",
+            CHEATSHEET_WORK.len()
+        );
+        assert!(
+            CHEATSHEET_MISSION.len() <= 1200,
+            "CHEATSHEET_MISSION length {} exceeds 1200",
+            CHEATSHEET_MISSION.len()
+        );
+    }
+
+    #[test]
+    fn cheatsheet_command_dispatches_by_scope() {
+        for scope in ["team", "work", "mission", "all"] {
+            cheatsheet_command(&[scope.to_string()])
+                .unwrap_or_else(|error| panic!("cheatsheet {scope} should succeed: {error}"));
+        }
+        // Default scope (no argument) is "all".
+        cheatsheet_command(&[]).expect("cheatsheet with no scope should default to all");
+        let error = cheatsheet_command(&["bogus".to_string()])
+            .expect_err("cheatsheet bogus should be rejected");
+        assert!(matches!(error, CliError::Usage(_)));
     }
 }
 
