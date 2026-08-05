@@ -32,6 +32,8 @@ export const teamWarRoomJourney = {
   mailboxStrip: (page) => page.getByTestId("team-mailbox-strip"),
   mailbox: (page, participantId) => page.getByTestId(`mailbox-${participantId}`),
   mailboxOpen: (page, participantId) => page.getByTestId(`mailbox-open-${participantId}`),
+  /** Provider · execution-mode · model stack line under each member mailbox. */
+  mailboxProviderStack: (page, participantId) => page.getByTestId(`mailbox-provider-stack-${participantId}`),
   allActivity: (page) => page.getByRole("button", { name: "All activity", exact: true }),
   activityFilter: (page, kind) => page.getByTestId(`activity-filter-${kind}`),
   activitySearch: (page) => page.getByLabel("Search team activity"),

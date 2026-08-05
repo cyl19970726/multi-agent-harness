@@ -64,7 +64,11 @@ export function ProvenanceFooter({ apiUrl, projectId, spaceId }: ProvenanceFoote
   const serverRev = meta?.git_rev ?? null;
   // Neither "unknown" build can prove a mismatch against the other — only flag
   // a disagreement between two builds that both actually know their own rev.
-  const revsComparable = Boolean(serverRev) && serverRev !== "unknown" && FRONTEND_GIT_REV !== "unknown";
+  // Synthetic servers (fixture/capture runners report revs like `fixture0`
+  // with a `-fixture` version) are not comparable either; a permanent alert
+  // there would train operators to ignore the real staleness channel.
+  const serverLooksSynthetic = (meta?.server_version ?? "").endsWith("-fixture");
+  const revsComparable = Boolean(serverRev) && serverRev !== "unknown" && !serverLooksSynthetic && FRONTEND_GIT_REV !== "unknown";
   const stale = revsComparable && serverRev !== FRONTEND_GIT_REV;
 
   return (

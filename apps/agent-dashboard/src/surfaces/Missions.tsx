@@ -448,8 +448,8 @@ function MissionDetail({
               <h1 className="text-2xl font-semibold tracking-[-0.025em] text-foreground">{mission.title}</h1>
               <p className="line-clamp-2 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{mission.objective}</p>
               <div className="flex flex-wrap items-center gap-1.5">
-                <Badge tone="muted">{waves.length} ordered waves</Badge>
-                <Badge tone="muted">{mission.agent_team_ids?.length ?? 0} linked teams</Badge>
+                <Badge tone="muted">{waves.length} ordered {waves.length === 1 ? "wave" : "waves"}</Badge>
+                <Badge tone="muted">{mission.agent_team_ids?.length ?? 0} linked {mission.agent_team_ids?.length === 1 ? "team" : "teams"}</Badge>
                 <Badge tone={missionTone(mission.status)}>{mission.status ?? "planned"}</Badge>
               </div>
             </div>
@@ -495,8 +495,8 @@ function MissionDetail({
           <section className="border-b border-border/70 py-5">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Mission context</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">Durable brief used by the Host across every Wave.</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Mission brief</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Durable context used by the Host across every Wave.</p>
               </div>
               <Badge tone="muted">Markdown</Badge>
             </div>
@@ -507,7 +507,7 @@ function MissionDetail({
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Mission Log</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">Append-only Host judgment (ADR 0051), newest first.</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Append-only Host judgment, newest first.</p>
               </div>
               <Badge tone="muted">{missionLog.length} {missionLog.length === 1 ? "entry" : "entries"}</Badge>
             </div>
@@ -539,17 +539,17 @@ function MissionDetail({
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Wave canvas</p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Historical — Wave write commands retired by the Mission Log cutover (ADR 0051).
+                Wave rows are append-only history; the current Wave's Markdown can still be revised in place.
               </p>
             </div>
-            <Badge tone="muted">Historical</Badge>
+            <Badge tone="muted">Read-only</Badge>
           </div>
 
           {waves.length === 0 ? (
             <EmptyState
               icon={Waves}
               title="No historical Waves"
-              description="This Mission has no Wave rows from before the Mission Log cutover (ADR 0051)."
+              description="This Mission has no Wave rows from before the Mission Log cutover."
             />
           ) : (
             <div className="mt-5">
@@ -617,7 +617,7 @@ function MissionDetail({
         </section>
 
         <div id="mission-context" className="scroll-mt-3 xl:sticky xl:top-0 xl:self-start">
-        <ContextRail quiet label="Mission context" className="h-fit" contentClassName="flex flex-col space-y-0">
+        <ContextRail quiet label="Mission facts" className="h-fit" contentClassName="flex flex-col space-y-0">
           <ContextModule className="order-5 xl:order-1" title="Mission brief" kicker="Durable intent" icon={<Flag className="size-3.5" />}>
             <dl className="space-y-2 text-[11px] leading-relaxed">
               <ContextFact label="Objective" value={mission.objective} />
@@ -1784,8 +1784,13 @@ function ActionButton({
   children,
   ...props
 }: ComponentProps<typeof Button> & { enabled: boolean }) {
+  const disabled = !enabled || props.disabled;
   return (
-    <Button {...props} disabled={!enabled || props.disabled}>
+    <Button
+      {...props}
+      disabled={disabled}
+      title={disabled ? props.title ?? "Connect a live source to enable these actions" : props.title}
+    >
       {children}
     </Button>
   );

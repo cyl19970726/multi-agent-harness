@@ -16,7 +16,7 @@ tmp/
 .lapian/
 .playwright-mcp/
 .worktrees/
-apps/agent-dashboard/web/assets/
+apps/agent-dashboard/web/
 custom-workflow-phase-goal-*.png
 frontend-agent-loop-*.png
 phase-execution-modes-goal-verify.png

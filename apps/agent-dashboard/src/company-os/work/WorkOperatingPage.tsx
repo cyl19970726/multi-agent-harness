@@ -8,7 +8,6 @@ import {
   CircleDot,
   Clock3,
   Columns3,
-  Filter,
   Flag,
   LayoutDashboard,
   ListChecks,
@@ -422,7 +421,6 @@ export function WorkOperatingPage({ source }: { source: unknown }) {
           </div>
           <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
             <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-card/80 px-3 text-sm shadow-sm sm:min-w-56"><Search className="size-4 shrink-0 text-muted-foreground" /><span className="sr-only">Search work</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search WorkItems…" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground" /></label>
-            <button type="button" className="hidden size-10 place-items-center rounded-xl border border-border bg-card text-muted-foreground shadow-sm sm:grid" aria-label="Filters"><Filter className="size-4" /></button>
             <button type="button" disabled aria-label="New work unavailable" title="No governed WorkItem creation transport is connected." className="hidden h-10 shrink-0 cursor-not-allowed items-center justify-center gap-2 rounded-xl border border-border bg-muted/70 px-4 text-sm font-semibold text-muted-foreground opacity-60 sm:inline-flex"><Sparkles className="size-4" />New work</button>
           </div>
         </div>
@@ -534,5 +532,5 @@ function ActorStack({ actors }: { actors: Array<ActorRow | undefined> }) {
 }
 
 function WorkIntegrity({ findings }: { findings: string[] }) { return <div role="alert" data-work-integrity-count={findings.length} className="mb-5 rounded-xl border border-status-warn/35 bg-status-warn/[0.05] p-4"><div className="flex items-center gap-2 text-sm font-semibold text-status-warn"><AlertTriangle className="size-4" />Work projection integrity ({findings.length})</div><ul className="mt-3 space-y-1 text-xs leading-5 text-muted-foreground">{findings.map((finding) => <li key={finding}>{finding}</li>)}</ul></div>; }
-function EmptyWork({ provenance }: { provenance: WorkModel["provenance"] }) { return <EmptyPanel title="No WorkItems in aggregate truth" body={provenance === "company_os.work" ? "company_os.work is empty. Raw WorkItem rows are not used as a first-row or list fallback." : "The prototype projection contains no WorkItems; no company commitment is invented."} />; }
+function EmptyWork({ provenance }: { provenance: WorkModel["provenance"] }) { return <EmptyPanel title="No WorkItems in aggregate truth" body={provenance === "company_os.work" ? "company_os.work is empty. Raw WorkItem rows are not used as a first-row or list fallback." : "The prototype projection contains no WorkItems; no company commitment is invented. Run-scoped work is visible under the Team Works tab above."} />; }
 function EmptyPanel({ title, body }: { title: string; body: string }) { return <div className="grid min-h-80 place-items-center rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center"><div><Bot className="mx-auto size-8 text-primary" /><h2 className="company-editorial-title mt-4 text-2xl">{title}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">{body}</p></div></div>; }
