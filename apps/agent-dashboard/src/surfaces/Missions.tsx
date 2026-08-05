@@ -53,7 +53,7 @@ import {
 } from "../api/actions";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import type { Mission, TeamRun, Wave } from "../types";
+import type { Mission, MissionLogEntry, TeamRun, Wave } from "../types";
 
 interface MissionsProps {
   model: WorkbenchModel;
@@ -135,6 +135,13 @@ function wavesFor(model: WorkbenchModel, missionId: string): Wave[] {
   return [...(model.snapshot.waves ?? [])]
     .filter((wave) => wave.mission_id === missionId)
     .sort((a, b) => a.index - b.index);
+}
+
+/** Mission Log entries for one Mission, newest revision first (ADR 0051). */
+function missionLogFor(model: WorkbenchModel, missionId: string): MissionLogEntry[] {
+  return [...(model.snapshot.mission_log ?? [])]
+    .filter((entry) => entry.mission_id === missionId)
+    .sort((a, b) => b.revision - a.revision);
 }
 
 function runsForWave(model: WorkbenchModel, wave: Wave): TeamRun[] {
@@ -347,6 +354,7 @@ function MissionDetail({
   const [teamOpen, setTeamOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const waves = wavesFor(model, mission.id);
+  const missionLog = missionLogFor(model, mission.id);
   const readyToClose =
     waves.length > 0 &&
     waves.every((wave) => wave.status === "completed" && wave.gate_status === "accepted");
@@ -495,11 +503,53 @@ function MissionDetail({
             <MarkdownContext value={mission.context} empty="No Mission context has been recorded yet." />
           </section>
 
+          <section className="border-b border-border/70 py-5">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Mission Log</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Append-only Host judgment (ADR 0051), newest first.</p>
+              </div>
+              <Badge tone="muted">{missionLog.length} {missionLog.length === 1 ? "entry" : "entries"}</Badge>
+            </div>
+            {missionLog.length === 0 ? (
+              <p className="text-[12px] text-muted-foreground">No mission log yet.</p>
+            ) : (
+              <ul className="space-y-3">
+                {missionLog.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="border-l-2 border-status-decision/70 bg-status-decision/5 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      <span className="font-semibold text-foreground">#{entry.revision}</span>
+                      <Badge tone="muted">{entry.kind}</Badge>
+                      <span>{entry.actor}</span>
+                      <span>{fmt(entry.created_at)}</span>
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-foreground">
+                      {entry.body}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <div className="mb-3 mt-5 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Wave canvas</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Historical — Wave write commands retired by the Mission Log cutover (ADR 0051).
+              </p>
+            </div>
+            <Badge tone="muted">Historical</Badge>
+          </div>
+
           {waves.length === 0 ? (
             <EmptyState
               icon={Waves}
-              title="Define the first Wave"
-              description="Record the Host's first operational memo and the plan decision that should come next."
+              title="No historical Waves"
+              description="This Mission has no Wave rows from before the Mission Log cutover (ADR 0051)."
             />
           ) : (
             <div className="mt-5">

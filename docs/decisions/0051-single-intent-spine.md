@@ -172,3 +172,9 @@ inference path. Until that PR lands:
 Goal-stack deletion (CLI `goal *`, store surfaces, star-goal Skill copies)
 is its own PR under ADR 0028's existing removal policy and is not gated on
 the MissionLog cutover landing first.
+
+**Cutover status:** the MissionLog cutover PR (#318, branch
+`feat/mission-log-cutover`, "Mission Log absorbs Wave — append-only judgment
+log, wave-write retirement, recover reads log") landed the storage, CLI/HTTP/
+MCP surface, and Wave write retirement described above; the deprecated-but-
+functional Wave write window this section describes is now closed.

@@ -1,18 +1,22 @@
 # Mission, Host Plan Waves, And Agent Teams
 
 ```text
-status: canonical; Works cutover in progress
+status: canonical; Works cutover in progress; Wave retired for Host judgment (ADR 0051)
 owner_role: product
-architecture: ADR 0034 + ADR 0037 + ADR 0050
+architecture: ADR 0034 + ADR 0037 + ADR 0050 + ADR 0051
 ```
 
 ## Product Promise
 
-Mission/Wave gives a capable Host Agent a durable external memory without
-turning that memory into a rigid scheduler.
+Mission plus its append-only Mission Log gives a capable Host Agent a durable
+external memory without turning that memory into a rigid scheduler.
 
 - **Mission** says what we are trying to accomplish and why.
-- **Wave** records the Host's current plan, judgment, and important changes.
+- **Mission Log** records the Host's judgment as append-only entries
+  (`judgment`/`replan`/`recovery`/`closeout_evidence`) — durable, versioned,
+  and read before every recovery or re-entry (ADR 0051). Wave played this
+  role before the cutover; historical Wave rows remain readable, but no new
+  Host judgment is written there.
 - **Agent Team** is an independent reusable group led by the Host that created
   and coordinates it.
 - **Works** say what exists, who owns it, and its current execution state.
@@ -32,15 +36,16 @@ Deliver a repeatable Codex-first integration with a live Dashboard. Preserve
 provider-native sessions and use Kimi only for targeted review.
 
 ## Success
-- Mission, Wave, Team and Member views remain navigable.
+- Mission, Mission Log, Team and Member views remain navigable.
 - Chat, pending interaction, steer, interrupt and resume are honest.
 - All acceptance checks pass from latest master.
 ```
 
-Wave 1 context:
+Mission Log entry 1, `--kind judgment`, appended before the Host starts either
+lane (log-before-act, ADR 0051):
 
 ```markdown
-# Wave 1 — Establish the baseline
+# Establish the baseline
 
 The Host will validate the current build and start the linked Platform Team.
 WorkspaceFixer owns MCP registration and Dashboard startup. InteractionReviewer
@@ -51,25 +56,36 @@ checks question/approval behavior.
 | WorkspaceFixer | Primary builder | Build and launch from latest master | Run evidence |
 | InteractionReviewer | Reviewer | Exercise interaction edge cases | Review report |
 
-## Host judgment
 Start both lanes concurrently. Integration may proceed after the build lane
-passes; the interaction lane may carry into the next Wave.
+passes; the interaction lane may carry into a later entry.
 ```
 
-When the build lane completes but review is still running, the Host creates:
+```bash
+harness mission log append --mission-id <id> --kind judgment \
+  --body "$(cat wave-1-judgment.md)"
+```
+
+When the build lane completes but review is still running, the Host appends
+the next judgment BEFORE integrating, not after:
 
 ```markdown
-# Wave 2 — Integrate and keep review running
+# Integrate and keep review running
 
 The baseline is reproducible. Merge the build evidence now. Keep
 InteractionReviewer on the same MemberRun and native session; its Work
-continues from Wave 1.
+continues unchanged.
 
 Add RepairFixer only if the live interaction check finds a defect.
 ```
 
-No runtime is moved into Wave 2. The Wave only records the changed Host plan.
-The existing Work, Member identity, and provider session continue.
+```bash
+harness mission log append --mission-id <id> --kind judgment \
+  --body "$(cat integrate-judgment.md)"
+```
+
+No runtime is moved by appending a Mission Log entry. The entry only records
+the changed Host judgment. The existing Work, Member identity, and provider
+session continue.
 
 ## Required Behaviors
 
@@ -81,17 +97,31 @@ The existing Work, Member identity, and provider session continue.
 - Shows linked teams and active runs as relations.
 - Closes with an explicit Host outcome; team lifecycle is unchanged.
 
-### Wave
+### Mission Log
 
-- Stores Markdown `context`, `revision`, `updated_by`, and append-only history.
-- Supports update and explicit advance. Use a revision for a small adjustment
-  inside the same judgment boundary. Advance and create the next Wave when the
-  plan, member composition, responsibility, risk, or decision boundary changes
-  materially.
-- Does not require all Works or TeamRuns to finish before advance.
-- May cite Works, members, artifacts, checks, or team runs in prose.
-- Optional legacy executor fields remain read-only-compatible, not required on
-  the new authoring path.
+- Append-only rows: `mission_id`, `revision` (monotonic per Mission,
+  store-assigned — callers never choose it), `kind` in `judgment` / `replan` /
+  `recovery` / `closeout_evidence`, a non-empty Markdown `body`, `actor`, and
+  `created_at`. There is no update, delete, or gate: a correction is a new
+  entry, not a mutation of an old one, and an append-only log has nothing
+  analogous to a Wave gate to accept, revise, or block (ADR 0051).
+- Log-before-act: at a material decision point — a new Work tranche, a
+  composition change, recovery, or a model/provider switch — the Host appends
+  the judgment entry before mutating runs or Works, never as after-the-fact
+  narration.
+- Mandatory readers: the recovery entrypoint (`harness team-run recover`)
+  prints the linked Mission's Log tail before any mutation; a replacement
+  Host derives its native goal/plan from `mission show` plus the Log tail
+  plus the board summary, never from provider-native goal/plan state, which
+  is explicitly disposable.
+- May cite Works, members, artifacts, checks, or team runs in prose, same as
+  the Wave memo it replaces.
+- **Historical Waves remain readable.** Rows created before this cutover
+  (Markdown `context`, `revision`, `updated_by`, append-only history, and
+  optional legacy executor fields) stay available through `wave
+  list`/`show`/`history`. There is no data migration, and no new Host
+  judgment is written there — `wave create`/`update`/`advance`/`gate` are
+  retired on every surface (CLI, HTTP, MCP).
 
 ### Agent Team
 
@@ -108,11 +138,12 @@ The existing Work, Member identity, and provider session continue.
 - A Mission-scoped TeamRun uses `mission_id` and `agent_team_id`; `wave_id` is
   absent in the primary path.
 - Members can continue, join, be renamed, or be explicitly closed across
-  Waves. Interrupt stops only the current turn; Close ends one runtime
+  re-plans. Interrupt stops only the current turn; Close ends one runtime
   generation, and explicit Reopen resumes the same MemberRun/native session.
   Controls require the selected provider mode's real acknowledgement.
 - Closing preserves MemberRun coordination and its native-session locator.
-  Wave advance and TeamRun completion never close a member implicitly.
+  Appending a Mission Log entry and TeamRun completion never close a member
+  implicitly.
 
 ### Works and messaging
 
@@ -167,16 +198,19 @@ Keep the approved Mission Canvas layout. Make targeted semantic changes:
 
 - Mission context is the durable right-rail brief and can expand to full
   Markdown.
-- Linked teams appear at Mission scope, not nested as the selected Wave's
+- Linked teams appear at Mission scope, not nested as a selected Wave's
   attempt.
-- Selected Wave renders its full Markdown context and revision history.
+- The Mission Log renders newest-first as a plain list: revision, kind badge
+  (`judgment`/`replan`/`recovery`/`closeout_evidence`), body, and created_at.
+  It is a read projection in this cutover; recording judgment goes through
+  `harness mission log append`, not a Dashboard write form.
+- The Wave canvas/list is labeled **Historical** and renders read-only: full
+  Markdown context and revision history for rows that predate ADR 0051. It
+  never gains new entries.
 - A compact responsibility table is rendered from Markdown when present.
 - Member rows link to Member Focus.
-- Carry-over badges use Work origin and current state; they do not imply
-  the Wave owns the member.
-- “Advance Wave” is a Host plan decision and remains available while members
-  run, with a confirmation summarizing the carry-over.
-- “Update plan” edits the selected Wave Markdown and appends a revision.
+- Carry-over badges use Work origin and current state; they do not imply a
+  Mission Log entry or a historical Wave owns the member.
 - Lead Inbox groups member questions and coordination. Works separately expose
   blockers, submissions, and reviews, with linked discussion where present.
 - Team/Member controls expose the current Supervisor/reconnect state and typed
@@ -201,10 +235,10 @@ The Host gives two durable collaborators independent end-to-end lanes:
 
 Each member plans its own lane and may delegate bounded design, coding, or test
 work to native subagents. The Host answers correlated questions, integrates a
-completed lane without waiting for the other, and advances the Wave while the
-unfinished member keeps its original MemberRun, Work ownership,
-Workspace, and provider session. A separate Reviewer Member is used when
-high-risk acceptance must be independent.
+completed lane without waiting for the other, and appends the Mission Log
+judgment while the unfinished member keeps its original MemberRun, Work
+ownership, Workspace, and provider session. A separate Reviewer Member is
+used when high-risk acceptance must be independent.
 
 ## Integration Contract
 

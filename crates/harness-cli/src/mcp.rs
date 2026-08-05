@@ -27,22 +27,21 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, advance_wave, close_mission,
-    close_team_member_value, create_mission, create_team_run, create_team_work_value, create_wave,
-    current_unix_ms_u64, deactivate_team_run_member, drive_prepared_team_run,
-    format_work_brief_line, gate_wave, has_actionable_delivered_manual_ack,
-    host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
-    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
-    latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value,
-    parse_team_actor_kind, parse_team_message_kind, parse_team_message_response_intent,
-    parse_wave_executor_kind, prepare_team_run_start, reconcile_team_message_delivery_value,
-    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
-    reopened_member_requires_supervisor_start, resolve_pending_interaction_value,
-    revise_mission_context, revise_mission_team_link, revise_wave, route_agent_inbox_messages,
-    send_team_message_as_work, serde_snake_label, steer_team_member_value,
-    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
-    team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
-    work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    acknowledge_team_message, add_team_run_member, close_mission, close_team_member_value,
+    create_mission, create_team_run, create_team_work_value, current_unix_ms_u64,
+    deactivate_team_run_member, drive_prepared_team_run, format_work_brief_line,
+    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
+    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
+    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
+    mutate_team_work_value, parse_team_actor_kind, parse_team_message_kind,
+    parse_team_message_response_intent, prepare_team_run_start,
+    reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
+    rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
+    resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
+    revise_mission_team_link, route_agent_inbox_messages, send_team_message_as_work,
+    serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
+    team_run_board_summary_text, team_run_inbox, team_run_wave_index, transition_team_run,
+    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -490,23 +489,6 @@ fn optional_str(arguments: &Value, key: &str) -> Result<Option<String>, String> 
     }
 }
 
-fn optional_string_array(arguments: &Value, key: &str) -> Result<Vec<String>, String> {
-    match arguments.get(key) {
-        None => Ok(Vec::new()),
-        Some(Value::Array(values)) => values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                value
-                    .as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("argument `{key}[{index}]` must be a string"))
-            })
-            .collect(),
-        Some(_) => Err(format!("argument `{key}` must be an array")),
-    }
-}
-
 fn tool_mission_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let mission = create_mission(
         store,
@@ -564,36 +546,12 @@ fn tool_mission_list(store: &HarnessStore) -> Result<Value, String> {
         .map_err(|error| error.to_string())?))
 }
 
-fn tool_wave_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let index = match arguments.get("index") {
-        None => None,
-        Some(value) => {
-            let index = value
-                .as_u64()
-                .ok_or_else(|| "index must be a positive integer".to_string())?;
-            Some(u32::try_from(index).map_err(|_| "index must fit a positive u32".to_string())?)
-        }
-    };
-    let wave = create_wave(
-        store,
-        optional_str(arguments, "id")?,
-        required_str(arguments, "mission_id")?,
-        index,
-        required_str(arguments, "title")?,
-        required_str(arguments, "objective")?,
-        parse_wave_executor_kind(
-            optional_str(arguments, "executor_kind")?
-                .as_deref()
-                .unwrap_or("host"),
-        )
-        .map_err(|error| error.to_string())?,
-        optional_str(arguments, "exit_criteria")?,
-        optional_str(arguments, "plan_note")?,
-        optional_str(arguments, "context")?,
-        optional_str(arguments, "updated_by")?,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!(wave))
+/// Wave write tools retired by the ADR 0051 Mission Log cutover — see
+/// `crate::retired_wave_write_error`, the single source of truth this
+/// mirrors across CLI, HTTP, and MCP so no surface keeps a live Wave-write
+/// path. `wave_list` (below) stays: historical Wave rows remain readable.
+fn tool_wave_create(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
+    Err(retired_wave_write_error("create").to_string())
 }
 
 fn tool_wave_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -606,49 +564,16 @@ fn tool_wave_list(store: &HarnessStore, arguments: &Value) -> Result<Value, Stri
         .collect::<Vec<_>>()))
 }
 
-fn tool_wave_update(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    revise_wave(
-        store,
-        required_str(arguments, "wave_id")?,
-        required_str(arguments, "context")?,
-        optional_str(arguments, "updated_by")?
-            .as_deref()
-            .unwrap_or("host"),
-    )
-    .map(|wave| json!(wave))
-    .map_err(|error| error.to_string())
+fn tool_wave_update(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
+    Err(retired_wave_write_error("update").to_string())
 }
 
-fn tool_wave_advance(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    advance_wave(
-        store,
-        required_str(arguments, "wave_id")?,
-        required_str(arguments, "outcome")?,
-        optional_str(arguments, "advanced_by")?
-            .as_deref()
-            .unwrap_or("host"),
-        optional_string_array(arguments, "artifact_refs")?,
-    )
-    .map(|wave| json!(wave))
-    .map_err(|error| error.to_string())
+fn tool_wave_advance(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
+    Err(retired_wave_write_error("advance").to_string())
 }
 
-fn tool_wave_gate(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let artifacts = optional_string_array(arguments, "artifact_refs")?;
-    let wave = gate_wave(
-        store,
-        required_str(arguments, "wave_id")?,
-        required_str(arguments, "status")?,
-        optional_str(arguments, "run_id")?,
-        optional_str(arguments, "accepted_by")?
-            .as_deref()
-            .unwrap_or("host"),
-        optional_str(arguments, "note")?,
-        optional_str(arguments, "outcome")?,
-        artifacts,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!(wave))
+fn tool_wave_gate(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
+    Err(retired_wave_write_error("gate").to_string())
 }
 
 /// `team_run_create` — journal a new run, idle members, and explicit initial Works.
@@ -1225,7 +1150,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "mission_close",
-            "description": "Complete a Mission with an explicit outcome after every ordered Wave has an explicit Host advance outcome. Completed Missions are immutable; linked Team lifecycle is unchanged.",
+            "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Wave gate acceptance is no longer required (ADR 0051) — record a closeout_evidence Mission Log entry beforehand by convention.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1243,7 +1168,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "wave_create",
-            "description": "Create an ordered Host-plan Wave with Markdown context. executor_kind is an optional legacy direct-executor compatibility hint.",
+            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `mission_log_append`-equivalent CLI (`harness mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <markdown>`) instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1263,7 +1188,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "wave_update",
-            "description": "Append a new revision of the selected Wave's Host operational memo.",
+            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `harness mission log append` instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1276,7 +1201,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "wave_advance",
-            "description": "Record the Host decision to advance. Active members, assignments, and provider sessions continue unchanged.",
+            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. Use `harness mission log append` instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1295,7 +1220,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "wave_gate",
-            "description": "Record a lightweight Wave gate. `accepted` requires an eligible executor run; for agent_team it must be a completed TeamRun linked to the same Mission/Wave. `revise` and `blocked` preserve attempts.",
+            "description": "Retired by the ADR 0051 Mission Log cutover; always returns an error. An append-only Mission Log has no gate — use `harness mission log append` instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

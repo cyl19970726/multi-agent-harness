@@ -120,6 +120,51 @@ fn call_payload(response: &serde_json::Value) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("tool payload not JSON ({e}): {text}"))
 }
 
+/// Assert a `tools/call` response IS an error (ADR 0051 retired Wave-write
+/// tools answer 200-style with `isError: true`, not a JSON-RPC error) and
+/// return its text content.
+fn call_error_text(response: &serde_json::Value) -> String {
+    let result = &response["result"];
+    assert_eq!(
+        result["isError"].as_bool(),
+        Some(true),
+        "tools/call unexpectedly succeeded: {response}"
+    );
+    result["content"][0]["text"]
+        .as_str()
+        .expect("text content block")
+        .to_string()
+}
+
+/// Seed one historical Wave row directly, bypassing the retired `wave_create`
+/// MCP tool (ADR 0051), so tests can prove `origin_wave_id` navigation still
+/// resolves a pre-cutover Wave row without exercising a live write.
+fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id: &str, index: u64) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("waves.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open wave ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "mission_id": mission_id,
+            "index": index,
+            "title": "Historical Wave",
+            "objective": "Seeded pre-cutover row for origin_wave_id coverage",
+            "executor_kind": "agent_team",
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical wave");
+}
+
 #[test]
 fn mcp_stdio_agent_team_tools() {
     let home = TempHome::new("mcp-stdio");
@@ -333,8 +378,12 @@ fn mcp_stdio_agent_team_tools() {
     assert!(start_descriptor.contains("never store_root"));
     assert!(start_descriptor.contains("provider-native sessions"));
 
-    // 3. Native Mission + Wave creation through MCP (the same helpers as CLI
-    // and HTTP) supplies the outer identity for the TeamRun.
+    // 3. Native Mission creation through MCP (the same helper as CLI and
+    // HTTP) supplies the outer identity for the TeamRun. Wave creation is
+    // retired (ADR 0051): the MCP tool now answers isError:true instead of
+    // authoring a row; a historical Wave is seeded directly (never through
+    // `wave_create`) purely so the origin_wave_id navigation check below has
+    // a real pre-cutover Wave id to cite.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -358,11 +407,17 @@ fn mcp_stdio_agent_team_tools() {
             }
         }),
     );
-    let wave = call_payload(&response);
-    assert_eq!(wave["mission_id"].as_str(), Some("mission-mcp"));
-    assert_eq!(wave["index"].as_u64(), Some(2));
+    let wave_create_error = call_error_text(&response);
+    assert!(
+        wave_create_error.contains("retired") && wave_create_error.contains("mission log append"),
+        "wave_create error: {wave_create_error}"
+    );
+    seed_historical_wave(&home, &project_id, "wave-mcp", "mission-mcp", 2);
 
-    // 4. team_run_create with two members → run id + member run ids.
+    // 4. team_run_create with two members → run id + member run ids. Direct
+    // wave_id binding still works against the seeded historical row --
+    // ADR 0051 retired Wave *write* commands, not citing an existing Wave id
+    // on TeamRun creation.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -954,21 +1009,9 @@ fn mcp_stdio_agent_team_tools() {
     // running projection and exact URL, then the provider completes one turn
     // in the background while the same Host session remains responsive. Turn
     // completion returns the Member to idle; it does not complete the TeamRun.
-    let response = mcp.request(
-        "tools/call",
-        serde_json::json!({
-            "name": "wave_create",
-            "arguments": {
-                "id": "wave-mcp-start",
-                "mission_id": "mission-mcp",
-                "index": 3,
-                "title": "Async start",
-                "objective": "Prove non-blocking MCP start",
-                "executor_kind": "agent_team"
-            }
-        }),
-    );
-    call_payload(&response);
+    // wave-mcp-start is seeded historical (wave_create MCP retirement is
+    // already proven above; no need to repeat the same assertion here).
+    seed_historical_wave(&home, &project_id, "wave-mcp-start", "mission-mcp", 3);
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1028,8 +1071,9 @@ fn mcp_stdio_agent_team_tools() {
         "MCP-started Member did not return to idle while TeamRun stayed running"
     );
 
-    // Mission closeout is a separate Host decision after all Waves are
-    // accepted; a host Wave needs no invented executor run.
+    // Mission closeout is a separate Host decision; it no longer requires
+    // any Wave gate (ADR 0051) -- close succeeds directly on its own
+    // outcome, and wave_create/wave_gate both answer isError:true.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1051,7 +1095,8 @@ fn mcp_stdio_agent_team_tools() {
             }
         }),
     );
-    call_payload(&response);
+    let wave_create_error = call_error_text(&response);
+    assert!(wave_create_error.contains("retired"), "{wave_create_error}");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1059,7 +1104,8 @@ fn mcp_stdio_agent_team_tools() {
             "arguments": {"wave_id": "wave-close", "status": "accepted", "outcome": "host slice done"}
         }),
     );
-    call_payload(&response);
+    let wave_gate_error = call_error_text(&response);
+    assert!(wave_gate_error.contains("retired"), "{wave_gate_error}");
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1074,6 +1120,7 @@ fn mcp_stdio_agent_team_tools() {
         closed["outcome_summary"].as_str(),
         Some("all intent satisfied")
     );
+    assert_eq!(closed["wave_ids"], serde_json::json!([]));
 
     // 14. Unknown method → JSON-RPC -32601; unknown tool → -32602; a failing
     //    tool call → isError:true with the reason as text.
