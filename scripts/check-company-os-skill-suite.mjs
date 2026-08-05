@@ -13,6 +13,8 @@ const suiteSkills = [
   "company-page-builder",
   "dogfood-company-os",
   "connect-github-company-os",
+  "orchestrate-mission-waves",
+  "collaborate-as-agent-team-member",
 ];
 
 const operatorSkills = [
@@ -26,8 +28,8 @@ const failures = [];
 expectSuiteSize();
 
 function expectSuiteSize() {
-  if (suiteSkills.length !== 8) {
-    failures.push(`company-os suite must contain exactly 8 skills, found ${suiteSkills.length}`);
+  if (suiteSkills.length !== 10) {
+    failures.push(`company-os suite must contain exactly 10 skills, found ${suiteSkills.length}`);
   }
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Acceptance: a fresh user can INSTALL the star-workflow skill, INSTALL the
-# eight-Skill Company OS operator suite, and RUN the harness. Models the external-user
+# ten-Skill Company OS operator suite, and RUN the harness. Models the external-user
 # journey with checkable outcomes; exits nonzero on any failed check.
 #
 #   scripts/acceptance-skill-install.sh            # local: install + build + serve + run
@@ -79,7 +79,7 @@ if bash "$REPO_ROOT/scripts/install-skill.sh" --agent both --dest "$COMPANY_PROJ
 else
   bad "install-skill.sh --suite company-os exited nonzero"
 fi
-for name in company-business-project-bootstrap company-docs-operator company-work-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os; do
+for name in company-business-project-bootstrap company-docs-operator company-work-operator company-org-operator company-module-designer company-page-builder dogfood-company-os connect-github-company-os orchestrate-mission-waves collaborate-as-agent-team-member shared-references; do
   for d in .claude/skills .agents/skills; do
     if [ -f "$COMPANY_PROJ/$d/$name/SKILL.md" ] && [ ! -L "$COMPANY_PROJ/$d/$name" ]; then
       ok "$d/$name installed as real files"

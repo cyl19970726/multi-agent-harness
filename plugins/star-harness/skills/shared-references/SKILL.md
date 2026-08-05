@@ -1,0 +1,84 @@
+---
+name: shared-references
+description: Shared Hard Invariants referenced by team coordination skills. Do not install directly; load as a cross-reference from orchestrate-mission-waves or collaborate-as-agent-team-member.
+---
+
+# Shared Hard Invariants
+
+These rules bind the Host Lead and every Agent Team Member. The Host-facing
+skill (`orchestrate-mission-waves`) and the Member-facing skill
+(`collaborate-as-agent-team-member`) both reference this file. Where this file
+and a canonical doc (ADR, schema, product doc) conflict, the canonical doc
+wins.
+
+## 1. No Assignment Message Compatibility Path
+
+Agent Team responsibility is only through the shared Works board. There is no
+Assignment Message compatibility path and no Harness Goal, Plan Gate, or Task
+Graph. TeamMessage is conversation only; never treat a Message as
+responsibility, ownership, or status.
+
+## 2. One Execution Driver Per MemberRun
+
+Each active MemberRun/native session/writable Workspace has exactly one
+top-level execution driver:
+
+- `host_driven`: Harness starts the next eligible Provider cycle.
+- `provider_driven`: a reviewed native continuation loop starts cycles.
+- `user_driven`: only for declared `external_interactive` members; a human
+  drives their own session.
+
+Never activate a native Goal and also start ordinary Harness cycles for the
+same Work. Provider Goal satisfaction, Provider turn completion, transport
+receipt, Work submission, and Host acceptance are different facts.
+
+## 3. Provider-Native Session Is Sole Execution Truth
+
+The provider's native session store is the sole execution truth for a member's
+transcript, tool calls, commands, file events, and provider turn lifecycle.
+Never reconstruct a session from Harness messages.
+
+## 4. Messages Never Change Work State
+
+TeamMessage is authored conversation only. A message may explain scope, a
+blocker, a result, or a review decision, but it never changes Work owner or
+status. If conversation creates durable follow-up, create self-owned or
+unassigned Work explicitly.
+
+## 5. Host Acceptance Separates Submission From Done
+
+Submission moves Work to `review`; it does not imply Host acceptance. A
+reviewer Member may recommend but cannot impersonate the Host's acceptance
+authority. Only explicit Host acceptance moves Work to `done`. Treat `review`
+as non-terminal: submission without Host acceptance must block TeamRun
+completion.
+
+## 6. Provider-Native Subagents Are Internal Only
+
+A Member may use Provider-native subagents for bounded internal lanes. They
+inherit the parent's Workspace and permission ceiling, return evidence to the
+parent, and never become Harness Members, own Work, or serve as independent
+reviewers.
+
+## 7. Child Completion Never Auto-Completes Parent
+
+When a parent delegates to a child Team or child Work, child completion does
+not auto-submit or auto-complete the parent Work. The parent owner remains
+accountable for integrating child results and submitting the parent Work.
+
+## 8. No Plan Mode / No Plan Gate
+
+Harness has no Plan Mode or Plan Gate. When the Host wants a plan first, it
+asks through an ordinary correlated Markdown message; the Member replies, and
+the Host argues or approves in the same chain. Provider-native plan/goal
+features are optional internal aids; they are not Harness state or Host
+acceptance.
+
+## 9. Work Ownership Survives
+
+Work identity persists across Mission Log entries, re-plans, crashes, and
+runtime restarts. Active Work keeps the same Work id, MemberRun, Workspace, and
+native session. Never clear ownership, duplicate side effects, or reconstruct a
+session from Harness messages after a crash. Host assignment, resume,
+request-changes, and rebind are external changes that still arrive as
+WorkDelivery.

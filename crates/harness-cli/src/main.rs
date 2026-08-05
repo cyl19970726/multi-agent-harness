@@ -10025,6 +10025,7 @@ fn team_member_provider_profile_for_mode(
                 "0.27.0".to_string(),
                 "0.31.0".to_string(),
                 "0.31.1".to_string(),
+                "0.32.0".to_string(),
             ],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
             adapter_reviewed_at: Some("2026-08-04".to_string()),
@@ -10189,12 +10190,20 @@ fn apply_provider_version(
 fn refreshed_team_member_provider_profile(
     member: &MemberRun,
 ) -> CliResult<(ProviderIntegrationProfile, Option<String>)> {
-    let mut profile = member.provider_profile.clone().ok_or_else(|| {
-        CliError::Usage(format!(
-            "member run {} has no provider integration profile",
-            member.id
-        ))
-    })?;
+    // Base the refresh on the CURRENT adapter registry, not the stored
+    // profile. The stored profile's reviewed_provider_versions is frozen at
+    // member-creation time, so a registry update could never unblock an
+    // existing durable MemberRun — contradicting the remediation contract in
+    // PROVIDER_COMPATIBILITY_BLOCKED itself ("add the exact version to the
+    // adapter's reviewed_provider_versions before retrying the same durable
+    // MemberRun and Work"). The gate persists the refreshed profile back, so
+    // existing members self-heal on the next boundary.
+    let stored_mode = member
+        .provider_profile
+        .as_ref()
+        .map(|stored| stored.execution_mode.clone());
+    let mut profile =
+        team_member_provider_profile_for_mode(&member.provider, stored_mode.as_deref());
     let detected = team_member_provider_version_output(&member.provider);
     let probe_error = detected.as_ref().err().cloned();
     apply_provider_version(&mut profile, detected.ok());
@@ -40282,9 +40291,20 @@ package:com.tencent.mm
 
         let mut future = team_member_provider_profile("kimi");
         apply_provider_version(&mut future, Some("0.32.0".to_string()));
+        // 0.32.0 is adapter-reviewed for prompt delivery/resume/mail, but
+        // cancel and native goal mode stay unclaimed (fail-closed per
+        // capability, not inherited from 0.31.x).
         assert!(!future.supports_cancel);
+        assert_eq!(future.goal_mode, ProviderFeatureMode::Emulated);
         assert_eq!(
             future.compatibility_status,
+            ProviderCompatibilityStatus::Current
+        );
+
+        let mut unreviewed = team_member_provider_profile("kimi");
+        apply_provider_version(&mut unreviewed, Some("0.33.0".to_string()));
+        assert_eq!(
+            unreviewed.compatibility_status,
             ProviderCompatibilityStatus::ReviewRequired
         );
     }

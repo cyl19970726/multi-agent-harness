@@ -4,7 +4,7 @@
 status: accepted product contract; breaking cutover in progress
 owner_role: execution-foundation
 canonical_for: Agent Team Work, shared Kanban, assignment/claim, Work delivery,
-  Message boundary, child delegation, and Mission/Wave relationship
+  Message boundary, child delegation, and Mission relationship
 decision: ADR 0050
 ```
 
@@ -591,23 +591,23 @@ Team and Organization views. Work still cannot approve legal, financial,
 credential, or irreversible external effects; those stay in their owning
 product modules.
 
-## Mission And Wave
+## Mission Log And Works
 
 Works do not replace Mission:
 
 ```text
-Mission = why, durable outcome, boundary, shared context, and closeout
-Wave    = what changed in Host judgment and why the plan was revised
-Works   = what currently exists, who owns it, and its execution state
+Mission     = why, durable outcome, boundary, shared context, and closeout
+Mission Log = versioned Host judgment: appended entries (judgment, replan, recovery, closeout-evidence)
+Works       = what currently exists, who owns it, and its execution state
 ```
 
-Works replace Assignment messages and remove task enumeration from Wave prose.
-A Wave cites important Work ids only when recording a material re-plan,
+Works replace Assignment messages and remove task enumeration from Mission Log prose.
+A Mission Log entry cites important Work ids only when recording a material re-plan,
 composition change, integration decision, or advance judgment.
 
 Mission remains optional. A standalone Agent Team may operate only with Works.
 Use Mission when one durable outcome spans several Teams, Workflows, Host work,
-or important plan revisions. Wave remains a lightweight memo, never a task
+or important plan revisions. The Mission Log is an append-only record, never a task
 container or synchronization barrier.
 
 ## Agent Team Workbench
