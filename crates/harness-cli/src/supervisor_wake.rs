@@ -479,6 +479,147 @@ mod tests {
         assert_eq!(decision, WakeDecision::Continue("work-1".into()));
     }
 
+    // ── Multi-turn behavioral tests ──────────────────────────────────────
+
+    /// Simulate escalation: streak 1 → Continue (probation), streak 2 →
+    /// Continue (probation), streak 3 → Degraded (threshold hit).
+    #[test]
+    fn zero_output_streak_escalates_to_degraded_across_turns() {
+        let policy = WakePolicy {
+            zero_output_degradation_threshold: 3,
+            ..WakePolicy::default()
+        };
+        let board = board_view(&[]);
+
+        // Turn 1: streak 1, below threshold, active work exists → Continue.
+        {
+            let member = member_view(MemberWakeViewOverrides {
+                status: Some(MemberRunStatus::Running),
+                is_idle: Some(false),
+                active_work_id: Some("work-1".into()),
+                active_work_version: Some(3),
+                last_consumed_work_version: Some(3),
+                zero_output_streak: Some(1),
+                ..Default::default()
+            });
+            let decision = decide_wake(&member, &board, &policy, &fresh_backoff());
+            assert_eq!(
+                decision,
+                WakeDecision::Continue("work-1".into()),
+                "streak 1 should Continue (probation)"
+            );
+        }
+
+        // Turn 2: streak 2, still below threshold → Continue.
+        {
+            let member = member_view(MemberWakeViewOverrides {
+                status: Some(MemberRunStatus::Running),
+                is_idle: Some(false),
+                active_work_id: Some("work-1".into()),
+                active_work_version: Some(3),
+                last_consumed_work_version: Some(3),
+                zero_output_streak: Some(2),
+                ..Default::default()
+            });
+            let decision = decide_wake(&member, &board, &policy, &fresh_backoff());
+            assert_eq!(
+                decision,
+                WakeDecision::Continue("work-1".into()),
+                "streak 2 should Continue (probation)"
+            );
+        }
+
+        // Turn 3: streak 3, hits threshold → Degraded.
+        {
+            let member = member_view(MemberWakeViewOverrides {
+                status: Some(MemberRunStatus::Running),
+                is_idle: Some(false),
+                active_work_id: Some("work-1".into()),
+                active_work_version: Some(3),
+                last_consumed_work_version: Some(3),
+                zero_output_streak: Some(3),
+                ..Default::default()
+            });
+            let decision = decide_wake(&member, &board, &policy, &fresh_backoff());
+            assert!(
+                matches!(decision, WakeDecision::Degraded(_)),
+                "streak 3 should Degrade, got {decision:?}"
+            );
+        }
+    }
+
+    /// Degraded member must stay sleeping even when new unconsumed deliveries
+    /// arrive. Predicate 1 (already degraded) beats predicate 3 (delivery).
+    #[test]
+    fn degraded_member_ignores_unconsumed_deliveries() {
+        let policy = WakePolicy {
+            zero_output_degradation_threshold: 3,
+            ..WakePolicy::default()
+        };
+        let member = member_view(MemberWakeViewOverrides {
+            status: Some(MemberRunStatus::Blocked),
+            is_idle: Some(false),
+            active_work_id: Some("work-1".into()),
+            active_work_version: Some(3),
+            last_consumed_work_version: Some(3),
+            zero_output_streak: Some(3),
+            unconsumed_delivery_count: Some(2),
+            ..Default::default()
+        });
+        let board = board_view(&[]);
+        let decision = decide_wake(&member, &board, &policy, &fresh_backoff());
+        assert!(
+            matches!(decision, WakeDecision::Sleep(_)),
+            "degraded (Blocked + streak>=threshold) with deliveries must Sleep, got {decision:?}"
+        );
+    }
+
+    /// When the version is already consumed, Continue is suppressed — but
+    /// unconsumed deliveries still wake the member for delivery (predicate 3
+    /// fires before predicate 4's version check).
+    #[test]
+    fn consumed_version_suppresses_continue_but_not_delivery() {
+        let policy = WakePolicy::default();
+
+        // Case A: consumed version + no deliveries + no streaks → Sleep.
+        {
+            let member = member_view(MemberWakeViewOverrides {
+                status: Some(MemberRunStatus::Running),
+                is_idle: Some(false),
+                active_work_id: Some("work-1".into()),
+                active_work_version: Some(5),
+                last_consumed_work_version: Some(5),
+                zero_output_streak: Some(0),
+                ..Default::default()
+            });
+            let decision = decide_wake(&member, &board_view(&[]), &policy, &fresh_backoff());
+            assert!(
+                matches!(decision, WakeDecision::Sleep(_)),
+                "consumed version + no deliveries should Sleep (Continue suppressed), got {decision:?}"
+            );
+        }
+
+        // Case B: consumed version + deliveries → DeliverPending (delivery
+        // wakes even though the version is stale).
+        {
+            let member = member_view(MemberWakeViewOverrides {
+                status: Some(MemberRunStatus::Running),
+                is_idle: Some(false),
+                active_work_id: Some("work-1".into()),
+                active_work_version: Some(5),
+                last_consumed_work_version: Some(5),
+                unconsumed_delivery_count: Some(1),
+                ..Default::default()
+            });
+            let decision = decide_wake(&member, &board_view(&[]), &policy, &fresh_backoff());
+            assert_eq!(
+                decision,
+                WakeDecision::DeliverPending,
+                "consumed version + deliveries should DeliverPending"
+            );
+        }
+    }
+
     // ── Backoff tests ────────────────────────────────────────────────────
 
     #[test]

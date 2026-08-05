@@ -6113,6 +6113,8 @@ mod tests {
             started_at: "unix-ms:1".into(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         };
         store.append_member_run(&member).expect("seed MemberRun");
         let work = store
@@ -6718,6 +6720,8 @@ mod tests {
             started_at: "unix-ms:1".into(),
             last_event_at: Some("unix-ms:2".into()),
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         };
 
         store
@@ -7534,6 +7538,8 @@ mod tests {
             started_at: "unix-ms:1".into(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         };
         store.append_team_run(&run).expect("append run");
         store.append_member_run(&member).expect("append member");
@@ -7753,6 +7759,8 @@ mod tests {
             started_at: "unix-ms:1".into(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         };
         let member_a = member("a");
         let member_b = member("b");
@@ -10874,6 +10882,8 @@ mod tests {
             started_at: "unix-ms:1".into(),
             last_event_at: None,
             finished_at: None,
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
         };
         store.append_member_run(&member).expect("append member");
         let work = store

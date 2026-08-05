@@ -102,6 +102,8 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         started_at: "unix-ms:1".into(),
         last_event_at: None,
         finished_at: None,
+        zero_output_streak: 0,
+        last_consumed_work_version: None,
     };
     let member_a = member("a");
     let member_b = member("b");
