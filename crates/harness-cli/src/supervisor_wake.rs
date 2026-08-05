@@ -235,6 +235,7 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct MemberWakeViewOverrides {
         status: Option<MemberRunStatus>,
         is_idle: Option<bool>,
@@ -244,21 +245,6 @@ mod tests {
         unconsumed_delivery_count: Option<u32>,
         unconsumed_message_count: Option<u32>,
         zero_output_streak: Option<u32>,
-    }
-
-    impl Default for MemberWakeViewOverrides {
-        fn default() -> Self {
-            Self {
-                status: None,
-                is_idle: None,
-                active_work_id: None,
-                active_work_version: None,
-                last_consumed_work_version: None,
-                unconsumed_delivery_count: None,
-                unconsumed_message_count: None,
-                zero_output_streak: None,
-            }
-        }
     }
 
     fn board_view(eligible_ids: &[&str]) -> BoardWakeView {

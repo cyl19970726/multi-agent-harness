@@ -16558,6 +16558,7 @@ fn stop_member_for_latched_close(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wait_for_idle_member_wake(
     ledger: &TeamRunLedger,
     member_row: &mut MemberRun,
