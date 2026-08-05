@@ -154,27 +154,45 @@ export function MemberRunFocus({
   const steerCapability = context ? liveSteerCapability(context.member) : { allowed: false, reason: undefined };
   const canLiveSteer = steerCapability.allowed;
 
+  // Native provider activity is live while the member runs, so poll it every
+  // 5s in that window; otherwise one read per session change is enough and the
+  // interval is torn down. SSE keeps covering the durable rows in both cases.
+  const memberStatus = context?.member.status;
   useEffect(() => {
     setNativeActivity(undefined);
     setNativeActivityState(apiUrl && memberRunId ? "loading" : "idle");
     if (!apiUrl || !memberRunId) return;
     let cancelled = false;
-    fetchNativeMemberActivity(apiUrl, memberRunId, projectBindingId, executionSpaceId)
-      .then((projection) => {
-        if (!cancelled) {
-          setNativeActivity(projection);
-          setNativeActivityState("ready");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setNativeActivityState("unavailable");
-      });
-    return () => { cancelled = true; };
+    let inFlight = false;
+    const load = () => {
+      if (inFlight) return;
+      inFlight = true;
+      fetchNativeMemberActivity(apiUrl, memberRunId, projectBindingId, executionSpaceId)
+        .then((projection) => {
+          if (!cancelled) {
+            setNativeActivity(projection);
+            setNativeActivityState("ready");
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setNativeActivityState("unavailable");
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    load();
+    const timer = memberStatus === "running" ? window.setInterval(load, 5_000) : null;
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearInterval(timer);
+    };
   }, [
     apiUrl,
     memberRunId,
     projectBindingId,
     executionSpaceId,
+    memberStatus,
     context?.member.native_session?.native_session_id,
   ]);
 

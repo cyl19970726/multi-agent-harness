@@ -51,12 +51,25 @@ async function main() {
       && close.body.completed_by === "lead",
     "Mission closeout action carries durable outcome and actor",
   );
-  const revisePlan = actions.updateWaveContext("wave/a", "# revised plan", "host");
+  const replan = actions.appendMissionLog({
+    missionId: "mission/a",
+    kind: "replan",
+    body: "# revised plan",
+    actor: "operator",
+  });
   check(
-    revisePlan.path === "/v1/waves/wave%2Fa/context"
-      && revisePlan.body.context === "# revised plan"
-      && revisePlan.body.updated_by === "host",
-    "Update plan writes a Wave Markdown revision through the canonical action",
+    replan.path === "/v1/missions/mission%2Fa/log"
+      && replan.body.kind === "replan"
+      && replan.body.body === "# revised plan"
+      && replan.body.actor === "operator",
+    "Plan revision appends a Mission Log entry through the canonical action (ADR 0051)",
+  );
+  check(
+    typeof actions.createWave !== "function"
+      && typeof actions.updateWaveContext !== "function"
+      && typeof actions.advanceWave !== "function"
+      && typeof actions.gateWave !== "function",
+    "Retired Wave write descriptors are removed from the action seam",
   );
   const answer = actions.sendTeamMessage("run/a", {
     fromMemberId: "host",
@@ -144,6 +157,27 @@ async function main() {
     readFile(join(dashboardRoot, "src/api.ts"), "utf8"),
     readFile(join(dashboardRoot, "src/lib/provider.ts"), "utf8"),
   ]);
+  const [agentsSurfaceSource, teamsHomeSource] = await Promise.all([
+    readFile(join(dashboardRoot, "src/surfaces/Surfaces.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src/surfaces/AgentTeamsHome.tsx"), "utf8"),
+  ]);
+  check(
+    providerSource.includes("TEAM_MEMBER_PROVIDER_MODES")
+      && providerSource.includes('"pi_rpc"')
+      && agentsSurfaceSource.includes("TEAM_MEMBER_PROVIDER_MODES.map")
+      && teamsHomeSource.includes("TEAM_MEMBER_PROVIDER_MODES")
+      && teamSource.includes("TEAM_MEMBER_PROVIDER_MODES")
+      && missionSource.includes("TEAM_MEMBER_PROVIDER_MODES"),
+    "every creation form sources providers from the single TEAM_MEMBER_PROVIDER_MODES registry (incl. pi_rpc)",
+  );
+  check(
+    teamSource.includes('aria-label="Response intent"'),
+    "War Room composer exposes the explicit response-intent control",
+  );
+  check(
+    memberSource.includes('memberStatus === "running"'),
+    "native activity polling is gated on the member actually running",
+  );
   check(
     teamSource.includes('delivery.member_id === "host" && delivery.status === "delivered"')
       && teamSource.includes("acknowledgeTeamMessage(run.id, message.id, \"host\")"),
@@ -224,14 +258,19 @@ async function main() {
   check(
     missionSource.includes("readyToClose")
       && missionSource.includes("MissionCloseDialog")
-      && missionSource.includes('const requiresRun = wave.executor_kind !== "host"'),
-    "Mission closeout and executor-aware Wave Gate controls are rendered",
+      && missionSource.includes("MissionLogDialog"),
+    "Mission closeout and Mission Log entry controls are rendered",
   );
   check(
-    missionSource.includes("UpdatePlanDialog")
-      && missionSource.includes("updateWaveContext(wave.id, context.trim(), \"host\")")
-      && missionSource.includes("Save revision"),
-    "Mission Canvas can revise current Wave Markdown without advancing the Wave",
+    missionSource.includes("appendMissionLog(")
+      && missionSource.includes('setLogKind("replan")')
+      && missionSource.includes("Append Host judgment")
+      && missionSource.includes("Host decisions are recorded as Mission Log entries (ADR 0051)")
+      && !missionSource.includes("updateWaveContext")
+      && !missionSource.includes("advanceWave")
+      && !missionSource.includes("gateWave")
+      && !missionSource.includes("createWave"),
+    "Mission Canvas revises the Host plan through Mission Log entries without advancing the Wave",
   );
   check(
     missionSource.includes("linkedTeamSummaries.map")

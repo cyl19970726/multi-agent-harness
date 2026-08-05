@@ -1844,3 +1844,68 @@ fn mission_log_cli_append_and_show_happy_path() {
     assert!(!missing_mission.status.success());
     assert!(String::from_utf8_lossy(&missing_mission.stderr).contains("mission not found"));
 }
+
+/// The console must be able to record Host judgment without a terminal:
+/// `POST /v1/missions/{id}/log` appends through the same path as
+/// `harness mission log append`, assigns store revisions, and rejects
+/// unknown kinds with a usage error.
+#[test]
+fn http_mission_log_append_route_appends_and_rejects_unknown_kind() {
+    let home = TempHome::new("mission-wave-http-log");
+    let _project_id = init_project(&home, "alpha");
+    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+
+    let (status, body) = serve.post_json(
+        "/v1/missions",
+        &serde_json::json!({
+            "id": "mission-log-http",
+            "title": "Mission Log HTTP",
+            "objective": "Append entries through the console route",
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-log-http/log",
+        &serde_json::json!({
+            "kind": "judgment",
+            "body": "Advance from the console.",
+            "actor": "operator",
+        }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    let entry = &body["result"];
+    assert_eq!(entry["mission_id"], "mission-log-http");
+    assert_eq!(entry["kind"], "judgment");
+    assert_eq!(entry["actor"], "operator");
+    assert!(
+        entry["revision"].as_u64().unwrap_or(0) >= 1,
+        "revision must be store-assigned: {entry}"
+    );
+
+    // A second append defaults the actor to host and advances the revision.
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-log-http/log",
+        &serde_json::json!({ "kind": "replan", "body": "Replan from the console." }),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["actor"], "host");
+    assert!(
+        body["result"]["revision"].as_u64().unwrap_or(0) > entry["revision"].as_u64().unwrap_or(0),
+        "revisions must be monotonic: {body}"
+    );
+
+    // Unknown kinds are usage errors (HTTP 400), mirroring the CLI.
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-log-http/log",
+        &serde_json::json!({ "kind": "advance", "body": "nope" }),
+    );
+    assert_eq!(status, 400, "body: {body}");
+
+    // Missing missions are rejected like the CLI (`mission not found`).
+    let (status, body) = serve.post_json(
+        "/v1/missions/mission-log-does-not-exist/log",
+        &serde_json::json!({ "kind": "judgment", "body": "orphan" }),
+    );
+    assert_eq!(status, 400, "body: {body}");
+}

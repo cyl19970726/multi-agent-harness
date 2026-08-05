@@ -96,22 +96,31 @@ export function createTeam(params: {
   name: string;
   description: string;
   leadAgentId: string;
+  memberIds?: string[];
+  hostMemberId?: string;
 }): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    name: params.name,
+    description: params.description,
+    lead_agent_id: params.leadAgentId,
+  };
+  if (params.memberIds && params.memberIds.length) {
+    body.member = params.memberIds;
+  }
+  if (params.hostMemberId) {
+    body.host_member_id = params.hostMemberId;
+  }
   return {
     method: "POST",
     path: "/v1/teams",
-    body: {
-      name: params.name,
-      description: params.description,
-      lead_agent_id: params.leadAgentId,
-    },
+    body,
   };
 }
 
 /**
  * Create a new Agent Member. POST /v1/agents requires name and role; provider
- * (codex|claude), description, skills and team membership are optional. Does NOT
- * start a runtime — that stays a separate action.
+ * (kimi|codex|claude|pi), description, skills and team membership are
+ * optional. Does NOT start a runtime — that stays a separate action.
  */
 export function createAgent(params: {
   name: string;
@@ -121,6 +130,10 @@ export function createAgent(params: {
   description?: string;
   skills?: string[];
   teamIds?: string[];
+  profile?: string;
+  permissionProfile?: string;
+  approvalPolicy?: string;
+  sandboxPolicy?: string;
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
     name: params.name,
@@ -143,7 +156,75 @@ export function createAgent(params: {
   if (params.teamIds && params.teamIds.length) {
     body.team = params.teamIds;
   }
+  if (params.profile) {
+    body.profile = params.profile;
+  }
+  if (params.permissionProfile) {
+    body.permission_profile = params.permissionProfile;
+  }
+  if (params.approvalPolicy) {
+    body.approval_policy = params.approvalPolicy;
+  }
+  if (params.sandboxPolicy) {
+    body.sandbox_policy = params.sandboxPolicy;
+  }
   return { method: "POST", path: "/v1/agents", body };
+}
+
+/**
+ * Append one append-only Mission Log entry (POST /v1/missions/{id}/log),
+ * the ADR 0051 replacement for retired Wave writes. Kinds mirror the CLI:
+ * judgment | replan | recovery | closeout_evidence.
+ */
+export function appendMissionLog(params: {
+  missionId: string;
+  kind: "judgment" | "replan" | "recovery" | "closeout_evidence";
+  body: string;
+  actor?: string;
+}): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    kind: params.kind,
+    body: params.body,
+  };
+  if (params.actor) {
+    body.actor = params.actor;
+  }
+  return {
+    method: "POST",
+    path: `/v1/missions/${encodeId(params.missionId)}/log`,
+    body,
+  };
+}
+
+/**
+ * Add one member to an existing TeamRun (POST /v1/team-runs/{id}/members).
+ * A live Supervisor picks the queued MemberRun up; without one the member
+ * waits until the run is (re)started or the member is reopened.
+ */
+export function addTeamMember(params: {
+  teamRunId: string;
+  name: string;
+  role: string;
+  provider: string;
+  model?: string;
+  executionMode?: string;
+  resumeNativeSessionId?: string;
+  initialWork?: string;
+}): ActionDescriptor {
+  const body: Record<string, unknown> = {
+    name: params.name,
+    role: params.role,
+    provider: params.provider,
+  };
+  if (params.model) body.model = params.model;
+  if (params.executionMode) body.execution_mode = params.executionMode;
+  if (params.resumeNativeSessionId) body.resume_native_session_id = params.resumeNativeSessionId;
+  if (params.initialWork) body.initial_work = params.initialWork;
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(params.teamRunId)}/members`,
+    body,
+  };
 }
 
 /**
@@ -231,7 +312,7 @@ export interface TeamRunMemberSpec {
   model?: string;
   effort?: string;
   serviceTier?: string;
-  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk";
+  executionMode?: "codex_app_server" | "kimi_acp" | "claude_agent_sdk" | "pi_rpc";
   /** Optional member-specific workspace override validated against project_root. */
   worktreeRef?: string;
   /** Paths the member may modify; empty/omitted means read-only. */
@@ -340,30 +421,6 @@ export function closeMission(params: {
   };
 }
 
-/** Add an ordered native Wave to a Mission (POST /v1/waves). */
-export function createWave(params: {
-  missionId: string;
-  title: string;
-  objective: string;
-  executorKind?: "agent_team" | "dynamic_workflow" | "host";
-  index?: number;
-  exitCriteria?: string;
-  planNote?: string;
-  context?: string;
-}): ActionDescriptor {
-  const body: Record<string, unknown> = {
-    mission_id: params.missionId,
-    title: params.title,
-    objective: params.objective,
-    executor_kind: params.executorKind ?? "host",
-  };
-  if (params.index != null) body.index = params.index;
-  if (params.exitCriteria) body.exit_criteria = params.exitCriteria;
-  if (params.planNote) body.plan_note = params.planNote;
-  if (params.context) body.context = params.context;
-  return { method: "POST", path: "/v1/waves", body };
-}
-
 export function updateMissionContext(missionId: string, context: string): ActionDescriptor {
   return {
     method: "POST",
@@ -397,54 +454,6 @@ export function createMissionTeam(params: {
       member: params.memberIds ?? [],
     },
   };
-}
-
-export function updateWaveContext(
-  waveId: string,
-  context: string,
-  updatedBy = "host",
-): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/waves/${encodeId(waveId)}/context`,
-    body: { context, updated_by: updatedBy },
-  };
-}
-
-export function advanceWave(params: {
-  waveId: string;
-  outcome: string;
-  advancedBy?: string;
-  artifactRefs?: string[];
-}): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/waves/${encodeId(params.waveId)}/advance`,
-    body: {
-      outcome: params.outcome,
-      advanced_by: params.advancedBy ?? "host",
-      artifact_refs: params.artifactRefs ?? [],
-    },
-  };
-}
-
-/** Record a Wave gate result without rewriting its attempt history. */
-export function gateWave(params: {
-  waveId: string;
-  status: "accepted" | "revise" | "blocked";
-  runId?: string;
-  acceptedBy?: string;
-  note?: string;
-  outcome?: string;
-  artifactRefs?: string[];
-}): ActionDescriptor {
-  const body: Record<string, unknown> = { status: params.status };
-  if (params.runId) body.run_id = params.runId;
-  if (params.acceptedBy) body.accepted_by = params.acceptedBy;
-  if (params.note) body.note = params.note;
-  if (params.outcome) body.outcome = params.outcome;
-  if (params.artifactRefs?.length) body.artifact_refs = params.artifactRefs;
-  return { method: "POST", path: `/v1/waves/${encodeId(params.waveId)}/gate`, body };
 }
 
 /**
