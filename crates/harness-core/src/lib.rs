@@ -3827,6 +3827,10 @@ pub struct WorkDeliveryUpdate {
 pub enum HostAttentionKind {
     WorkReviewRequested,
     WorkBlocked,
+    WorkAccepted,
+    WorkChangesRequested,
+    WorkCancelled,
+    WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
 }

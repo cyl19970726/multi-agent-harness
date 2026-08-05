@@ -2725,6 +2725,9 @@ impl HarnessStore {
         let kind = match operation.event.kind {
             WorkEventKind::Submitted => HostAttentionKind::WorkReviewRequested,
             WorkEventKind::Blocked => HostAttentionKind::WorkBlocked,
+            WorkEventKind::Accepted => HostAttentionKind::WorkAccepted,
+            WorkEventKind::ChangesRequested => HostAttentionKind::WorkChangesRequested,
+            WorkEventKind::Cancelled => HostAttentionKind::WorkCancelled,
             _ => return None,
         };
         Some(HostAttention {
@@ -4505,6 +4508,24 @@ impl HarnessStore {
                 updated_at: delivery.updated_at.clone(),
             },
         )?;
+        self.ensure_host_attention_unlocked(&HostAttention {
+            id: format!("host-attention-wd-{}-failed", delivery.id),
+            team_run_id: delivery.team_run_id.clone(),
+            kind: HostAttentionKind::WorkDeliveryFailed,
+            work_id: delivery.work_id.clone(),
+            work_version: delivery.work_version,
+            source_event_ref: format!("wd-update:{}", update_sequence),
+            member_run_id: Some(delivery.recipient_member_run_id.clone()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: delivery.updated_at.clone(),
+            updated_at: delivery.updated_at.clone(),
+        })?;
         Ok(delivery)
     }
 
@@ -10250,6 +10271,430 @@ mod tests {
         assert!(missing_registry
             .to_string()
             .contains("compatibility AgentMember not found"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    // ── Lane B: upstream event push — Work lifecycle → Host attention ──
+
+    #[test]
+    fn work_submit_emits_host_attention_for_bound_run() {
+        let (root, store, run, member, _) = work_test_fixture("work-submit-ha");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-submit-ha-1"),
+                host_work_context("we-submit-1", "create-submit-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-submit-2", "claim-submit-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let _submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "done",
+                vec!["artifact://x".into()],
+                vec!["check://y".into()],
+                member_work_context(&member.id, "we-submit-3", "submit-submit-ha", "unix-ms:4"),
+            )
+            .expect("submit Work");
+        let attentions = store.host_attentions().expect("host attentions");
+        let review = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkReviewRequested);
+        assert!(
+            review.is_some(),
+            "bound run must emit WorkReviewRequested on submit"
+        );
+        assert_eq!(review.unwrap().team_run_id, run.id);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_block_emits_host_attention_for_bound_run() {
+        let (root, store, run, member, _) = work_test_fixture("work-block-ha");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-block-ha-1"),
+                host_work_context("we-block-1", "create-block-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-block-2", "claim-block-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let _blocked = store
+            .block_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "dependency missing",
+                member_work_context(&member.id, "we-block-3", "block-block-ha", "unix-ms:4"),
+            )
+            .expect("block Work");
+        let attentions = store.host_attentions().expect("host attentions");
+        let blocked = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkBlocked);
+        assert!(
+            blocked.is_some(),
+            "bound run must emit WorkBlocked on block"
+        );
+        assert_eq!(blocked.unwrap().team_run_id, run.id);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_accept_emits_host_attention_for_bound_run() {
+        let (root, store, run, member, _) = work_test_fixture("work-accept-ha");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-accept-ha-1"),
+                host_work_context("we-accept-1", "create-accept-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-accept-2", "claim-accept-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "done",
+                vec!["artifact://z".into()],
+                vec![],
+                member_work_context(&member.id, "we-accept-3", "submit-accept-ha", "unix-ms:4"),
+            )
+            .expect("submit Work");
+        let _accepted = store
+            .accept_work_with_summary(
+                &submitted.id,
+                submitted.version,
+                Some("Host accepted"),
+                host_work_context("we-accept-4", "accept-accept-ha", "unix-ms:5"),
+            )
+            .expect("accept Work");
+        let attentions = store.host_attentions().expect("host attentions");
+        let accepted = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkAccepted);
+        assert!(
+            accepted.is_some(),
+            "bound run must emit WorkAccepted on accept"
+        );
+        assert_eq!(accepted.unwrap().team_run_id, run.id);
+        // WorkReviewRequested should still be present from the earlier submit
+        let review = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkReviewRequested);
+        assert!(
+            review.is_some(),
+            "WorkReviewRequested must persist after accept"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_changes_requested_emits_host_attention_for_bound_run() {
+        let (root, store, run, member, _) = work_test_fixture("work-cr-ha");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-cr-ha-1"),
+                host_work_context("we-cr-1", "create-cr-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-cr-2", "claim-cr-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "done",
+                vec!["artifact://x".into()],
+                vec![],
+                member_work_context(&member.id, "we-cr-3", "submit-cr-ha", "unix-ms:4"),
+            )
+            .expect("submit Work");
+        let _changes = store
+            .request_work_changes(
+                &submitted.id,
+                submitted.version,
+                "needs more tests",
+                host_work_context("we-cr-4", "request-changes-cr-ha", "unix-ms:5"),
+            )
+            .expect("request changes");
+        let attentions = store.host_attentions().expect("host attentions");
+        let cr = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkChangesRequested);
+        assert!(
+            cr.is_some(),
+            "bound run must emit WorkChangesRequested on request changes"
+        );
+        assert_eq!(cr.unwrap().team_run_id, run.id);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_cancel_emits_host_attention_for_bound_run() {
+        let (root, store, run, member, _) = work_test_fixture("work-cancel-ha");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-cancel-ha-1"),
+                host_work_context("we-cancel-1", "create-cancel-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-cancel-2", "claim-cancel-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let _cancelled = store
+            .cancel_work(
+                &claimed.id,
+                claimed.version,
+                "no longer needed",
+                host_work_context("we-cancel-3", "cancel-cancel-ha", "unix-ms:4"),
+            )
+            .expect("cancel Work");
+        let attentions = store.host_attentions().expect("host attentions");
+        let cancelled = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkCancelled);
+        assert!(
+            cancelled.is_some(),
+            "bound run must emit WorkCancelled on cancel"
+        );
+        assert_eq!(cancelled.unwrap().team_run_id, run.id);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn host_attention_dedup_ignores_duplicate_event() {
+        let (root, store, run, member, _) = work_test_fixture("work-dedup-ha");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-dedup-ha-1"),
+                host_work_context("we-dedup-1", "create-dedup-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-dedup-2", "claim-dedup-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let ctx = member_work_context(&member.id, "we-dedup-3", "submit-dedup-ha", "unix-ms:4");
+        let _submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "done",
+                vec!["artifact://x".into()],
+                vec![],
+                ctx.clone(),
+            )
+            .expect("first submit");
+        // Second submit with same idempotency key should be a no-op (dedup).
+        let _again = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "done",
+                vec!["artifact://x".into()],
+                vec![],
+                ctx,
+            )
+            .expect("idempotent second submit");
+        let attentions = store.host_attentions().expect("host attentions");
+        let review_count = attentions
+            .iter()
+            .filter(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkReviewRequested)
+            .count();
+        assert_eq!(
+            review_count, 1,
+            "dedup must emit exactly one WorkReviewRequested"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_transitions_dont_fail_for_unbound_run() {
+        let root = team_test_root("work-unbound-ha");
+        let store = HarnessStore::new(&root);
+        let run = AgentTeamRun {
+            id: "tr-work-unbound-ha".into(),
+            definition_id: None,
+            agent_team_id: None,
+            previous_run_id: None,
+            mission_id: None,
+            wave_id: None,
+            project_binding_id: None,
+            host_surface: "codex-app".into(),
+            host_thread_id: None,
+            host_actor: None,
+            host_control_mode: Default::default(),
+            objective: "prove unbound graceful".into(),
+            execution_root: None,
+            status: TeamRunStatus::Running,
+            member_run_ids: vec!["mr-work-unbound-ha".into()],
+            budget_limit_usd: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+            completed_at: None,
+        };
+        store.append_team_run(&run).expect("append unbound run");
+        let member = MemberRun {
+            id: "mr-work-unbound-ha".into(),
+            team_run_id: run.id.clone(),
+            slot_id: Some("slot-unbound".into()),
+            agent_member_id: Some("agent-unbound".into()),
+            name: "Member Unbound".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: None,
+            provider_capacity: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        };
+        store.append_member_run(&member).expect("append member");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-unbound-ha-1"),
+                host_work_context("we-ub-1", "create-ub-ha", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-ub-2", "claim-ub-ha", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let _submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "done",
+                vec!["artifact://x".into()],
+                vec![],
+                member_work_context(&member.id, "we-ub-3", "submit-ub-ha", "unix-ms:4"),
+            )
+            .expect("submit Work with unbound run");
+        let attentions = store.host_attentions().expect("host attentions");
+        // HostAttention is still emitted at the store level even for unbound runs;
+        // the runtime delivery layer gates on binding, not the store.
+        let review = attentions
+            .iter()
+            .find(|a| a.work_id == work.id && a.kind == HostAttentionKind::WorkReviewRequested);
+        assert!(
+            review.is_some(),
+            "WorkReviewRequested must still be emitted for unbound runs"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_delivery_failure_emits_host_attention() {
+        let (root, store, run, member, _) = work_test_fixture("work-wdf-ha");
+        let mut assigned = unassigned_test_work(&run.id, "work-wdf-ha-1");
+        assigned.active_member_run_id = Some(member.id.clone());
+        assigned.claim_mode = WorkClaimMode::HostAssign;
+        let assigned = store
+            .insert_work(
+                assigned,
+                host_work_context("we-wdf-1", "create-wdf-ha", "unix-ms:2"),
+            )
+            .expect("create assigned Work");
+        let delivery = store
+            .latest_work_deliveries()
+            .expect("deliveries")
+            .into_iter()
+            .find(|d| d.work_id == assigned.id)
+            .expect("delivery");
+        let lease = store
+            .acquire_team_supervisor_lease(&run.id, "supervisor-wdf", 7, "test", 100, 100)
+            .expect("lease");
+        let claimed = match store
+            .claim_work_delivery(
+                &run.id,
+                &delivery.id,
+                &member.id,
+                &lease.supervisor_id,
+                lease.generation,
+                "claim-wdf",
+                100,
+                "unix-ms:3",
+            )
+            .expect("claim")
+        {
+            WorkDeliveryClaimResult::Claimed(d) => d,
+            _ => panic!("delivery must be claimed"),
+        };
+        let failed = store
+            .fail_work_delivery_claim(
+                &run.id,
+                &delivery.id,
+                &member.id,
+                &lease.supervisor_id,
+                lease.generation,
+                claimed.claim_id.as_deref().expect("claim id"),
+                "provider crash",
+                101,
+                "unix-ms:4",
+            )
+            .expect("fail delivery");
+        assert_eq!(failed.status, WorkDeliveryStatus::Failed);
+        let attentions = store.host_attentions().expect("host attentions");
+        let wdf = attentions
+            .iter()
+            .find(|a| a.work_id == assigned.id && a.kind == HostAttentionKind::WorkDeliveryFailed);
+        assert!(
+            wdf.is_some(),
+            "must emit WorkDeliveryFailed for failed delivery claim"
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
