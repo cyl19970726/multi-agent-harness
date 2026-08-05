@@ -4,7 +4,7 @@
 status: accepted product contract; breaking cutover in progress
 owner_role: execution-foundation
 canonical_for: Agent Team Work, shared Kanban, assignment/claim, Work delivery,
-  Message boundary, child delegation, and Mission/Wave relationship
+  Message boundary, child delegation, and Mission relationship
 decision: ADR 0050
 ```
 

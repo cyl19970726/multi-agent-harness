@@ -273,7 +273,7 @@ The current separate StandingAgent record is a compatibility implementation. New
 
 The harness injects these environment variables when starting your runtime. The variables bind your identity and scope; never infer identity from a display name:
 
-| Variable | Always present | Meaning |
+| Variable | Presence | Meaning |
 | --- | --- | --- |
 | `HARNESS_TEAM_RUN_ID` | Yes | The TeamRun you belong to |
 | `HARNESS_MEMBER_RUN_ID` | Yes | Your own run identity — validated on every member Work command |

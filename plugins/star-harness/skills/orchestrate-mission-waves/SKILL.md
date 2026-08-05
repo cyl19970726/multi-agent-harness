@@ -317,7 +317,7 @@ The current separate StandingAgent record is a compatibility implementation; new
 
 When the Host starts a Member run, the harness injects these environment variables into the Member's runtime:
 
-| Variable | Always present | Meaning |
+| Variable | Presence | Meaning |
 | --- | --- | --- |
 | `HARNESS_TEAM_RUN_ID` | Yes | The TeamRun this Member belongs to |
 | `HARNESS_MEMBER_RUN_ID` | Yes | This Member's own run identity |
