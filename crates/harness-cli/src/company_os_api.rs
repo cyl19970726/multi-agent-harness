@@ -1635,6 +1635,7 @@ mod projection_tests {
                         causation_ref: None,
                         idempotency_key: format!("command-{id}"),
                         created_at: created_at.to_string(),
+                        duplicate_ok: false,
                     },
                 )
                 .unwrap();

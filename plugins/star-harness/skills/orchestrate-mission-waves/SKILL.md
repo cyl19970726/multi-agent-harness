@@ -7,7 +7,9 @@ description: Use when a Host Agent must create, resume, or re-plan a long-runnin
 
 Use the Harness CLI as the complete authority path. Treat this Skill as a thin
 operating guide; canonical architecture, schemas, store state, and native
-Provider records win any conflict.
+Provider records win any conflict. After a compaction or whenever CLI syntax is
+uncertain, run `harness cheatsheet` first — never rediscover flags via repeated
+`--help` calls or source greps.
 
 ## Keep One Small Mental Model
 
@@ -80,12 +82,42 @@ receipt, Work submission, and Host acceptance are different facts.
    required by its completion criteria, and the resolvable native session.
    Request changes or accept through Work operations. Do not wait for unrelated
    active Works.
-8. **Re-plan.** Revise the current Wave while judgment is materially unchanged.
-   Advance and create Wave N+1 when plan, composition, responsibility, risk, or
-   decision boundary changes materially. Active Work keeps the same Work id,
-   MemberRun, Workspace, and native session.
+8. **Re-plan.** At material decision points, record the judgment before
+   acting, not as after-the-fact narration. Revise the current Wave while
+   judgment is materially unchanged. Advance and create Wave N+1 when plan,
+   composition, responsibility, risk, or decision boundary changes
+   materially. Active Work keeps the same Work id, MemberRun, Workspace, and
+   native session.
 9. **Close.** Record an explicit Mission outcome. Closing a Mission or
    advancing a Wave never closes the independent Team or its Members.
+
+## Host Scheduling Policy
+
+This policy governs how the Host loop above actually runs a wake cycle; it
+adds no new commands, only a discipline for the ones already listed.
+
+- **Per-wake kernel.** Block on `harness team-run wait --id <team-run-id>
+  --after-seq <last-seq> --timeout-secs <bounded-seconds>`. On wake, drain
+  everything pending in priority order before sleeping again: (1) the
+  review queue first — `review` is non-terminal and blocks its owner's
+  downstream work; (2) blocked or crashed members; (3) the supply check
+  below; (4) idle-member x unassigned-Work matching; (5) record the
+  judgment (today, updating the current Wave revision); (6) recompute the
+  wait predicate and sleep. One wake processes every pending fact, not one
+  event at a time.
+- **Supply watermark.** Keep ready claimable Works at or above the count of
+  currently idle-capable Members. Start decomposing the next tranche once
+  the current one is roughly two-thirds consumed; do not wait for the board
+  to drain. Never let the board reach zero ready Works while Members remain
+  active.
+- **Claim-mode default.** Create Work with `--claim-mode team_claim` and an
+  empty eligible list (every active Member may claim) by default. Reserve
+  `--claim-mode host_assign` for the exception: a lane that needs one
+  specific owner because of disjoint paths or a required capability.
+- **Budget discipline.** Keep the Host window to policy, the current
+  judgment memo, and this wake's events only. Re-read global state fresh
+  from the board each wake instead of trusting window memory; judgment
+  history lives in durable records, never only in the window.
 
 ## Create And Allocate Works
 
@@ -219,7 +251,11 @@ pre-check a snapshot and assume a later completion call is safe.
 - `idle`: assign or expose ready claimable Work.
 - `working`: queue new Work without interrupting the active turn.
 - `waiting interaction`: resolve the exact PendingInteraction before driving.
-- `crashed/disconnected`: retain Work owner; reconcile deliveries and resume.
+- `crashed/disconnected`: run `harness team-run recover --id <run>` to adopt/restart
+  the supervisor generation, reconcile stale deliveries, resume compatible native
+  sessions, and rebind incompatible Works. Never run `team-run create` during
+  recovery — recovery must rebind the existing run and Work ids, never mint
+  new ones (ADR 0050).
 - `closed`: explicitly Reopen, rebind, reassign, or cancel unfinished Work.
 - `retired`: never revive; reassign or cancel Work.
 

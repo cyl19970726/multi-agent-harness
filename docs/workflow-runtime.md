@@ -334,8 +334,6 @@ The fields are defined at `crates/harness-core/src/lib.rs:2612` through `crates/
 | `result` | Structured machine payload from `step_result_json()` |
 | `started_at` | Step start time |
 | `ended_at` | Terminal time, if finished |
-| `task_id` | Goal task id when the historical phase compiler/linker stamps it |
-| `verdict_outcome` | Phase verdict marker used by the goal orchestrator |
 
 `WorkflowStep.run_id` points back to the run and `WorkflowRun.step_ids` preserves ordered membership. `native_session` locates the provider-owned execution record without copying its transcript, tool calls, command output, or turns into Harness storage.
 

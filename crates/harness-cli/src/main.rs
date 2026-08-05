@@ -1403,6 +1403,11 @@ fn run() -> CliResult<()> {
     if args.first().map(String::as_str) == Some("legacy-goal-task") {
         return legacy_goal_task_command(&mut args);
     }
+    // `cheatsheet` is store-LESS: it prints operating knowledge for the Host
+    // and must not require a store, project, or space.
+    if args.first().map(String::as_str) == Some("cheatsheet") {
+        return cheatsheet_command(&args[1..]);
+    }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
     // `args` so the subcommand parsers never see them). `serve` and `run-script`
     // started from different working directories converge on ONE store via the
@@ -9452,8 +9457,7 @@ fn wave_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Create one native Mission. Compatibility Mission projections are read-only,
-/// so native ids are checked only against the native ledger.
+/// Create one native Mission.
 pub(crate) fn create_mission(
     store: &HarnessStore,
     id: Option<String>,
@@ -9465,12 +9469,6 @@ pub(crate) fn create_mission(
     let id = id.unwrap_or_else(|| generated_id("mission"));
     if id.trim().is_empty() {
         return Err(CliError::Usage("mission id must not be empty".to_string()));
-    }
-    if id.starts_with("compat-goal:") {
-        return Err(CliError::Usage(
-            "mission ids beginning with `compat-goal:` are reserved for read-only Goal projections"
-                .to_string(),
-        ));
     }
     if title.trim().is_empty() || objective.trim().is_empty() {
         return Err(CliError::Usage(
@@ -11983,6 +11981,7 @@ fn create_team_run(
                     causation_ref: None,
                     idempotency_key: generated_id("work-command"),
                     created_at: now,
+                    duplicate_ok: false,
                 },
             )?;
             append_team_run_event(
@@ -12115,6 +12114,7 @@ fn add_team_run_member(
                         causation_ref: None,
                         idempotency_key: generated_id("work-command"),
                         created_at: now_string(),
+                        duplicate_ok: false,
                     },
                 ),
             )
@@ -13175,6 +13175,415 @@ pub(crate) fn transition_team_run(
     Ok(next)
 }
 
+/// Per-member recovery classification returned by the pure decision function.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+enum MemberRecoveryPath {
+    /// Member is already active with a current supervisor lease.
+    AlreadyActive,
+    /// Native session exists and supports resume — reopen the member.
+    ResumeCompatible,
+    /// Session is incompatible or missing — rebind Works to a new generation.
+    RebindIncompatible { reason: String },
+    /// Member is in a terminal state (retired/completed/failed).
+    Terminal { reason: String },
+}
+
+/// Pure function: classify a member's recovery path. Does not perform I/O or
+/// mutation. Unit-testable across every edge case without a store.
+fn classify_member_recovery_path(
+    member: &MemberRun,
+    supervisor_current: bool,
+) -> MemberRecoveryPath {
+    // Retired members are permanently dead.
+    if member.coordination_is_retired() {
+        return MemberRecoveryPath::Terminal {
+            reason: "member is retired".to_string(),
+        };
+    }
+    // Already active — running coordination, regardless of supervisor.
+    if member.coordination_is_active() {
+        return MemberRecoveryPath::AlreadyActive;
+    }
+    // Terminal runtime status without an active coordinator.
+    if matches!(
+        member.status,
+        MemberRunStatus::Completed | MemberRunStatus::Failed
+    ) && !supervisor_current
+    {
+        return MemberRecoveryPath::Terminal {
+            reason: format!(
+                "member is {} with no active supervisor",
+                serde_snake_label(&member.status)
+            ),
+        };
+    }
+    // Closed/stopped members need inspection.
+    if !member.coordination_is_active()
+        && matches!(
+            member.status,
+            MemberRunStatus::Stopped
+                | MemberRunStatus::Completed
+                | MemberRunStatus::Failed
+                | MemberRunStatus::Idle
+                | MemberRunStatus::Queued
+        )
+    {
+        // External interactive members are always resumable (even if Stopped).
+        if member.is_external_interactive() {
+            return MemberRecoveryPath::ResumeCompatible;
+        }
+        // Check native session resumability.
+        if let Some(native_session) = member.native_session.as_ref() {
+            if native_session.supports_resume
+                && !matches!(
+                    native_session.availability,
+                    harness_core::NativeSessionAvailability::Missing
+                        | harness_core::NativeSessionAvailability::Incompatible
+                )
+            {
+                // Also check provider profile.
+                if let Some(profile) = member.provider_profile.as_ref() {
+                    if profile.supports_resume {
+                        return MemberRecoveryPath::ResumeCompatible;
+                    }
+                }
+            }
+            return MemberRecoveryPath::RebindIncompatible {
+                reason: format!(
+                    "native session {} is not resumable (availability: {})",
+                    native_session.native_session_id,
+                    serde_snake_label(&native_session.availability)
+                ),
+            };
+        }
+        // No native session for a non-external member: if stopped, rebind; otherwise can resume.
+        if member.status == MemberRunStatus::Stopped {
+            return MemberRecoveryPath::RebindIncompatible {
+                reason: "no native session and member is stopped".to_string(),
+            };
+        }
+        return MemberRecoveryPath::ResumeCompatible;
+    }
+    MemberRecoveryPath::Terminal {
+        reason: format!(
+            "member status {} coordination {} not recoverable",
+            serde_snake_label(&member.status),
+            serde_snake_label(&member.coordination_status)
+        ),
+    }
+}
+
+/// Recover a team run without minting new ids: reconcile deliveries, reopen
+/// compatible sessions, rebind incompatible ones. Always reads current state
+/// first; never creates new TeamRun ids or Work ids.
+fn team_run_recover(
+    store: &HarnessStore,
+    team_run_id: &str,
+    json: bool,
+) -> CliResult<serde_json::Value> {
+    let run = latest_team_run(store, team_run_id)?;
+    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .collect();
+    let works: Vec<Work> = store
+        .latest_works()?
+        .into_iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .collect();
+    let deliveries: Vec<WorkDelivery> = store
+        .latest_work_deliveries()?
+        .into_iter()
+        .filter(|delivery| delivery.team_run_id == team_run_id)
+        .collect();
+    let supervisor = store.latest_team_supervisor_lease(team_run_id)?;
+    let supervisor_current = supervisor.as_ref().is_some_and(|lease| {
+        lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+            && lease.expires_unix_ms > current_unix_ms_u64()
+    });
+
+    // ── Phase 1: orientation (read-only) ────────────────────────────
+    if !json {
+        println!(
+            "team run: {}\tstatus={}\tobjective={}",
+            run.id,
+            serde_snake_label(&run.status),
+            run.objective
+        );
+        println!(
+            "supervisor: {}\tcurrent={}",
+            supervisor
+                .as_ref()
+                .map(|s| format!("{} gen={}", s.supervisor_id, s.generation))
+                .unwrap_or_else(|| "none".to_string()),
+            supervisor_current
+        );
+        let (open, done, cancelled) = (
+            works.iter().filter(|w| !w.is_terminal()).count(),
+            works
+                .iter()
+                .filter(|w| w.status == WorkStatus::Done)
+                .count(),
+            works
+                .iter()
+                .filter(|w| w.status == WorkStatus::Cancelled)
+                .count(),
+        );
+        println!(
+            "works: {} total  {} open  {} done  {} cancelled",
+            works.len(),
+            open,
+            done,
+            cancelled
+        );
+        for member in &members {
+            let member_works: Vec<&Work> = works
+                .iter()
+                .filter(|w| {
+                    w.active_member_run_id.as_deref() == Some(&member.id)
+                        || w.owner_member_id.as_deref() == member.agent_member_id.as_deref()
+                })
+                .collect();
+            let path = classify_member_recovery_path(member, supervisor_current);
+            println!(
+                "  {} ({}): status={} coordination={} recovery={} works={}",
+                member.name,
+                member.provider,
+                serde_snake_label(&member.status),
+                serde_snake_label(&member.coordination_status),
+                serde_snake_label(&path),
+                member_works.len()
+            );
+        }
+    }
+
+    // ── Gather recovery plan ─────────────────────────────────────────
+    let recovery_plan: Vec<(&MemberRun, MemberRecoveryPath)> = members
+        .iter()
+        .map(|member| {
+            (
+                member,
+                classify_member_recovery_path(member, supervisor_current),
+            )
+        })
+        .collect();
+
+    let unrecoverable: Vec<_> = recovery_plan
+        .iter()
+        .filter(|(_, path)| matches!(path, MemberRecoveryPath::Terminal { .. }))
+        .collect();
+    if !unrecoverable.is_empty() {
+        let blocked: Vec<String> = unrecoverable
+            .iter()
+            .map(|(member, path)| {
+                let reason = match path {
+                    MemberRecoveryPath::Terminal { reason } => reason.as_str(),
+                    _ => "unknown",
+                };
+                format!("{}: {}", member.id, reason)
+            })
+            .collect();
+        let msg = format!(
+            "UNRECOVERABLE_MEMBERS: {} member(s) cannot be recovered: {}; run `harness team-run status --id {}` for details",
+            blocked.len(),
+            blocked.join("; "),
+            team_run_id
+        );
+        if json {
+            return Err(CliError::Usage(msg));
+        }
+        eprintln!("{msg}");
+        std::process::exit(1);
+    }
+
+    // ── Phase 2: reconcile stale deliveries ──────────────────────────
+    let mut reconciled = 0u64;
+    let now = current_unix_ms_u64();
+    let now_str = now_string();
+    for delivery in &deliveries {
+        if delivery.status != WorkDeliveryStatus::Claimed {
+            continue;
+        }
+        // Only reconcile deliveries that are stale (claimed by a previous gen).
+        if let Some(claimed_gen) = delivery.claimed_generation {
+            if let Some(ref lease) = supervisor {
+                if claimed_gen < lease.generation
+                    && lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+                {
+                    let _ = store.reconcile_stale_work_delivery_claim(
+                        team_run_id,
+                        &delivery.id,
+                        &lease.supervisor_id,
+                        lease.generation,
+                        now,
+                        &now_str,
+                    );
+                    reconciled += 1;
+                }
+            }
+        }
+    }
+    if !json && reconciled > 0 {
+        println!("reconciled_stale_deliveries: {reconciled}");
+    }
+
+    // ── Phase 3: reopen compatible sessions ──────────────────────────
+    let mut reopened = 0u64;
+    let mut rebound = 0u64;
+    let mut skipped = 0u64;
+    let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
+    for (member, path) in &recovery_plan {
+        match path {
+            MemberRecoveryPath::AlreadyActive => {
+                skipped += 1;
+            }
+            MemberRecoveryPath::ResumeCompatible => {
+                // Reopen the member using the existing reopen path.
+                let mut reopened_member = (*member).clone();
+                reopened_member.runtime_generation =
+                    reopened_member.runtime_generation.saturating_add(1);
+                reopened_member.coordination_status = MemberCoordinationStatus::Active;
+                reopened_member.status = if reopened_member.is_external_interactive() {
+                    MemberRunStatus::Idle
+                } else {
+                    MemberRunStatus::Queued
+                };
+                reopened_member.finished_at = None;
+                reopened_member.last_event_at = Some(now_str.clone());
+                store.append_member_run(&reopened_member)?;
+                ledger.append_action(
+                    &member.id,
+                    "recovered",
+                    MemberActionStatus::Succeeded,
+                    "member recovered and reopened",
+                    &format!(
+                        "host: recovered after supervisor death; runtime generation {}",
+                        reopened_member.runtime_generation
+                    ),
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Host,
+                    Some(member.id.clone()),
+                    "member_run",
+                    &member.id,
+                    "recovered",
+                    &format!(
+                        "member {} recovered at runtime generation {}",
+                        member.name, reopened_member.runtime_generation
+                    ),
+                )?;
+                reopened += 1;
+            }
+            MemberRecoveryPath::RebindIncompatible { reason } => {
+                // Rebind member's Works to a new generation.
+                let member_works: Vec<Work> = works
+                    .iter()
+                    .filter(|w| {
+                        w.active_member_run_id.as_deref() == Some(&member.id) && !w.is_terminal()
+                    })
+                    .cloned()
+                    .collect();
+                if member_works.is_empty() {
+                    if !json {
+                        println!(
+                            "  {} ({}): no non-terminal Works to rebind ({})",
+                            member.name, member.provider, reason
+                        );
+                    }
+                    skipped += 1;
+                    continue;
+                }
+                // Create a new runtime generation row first.
+                let mut rebound_member = (*member).clone();
+                rebound_member.runtime_generation =
+                    rebound_member.runtime_generation.saturating_add(1);
+                rebound_member.coordination_status = MemberCoordinationStatus::Active;
+                rebound_member.status = MemberRunStatus::Queued;
+                rebound_member.finished_at = None;
+                rebound_member.last_event_at = Some(now_str.clone());
+                store.append_member_run(&rebound_member)?;
+                ledger.append_action(
+                    &member.id,
+                    "recovered",
+                    MemberActionStatus::Succeeded,
+                    "member recovered with Work rebinds",
+                    &format!(
+                        "host: recovered after supervisor death; {} Works rebound to generation {}",
+                        member_works.len(),
+                        rebound_member.runtime_generation
+                    ),
+                )?;
+                // Rebind each Work.
+                for work in &member_works {
+                    let ctx = WorkCommandContext {
+                        event_id: generated_id("work-event"),
+                        performed_by_actor: TeamActorRef {
+                            kind: TeamActorKind::Host,
+                            id: "host".to_string(),
+                            display_name: Some("Host recovery".to_string()),
+                            authn_source: Some("team_run_recover".to_string()),
+                        },
+                        authority_actor: None,
+                        causation_ref: None,
+                        idempotency_key: generated_id("work-command"),
+                        created_at: now_str.clone(),
+                        duplicate_ok: false,
+                    };
+                    store.rebind_work(&work.id, work.version, &rebound_member.id, ctx)?;
+                    ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        Some(member.id.clone()),
+                        "work",
+                        &work.id,
+                        "rebound",
+                        &format!(
+                            "Work {} rebound from {} gen {} to {} gen {} ({})",
+                            work.title,
+                            member.id,
+                            member.runtime_generation,
+                            rebound_member.id,
+                            rebound_member.runtime_generation,
+                            reason
+                        ),
+                    )?;
+                }
+                if !json {
+                    println!(
+                        "  {} ({}): rebound {} Works ({})",
+                        member.name,
+                        member.provider,
+                        member_works.len(),
+                        reason
+                    );
+                }
+                rebound += member_works.len() as u64;
+            }
+            MemberRecoveryPath::Terminal { .. } => {
+                // Already checked above.
+            }
+        }
+    }
+
+    let report = serde_json::json!({
+        "team_run_id": team_run_id,
+        "status": serde_snake_label(&run.status),
+        "supervisor_current": supervisor_current,
+        "members": members.len(),
+        "works_total": works.len(),
+        "reconciled_deliveries": reconciled,
+        "reopened": reopened,
+        "rebound_works": rebound,
+        "skipped": skipped,
+    });
+    if !json {
+        println!(
+            "recovery complete: reopened={} rebound_works={} reconciled_deliveries={} skipped={}",
+            reopened, rebound, reconciled, skipped
+        );
+    }
+    Ok(report)
+}
+
 /// Recover a running attempt only after the operator has independently stopped
 /// every provider process. This is not cooperative interruption: the explicit
 /// CLI flag is an auditable attestation used when the foreground orchestrator
@@ -13384,6 +13793,7 @@ fn host_work_context(args: &[String]) -> WorkCommandContext {
         idempotency_key: value(args, "--idempotency-key")
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
+        duplicate_ok: has_flag(args, "--duplicate-ok"),
     }
 }
 
@@ -13423,7 +13833,181 @@ fn member_work_context(
         idempotency_key: value(args, "--idempotency-key")
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
+        duplicate_ok: false,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Decision-shaped board reads (issue #305).
+//
+// The full `work list`/`work show` JSON dump is the right shape for a member
+// picking up its own Work, but it is the wrong shape for a Host that only
+// needs to decide what to do next: measured on the first live work-board run,
+// those two reads averaged 12.6K chars each across 22 calls (277K chars,
+// 19.4% of the Host's entire tool output) to answer questions that need only
+// a handful of numbers -- how many Works are unassigned/ready, how many
+// members are idle, how many submissions are waiting on review. `--brief`,
+// `--since`, and `board-summary` below are additive projections over the same
+// authoritative store reads; the full JSON array remains the default.
+// ---------------------------------------------------------------------------
+
+/// One `--brief` line: `<work-id>  <status>  <owner-member-run-id|unassigned>
+/// v<version>  <title>`, title hard-truncated to 60 chars (by `char`, not
+/// byte, so multibyte titles never split mid-character). Plain text, no JSON
+/// wrapper -- this is the compact projection `work list --brief` prints one
+/// of per Work.
+fn format_work_brief_line(work: &Work) -> String {
+    let owner = work.active_member_run_id.as_deref().unwrap_or("unassigned");
+    let title: String = work.title.chars().take(60).collect();
+    format!(
+        "{}  {}  {}  v{}  {}",
+        work.id,
+        serde_snake_label(&work.status),
+        owner,
+        work.version,
+        title
+    )
+}
+
+/// Per-run monotonic cursor for `work list --since`: each Work id mapped to
+/// the 1-based position of its most recent [`WorkOperation`] within this team
+/// run's operations, numbered in store append (causal) order.
+///
+/// `work_operations.jsonl` is the sole mutation path for every Work row and
+/// every append is serialized under the store's write lock, so this order is
+/// a genuine per-run total order -- the "monotonic per-run operation
+/// sequence" a delta cursor needs. Two alternatives were considered and
+/// rejected: `Work::version` restarts at 1 for every Work, so it is not
+/// comparable across Works in one run; `updated_at` is millisecond-resolution
+/// and can tie under fast scripted mutation (concurrent or same-millisecond
+/// writes), which would make "changed after" ambiguous. `--since <cursor>`
+/// therefore means "Works whose latest WorkOperation sorts after `cursor` in
+/// this run's append order", and a `list` call made with `--since` reports
+/// the new `next_since` watermark so a Host wake->decide->act loop can chain
+/// calls without redundantly re-reading unchanged Works.
+fn work_operation_cursors(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<BTreeMap<String, u64>> {
+    let mut cursors = BTreeMap::new();
+    for (index, operation) in store
+        .work_operations()?
+        .into_iter()
+        .filter(|operation| operation.event.team_run_id == team_run_id)
+        .enumerate()
+    {
+        cursors.insert(operation.work.id, (index + 1) as u64);
+    }
+    Ok(cursors)
+}
+
+/// Bucket one member into the `board-summary` per-member line. Reads BOTH
+/// signals the summary promises: owned Work content and MemberRun process
+/// state.
+///
+/// A member owning any Work in `review` is `awaiting-review` -- a submission
+/// is waiting on the Host's accept/request-changes decision -- regardless of
+/// process state; that decision is the whole reason this bucket exists.
+/// Otherwise a member owning an `in_progress` Work, or whose MemberRunStatus
+/// is `Running`/`Starting`, is `working`. Everything else (idle, queued,
+/// waiting on a provider interaction, disconnected, blocked, or terminal) is
+/// `idle`: none of those states are "a Host decision is pending on this
+/// member" and the summary has only three buckets to spend.
+fn member_board_state<'a>(
+    member: &MemberRun,
+    owned_works: impl Iterator<Item = &'a Work>,
+) -> &'static str {
+    let mut awaiting_review = false;
+    let mut owns_in_progress = false;
+    for work in owned_works {
+        match work.status {
+            WorkStatus::Review => awaiting_review = true,
+            WorkStatus::InProgress => owns_in_progress = true,
+            _ => {}
+        }
+    }
+    if awaiting_review {
+        "awaiting-review"
+    } else if owns_in_progress
+        || matches!(
+            member.status,
+            MemberRunStatus::Running | MemberRunStatus::Starting
+        )
+    {
+        "working"
+    } else {
+        "idle"
+    }
+}
+
+/// `team-run board-summary` -- a single plain-text projection built from one
+/// `latest_works` read and one `latest_member_runs_in_append_order` read:
+/// counts by status, assigned vs unassigned, claim-ready count (reusing
+/// [`Work::is_claim_ready`], the same readiness rule the claim path
+/// enforces), and one `member_board_state` line per active member. Contract:
+/// the whole string stays under 500 chars for an ordinary run so a Host can
+/// afford it on every wake (see the module-level comment above for the
+/// measured cost this replaces). There is no `--json` form: the entire point
+/// is a bounded plain-text read, and a JSON wrapper would tax the same
+/// budget it exists to protect.
+fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliResult<String> {
+    latest_team_run(store, team_run_id)?;
+    let works: Vec<Work> = store
+        .latest_works()?
+        .into_iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .collect();
+
+    let mut open = 0u64;
+    let mut in_progress = 0u64;
+    let mut blocked = 0u64;
+    let mut review = 0u64;
+    let mut done = 0u64;
+    let mut cancelled = 0u64;
+    let mut assigned = 0u64;
+    let mut unassigned = 0u64;
+    for work in &works {
+        match work.status {
+            WorkStatus::Open => open += 1,
+            WorkStatus::InProgress => in_progress += 1,
+            WorkStatus::Blocked => blocked += 1,
+            WorkStatus::Review => review += 1,
+            WorkStatus::Done => done += 1,
+            WorkStatus::Cancelled => cancelled += 1,
+        }
+        if work.active_member_run_id.is_some() {
+            assigned += 1;
+        } else {
+            unassigned += 1;
+        }
+    }
+    let ready = works
+        .iter()
+        .filter(|work| work.is_claim_ready(&works))
+        .count();
+
+    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == team_run_id && member.coordination_is_active())
+        .collect();
+
+    let mut lines = vec![
+        format!(
+            "open={open} in_progress={in_progress} blocked={blocked} review={review} done={done} cancelled={cancelled}"
+        ),
+        format!("assigned={assigned} unassigned={unassigned} ready={ready}"),
+    ];
+    for member in &members {
+        let owned = works
+            .iter()
+            .filter(|work| work.active_member_run_id.as_deref() == Some(member.id.as_str()));
+        lines.push(format!(
+            "{}: {}",
+            member.name,
+            member_board_state(member, owned)
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -13445,6 +14029,27 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 .map(|raw| parse_work_status(&raw))
                 .transpose()?;
             let member_run_id = value(args, "--member-run-id");
+            // `--since <cursor>`: delta read against the WorkOperation append
+            // order (see `work_operation_cursors` for why that order, and not
+            // Work::version or updated_at, is the cursor). Independent of the
+            // --status/--member-run-id value filters below: a Work can match
+            // both, either, or neither.
+            let since = value(args, "--since")
+                .map(|raw| {
+                    raw.parse::<u64>().map_err(|_| {
+                        CliError::Usage(
+                            "--since must be an integer WorkOperation-order cursor (pass the \
+                             next_since a previous `work list --since` call returned)"
+                                .to_string(),
+                        )
+                    })
+                })
+                .transpose()?;
+            let brief = has_flag(args, "--brief");
+            let cursors = since
+                .is_some()
+                .then(|| work_operation_cursors(store, &team_run_id))
+                .transpose()?;
             let mut works = store
                 .latest_works()?
                 .into_iter()
@@ -13462,6 +14067,14 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                         work.active_member_run_id.as_deref() == Some(member)
                     })
                 })
+                .filter(|work| {
+                    since.is_none_or(|cursor| {
+                        cursors
+                            .as_ref()
+                            .and_then(|cursors| cursors.get(&work.id))
+                            .is_some_and(|sequence| *sequence > cursor)
+                    })
+                })
                 .collect::<Vec<_>>();
             works.sort_by(|left, right| {
                 work_priority_rank(right.priority)
@@ -13469,7 +14082,29 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     .then_with(|| left.created_at.cmp(&right.created_at))
                     .then_with(|| left.id.cmp(&right.id))
             });
-            print_json(&works)
+            if brief {
+                // Plain text, one Work per line, no JSON wrapper: --since
+                // still filters this list, but the next_since watermark below
+                // is JSON-only (there is no room for a 6th field in the fixed
+                // brief line shape without breaking its stable format).
+                for work in &works {
+                    println!("{}", format_work_brief_line(work));
+                }
+                Ok(())
+            } else if let Some(since) = since {
+                let next_since = cursors
+                    .as_ref()
+                    .and_then(|cursors| cursors.values().copied().max())
+                    .unwrap_or(0)
+                    .max(since);
+                print_json(&serde_json::json!({
+                    "since": since,
+                    "next_since": next_since,
+                    "works": works,
+                }))
+            } else {
+                print_json(&works)
+            }
         }
         "show" => {
             let work_id = required(args, "--work-id")?;
@@ -13727,7 +14362,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|work|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14498,6 +15133,17 @@ fn team_run_command(
                 // measured 10.08 s for `--timeout-secs 1 --poll-ms 10000`.
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 std::thread::sleep(remaining.min(Duration::from_millis(poll_ms)));
+            }
+        }
+        "board-summary" => {
+            let id = required(args, "--id")?;
+            println!("{}", team_run_board_summary_text(store, &id)?);
+        }
+        "recover" => {
+            let id = required(args, "--id")?;
+            let report = team_run_recover(store, &id, json)?;
+            if json {
+                print_json(&report)?;
             }
         }
         other => {
@@ -21239,8 +21885,12 @@ fn dashboard_command(
     resolved: &ResolvedStore,
     args: &[String],
 ) -> CliResult<()> {
-    require_subcommand(args, "dashboard snapshot")?;
+    require_subcommand(
+        args,
+        "dashboard snapshot | dashboard doctor --team-run-id <id> --api <base-url>",
+    )?;
     match args[0].as_str() {
+        "doctor" => dashboard_doctor_command(store, &args[1..])?,
         "snapshot" => {
             let company_store = if let Ok(home) = company_store::harness_home() {
                 match company_store::active_company_id(&home).map_err(company_store_err)? {
@@ -21272,6 +21922,419 @@ fn dashboard_command(
         }
     }
     Ok(())
+}
+
+/// `harness dashboard doctor --team-run-id <id> --api <base-url>` (issue #307,
+/// item 3) — a read-only, operator-facing check that a dashboard pointed at
+/// `--api` would show Store truth for the given TeamRun. It fetches the exact
+/// two things the Workbench itself fetches (`GET /v1/meta` and
+/// `GET /v1/team-runs/{id}/snapshot`) and compares them against THIS process's
+/// own direct store reads (bypassing HTTP entirely) plus this CLI binary's own
+/// build rev (embedded the same way the server's is — `build_git_rev`, or an
+/// explicit `--expected-git-rev` override for CI that deploys a different
+/// commit than it runs doctor from). It performs no writes. A count mismatch
+/// or a git_rev disagreement both fail non-zero.
+fn dashboard_doctor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let team_run_id = required(args, "--team-run-id")?;
+    let api = required(args, "--api")?;
+    // Owned (not `Option<&str>`) so defaulting to this binary's own compiled-in
+    // rev is a plain value fallback, not a borrow that has to outlive `args`.
+    let expected_git_rev =
+        value(args, "--expected-git-rev").unwrap_or_else(|| build_git_rev().to_string());
+
+    let store_counts = DoctorStoreCounts {
+        works: store
+            .latest_works()?
+            .into_iter()
+            .filter(|work| work.team_run_id == team_run_id)
+            .count(),
+        members: latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .filter(|member| member.team_run_id == team_run_id)
+            .count(),
+        messages: latest_team_messages_in_append_order(store)?
+            .into_iter()
+            .filter(|message| message.team_run_id == team_run_id)
+            .count(),
+    };
+
+    let (meta_status, meta) = http_get_json(&api, "/v1/meta")?;
+    if meta_status != 200 {
+        return Err(CliError::Usage(format!(
+            "GET {api}/v1/meta returned HTTP {meta_status}: {meta}"
+        )));
+    }
+    // `--team-run-id` is an operator-supplied CLI flag, not untrusted web
+    // input, and Harness's own generated ids are always plain
+    // alphanumeric/hyphen — no percent-encoding needed for this path segment.
+    let snapshot_path = format!("/v1/team-runs/{team_run_id}/snapshot");
+    let (snapshot_status, snapshot) = http_get_json(&api, &snapshot_path)?;
+    if snapshot_status != 200 {
+        return Err(CliError::Usage(format!(
+            "GET {api}{snapshot_path} returned HTTP {snapshot_status}: {snapshot}"
+        )));
+    }
+
+    let report = doctor_report(&store_counts, &meta, &snapshot, &expected_git_rev);
+    print_doctor_report(&team_run_id, &api, &report);
+    if report.all_pass() {
+        Ok(())
+    } else {
+        Err(CliError::Usage(
+            "dashboard doctor: the API disagrees with direct store reads or the server build; see table above"
+                .to_string(),
+        ))
+    }
+}
+
+/// Direct-store Work/member/message counts for one TeamRun — bypasses HTTP
+/// entirely, so it is the ground truth `dashboard doctor` compares the API
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DoctorStoreCounts {
+    works: usize,
+    members: usize,
+    messages: usize,
+}
+
+/// One row of the printed `dashboard doctor` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorCheck {
+    label: &'static str,
+    expected: String,
+    observed: String,
+    pass: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct DoctorReport {
+    checks: Vec<DoctorCheck>,
+}
+
+impl DoctorReport {
+    fn all_pass(&self) -> bool {
+        self.checks.iter().all(|check| check.pass)
+    }
+}
+
+/// Pure comparison, no I/O, so it is unit-testable without a live server.
+/// `store_counts` and `expected_git_rev` are this process's own ground truth;
+/// `meta` and `snapshot` are exactly the JSON bodies a dashboard client would
+/// receive from `GET /v1/meta` and `GET /v1/team-runs/{id}/snapshot`.
+fn doctor_report(
+    store_counts: &DoctorStoreCounts,
+    meta: &serde_json::Value,
+    snapshot: &serde_json::Value,
+    expected_git_rev: &str,
+) -> DoctorReport {
+    let api_works = json_array_len(snapshot, "works");
+    let api_members = json_array_len(snapshot, "member_runs");
+    let api_messages = json_array_len(snapshot, "team_messages");
+    let server_git_rev = meta
+        .get("git_rev")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    // Plain string equality, deliberately with no special-case for "unknown":
+    // a build that could not embed its own rev (no git available) failing to
+    // match a concrete rev is itself a real provenance gap worth surfacing,
+    // not something to silently wave through. Two builds that both landed on
+    // "unknown" register as equal — no false alarm — but the printed table
+    // still shows the raw "unknown" value so a human notices neither side
+    // could actually prove anything.
+    let rev_pass = expected_git_rev == server_git_rev;
+
+    DoctorReport {
+        checks: vec![
+            DoctorCheck {
+                label: "works count (store vs API)",
+                expected: store_counts.works.to_string(),
+                observed: api_works.to_string(),
+                pass: store_counts.works == api_works,
+            },
+            DoctorCheck {
+                label: "members count (store vs API)",
+                expected: store_counts.members.to_string(),
+                observed: api_members.to_string(),
+                pass: store_counts.members == api_members,
+            },
+            DoctorCheck {
+                label: "messages count (store vs API)",
+                expected: store_counts.messages.to_string(),
+                observed: api_messages.to_string(),
+                pass: store_counts.messages == api_messages,
+            },
+            DoctorCheck {
+                label: "git_rev (this build vs server)",
+                expected: expected_git_rev.to_string(),
+                observed: server_git_rev.to_string(),
+                pass: rev_pass,
+            },
+        ],
+    }
+}
+
+fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn print_doctor_report(team_run_id: &str, api: &str, report: &DoctorReport) {
+    println!("harness dashboard doctor — team-run {team_run_id} against {api}");
+    for check in &report.checks {
+        println!(
+            "  {:<32} expected={:<24} observed={:<24} {}",
+            check.label,
+            check.expected,
+            check.observed,
+            if check.pass { "PASS" } else { "FAIL" },
+        );
+    }
+    if report.all_pass() {
+        println!("PASS — API and this store agree; server build matches.");
+    } else {
+        println!(
+            "FAIL — the API (what a dashboard renders) disagrees with direct store reads or the server build. See rows above."
+        );
+    }
+}
+
+/// Strip an optional `http(s)://` scheme, returning the bare `host:port`
+/// `TcpStream::connect` needs. `dashboard doctor` only ever talks to a
+/// local/plain-HTTP `harness serve` (the same transport `serve` itself
+/// speaks) — no TLS.
+fn http_authority(base_url: &str) -> CliResult<String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let authority = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    if authority.is_empty() {
+        return Err(CliError::Usage("--api must not be empty".to_string()));
+    }
+    Ok(authority.to_string())
+}
+
+/// A minimal blocking HTTP/1.1 GET over a raw TCP socket — `dashboard doctor`'s
+/// only network call. This workspace has no HTTP client crate (`serve` itself
+/// is hand-rolled TCP/HTTP — see `handle_http_connection`), and adding one for
+/// a single CLI diagnostic is not worth a new dependency. Returns
+/// `(status_code, parsed_json_body)`.
+fn http_get_json(base_url: &str, path: &str) -> CliResult<(u16, serde_json::Value)> {
+    let authority = http_authority(base_url)?;
+    let mut stream = TcpStream::connect(&authority).map_err(|error| {
+        CliError::Usage(format!(
+            "cannot reach --api {base_url} ({authority}): {error}"
+        ))
+    })?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut raw = String::new();
+    read_http_response_to_string(&mut stream, &mut raw)?;
+    let (header_part, body) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| CliError::Usage(format!("malformed HTTP response from {base_url}{path}")))?;
+    let status = header_part
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| CliError::Usage(format!("malformed HTTP status from {base_url}{path}")))?;
+    let json = serde_json::from_str(body.trim()).map_err(|error| {
+        CliError::Usage(format!("{base_url}{path} did not return JSON: {error}"))
+    })?;
+    Ok((status, json))
+}
+
+/// Linux may report `ECONNRESET` after the peer has already written a
+/// complete `Connection: close` response (the same transport quirk the serve
+/// integration test harness works around). Accept that ending only when the
+/// declared Content-Length is fully present; any other read error propagates.
+fn read_http_response_to_string(stream: &mut TcpStream, raw: &mut String) -> CliResult<()> {
+    match stream.read_to_string(raw) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::ConnectionReset
+                && http_response_looks_complete(raw) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(CliError::Io(error)),
+    }
+}
+
+fn http_response_looks_complete(raw: &str) -> bool {
+    let Some((headers, body)) = raw.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let Some(content_length) = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    }) else {
+        return false;
+    };
+    body.len() >= content_length
+}
+
+#[cfg(test)]
+mod dashboard_doctor_tests {
+    use super::*;
+
+    fn counts(works: usize, members: usize, messages: usize) -> DoctorStoreCounts {
+        DoctorStoreCounts {
+            works,
+            members,
+            messages,
+        }
+    }
+
+    fn snapshot(works: usize, members: usize, messages: usize) -> serde_json::Value {
+        serde_json::json!({
+            "works": vec![serde_json::json!({}); works],
+            "member_runs": vec![serde_json::json!({}); members],
+            "team_messages": vec![serde_json::json!({}); messages],
+        })
+    }
+
+    fn meta(git_rev: &str) -> serde_json::Value {
+        serde_json::json!({"git_rev": git_rev})
+    }
+
+    #[test]
+    fn all_matching_counts_and_revs_pass() {
+        let report = doctor_report(
+            &counts(2, 1, 3),
+            &meta("abc1234"),
+            &snapshot(2, 1, 3),
+            "abc1234",
+        );
+        assert!(report.all_pass(), "{report:?}");
+        assert!(report.checks.iter().all(|check| check.pass));
+    }
+
+    #[test]
+    fn works_count_mismatch_fails_only_that_row() {
+        let report = doctor_report(
+            &counts(2, 1, 3),
+            &meta("abc1234"),
+            &snapshot(1, 1, 3),
+            "abc1234",
+        );
+        assert!(!report.all_pass());
+        let works_row = &report.checks[0];
+        assert_eq!(works_row.label, "works count (store vs API)");
+        assert!(!works_row.pass);
+        assert!(report.checks[1].pass, "members row should be unaffected");
+        assert!(report.checks[2].pass, "messages row should be unaffected");
+    }
+
+    #[test]
+    fn members_count_mismatch_fails() {
+        let report = doctor_report(
+            &counts(2, 1, 3),
+            &meta("abc1234"),
+            &snapshot(2, 0, 3),
+            "abc1234",
+        );
+        assert!(!report.all_pass());
+        assert!(!report.checks[1].pass);
+    }
+
+    #[test]
+    fn messages_count_mismatch_fails() {
+        let report = doctor_report(
+            &counts(2, 1, 3),
+            &meta("abc1234"),
+            &snapshot(2, 1, 0),
+            "abc1234",
+        );
+        assert!(!report.all_pass());
+        assert!(!report.checks[2].pass);
+    }
+
+    #[test]
+    fn git_rev_mismatch_fails_the_rev_row_even_when_counts_match() {
+        let report = doctor_report(
+            &counts(0, 0, 0),
+            &meta("stale0ff"),
+            &snapshot(0, 0, 0),
+            "fresh999",
+        );
+        assert!(!report.all_pass());
+        let rev_row = report.checks.last().expect("rev row");
+        assert_eq!(rev_row.label, "git_rev (this build vs server)");
+        assert!(!rev_row.pass);
+        assert_eq!(rev_row.expected, "fresh999");
+        assert_eq!(rev_row.observed, "stale0ff");
+    }
+
+    #[test]
+    fn both_sides_reporting_unknown_git_rev_counts_as_equal_not_a_failure() {
+        // Two builds that both landed on "unknown" (no git at build time) are
+        // literally equal strings, so this must not register as a mismatch —
+        // even though neither side actually proved a commit (the printed
+        // table still shows "unknown" so a human can notice that).
+        let report = doctor_report(
+            &counts(0, 0, 0),
+            &meta("unknown"),
+            &snapshot(0, 0, 0),
+            "unknown",
+        );
+        assert!(report.all_pass(), "{report:?}");
+    }
+
+    #[test]
+    fn missing_meta_git_rev_field_defaults_to_unknown_and_fails_against_a_known_expected_rev() {
+        // A server that cannot even report SOME git_rev while this build
+        // knows its own concrete rev is a real provenance gap, not something
+        // to silently pass.
+        let report = doctor_report(
+            &counts(0, 0, 0),
+            &serde_json::json!({}),
+            &snapshot(0, 0, 0),
+            "abc1234",
+        );
+        let rev_row = report.checks.last().expect("rev row");
+        assert_eq!(rev_row.observed, "unknown");
+        assert!(
+            !rev_row.pass,
+            "a concrete expected rev vs an unreported server rev must fail"
+        );
+    }
+
+    #[test]
+    fn missing_snapshot_arrays_count_as_zero_not_a_panic() {
+        let report = doctor_report(
+            &counts(0, 0, 0),
+            &meta("abc1234"),
+            &serde_json::json!({}),
+            "abc1234",
+        );
+        assert!(report.all_pass(), "{report:?}");
+    }
+
+    #[test]
+    fn http_authority_strips_scheme_and_trailing_slash() {
+        assert_eq!(
+            http_authority("http://127.0.0.1:8787/").unwrap(),
+            "127.0.0.1:8787"
+        );
+        assert_eq!(
+            http_authority("https://example.com").unwrap(),
+            "example.com"
+        );
+        assert_eq!(http_authority("127.0.0.1:8787").unwrap(), "127.0.0.1:8787");
+        assert!(http_authority("   ").is_err());
+    }
 }
 
 fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -22239,6 +23302,11 @@ fn handle_http_connection(
                         .map(|(_, company_store)| company_store),
                 )?,
             )?,
+            // GET /v1/meta — server build/data provenance (issue #307). Always
+            // the coordination store (`store_owned`), never the Company OS
+            // store: it answers "which build served this, which store did it
+            // read, how far has that store's op log advanced".
+            "/v1/meta" => write_http_json(&mut stream, "200 OK", &dashboard_meta(&store_owned)?)?,
             // GET /v1/projects — enumerate known projects (registry + on-disk stores
             // + reserved `_global`) for the dashboard picker. `current` marks the
             // active project (multi-project P6 / project-api task).
@@ -23855,8 +24923,7 @@ pub(crate) fn resolve_pending_interaction_value(
     serde_json::to_value(resolved).map_err(CliError::Json)
 }
 
-/// POST /v1/missions — create native Mission intent. Goal compatibility
-/// projections are read-only and intentionally have no creation endpoint.
+/// POST /v1/missions — create native Mission intent from the JSON body.
 fn create_mission_value(
     store: &HarnessStore,
     body: &serde_json::Value,
@@ -24101,9 +25168,9 @@ fn create_message_value(
 //
 // These functions own the *persistence + event* logic for creating each core
 // entity, so the CLI command arms and the HTTP create routes (POST /v1/teams,
-// /agents, /goals, /tasks[+assign]) share one implementation. The CLI builds
-// the struct from `--flag` args; the HTTP value-fns below build the same struct
-// from a JSON body. Both then call these helpers, so behaviour cannot diverge.
+// /agents) share one implementation. The CLI builds the struct from `--flag`
+// args; the HTTP value-fns below build the same struct from a JSON body. Both
+// then call these helpers, so behaviour cannot diverge.
 // ---------------------------------------------------------------------------
 
 /// Persist a freshly-built team. Mirrors the `team create` CLI arm.
@@ -24146,7 +25213,7 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
     Ok(())
 }
 
-/// Persist a freshly-built goal. Mirrors the `goal create` CLI arm.
+/// Persist a freshly-built Agent Member. Mirrors the `agent create` CLI arm.
 fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
     if latest_members(store)?.contains_key(&member.id) {
         return Err(CliError::Usage(format!(
@@ -24189,6 +25256,7 @@ fn http_host_work_context(body: &serde_json::Value) -> CliResult<WorkCommandCont
         idempotency_key: json_string(body, "idempotency_key")
             .unwrap_or_else(|| generated_id("work-command")),
         created_at: now_string(),
+        duplicate_ok: json_bool(body, "duplicate_ok").unwrap_or(false),
     })
 }
 
@@ -24502,7 +25570,7 @@ fn create_agent_value(
     Ok(serde_json::to_value(member)?)
 }
 
-/// POST /v1/goals — build a goal from the JSON body and persist it.
+/// Build an Agent Member from a POST /v1/agents JSON body (see `create_agent_value`).
 fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
     Ok(AgentMember {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("agent")),
@@ -30368,6 +31436,34 @@ fn dashboard_snapshot_with_company(
     Ok(snapshot)
 }
 
+/// `GET /v1/meta` — server build/data provenance (issue #307, 2nd occurrence of
+/// "panel shows something other than Store truth"). Every dashboard surface can
+/// cross-check itself against this without reading server logs:
+///   - `git_rev` / `built_at`: which commit and when this *server* binary was
+///     built (embedded at compile time by `build.rs`, never shelled out here);
+///   - `store_root`: which coordination store this response actually read;
+///   - `latest_op_seq`: how far that store's Work operation log has advanced.
+///
+/// The store has no single field named "seq"; `work_operations.jsonl` is an
+/// append-only per-store log (one row per create/assign/start/accept/...), so
+/// its row count is a monotonic cursor over every WorkOperation the store has
+/// recorded — the "newest event cursor" the store exposes (see
+/// `HarnessStore::work_operations`). It only ever grows.
+fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Value> {
+    let store_root = std::fs::canonicalize(store.root())
+        .unwrap_or_else(|_| store.root().to_path_buf())
+        .display()
+        .to_string();
+    let latest_op_seq = store.work_operations()?.len() as u64;
+    Ok(serde_json::json!({
+        "git_rev": build_git_rev(),
+        "built_at": build_built_at(),
+        "store_root": store_root,
+        "latest_op_seq": latest_op_seq,
+        "server_version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 /// A bounded canonical projection for a Team deep link. It contains only
 /// Harness coordination state belonging to the selected TeamRun plus its
 /// Mission, Team, members, and Waves. Provider-native transcript/activity is
@@ -33515,6 +34611,22 @@ fn now_string() -> String {
     format!("unix-ms:{millis}")
 }
 
+/// The commit this binary was built from, embedded by `build.rs` at compile
+/// time (issue #307 — `/v1/meta` must never shell out to `git` per-request).
+/// "unknown" only when the build environment had no git / was not a checkout.
+fn build_git_rev() -> &'static str {
+    option_env!("HARNESS_BUILD_GIT_REV").unwrap_or("unknown")
+}
+
+/// When this binary was compiled, in the same `unix-ms:<millis>` convention as
+/// every other timestamp this server emits. `None` only if the build
+/// environment's clock could not be read (see `build.rs`).
+fn build_built_at() -> Option<String> {
+    option_env!("HARNESS_BUILD_AT_MS")
+        .and_then(|value| value.parse::<u128>().ok())
+        .map(|millis| format!("unix-ms:{millis}"))
+}
+
 fn current_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -33543,6 +34655,118 @@ fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
     Ok(())
 }
 
+fn cheatsheet_command(args: &[String]) -> CliResult<()> {
+    let scope = args.first().map(String::as_str).unwrap_or("all");
+    match scope {
+        "team" => print!("{}", CHEATSHEET_TEAM),
+        "work" => print!("{}", CHEATSHEET_WORK),
+        "mission" => print!("{}", CHEATSHEET_MISSION),
+        "all" => print!("{}", CHEATSHEET_ALL),
+        other => {
+            return Err(CliError::Usage(format!(
+            "unknown cheatsheet scope: {other}; usage: harness cheatsheet [team|work|mission|all]"
+        )))
+        }
+    }
+    Ok(())
+}
+
+// Each cheatsheet is a hand-curated plain-text one-pager of EXACT invocation
+// forms used by the orchestrate-mission-waves skill. Every flag is derived from
+// the real CLI definitions in this file. Length budgets are enforced by the
+// anti-drift test (cheatsheet_length_budgets).
+
+const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> [--agent-team-id <id>] [--budget-usd <n>]
+                    [--mission-id <id>] [--wave-id <id>] [--previous <id>]
+                    --member name:role:provider[/mode][:model][@paths]
+team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
+team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run status     --id <id> [--json]
+team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
+team-run send       --id <id> --from <actor> --to <csv> --kind message|handoff|control
+                    --body <text> [--response-required|--informational]
+                    [--work-id <id>] [--correlation-id <id>] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run ack        --id <id> (--message-id <csv>|--all-delivered)
+                    [--member-id <id>] [--json]
+team-run events     --id <id> [--after-seq <n>] [--json]
+team-run board-summary --id <id>
+team-run recover    --id <id> [--json]
+"#;
+
+const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title <text>
+                    --completion-criteria <text>
+                    [--owner-member-run-id <id> --claim-mode host_assign]
+                    [--claim-mode team_claim --eligible-member-id <id>]
+                    [--priority low|normal|high|urgent] [--context <md>]
+                    [--prerequisite-work-id <id>] [--idempotency-key <key>]
+work list            --team-run-id <id> [--brief] [--since <cursor>]
+                    [--status <status>] [--member-run-id <id>]
+work show            --work-id <id>
+work assign          --work-id <id> --expected-version <n>
+                    --member-run-id <id> [--idempotency-key <key>]
+work accept          --work-id <id> --expected-version <n>
+                    [--idempotency-key <key>]
+work request-changes --work-id <id> --expected-version <n>
+                    --reason <text> [--idempotency-key <key>]
+"#;
+
+const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
+                      [--desired-outcome <text>] [--context <text>] [--json]
+mission show          --id <id>
+mission update-context --id <id> --context <text>
+mission create-team   --id <id> --name <text> --description <text>
+                      [--lead <id>] [--member <id>] [--team-id <id>]
+mission close         --id <id> --outcome <text> [--completed-by <actor>]
+wave create  --mission-id <id> --title <text> --objective <text> [--id <id>]
+             [--index <n>] [--executor-kind host|agent_team|dynamic_workflow]
+             [--context <text>] [--json]
+wave show    --id <id>
+wave list    [--mission-id <id>]
+wave update  --id <id> --context <text>
+wave advance --id <id> --outcome <text> [--artifact <ref>]
+wave gate    --id <id> --status <status> [--note <text>]
+"#;
+
+const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> [--mission-id <id>] [--wave-id <id>]
+  --member name:role:provider[/mode][:model][@paths]
+team-run start --id <id> [--max-concurrency <n>]
+team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run status --id <id> [--json]
+team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
+team-run send --id <id> --from <actor> --to <csv>
+  --kind message|handoff|control --body <text> [--work-id <id>] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
+team-run events --id <id> [--json]
+team-run board-summary --id <id>
+team-run recover --id <id> [--json]
+
+work create --team-run-id <id> --title <text> --completion-criteria <text>
+  [--owner-member-run-id <id> --claim-mode host_assign]
+  [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
+work list --team-run-id <id> [--brief] [--since <cursor>]
+work show --work-id <id>
+work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
+work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
+
+mission create --title <text> --objective <text> [--id <id>]
+  [--context <text>] [--json]
+mission show --id <id>
+mission update-context --id <id> --context <text>
+mission create-team --id <id> --name <text> --description <text>
+  [--lead <id>] [--member <id>]
+mission close --id <id> --outcome <text>
+wave create --mission-id <id> --title <text> --objective <text>
+  [--executor-kind host|agent_team|dynamic_workflow] [--context <text>] [--json]
+wave show --id <id>
+wave list [--mission-id <id>]
+wave update --id <id> --context <text>
+wave advance --id <id> --outcome <text> [--artifact <ref>]
+wave gate --id <id> --status <status> [--note <text>]
+"#;
+
 fn print_help() {
     println!(
         r#"harness commands:
@@ -33556,8 +34780,16 @@ fn print_help() {
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
   wave create|list|show|history|update|advance|gate
-  team-run create|list|status|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run board-summary --id <team-run-id>
+      <=500-char plain-text board digest: counts by status, assigned/unassigned,
+      ready, and one idle|working|awaiting-review line per active member.
   team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reconcile-delivery
+  team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
+      --brief: one plain-text line per Work, no JSON wrapper.
+      --since <cursor>: only Works whose latest WorkOperation postdates the
+      cursor (a JSON `list` response's next_since); wraps JSON output as an
+      object with since/next_since/works so a Host loop can chain calls.
   member-run show --id <member-run-id> [--json]
   member-run open-native --id <member-run-id> [--print-only] [--json]
   team create|list|show|rename|add-member|remove-member|close|archive
@@ -33590,10 +34822,12 @@ fn print_help() {
   agent create|list|show|start|health|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
+  dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
   mcp
   daemon start|status|stop
+  cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only
 through legacy-goal-task export|verify.
@@ -41501,6 +42735,239 @@ package:com.tencent.mm
             "legacy free-form report"
         );
     }
+
+    // --- cheatsheet anti-drift tests ---
+    //
+    // The CHEATSHEET_* consts above are hand-curated free text, not
+    // generated from a schema, so nothing stops them from drifting out of
+    // sync with the real argv-parsing code in this file. These tests treat
+    // main.rs's own source as the source of truth instead of checking the
+    // cheatsheet against a generic helper in isolation: every documented
+    // subcommand leaf must appear as a real match arm in the right
+    // dispatcher function, and every documented flag must appear as an
+    // argument to this file's own argv-parsing primitives
+    // (`value`/`many`/`has_flag`/`required`) somewhere in the file.
+    // `flag_checker_rejects_a_fabricated_flag` below proves the checker
+    // actually discriminates real flags from made-up ones.
+
+    /// This file's own source, embedded so the checks below can verify the
+    /// cheatsheet consts against the real argv-parsing code.
+    const MAIN_RS_SOURCE: &str = include_str!("main.rs");
+
+    /// Extract every distinct `--flag-name` token in `text`, including ones
+    /// glued to punctuation with no separating space (e.g. `[--to`,
+    /// `--all-delivered]`, `--kind|--other`). Scans byte-by-byte instead of
+    /// splitting on whitespace so no punctuation-adjacent flag is ever
+    /// silently skipped (the bug in the version this replaces: its
+    /// `starts_with("-[")` guard was backwards and dropped ~40% of the
+    /// flags in CHEATSHEET_ALL from coverage).
+    fn extract_flags(text: &str) -> std::collections::BTreeSet<&str> {
+        let bytes = text.as_bytes();
+        let mut flags = std::collections::BTreeSet::new();
+        let mut i = 0;
+        while i + 2 < bytes.len() {
+            if &bytes[i..i + 2] == b"--" && bytes[i + 2].is_ascii_lowercase() {
+                let start = i;
+                let mut end = i + 3;
+                while end < bytes.len() && (bytes[end].is_ascii_lowercase() || bytes[end] == b'-') {
+                    end += 1;
+                }
+                // A real flag name never ends in '-': trim a trailing run
+                // picked up from adjacent punctuation like
+                // "--response-required|--informational".
+                while end > start + 3 && bytes[end - 1] == b'-' {
+                    end -= 1;
+                }
+                flags.insert(&text[start..end]);
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+        flags
+    }
+
+    /// The exact source text of the named top-level function, bounded from
+    /// its `fn <name>(` signature to the function-closing `}` that starts a
+    /// line at column 0. rustfmt always places a top-level item's closing
+    /// brace there, and nothing inside a function body in this file --
+    /// even a `format!("...{}...")` string literal -- legitimately starts a
+    /// line with a bare `}`, so this stays correct without a full
+    /// brace-matching lexer.
+    fn function_body<'a>(source: &'a str, fn_name: &str) -> &'a str {
+        let needle = format!("\nfn {fn_name}(");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("fn {fn_name} not found in main.rs"));
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("end of fn {fn_name} not found"));
+        &source[start..end]
+    }
+
+    /// True if `"leaf" =>` appears as a match arm inside `body` -- i.e. the
+    /// subcommand is a real match arm, not just documented text.
+    fn subcommand_is_real(body: &str, leaf: &str) -> bool {
+        body.contains(&format!("\"{leaf}\" =>"))
+    }
+
+    /// True if `flag` is read by one of this file's own argv-parsing
+    /// primitives (`value`, `many`, `has_flag`, `required`) anywhere in
+    /// `source` -- i.e. the flag is really wired, not just typed into the
+    /// cheatsheet text. Matching against the whole file rather than one
+    /// dispatcher's body is deliberate: a few flags (e.g.
+    /// `--expected-version`) are read through a small named helper one
+    /// level removed from the dispatcher (`required_work_version`), and the
+    /// flag string only appears as a literal inside that helper.
+    fn flag_is_wired(source: &str, flag: &str) -> bool {
+        ["value", "many", "has_flag", "required"]
+            .iter()
+            .any(|func| source.contains(&format!("{func}(args, \"{flag}\")")))
+    }
+
+    #[test]
+    fn flag_checker_rejects_a_fabricated_flag() {
+        // Proves flag_is_wired()/subcommand_is_real() actually discriminate
+        // real CLI surface from made-up surface. The version this replaces
+        // synthesized `["--flag", "placeholder"]` and fed it straight back
+        // into value(), which trivially returns Some("placeholder") for ANY
+        // string -- it could never fail no matter what the cheatsheet
+        // claimed.
+        assert!(
+            !flag_is_wired(MAIN_RS_SOURCE, "--frobnicate-widget"),
+            "flag_is_wired must reject a flag that is not real"
+        );
+        let team_run_body = function_body(MAIN_RS_SOURCE, "team_run_command");
+        assert!(
+            !subcommand_is_real(team_run_body, "levitate"),
+            "subcommand_is_real must reject a leaf that is not a real match arm"
+        );
+        // And sanity-check the positive case on the same inputs, so a
+        // trivial "always return false" implementation cannot pass this test.
+        assert!(flag_is_wired(MAIN_RS_SOURCE, "--objective"));
+        assert!(subcommand_is_real(team_run_body, "create"));
+    }
+
+    #[test]
+    fn cheatsheet_subcommands_exist_in_dispatch() {
+        let team_run_body = function_body(MAIN_RS_SOURCE, "team_run_command");
+        for leaf in [
+            "create",
+            "start",
+            "add-member",
+            "status",
+            "wait",
+            "send",
+            "host-inbox",
+            "ack",
+            "events",
+            "board-summary",
+            "recover",
+        ] {
+            assert!(
+                subcommand_is_real(team_run_body, leaf),
+                "team-run {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in team_run_command"
+            );
+        }
+        let work_body = function_body(MAIN_RS_SOURCE, "team_run_work_command");
+        for leaf in [
+            "create",
+            "list",
+            "show",
+            "assign",
+            "accept",
+            "request-changes",
+        ] {
+            assert!(
+                subcommand_is_real(work_body, leaf),
+                "work {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in team_run_work_command"
+            );
+        }
+        let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
+        for leaf in ["create", "show", "update-context", "create-team", "close"] {
+            assert!(
+                subcommand_is_real(mission_body, leaf),
+                "mission {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in mission_command"
+            );
+        }
+        let wave_body = function_body(MAIN_RS_SOURCE, "wave_command");
+        for leaf in ["create", "show", "list", "update", "advance", "gate"] {
+            assert!(
+                subcommand_is_real(wave_body, leaf),
+                "wave {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in wave_command"
+            );
+        }
+    }
+
+    #[test]
+    fn cheatsheet_flags_are_wired() {
+        // Flags are read straight off the CHEATSHEET_* consts (not a
+        // hand-duplicated list) so editing a const can never silently skip
+        // this check.
+        for (scope, text) in [
+            ("team", CHEATSHEET_TEAM),
+            ("work", CHEATSHEET_WORK),
+            ("mission", CHEATSHEET_MISSION),
+            ("all", CHEATSHEET_ALL),
+        ] {
+            let flags = extract_flags(text);
+            assert!(
+                !flags.is_empty(),
+                "{scope} cheatsheet must document at least one flag"
+            );
+            for flag in &flags {
+                assert!(
+                    flag_is_wired(MAIN_RS_SOURCE, flag),
+                    "[{scope}] {flag} is documented in the cheatsheet but is not read by \
+                     value()/many()/has_flag()/required() anywhere in main.rs -- it may be \
+                     a typo, or a stale/renamed flag"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cheatsheet_length_budgets() {
+        // `all` <= 2000 chars; each scoped page <= 1200 chars.
+        assert!(
+            CHEATSHEET_ALL.len() <= 2000,
+            "CHEATSHEET_ALL length {} exceeds 2000",
+            CHEATSHEET_ALL.len()
+        );
+        assert!(
+            CHEATSHEET_TEAM.len() <= 1200,
+            "CHEATSHEET_TEAM length {} exceeds 1200",
+            CHEATSHEET_TEAM.len()
+        );
+        assert!(
+            CHEATSHEET_WORK.len() <= 1200,
+            "CHEATSHEET_WORK length {} exceeds 1200",
+            CHEATSHEET_WORK.len()
+        );
+        assert!(
+            CHEATSHEET_MISSION.len() <= 1200,
+            "CHEATSHEET_MISSION length {} exceeds 1200",
+            CHEATSHEET_MISSION.len()
+        );
+    }
+
+    #[test]
+    fn cheatsheet_command_dispatches_by_scope() {
+        for scope in ["team", "work", "mission", "all"] {
+            cheatsheet_command(&[scope.to_string()])
+                .unwrap_or_else(|error| panic!("cheatsheet {scope} should succeed: {error}"));
+        }
+        // Default scope (no argument) is "all".
+        cheatsheet_command(&[]).expect("cheatsheet with no scope should default to all");
+        let error = cheatsheet_command(&["bogus".to_string()])
+            .expect_err("cheatsheet bogus should be rejected");
+        assert!(matches!(error, CliError::Usage(_)));
+    }
 }
 
 #[cfg(test)]
@@ -41918,6 +43385,232 @@ mod sse_tests {
 
         drop(sse_conn);
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+// ── Tests for team-run recover decision logic ────────────────────
+
+#[cfg(test)]
+mod tests_team_run_recover {
+    use super::*;
+
+    fn make_member(
+        status: MemberRunStatus,
+        coordination_status: MemberCoordinationStatus,
+        has_session: bool,
+        session_supports_resume: bool,
+        session_availability: NativeSessionAvailability,
+        is_external: bool,
+    ) -> MemberRun {
+        let execution_mode = if is_external {
+            EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string()
+        } else {
+            "codex_app_server".to_string()
+        };
+        MemberRun {
+            id: "mr-test".into(),
+            team_run_id: "tr-test".into(),
+            slot_id: Some("slot-test".into()),
+            agent_member_id: Some("agent-test".into()),
+            name: "test-member".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: if has_session || is_external {
+                Some(ProviderIntegrationProfile {
+                    provider: "codex".into(),
+                    execution_mode: execution_mode.clone(),
+                    execution_driver: if is_external {
+                        MemberExecutionDriver::UserDriven
+                    } else {
+                        MemberExecutionDriver::default()
+                    },
+                    provider_version: None,
+                    adapter_contract_version: None,
+                    reviewed_provider_versions: Vec::new(),
+                    compatibility_status: ProviderCompatibilityStatus::Current,
+                    adapter_reviewed_at: None,
+                    compatibility_note: None,
+                    interaction_mode: ProviderInteractionMode::PauseAndResume,
+                    ordinary_message_boundary: OrdinaryMessageBoundary::Unknown,
+                    plan_mode: ProviderFeatureMode::Unknown,
+                    goal_mode: ProviderFeatureMode::Unknown,
+                    tool_event_fidelity: ProviderEventFidelity::Structured,
+                    artifact_event_fidelity: ProviderEventFidelity::Structured,
+                    supports_cancel: true,
+                    supports_resume: session_supports_resume,
+                    observes_native_subagents: false,
+                    observes_background_tasks: false,
+                    thinking_transient_only: true,
+                })
+            } else {
+                None
+            },
+            provider_capacity: None,
+            coordination_status,
+            runtime_generation: 1,
+            status,
+            native_session: if has_session {
+                Some(NativeSessionRef {
+                    provider: "codex".into(),
+                    execution_mode: execution_mode.clone(),
+                    native_session_id: "ns-1".into(),
+                    native_locator_kind: "codex_sqlite".into(),
+                    provider_version: None,
+                    adapter_contract_version: "1.0".into(),
+                    availability: session_availability,
+                    supports_resume: session_supports_resume,
+                    last_verified_at: None,
+                    parent_native_session_id: None,
+                })
+            } else {
+                None
+            },
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            last_event_at: None,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn active_with_supervisor_returns_already_active() {
+        let member = make_member(
+            MemberRunStatus::Running,
+            MemberCoordinationStatus::Active,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, true),
+            MemberRecoveryPath::AlreadyActive
+        );
+    }
+
+    #[test]
+    fn compatible_session_returns_resume() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false),
+            MemberRecoveryPath::ResumeCompatible
+        );
+    }
+
+    #[test]
+    fn incompatible_session_returns_rebind() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            true,
+            false,
+            NativeSessionAvailability::Incompatible,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
+            "expected RebindIncompatible, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn missing_session_returns_rebind() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            false,
+            false,
+            NativeSessionAvailability::Missing,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::RebindIncompatible { .. }),
+            "expected RebindIncompatible, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn retired_member_returns_terminal() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Retired,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::Terminal { .. }),
+            "expected Terminal, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn external_interactive_always_resume() {
+        let member = make_member(
+            MemberRunStatus::Stopped,
+            MemberCoordinationStatus::Closed,
+            false,
+            false,
+            NativeSessionAvailability::Missing,
+            true, // external interactive
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false),
+            MemberRecoveryPath::ResumeCompatible
+        );
+    }
+
+    #[test]
+    fn already_active_member_no_supervisor_remains_already_active() {
+        // Active coordination but no supervisor lease: still AlreadyActive.
+        let member = make_member(
+            MemberRunStatus::Running,
+            MemberCoordinationStatus::Active,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        assert_eq!(
+            classify_member_recovery_path(&member, false),
+            MemberRecoveryPath::AlreadyActive
+        );
+    }
+
+    #[test]
+    fn completed_member_no_supervisor_returns_terminal() {
+        let member = make_member(
+            MemberRunStatus::Completed,
+            MemberCoordinationStatus::Closed,
+            true,
+            true,
+            NativeSessionAvailability::Available,
+            false,
+        );
+        let result = classify_member_recovery_path(&member, false);
+        assert!(
+            matches!(result, MemberRecoveryPath::Terminal { .. }),
+            "expected Terminal, got {:?}",
+            result
+        );
     }
 }
 

@@ -860,6 +860,26 @@ export interface TeamRunEvent {
   occurred_at?: string;
 }
 
+/**
+ * Server build/data provenance (`GET /v1/meta`). Lets the dashboard prove
+ * which build served it, which coordination store it read, and how far that
+ * store's operation log has advanced — the second occurrence of "panel shows
+ * something other than Store truth" (issue #307) was a stale frontend build
+ * with no way to detect itself; this is the cross-check.
+ */
+export interface HarnessMeta {
+  /** The commit the *server* binary was built from ("unknown" if undeterminable). */
+  git_rev: string;
+  /** When the server binary was compiled, `unix-ms:<millis>`, or null if undeterminable. */
+  built_at: string | null;
+  /** Absolute path to the coordination store this exact response read. */
+  store_root: string;
+  /** Monotonic cursor over the store's WorkOperation log; only ever grows. */
+  latest_op_seq: number;
+  /** harness-cli's own crate version. */
+  server_version: string;
+}
+
 export interface DashboardSnapshot {
   generated_at?: string;
   company_os?: CompanyOsSnapshotProjection;

@@ -29,19 +29,20 @@ use serde_json::{json, Value};
 use crate::{
     acknowledge_team_message, add_team_run_member, advance_wave, close_mission,
     close_team_member_value, create_mission, create_team_run, create_team_work_value, create_wave,
-    current_unix_ms_u64, deactivate_team_run_member, drive_prepared_team_run, gate_wave,
-    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
-    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    mutate_team_work_value, parse_team_actor_kind, parse_team_message_kind,
-    parse_team_message_response_intent, parse_wave_executor_kind, prepare_team_run_start,
-    reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
-    rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
-    resolve_pending_interaction_value, revise_mission_context, revise_mission_team_link,
-    revise_wave, route_agent_inbox_messages, send_team_message_as_work, serde_snake_label,
-    steer_team_member_value, team_member_specs_from_definition, team_run_inbox,
+    current_unix_ms_u64, deactivate_team_run_member, drive_prepared_team_run,
+    format_work_brief_line, gate_wave, has_actionable_delivered_manual_ack,
+    host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
+    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
+    latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value,
+    parse_team_actor_kind, parse_team_message_kind, parse_team_message_response_intent,
+    parse_wave_executor_kind, prepare_team_run_start, reconcile_team_message_delivery_value,
+    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
+    reopened_member_requires_supervisor_start, resolve_pending_interaction_value,
+    revise_mission_context, revise_mission_team_link, revise_wave, route_agent_inbox_messages,
+    send_team_message_as_work, serde_snake_label, steer_team_member_value,
+    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
     team_run_wave_index, transition_team_run, visible_member_actions_in_append_order,
-    ResolvedStore, TeamMemberSpec,
+    work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -206,6 +207,7 @@ fn call_tool(
         "team_message_acknowledge" => tool_team_message_acknowledge(store, resolved, &arguments),
         "team_run_list" => tool_team_run_list(store, &arguments),
         "team_run_status" => tool_team_run_status(store, resolved, &arguments),
+        "team_run_board_summary" => tool_team_run_board_summary(store, &arguments),
         "team_run_host_inbox" => tool_team_run_host_inbox(store, &arguments),
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
@@ -229,20 +231,73 @@ fn call_tool(
     }))
 }
 
+/// `team_run_work_list` -- mirrors `harness team-run work list`, including
+/// its decision-shaped `brief`/`since` projections (issue #305). `since` is a
+/// WorkOperation-order cursor (see `work_operation_cursors`); a call that
+/// passes it gets back `next_since` so a Host loop can chain delta reads
+/// without re-deriving the cursor itself. `brief` returns pre-formatted
+/// `works_brief` lines (`format_work_brief_line`) instead of full Work JSON.
 fn tool_team_run_work_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
+    let brief = arguments
+        .get("brief")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let since = match arguments.get("since") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            "argument `since` must be a non-negative integer WorkOperation cursor".to_string()
+        })?),
+    };
+    let cursors = match since {
+        Some(_) => {
+            Some(work_operation_cursors(store, team_run_id).map_err(|error| error.to_string())?)
+        }
+        None => None,
+    };
     let mut works = store
         .latest_works()
         .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|work| work.team_run_id == team_run_id)
+        .filter(|work| {
+            since.is_none_or(|cursor| {
+                cursors
+                    .as_ref()
+                    .and_then(|cursors| cursors.get(&work.id))
+                    .is_some_and(|sequence| *sequence > cursor)
+            })
+        })
         .collect::<Vec<_>>();
     works.sort_by(|left, right| {
         left.created_at
             .cmp(&right.created_at)
             .then(left.id.cmp(&right.id))
     });
+    if brief {
+        let works_brief: Vec<String> = works.iter().map(format_work_brief_line).collect();
+        return Ok(json!({"works_brief": works_brief}));
+    }
+    if let Some(since) = since {
+        let next_since = cursors
+            .as_ref()
+            .and_then(|cursors| cursors.values().copied().max())
+            .unwrap_or(0)
+            .max(since);
+        return Ok(json!({"since": since, "next_since": next_since, "works": works}));
+    }
     Ok(json!({"works": works}))
+}
+
+/// `team_run_board_summary` -- mirrors `harness team-run board-summary`: a
+/// single bounded plain-text digest (issue #305), returned under `summary`
+/// rather than as the raw MCP text payload so the shape matches every other
+/// tool result here.
+fn tool_team_run_board_summary(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    let team_run_id = required_str(arguments, "team_run_id")?;
+    let summary =
+        team_run_board_summary_text(store, team_run_id).map_err(|error| error.to_string())?;
+    Ok(json!({"summary": summary}))
 }
 
 fn tool_team_run_work_show(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
@@ -1298,8 +1353,16 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_work_list",
-            "description": "List the authoritative shared Works board for one TeamRun.",
-            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}}, "required": ["team_run_id"]}
+            "description": "List the authoritative shared Works board for one TeamRun. brief=true returns compact works_brief text lines (id, status, owner, version, title<=60 chars) instead of full Work JSON. since=<cursor> is a delta read: only Works whose latest WorkOperation postdates the cursor (a WorkOperation-order sequence, not a Work version), returned alongside a next_since watermark to chain the next call; combine with brief for the smallest board read.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string"},
+                    "brief": {"type": "boolean", "default": false, "description": "Return works_brief (one compact text line per Work) instead of works (full Work JSON)."},
+                    "since": {"type": "integer", "minimum": 0, "description": "WorkOperation-order cursor. Only Works that changed after this point are returned; response adds since/next_since."}
+                },
+                "required": ["team_run_id"]
+            }
         },
         {
             "name": "team_run_work_show",
@@ -1488,6 +1551,17 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."},
                     "include_resolved": {"type": "boolean", "default": false, "description": "Include resolved PendingInteraction history; the unbounded resolved list is excluded by default."}
+                },
+                "required": ["team_run_id"]
+            }
+        },
+        {
+            "name": "team_run_board_summary",
+            "description": "Decision-shaped Works board digest for one TeamRun (issue #305): a single `summary` string, always under 500 chars, with counts by status (open/in_progress/blocked/review/done/cancelled), assigned vs unassigned, the claim-ready count, and one `member: idle|working|awaiting-review` line per active member. Use this instead of team_run_work_list when the question is 'what should I do next', not 'show me every Work'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "team_run_id": {"type": "string", "description": "Run id returned by team_run_create / team_run_list."}
                 },
                 "required": ["team_run_id"]
             }

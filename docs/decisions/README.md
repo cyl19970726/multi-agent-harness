@@ -49,6 +49,7 @@ consequences, affected modules, and validation path.
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
 | [0050](0050-agent-team-work-board-and-message-boundary.md) | amended by 0051; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
 | [0051](0051-nested-agent-teams-are-the-agent-organization.md) | accepted target; implementation pending | AgentMember is the durable agent identity; Organization is recursive AgentTeam topology over one Work kernel |
+| [0051](0051-single-intent-spine.md) | accepted; staged breaking cutover | Mission absorbs Wave as an append-only Mission Log; provider-native goal/plan are derived drive cache, never truth |
 
 ## Split Rule
 

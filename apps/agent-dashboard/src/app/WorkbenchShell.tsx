@@ -36,6 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
+import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
 
 import type { WorkbenchModel } from "../model/readModel";
 import type { Company, ExecutionSpace, Project } from "../types";
@@ -127,7 +128,6 @@ const mobileMoreGroups = navigationGroups.slice(1);
 /**
  * Surfaces reachable in code but intentionally off the primary rail:
  * - agent detail: the Agents surface with a selected agent (?agent=<id>)
- * - goal / task: drill-in detail views reached by selecting an object
  * - debug: moved behind a TopBar button
  */
 
@@ -240,6 +240,7 @@ export function WorkbenchShell({
             );
           })()}
         </main>
+        <ProvenanceFooter apiUrl={apiUrl} projectId={selectedProjectId} spaceId={selectedSpaceId} />
       </div>
     </div>
   );

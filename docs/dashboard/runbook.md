@@ -65,6 +65,34 @@ These actions route through the same Rust CLI value paths as operator commands
 and return an updated snapshot for the Workbench. They are not local UI-only
 state changes.
 
+## Provenance
+
+Second occurrence of "the panel showed something other than Store truth"
+(issue #307; first was fixture impersonation, PR #291) was a dashboard served
+from a stale, pre-`TeamWorksBoard` commit while the Store/API had Works the
+whole time — caught by the user via screenshot, not by the Host. Every surface
+now carries enough provenance to answer "is this the truth?" without reading
+server logs:
+
+- `GET /v1/meta` returns `{ git_rev, built_at, store_root, latest_op_seq,
+  server_version }`. `git_rev`/`built_at` are embedded at **compile time** by
+  `crates/harness-cli/build.rs` (a `git rev-parse --short HEAD` build-script
+  call, never shelled out per-request); `latest_op_seq` is a monotonic cursor
+  over the store's `work_operations.jsonl` append log.
+- The Workbench's persistent footer shows that server `git_rev` +
+  `latest_op_seq` next to this frontend bundle's OWN build rev (injected by
+  `vite.config.ts` via `import.meta.env.VITE_DASHBOARD_GIT_REV`, the same
+  `git rev-parse` mechanism run at dev-server/build start). A screenshot of
+  any surface carries this strip, so a stale worktree is visible without
+  asking. A prominent banner replaces the quiet strip only when the two revs
+  disagree, or `/v1/meta` is unreachable — otherwise it stays out of the way.
+- `harness dashboard doctor --team-run-id <id> --api <base-url>
+  [--expected-git-rev <rev>]` is the operator/CI-facing check: it fetches
+  `/v1/meta` and the same `GET /v1/team-runs/{id}/snapshot` the Workbench
+  fetches, compares works/members/messages counts and `git_rev` against this
+  process's own direct store reads (no HTTP), prints a pass/fail table, and
+  exits non-zero on any mismatch. Read-only; performs no writes.
+
 ## Develop
 
 ```bash

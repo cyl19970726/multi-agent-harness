@@ -1187,6 +1187,20 @@ impl HarnessStore {
                 work.id
             )));
         }
+        if !context.duplicate_ok {
+            let normalized = normalize_work_title(&work.title);
+            for existing in self.latest_works_unlocked()?.values() {
+                if existing.team_run_id == work.team_run_id
+                    && !existing.is_terminal()
+                    && normalize_work_title(&existing.title) == normalized
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "DUPLICATE_TITLE: a non-terminal Work ({}) with title \"{}\" already exists in team run {}; pass --duplicate-ok to skip this guard",
+                        existing.id, existing.title, work.team_run_id
+                    )));
+                }
+            }
+        }
         if work.title.trim().is_empty() || work.completion_criteria_markdown.trim().is_empty() {
             return Err(StoreError::Conflict(
                 "work title and completion criteria are required".to_string(),
@@ -4437,6 +4451,15 @@ fn latest_by_id<T>(
     latest
 }
 
+/// Normalize a Work title for duplicate detection: trim, lowercase, collapse
+/// whitespace. Two titles that differ only in casing or spacing are treated as
+/// the same logical Work within a team run.
+fn normalize_work_title(title: &str) -> String {
+    let trimmed = title.trim().to_lowercase();
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    words.join(" ")
+}
+
 fn stable_member_identity(member: &MemberRun) -> String {
     member
         .agent_member_id
@@ -6607,6 +6630,7 @@ mod tests {
             causation_ref: None,
             idempotency_key: key.into(),
             created_at: at.into(),
+            duplicate_ok: false,
         }
     }
 
@@ -6628,6 +6652,7 @@ mod tests {
             causation_ref: None,
             idempotency_key: key.into(),
             created_at: at.into(),
+            duplicate_ok: false,
         }
     }
 
@@ -6639,7 +6664,7 @@ mod tests {
             created_by_member_id: None,
             parent_work_id: None,
             source_work_item_ref: None,
-            title: "Implement Work core".into(),
+            title: format!("Implement Work core — {id}"),
             context_markdown: "Build the smallest correct slice.".into(),
             completion_criteria_markdown: "Tests pass and state is reconstructable.".into(),
             status: WorkStatus::Open,
@@ -8153,6 +8178,127 @@ mod tests {
             )
             .expect_err("legacy store must be rejected");
         assert!(error.to_string().contains("assignment"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    // ── duplicate-title guard ──────────────────────────────────────────
+
+    fn work_with_title(run_id: &str, id: &str, title: &str) -> Work {
+        let mut work = unassigned_test_work(run_id, id);
+        work.title = title.to_string();
+        work
+    }
+
+    #[test]
+    fn duplicate_title_guard_refuses_non_terminal_match() {
+        let (root, store, run, _member, _assigned_work) = work_test_fixture("dup-title-guard");
+        let ctx1 = host_work_context("dup-ctx-1", "create-first", "unix-ms:3");
+        store
+            .insert_work(
+                work_with_title(&run.id, "work-audit-1", "Audit Company Docs"),
+                ctx1,
+            )
+            .expect("create first Work");
+
+        let ctx2 = host_work_context("dup-ctx-2", "create-dup", "unix-ms:4");
+        let dup = work_with_title(&run.id, "work-audit-2", "Audit Company Docs");
+        let error = store
+            .insert_work(dup, ctx2)
+            .expect_err("duplicate title must fail");
+        assert!(
+            error.to_string().contains("DUPLICATE_TITLE"),
+            "error: {error}"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn duplicate_title_guard_allows_when_flag_is_duplicate_ok() {
+        let (root, store, run, _member, _assigned_work) = work_test_fixture("dup-title-flag");
+        let ctx1 = host_work_context("dup-ctx-flag-1", "create-first", "unix-ms:3");
+        store
+            .insert_work(
+                work_with_title(&run.id, "work-audit-1", "Audit Company Docs"),
+                ctx1,
+            )
+            .expect("create first Work");
+
+        let mut ctx2 = host_work_context("dup-ctx-flag-2", "create-dup-ok", "unix-ms:4");
+        ctx2.duplicate_ok = true;
+        let dup = work_with_title(&run.id, "work-audit-2", "Audit Company Docs");
+        let created = store
+            .insert_work(dup, ctx2)
+            .expect("duplicate-ok must allow same-title Work");
+        assert_eq!(created.title, "Audit Company Docs");
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn duplicate_title_guard_allows_when_existing_is_done() {
+        let (root, store, run, member_a, _member_b) = work_test_fixture("dup-title-done");
+        let ctx1 = host_work_context("dup-ctx-done-1", "create-first", "unix-ms:3");
+        let mut work = work_with_title(&run.id, "work-audit-1", "Audit Company Docs");
+        work.claim_mode = WorkClaimMode::HostAssign;
+        work.active_member_run_id = Some(member_a.id.clone());
+        work.owner_member_id = member_a.agent_member_id.clone();
+        let first = store.insert_work(work, ctx1).expect("create first Work");
+
+        // Start → Submit → Accept to make the work Done.
+        let first = store
+            .start_work(
+                &first.id,
+                first.version,
+                &member_a.id,
+                member_work_context(&member_a.id, "start", "start-key", "unix-ms:4"),
+            )
+            .expect("start");
+        let first = store
+            .submit_work(
+                &first.id,
+                first.version,
+                &member_a.id,
+                "All tests pass.",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member_a.id, "submit", "submit-key", "unix-ms:5"),
+            )
+            .expect("submit");
+        store
+            .accept_work(
+                &first.id,
+                first.version,
+                host_work_context("accept", "accept-key", "unix-ms:6"),
+            )
+            .expect("accept first Work");
+
+        let ctx2 = host_work_context("dup-ctx-done-2", "create-after-done", "unix-ms:7");
+        let dup = work_with_title(&run.id, "work-audit-2", "Audit Company Docs");
+        store
+            .insert_work(dup, ctx2)
+            .expect("terminal existing Work must not block new same-title");
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn duplicate_title_guard_normalizes_casing_and_spacing() {
+        let (root, store, run, _member, _assigned_work) = work_test_fixture("dup-title-normalize");
+        let ctx1 = host_work_context("dup-norm-1", "create-first", "unix-ms:3");
+        store
+            .insert_work(
+                work_with_title(&run.id, "work-norm-1", "audit company docs"),
+                ctx1,
+            )
+            .expect("create first Work");
+
+        let ctx2 = host_work_context("dup-norm-2", "create-dup-norm", "unix-ms:4");
+        let dup = work_with_title(&run.id, "work-norm-2", "AUDIT   COMPANY   DOCS");
+        let error = store
+            .insert_work(dup, ctx2)
+            .expect_err("different casing/spacing must still be detected");
+        assert!(
+            error.to_string().contains("DUPLICATE_TITLE"),
+            "error: {error}"
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

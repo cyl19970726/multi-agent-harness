@@ -6385,3 +6385,560 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     let completed = team_run_json(&home, &project_id, &["complete", "--id", &run_id, "--json"]);
     assert_eq!(completed["status"].as_str(), Some("completed"));
 }
+
+// ---------------------------------------------------------------------------
+// Decision-shaped board reads (issue #305): `work list --brief`, `work list
+// --since`, and `team-run board-summary`. All three read the same
+// authoritative store as `work list`'s full JSON; they only change the
+// projection.
+// ---------------------------------------------------------------------------
+
+/// A TeamRun with three members -- alice and bob each own Work, charlie stays
+/// idle -- and six Works, one in each `WorkStatus`. Every board-read test
+/// seeds its own fixture so the three read paths stay independent.
+struct BoardReadFixture {
+    home: TempHome,
+    project_id: String,
+    run_id: String,
+    alice_id: String,
+    bob_id: String,
+    #[allow(dead_code)] // read by the board-summary test only
+    charlie_id: String,
+    work_open_id: String,
+    work_in_progress_id: String,
+    work_review_id: String,
+    work_blocked_id: String,
+    work_done_id: String,
+    work_cancelled_id: String,
+}
+
+/// Create one Work and return its id. `owner` is the owning MemberRun id, or
+/// `None` to leave it unassigned in the shared Ready Pool.
+fn create_fixture_work(
+    home: &TempHome,
+    project_id: &str,
+    run_id: &str,
+    title: &str,
+    owner: Option<&str>,
+) -> String {
+    let mut args = vec![
+        "work",
+        "create",
+        "--team-run-id",
+        run_id,
+        "--title",
+        title,
+        "--completion-criteria",
+        "Done when the fixture says so",
+    ];
+    if let Some(owner) = owner {
+        args.push("--owner-member-run-id");
+        args.push(owner);
+    }
+    let created = team_run_json(home, project_id, &args);
+    created["id"].as_str().expect("Work id").to_string()
+}
+
+fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
+    let home = TempHome::new(tag);
+    let project_id = init_project(&home, "alpha");
+
+    let out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Exercise decision-shaped board reads",
+            "--member",
+            "alice:implementer:codex",
+            "--member",
+            "bob:implementer:codex",
+            "--member",
+            "charlie:implementer:codex",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let status = team_run_json(&home, &project_id, &["status", "--id", &run_id, "--json"]);
+    let members = status["members"].as_array().expect("members").clone();
+    let member_id = |name: &str| -> String {
+        members
+            .iter()
+            .find(|entry| entry["member_run"]["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("member {name} not found: {members:?}"))["member_run"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("member {name} id"))
+            .to_string()
+    };
+    let alice_id = member_id("alice");
+    let bob_id = member_id("bob");
+    let charlie_id = member_id("charlie");
+
+    // Work A: created unassigned, never claimed -- stays `open`. Title is
+    // deliberately >60 chars to exercise --brief's title truncation.
+    let long_title =
+        "Open unassigned Work whose title runs well past the sixty character brief cutoff";
+    let work_open_id = create_fixture_work(&home, &project_id, &run_id, long_title, None);
+
+    // Work D: alice owns it, starts it, and the Host blocks it -- `blocked`.
+    // Driven to completion before Work B starts so alice never holds two
+    // simultaneously `in_progress` Works (the store rejects that as
+    // MEMBER_BUSY).
+    let work_blocked_id =
+        create_fixture_work(&home, &project_id, &run_id, "Blocked Work", Some(&alice_id));
+    member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &alice_id,
+        &[
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_blocked_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &alice_id,
+        ],
+    );
+    team_run_json(
+        &home,
+        &project_id,
+        &[
+            "work",
+            "block",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_blocked_id,
+            "--expected-version",
+            "2",
+            "--reason",
+            "Waiting on an external dependency",
+        ],
+    );
+
+    // Work B: alice owns it and starts it -- stays `in_progress`.
+    let work_in_progress_id = create_fixture_work(
+        &home,
+        &project_id,
+        &run_id,
+        "In-progress Work",
+        Some(&alice_id),
+    );
+    member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &alice_id,
+        &[
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_in_progress_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &alice_id,
+        ],
+    );
+
+    // Work C: bob owns it, starts it, and submits -- `review`. Driven to
+    // completion before Work E for the same MEMBER_BUSY reason as above.
+    let work_review_id =
+        create_fixture_work(&home, &project_id, &run_id, "Review Work", Some(&bob_id));
+    member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &bob_id,
+        &[
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_review_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &bob_id,
+        ],
+    );
+    member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &bob_id,
+        &[
+            "work",
+            "submit",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_review_id,
+            "--expected-version",
+            "2",
+            "--member-run-id",
+            &bob_id,
+            "--result",
+            "Submitted for Host review",
+        ],
+    );
+
+    // Work E: bob owns it, starts, submits, and the Host accepts -- `done`.
+    let work_done_id = create_fixture_work(&home, &project_id, &run_id, "Done Work", Some(&bob_id));
+    member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &bob_id,
+        &[
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_done_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &bob_id,
+        ],
+    );
+    member_team_run_json(
+        &home,
+        &project_id,
+        &run_id,
+        &bob_id,
+        &[
+            "work",
+            "submit",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_done_id,
+            "--expected-version",
+            "2",
+            "--member-run-id",
+            &bob_id,
+            "--result",
+            "Done and submitted",
+        ],
+    );
+    team_run_json(
+        &home,
+        &project_id,
+        &[
+            "work",
+            "accept",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_done_id,
+            "--expected-version",
+            "3",
+        ],
+    );
+
+    // Work F: created unassigned, then the Host cancels it -- `cancelled`.
+    let work_cancelled_id =
+        create_fixture_work(&home, &project_id, &run_id, "Cancelled Work", None);
+    team_run_json(
+        &home,
+        &project_id,
+        &[
+            "work",
+            "cancel",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_cancelled_id,
+            "--expected-version",
+            "1",
+            "--reason",
+            "No longer needed",
+        ],
+    );
+
+    BoardReadFixture {
+        home,
+        project_id,
+        run_id,
+        alice_id,
+        bob_id,
+        charlie_id,
+        work_open_id,
+        work_in_progress_id,
+        work_review_id,
+        work_blocked_id,
+        work_done_id,
+        work_cancelled_id,
+    }
+}
+
+#[test]
+fn work_list_brief_prints_one_stable_line_per_work_with_truncated_title() {
+    let fixture = seed_board_read_fixture("work-brief");
+    let out = run_harness(
+        &fixture.home,
+        fixture.home.base(),
+        &[
+            "--project",
+            &fixture.project_id,
+            "team-run",
+            "work",
+            "list",
+            "--team-run-id",
+            &fixture.run_id,
+            "--brief",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "work list --brief failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 6, "one brief line per Work: {lines:?}");
+    assert!(
+        lines.iter().all(|line| line.starts_with("work-")),
+        "brief output must be plain text with no JSON wrapper: {lines:?}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stdout).is_err(),
+        "brief output must not be JSON: {stdout:?}"
+    );
+
+    let field_of = |work_id: &str| -> Vec<String> {
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with(&format!("{work_id}  ")))
+            .unwrap_or_else(|| panic!("no brief line for {work_id}: {lines:?}"));
+        line.split("  ").map(str::to_string).collect()
+    };
+
+    // <work-id>  <status>  <owner-member-run-id|unassigned>  v<version>  <title>
+    let open_fields = field_of(&fixture.work_open_id);
+    assert_eq!(open_fields[0], fixture.work_open_id);
+    assert_eq!(open_fields[1], "open");
+    assert_eq!(open_fields[2], "unassigned");
+    assert_eq!(open_fields[3], "v1");
+    assert_eq!(
+        open_fields[4].chars().count(),
+        60,
+        "title over 60 chars must be hard-truncated to exactly 60: {:?}",
+        open_fields[4]
+    );
+
+    let in_progress_fields = field_of(&fixture.work_in_progress_id);
+    assert_eq!(in_progress_fields[1], "in_progress");
+    assert_eq!(in_progress_fields[2], fixture.alice_id);
+    assert_eq!(in_progress_fields[3], "v2");
+    assert_eq!(in_progress_fields[4], "In-progress Work");
+
+    let review_fields = field_of(&fixture.work_review_id);
+    assert_eq!(review_fields[1], "review");
+    assert_eq!(review_fields[2], fixture.bob_id);
+    assert_eq!(review_fields[3], "v3");
+
+    let blocked_fields = field_of(&fixture.work_blocked_id);
+    assert_eq!(blocked_fields[1], "blocked");
+    assert_eq!(blocked_fields[2], fixture.alice_id);
+    assert_eq!(blocked_fields[3], "v3");
+
+    let done_fields = field_of(&fixture.work_done_id);
+    assert_eq!(done_fields[1], "done");
+    assert_eq!(done_fields[2], fixture.bob_id);
+    assert_eq!(done_fields[3], "v4");
+
+    let cancelled_fields = field_of(&fixture.work_cancelled_id);
+    assert_eq!(cancelled_fields[1], "cancelled");
+    assert_eq!(cancelled_fields[2], "unassigned");
+    assert_eq!(cancelled_fields[3], "v2");
+}
+
+#[test]
+fn work_list_since_returns_only_works_changed_after_cursor() {
+    let fixture = seed_board_read_fixture("work-since");
+
+    let snapshot = team_run_json(
+        &fixture.home,
+        &fixture.project_id,
+        &[
+            "work",
+            "list",
+            "--team-run-id",
+            &fixture.run_id,
+            "--since",
+            "0",
+        ],
+    );
+    assert_eq!(snapshot["since"].as_u64(), Some(0));
+    assert_eq!(
+        snapshot["works"].as_array().map(Vec::len),
+        Some(6),
+        "since=0 returns every Work: {snapshot}"
+    );
+    let baseline_next_since = snapshot["next_since"].as_u64().expect("next_since");
+
+    // One more mutation after the snapshot: the Host resumes the blocked Work.
+    let resumed = team_run_json(
+        &fixture.home,
+        &fixture.project_id,
+        &[
+            "work",
+            "resume",
+            "--team-run-id",
+            &fixture.run_id,
+            "--work-id",
+            &fixture.work_blocked_id,
+            "--expected-version",
+            "3",
+            "--resolution",
+            "dependency resolved",
+        ],
+    );
+    assert_eq!(resumed["status"].as_str(), Some("in_progress"));
+    assert_eq!(resumed["version"].as_u64(), Some(4));
+
+    let delta = team_run_json(
+        &fixture.home,
+        &fixture.project_id,
+        &[
+            "work",
+            "list",
+            "--team-run-id",
+            &fixture.run_id,
+            "--since",
+            &baseline_next_since.to_string(),
+        ],
+    );
+    let delta_works = delta["works"].as_array().expect("delta works");
+    assert_eq!(
+        delta_works.len(),
+        1,
+        "only the Work that changed after the cursor comes back: {delta}"
+    );
+    assert_eq!(
+        delta_works[0]["id"].as_str(),
+        Some(fixture.work_blocked_id.as_str())
+    );
+    assert_eq!(delta_works[0]["status"].as_str(), Some("in_progress"));
+    assert_eq!(delta_works[0]["version"].as_u64(), Some(4));
+    let next_since = delta["next_since"].as_u64().expect("next_since");
+    assert_eq!(
+        next_since,
+        baseline_next_since + 1,
+        "exactly one new WorkOperation landed since the baseline cursor"
+    );
+
+    // Chaining --since with the fresh cursor sees nothing new: the delta read
+    // is idempotent at the tip of the operation log.
+    let empty = team_run_json(
+        &fixture.home,
+        &fixture.project_id,
+        &[
+            "work",
+            "list",
+            "--team-run-id",
+            &fixture.run_id,
+            "--since",
+            &next_since.to_string(),
+        ],
+    );
+    assert_eq!(
+        empty["works"].as_array().map(Vec::len),
+        Some(0),
+        "nothing changed since the latest cursor: {empty}"
+    );
+    assert_eq!(empty["next_since"].as_u64(), Some(next_since));
+}
+
+#[test]
+fn team_run_board_summary_is_bounded_and_reports_counts_and_member_state() {
+    let fixture = seed_board_read_fixture("board-summary");
+
+    let out = run_harness(
+        &fixture.home,
+        fixture.home.base(),
+        &[
+            "--project",
+            &fixture.project_id,
+            "team-run",
+            "board-summary",
+            "--id",
+            &fixture.run_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "board-summary failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let summary = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        summary.chars().count() <= 500,
+        "board-summary must stay <=500 chars, got {}: {summary:?}",
+        summary.chars().count()
+    );
+    for expected in [
+        "open=1",
+        "in_progress=1",
+        "blocked=1",
+        "review=1",
+        "done=1",
+        "cancelled=1",
+        "assigned=4",
+        "unassigned=2",
+        "ready=1",
+        "alice: working",
+        "bob: awaiting-review",
+        "charlie: idle",
+    ] {
+        assert!(
+            summary.contains(expected),
+            "board-summary missing {expected:?}: {summary}"
+        );
+    }
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&summary).is_err(),
+        "board-summary is plain text, not JSON: {summary}"
+    );
+
+    // Unknown run id fails with a descriptive error instead of an empty
+    // summary, mirroring `team-run status`.
+    let missing = run_harness(
+        &fixture.home,
+        fixture.home.base(),
+        &[
+            "--project",
+            &fixture.project_id,
+            "team-run",
+            "board-summary",
+            "--id",
+            "team-run-does-not-exist",
+        ],
+    );
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("team run not found"),
+        "stderr: {}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+}

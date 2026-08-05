@@ -163,6 +163,22 @@ async function mockRoutes(page) {
     if (url.pathname === "/v1/workflows") return route.fulfill({ status: 200, contentType: "application/json", body: '{"workflows":[]}' });
     if (url.pathname === "/v1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
     if (url.pathname.endsWith("/native-activity")) return route.fulfill({ status: 200, contentType: "application/json", body: '{"items":[],"truncated":false,"availability":"unknown","native_session_id":"","provider":"","execution_mode":""}' });
+    // The persistent provenance footer (issue #307) polls this on its own;
+    // stub it like every other endpoint so this check stays free of
+    // console-logged network errors.
+    if (url.pathname === "/v1/meta") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          git_rev: "fixture0",
+          built_at: null,
+          store_root: "/fixture/store",
+          latest_op_seq: 0,
+          server_version: "0.0.0-fixture",
+        }),
+      });
+    }
     return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not_found"}' });
   });
 }
