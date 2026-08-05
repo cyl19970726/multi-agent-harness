@@ -46,6 +46,7 @@ import { memberTone } from "@/components/workbench/tones";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { liveSteerCapability, memberModelLabel, providerStackLine } from "@/lib/provider";
 import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
 import type {
@@ -150,8 +151,8 @@ export function MemberRunFocus({
   const closeRequest = model.snapshot.team_member_close_requests?.find(
     (request) => request.member_run_id === memberRunId,
   );
-  const canLiveSteer = context?.member.provider_profile?.execution_mode === "codex_app_server"
-    && context?.member.status === "running";
+  const steerCapability = context ? liveSteerCapability(context.member) : { allowed: false, reason: undefined };
+  const canLiveSteer = steerCapability.allowed;
 
   useEffect(() => {
     setNativeActivity(undefined);
@@ -291,11 +292,7 @@ export function MemberRunFocus({
               ? "This member runtime is finished; close and reopen it to resume the same native session."
               : ACTIONS_DISABLED_HINT}
           supportsLiveSteer={canLiveSteer}
-          steerUnavailableReason={context.member.provider_profile?.execution_mode !== "codex_app_server"
-            ? `${context.member.provider_profile?.execution_mode ?? "This provider mode"} does not support same-turn Steer.`
-            : context.member.status !== "running"
-              ? "Steer is available only while this Codex member has an active turn."
-              : undefined}
+          steerUnavailableReason={steerCapability.reason}
           deliveryHint={composerMode === "steer"
             ? "Injects only this explicit Steer into the active Codex turn."
             : `${responseIntent === "response_required" ? "Requests a reply in" : "Adds context to"} the member's next provider round${currentWork ? ` and links Work ${currentWork.id}` : ""}.`}
@@ -416,7 +413,7 @@ function MemberHeroHeader({
             <span className="text-foreground">{context.member.coordination_status ?? "active"} · gen {context.member.runtime_generation ?? 1}</span>
             <span className="h-4 w-px bg-border" />
             <span className="text-muted-foreground">Provider</span>
-            <span className="text-foreground">{context.member.provider ?? "provider"}{memberModelLabel(context.member) ? ` · ${memberModelLabel(context.member)}` : ""}</span>
+            <span className="text-foreground">{providerStackLine(context.member.provider, context.member.provider_profile?.execution_mode ?? context.member.native_session?.execution_mode, memberModelLabel(context.member))}</span>
           </div>
         </div>
       </div>
@@ -946,7 +943,7 @@ function MemberContextRail({
           <RailKeyValue label="Service control" value={providerControlSummary(context.member.provider_controls?.service_tier)} />
           <RailKeyValue label="Native session" value={context.member.native_session?.native_session_id ?? "Unavailable"} mono />
           <RailKeyValue label="Resume" value={context.member.native_session?.supports_resume ? "Supported" : "Not verified"} />
-          <RailKeyValue label="Actual cwd" value={context.member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono />
+          <RailKeyValue label="Actual cwd" value={context.member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." />
           <RailKeyValue label="Git branch" value={context.member.workspace_snapshot?.git_branch ?? "Detached or not captured"} mono />
           <RailKeyValue label="Last activity" value={formatRelative(context.member.last_event_at)} />
           {claudeDesktopSessionUri(context.member) && (
@@ -1175,8 +1172,8 @@ function RailEmpty({ children }: { children: string }) {
   return <p className="text-[12px] leading-relaxed text-muted-foreground">{children}</p>;
 }
 
-function RailKeyValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div className="flex min-w-0 items-start justify-between gap-3"><span className="shrink-0 text-muted-foreground">{label}</span><span className={cn("min-w-0 text-right text-foreground", mono && "truncate font-mono text-[11px]")}>{value}</span></div>;
+function RailKeyValue({ label, value, mono = false, title }: { label: string; value: string; mono?: boolean; title?: string }) {
+  return <div className="flex min-w-0 items-start justify-between gap-3" title={title}><span className="shrink-0 text-muted-foreground">{label}</span><span className={cn("min-w-0 text-right text-foreground", mono && "truncate font-mono text-[11px]")}>{value}</span></div>;
 }
 
 function RailReferenceList({ label, refs, empty }: { label: string; refs?: string[]; empty: string }) {
@@ -1197,14 +1194,6 @@ function providerControlSummary(control?: ProviderControlValue | null, legacyReq
   const effective = control?.effective;
   const status = control?.status ?? (legacyRequested ? "legacy_unverified" : "not_recorded");
   return `${requested ? `requested ${requested}` : "provider default"} → ${effective ?? "not confirmed"} · ${status}`;
-}
-
-function memberModelLabel(member: MemberRunContext["member"]): string | undefined {
-  const control = member.provider_controls?.model;
-  if (control?.effective) return control.effective;
-  if (control?.requested) return `${control.requested} (${control.status ?? "requested"})`;
-  if (member.model) return `${member.model} (unverified)`;
-  return undefined;
 }
 
 function toActivityItems(

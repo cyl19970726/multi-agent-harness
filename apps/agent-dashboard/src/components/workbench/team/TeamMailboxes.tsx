@@ -1,6 +1,7 @@
 import { ArrowRight, Inbox, Mail, MessageSquare, SendHorizontal, SquareArrowOutUpRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { memberModelLabel, providerStackLine } from "@/lib/provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
@@ -129,6 +130,23 @@ export function TeamMailboxStrip({
                   <span className="min-w-0">
                     <span className="block truncate text-[11px] font-semibold text-foreground">{participant.name}</span>
                     <span className="block truncate text-[9px] uppercase tracking-wider text-muted-foreground">{participant.role}</span>
+                    {participant.member && (
+                      <span
+                        data-testid={`mailbox-provider-stack-${participant.id}`}
+                        className="block truncate text-[9px] text-muted-foreground/90"
+                        title={providerStackLine(
+                          participant.member.provider,
+                          participant.member.provider_profile?.execution_mode ?? participant.member.native_session?.execution_mode,
+                          memberModelLabel(participant.member),
+                        )}
+                      >
+                        {providerStackLine(
+                          participant.member.provider,
+                          participant.member.provider_profile?.execution_mode ?? participant.member.native_session?.execution_mode,
+                          memberModelLabel(participant.member),
+                        )}
+                      </span>
+                    )}
                   </span>
                 </button>
                 {participant.member && (

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, Send, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { AlertTriangle, Bot, BriefcaseBusiness, Building2, CheckCircle2, CircleDollarSign, Clock3, FileCheck2, KeyRound, Landmark, Library, Network, Plus, Route, Scale, Search, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 
 import {
   ActorPill, ContextRail, DecisionNotice,
@@ -353,7 +353,7 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
           <p className="text-xs leading-5 text-muted-foreground">Tools and Skills enable work; they never grant authority. Money requires Finance policy, and sensitive company actions may still require a named Human approval.</p>
         </ContextModule>
       </WorkbenchContextRail>}
-      composer={<form aria-label="Message Standing Agent" className="mx-auto flex w-full max-w-[1080px] items-end gap-2"><div className="min-w-0 flex-1"><label className="sr-only" htmlFor="standing-agent-message">Message {actor.name}</label><textarea id="standing-agent-message" disabled rows={2} placeholder={`Message ${actor.name}…`} aria-describedby="standing-agent-message-reason" className="min-h-14 w-full resize-none rounded-xl border border-input bg-muted/65 px-3 py-2 text-sm text-muted-foreground" /><p id="standing-agent-message-reason" className="mt-1 text-[10px] text-muted-foreground">{commandUnavailable}</p></div><button type="submit" disabled title={commandUnavailable} aria-label={`Send message. Unavailable: ${commandUnavailable}`} className="grid size-11 shrink-0 cursor-not-allowed place-items-center rounded-xl bg-muted text-muted-foreground"><Send className="size-4" /></button></form>}
+      composer={<div data-testid="standing-agent-chat-guidance" aria-label="Message Standing Agent" className="mx-auto flex w-full max-w-[1080px] items-center gap-3 rounded-xl border border-border bg-muted/40 px-4 py-3"><Bot className="size-4 shrink-0 text-muted-foreground" /><p className="text-xs leading-5 text-muted-foreground">{commandUnavailable} To chat with a live runtime, open one of this agent's Agent Team MemberRuns from the context rail.</p></div>}
     >
       <div className="mx-auto w-full max-w-[1080px] space-y-5 px-5 py-6 sm:px-8">
         <StandingLinkConflictBanner conflicts={actorLinkConflicts} />

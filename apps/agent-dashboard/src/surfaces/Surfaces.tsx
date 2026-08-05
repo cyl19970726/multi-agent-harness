@@ -1,4 +1,4 @@
-import { Activity, Bot, Inbox, Send, TerminalSquare, Users } from "lucide-react";
+import { Activity, Bot, Inbox, MessageSquare, Send, TerminalSquare, Users } from "lucide-react";
 
 import { Avatar } from "@/components/workbench/Avatar";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 import { deliverQueued } from "../api/actions";
+import { providerDisplayName, providerStackLine } from "@/lib/provider";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
 
@@ -59,10 +60,9 @@ export function AgentsList({ model, onSelectionChange }: SurfaceProps) {
                   </div>
                   <Badge tone={runtimeTone(status)}>{status ?? "unknown"}</Badge>
                 </div>
-                <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
-                  <span>{member.provider ?? "provider unset"}</span>
-                  <span>·</span>
-                  <span>{member.inbox_count ?? 0} inbox</span>
+                <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                  <p className="truncate">{providerStackLine(member.provider, member.native_session?.execution_mode, member.model)}</p>
+                  <p>{member.inbox_count ?? 0} inbox</p>
                 </div>
               </button>
             );
@@ -90,6 +90,11 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
   const messages = (model.snapshot.messages ?? []).filter(
     (message) => message.from_agent_id === member.id || message.to_agent_id === member.id,
   );
+  // Chat with a live runtime happens in the team surface; resolve the newest
+  // MemberRun that explicitly links this durable identity.
+  const latestMemberRun = (model.snapshot.member_runs ?? [])
+    .filter((run) => run.agent_member_id === member.id)
+    .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-background lg:flex-row">
@@ -104,7 +109,7 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
               <h1 className="text-2xl font-semibold tracking-tight">{member.name ?? member.id}</h1>
               <Badge tone={runtimeTone(status)}>{status ?? "unknown"}</Badge>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">{member.role ?? "Agent member"} · {member.provider ?? "provider unset"}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{member.role ?? "Agent member"} · {providerDisplayName(member.provider)}</p>
             {member.description && <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">{member.description}</p>}
           </div>
           <Button
@@ -157,6 +162,64 @@ export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction
           )}
           {!nativeSession && <p className="text-xs text-muted-foreground">No provider-native session is bound yet.</p>}
         </div>
+
+        <div className="mt-5">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Model & configuration</h2>
+          <dl className="mt-3 space-y-2 rounded-lg border border-border bg-background/70 p-3 text-xs">
+            <ConfigRow label="Model" value={member.model ?? "Not configured"} mono />
+            <ConfigRow label="Execution mode" value={nativeSession?.execution_mode ?? "Not recorded"} />
+            {member.profile && <ConfigRow label="Profile" value={member.profile} />}
+            {member.provider_config?.permission_profile && <ConfigRow label="Permission profile" value={member.provider_config.permission_profile} />}
+            {member.provider_config?.approval_policy && <ConfigRow label="Approval policy" value={member.provider_config.approval_policy} />}
+            {member.provider_config?.approvals_reviewer && <ConfigRow label="Approvals reviewer" value={member.provider_config.approvals_reviewer} />}
+            {member.provider_config?.sandbox_policy && <ConfigRow label="Sandbox policy" value={member.provider_config.sandbox_policy} />}
+            {member.provider_config?.service_tier && <ConfigRow label="Service tier" value={member.provider_config.service_tier} />}
+            {member.provider_config?.collaboration_mode && <ConfigRow label="Collaboration mode" value={member.provider_config.collaboration_mode} />}
+            {member.provider_config?.environment_id && <ConfigRow label="Environment" value={member.provider_config.environment_id} mono />}
+            {(member.provider_config?.runtime_workspace_roots?.length ?? 0) > 0 && (
+              <ConfigRow label="Workspace roots" value={member.provider_config!.runtime_workspace_roots!.join(", ")} mono />
+            )}
+            {(member.provider_config?.mcp?.servers?.length ?? 0) > 0 && (
+              <ConfigRow label="MCP servers" value={member.provider_config!.mcp!.servers!.map((server) => server.id).join(", ")} />
+            )}
+            <ConfigRow
+              label="Runtime"
+              value={member.runtime_alive
+                ? `alive${member.runtime_pid ? ` · pid ${member.runtime_pid}` : ""}`
+                : member.runtime_status ?? "not running"}
+            />
+            {member.control_endpoint && <ConfigRow label="Control endpoint" value={member.control_endpoint} mono />}
+            {member.provider_thread_id && <ConfigRow label="Provider thread" value={member.provider_thread_id} mono />}
+            {(member.provider_child_thread_count ?? 0) > 0 && <ConfigRow label="Child threads" value={String(member.provider_child_thread_count)} />}
+            {member.runtime_health?.protocol_probe && <ConfigRow label="Protocol probe" value={member.runtime_health.protocol_probe} />}
+            {member.runtime_health?.delivery_probe && <ConfigRow label="Delivery probe" value={member.runtime_health.delivery_probe} />}
+            {member.prompt_ref && <ConfigRow label="Prompt ref" value={member.prompt_ref} mono />}
+            {(member.skill_refs?.length ?? 0) > 0 && <ConfigRow label="Skill refs" value={member.skill_refs!.join(", ")} />}
+          </dl>
+        </div>
+
+        <div className="mt-5">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Chat</h2>
+          {latestMemberRun ? (
+            <>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Messages are delivered through this member's team run, not the directory page.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2"
+                onClick={() => onSelectionChange({ surface: "team", teamId: latestMemberRun.team_run_id, memberRunId: latestMemberRun.id })}
+              >
+                <MessageSquare className="size-3.5" /> Open team chat
+              </Button>
+            </>
+          ) : (
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              This member has no active team run. Chat is delivered through team assignments; use Deliver inbox for queued messages.
+            </p>
+          )}
+        </div>
       </aside>
     </div>
   );
@@ -167,6 +230,15 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
     <div className="rounded-lg border border-border bg-background/70 p-3">
       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">{icon}{label}</div>
       <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+function ConfigRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="grid grid-cols-[7rem_1fr] gap-2">
+      <dt className="min-w-0 text-muted-foreground">{label}</dt>
+      <dd className={cn("min-w-0 break-words text-foreground", mono && "font-mono text-[10px]")}>{value}</dd>
     </div>
   );
 }

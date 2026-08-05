@@ -51,5 +51,18 @@ export default defineConfig({
   build: {
     outDir: "web",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // The app was a single >500 kB chunk. Split the stable dependency
+        // layer so app changes do not re-download the whole vendor bundle.
+        // React, Radix, and lucide share an import cycle boundary, so they
+        // form one framework chunk instead of two cross-importing chunks.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("react") || id.includes("scheduler") || id.includes("@radix-ui") || id.includes("lucide-react")) return "framework-vendor";
+          return "vendor";
+        },
+      },
+    },
   },
 });

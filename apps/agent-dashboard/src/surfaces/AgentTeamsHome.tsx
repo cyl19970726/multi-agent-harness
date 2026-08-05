@@ -50,6 +50,23 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
     })
     .sort((left, right) => timestamp(right.run.updated_at ?? right.run.created_at) - timestamp(left.run.updated_at ?? left.run.created_at));
 
+  // Attempts of the same team are numbered chronologically so repeated team
+  // names on this page read as attempts, not duplicated teams.
+  const attemptNumberByRun = new Map<string, number>();
+  const attemptTotalByTeam = new Map<string, number>();
+  {
+    const runsByTeam = new Map<string, TeamRun[]>();
+    for (const attempt of attempts) {
+      const teamKey = attempt.team?.id;
+      if (!teamKey) continue;
+      runsByTeam.set(teamKey, [...(runsByTeam.get(teamKey) ?? []), attempt.run]);
+    }
+    for (const [teamKey, runs] of runsByTeam) {
+      attemptTotalByTeam.set(teamKey, runs.length);
+      runs.slice().reverse().forEach((run, index) => attemptNumberByRun.set(run.id, index + 1));
+    }
+  }
+
   return (
     <DocumentSurface className="max-w-[1120px]">
       <header className="flex flex-wrap items-end justify-between gap-5 border-b border-border/70 pb-5">
@@ -86,6 +103,8 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
             {attempts.map(({ run, team, mission, legacyWave, members }) => {
               const tone = runTone(run.status);
               const pressure = members.filter((member) => ["blocked", "failed", "waiting", "reviewing", "disconnected"].includes(member.status ?? ""));
+              const attemptTotal = team ? attemptTotalByTeam.get(team.id) : undefined;
+              const attemptNumber = attemptNumberByRun.get(run.id);
               return (
                 <button
                   key={run.id}
@@ -105,6 +124,7 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-semibold text-foreground">{team?.name ?? run.objective}</span>
                         <Badge tone={tone}>{run.status ?? "unknown"}</Badge>
+                        {(attemptTotal ?? 0) > 1 && attemptNumber && <Badge tone="muted">Attempt {attemptNumber} of {attemptTotal}</Badge>}
                       </span>
                       <span className="mt-1 block truncate text-xs text-muted-foreground">
                         {mission
@@ -134,8 +154,9 @@ export function AgentTeamsHome({ model, onSelectionChange }: AgentTeamsHomeProps
                         {members.length} {members.length === 1 ? "member" : "members"}
                       </span>
                     </span>
-                    <span className={cn("text-[11px] font-medium", pressure.length > 0 ? "text-status-warn" : "text-muted-foreground")}>
-                      {pressure.length > 0 ? `${pressure.length} need attention` : formatRelative(run.updated_at ?? run.created_at)}
+                    <span className="flex min-w-0 items-center gap-2 text-[11px]">
+                      {pressure.length > 0 && <span className="shrink-0 font-medium text-status-warn">{pressure.length} need attention</span>}
+                      <span className="truncate text-muted-foreground">{formatRelative(run.updated_at ?? run.created_at)}</span>
                     </span>
                   </div>
                 </button>

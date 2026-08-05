@@ -1,6 +1,7 @@
 import { SquareArrowOutUpRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { memberModelLabel, providerStackLine } from "@/lib/provider";
 import { Avatar } from "@/components/workbench/Avatar";
 import { StatusDot } from "@/components/workbench/atoms";
 
@@ -106,13 +107,13 @@ function MemberCapacityRow({
             <span className="truncate text-[12px] font-semibold text-foreground">{member.name ?? member.id}</span>
             <StatusDot tone={tone} pulse={tone === "running"} />
           </span>
-          <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-            {member.role ?? "member"} · {member.provider ?? "provider"}{member.model ? ` · ${member.model}` : ""}
+          <span className="mt-0.5 block truncate text-[10px] text-muted-foreground" title={providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}>
+            {member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}
           </span>
         </span>
       </button>
 
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
         <CapacityFact label="Addressable" value={addressable ? "Yes" : "No"} tone={addressable ? undefined : "warn"} />
         <CapacityFact label="Active" value={String(active)} />
         <CapacityFact label="Queued" value={String(queued)} />
@@ -194,14 +195,14 @@ function CapacityFact({ label, value, tone, title, note }: {
   note?: string;
 }) {
   return (
-    <div className="min-w-0" title={title}>
-      <span className="block truncate text-[8px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
+    <div className="min-w-0" title={title ?? label}>
+      <span className="block truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
       <span className={cn(
         "block truncate text-[11px] font-medium text-foreground",
         tone === "warn" && "text-status-warn",
         tone === "bad" && "text-status-bad",
       )}>{value}</span>
-      {note && <span className="block truncate text-[8px] text-muted-foreground">{note}</span>}
+      {note && <span className="block truncate text-[9px] text-muted-foreground">{note}</span>}
     </div>
   );
 }
@@ -232,7 +233,7 @@ export function MemberControl({ member, selected, work, currentAction, livePrevi
           <Avatar name={member.name ?? member.id} tone={tone} />
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-1.5"><span className="truncate text-[12px] font-semibold text-foreground">{member.name ?? member.id}</span><StatusDot tone={tone} pulse={tone === "running"} /></span>
-            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}{member.model ? ` · ${member.model}` : ""}<span className="sm:hidden"> · {member.status ?? "unknown"}</span></span>
+            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}<span className="sm:hidden"> · {member.status ?? "unknown"}</span></span>
           </span>
         </button>
         <button type="button" onClick={onOpen} aria-label={`Open ${member.name ?? member.id}`} className="absolute right-1.5 top-1.5 rounded bg-background/90 p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"><SquareArrowOutUpRight className="size-3.5" /></button>

@@ -319,6 +319,17 @@ try {
         await teamWarRoomJourney.mailboxOpen(page, fixtureMailbox).first().isVisible().catch(() => false),
         `${viewport.label}: capture journey selector resolves — mailbox-open-${fixtureMailbox}`,
       );
+      // Regression guard for the member identity facts on the thumbnail card:
+      // the provider display name, execution mode, and model must stay visible.
+      const providerStack = teamWarRoomJourney.mailboxProviderStack(page, fixtureMailbox).first();
+      check(
+        await providerStack.isVisible().catch(() => false),
+        `${viewport.label}: mailbox card shows the provider · mode · model stack`,
+      );
+      check(
+        ((await providerStack.textContent().catch(() => "")) ?? "").includes("Claude Code"),
+        `${viewport.label}: mailbox provider stack renders the provider display name`,
+      );
     }
     const activity = await page.evaluate(PROBE);
     if (viewport.width <= 320) {

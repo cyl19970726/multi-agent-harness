@@ -136,12 +136,13 @@ async function main() {
     "Host reopen resumes the same MemberRun through an explicit action",
   );
 
-  const [teamSource, missionSource, memberSource, appSource, apiSource] = await Promise.all([
+  const [teamSource, missionSource, memberSource, appSource, apiSource, providerSource] = await Promise.all([
     readWarRoomSource(dashboardRoot),
     readFile(join(dashboardRoot, "src/surfaces/Missions.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/surfaces/MemberRuns.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/app/App.tsx"), "utf8"),
     readFile(join(dashboardRoot, "src/api.ts"), "utf8"),
+    readFile(join(dashboardRoot, "src/lib/provider.ts"), "utf8"),
   ]);
   check(
     teamSource.includes('delivery.member_id === "host" && delivery.status === "delivered"')
@@ -240,8 +241,10 @@ async function main() {
   check(
     memberSource.includes('composerMode === "steer"')
       && memberSource.includes("Injects only this explicit Steer")
-      && memberSource.includes("Steer is available only while this Codex member has an active turn.")
-      && memberSource.includes('execution_mode === "codex_app_server"')
+      && memberSource.includes("liveSteerCapability(context.member)")
+      && memberSource.includes("steerUnavailableReason={steerCapability.reason}")
+      && providerSource.includes('mode !== "codex_app_server"')
+      && providerSource.includes("Steer is available only while this Codex member has an active turn.")
       && memberSource.includes('disabled={!supportsLiveSteer}')
       && memberSource.includes('if (composerMode === "steer" && !canLiveSteer) return')
       && !memberSource.includes("queues control guidance for the next provider round")

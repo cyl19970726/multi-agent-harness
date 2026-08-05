@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Bot, ChevronRight, ShieldCheck, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { providerStackLine, memberModelLabel } from "@/lib/provider";
 import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
 import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
@@ -49,7 +50,7 @@ export function MemberRunCompact({
             <span className="truncate text-[13px] font-semibold text-foreground">{member.name ?? member.id}</span>
             <Badge tone={tone}>{member.status ?? "idle"}</Badge>
           </div>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}{member.model ? ` · ${member.model}` : ""}</p>
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}</p>
         </div>
         {onOpen && <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground" />}
       </div>
@@ -92,7 +93,7 @@ export function MemberRunPanel({
         <Avatar name={member.name ?? member.id} tone={tone} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5"><span className="text-[14px] font-semibold text-foreground">{member.name ?? member.id}</span><Badge tone={tone}>{member.status ?? "idle"}</Badge></div>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}{member.model ? ` · ${member.model}` : ""}</p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}</p>
         </div>
       </div>
       <dl className="mt-3 space-y-2 border-t border-border/60 pt-3 text-[11px]">
@@ -101,7 +102,7 @@ export function MemberRunPanel({
         {thinkingPreview && <MemberFact label="Thinking preview" value={thinkingPreview} live transient />}
         <MemberFact label="Native session" value={member.native_session?.native_session_id ?? "No session recorded"} mono />
         <MemberFact label="Worktree override" value={member.worktree_ref ?? "None"} mono />
-        <MemberFact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono />
+        <MemberFact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." />
       </dl>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {outputCount !== undefined && <Badge tone="muted">{outputCount} outputs</Badge>}
@@ -141,7 +142,7 @@ export function StandingAgentCompact({
         <Avatar name={agent.name ?? agent.id} tone={tone} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5"><span className="truncate text-[13px] font-semibold text-foreground">{agent.name ?? agent.id}</span><Badge tone={tone}>{agent.runtime_status ?? agent.status ?? "unknown"}</Badge></div>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{agent.role ?? "agent"} · {agent.provider ?? "provider"}{agent.model ? ` · ${agent.model}` : ""}</p>
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{agent.role ?? "agent"} · {providerStackLine(agent.provider, agent.native_session?.execution_mode, agent.model)}</p>
         </div>
         {onOpen && <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground" />}
       </div>
@@ -156,8 +157,8 @@ function MemberLine({ icon, label, value, live = false, transient = false }: { i
   return <div className="flex min-w-0 items-start gap-1.5"><span className={cn("mt-0.5 shrink-0 text-muted-foreground", live && "text-status-running")}>{icon}</span><span className="shrink-0 text-muted-foreground">{label}</span><span className="min-w-0 flex-1 truncate text-foreground">{value}</span>{transient && <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-status-info">live</span>}</div>;
 }
 
-function MemberFact({ label, value, live = false, transient = false, mono = false }: { label: string; value: string; live?: boolean; transient?: boolean; mono?: boolean }) {
-  return <div className="grid grid-cols-[5.5rem_1fr] gap-2"><dt className={cn("text-muted-foreground", live && "text-status-running")}>{label}</dt><dd className={cn("min-w-0 break-words text-foreground", mono && "font-mono text-[10px]")}>{value}{transient && <span className="ml-1 text-[9px] font-semibold uppercase tracking-wide text-status-info">live only</span>}</dd></div>;
+function MemberFact({ label, value, live = false, transient = false, mono = false, title }: { label: string; value: string; live?: boolean; transient?: boolean; mono?: boolean; title?: string }) {
+  return <div className="grid grid-cols-[5.5rem_1fr] gap-2" title={title}><dt className={cn("text-muted-foreground", live && "text-status-running")}>{label}</dt><dd className={cn("min-w-0 break-words text-foreground", mono && "font-mono text-[10px]")}>{value}{transient && <span className="ml-1 text-[9px] font-semibold uppercase tracking-wide text-status-info">live only</span>}</dd></div>;
 }
 
 function memberRunTone(status?: string | null): StatusTone {

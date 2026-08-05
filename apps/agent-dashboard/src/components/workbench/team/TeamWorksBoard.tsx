@@ -23,11 +23,11 @@ import { formatTime, memberTone, shortId, workTone } from "./teamFormat";
 type WorkLane = "open" | "assigned" | "doing" | "review" | "done";
 
 const WORK_LANES: Array<{ id: WorkLane; label: string; statuses: string[]; tone: StatusTone }> = [
-  { id: "open", label: "Open", statuses: ["open"], tone: "idle" },
-  { id: "assigned", label: "Assigned", statuses: ["open"], tone: "info" },
-  { id: "doing", label: "In progress", statuses: ["in_progress", "blocked"], tone: "running" },
+  { id: "open", label: "Open · unassigned", statuses: ["open"], tone: "idle" },
+  { id: "assigned", label: "Open · assigned", statuses: ["open"], tone: "info" },
+  { id: "doing", label: "In progress & blocked", statuses: ["in_progress", "blocked"], tone: "running" },
   { id: "review", label: "Review", statuses: ["review"], tone: "warn" },
-  { id: "done", label: "Done", statuses: ["done", "cancelled"], tone: "good" },
+  { id: "done", label: "Done / cancelled", statuses: ["done", "cancelled"], tone: "good" },
 ];
 
 /** Focusable descendants used to keep Tab inside the modal Work sheet. */
@@ -187,7 +187,7 @@ export function TeamWorksBoard({
     <section className="py-2" aria-label="Shared team Works board" data-testid="team-works-board">
       <header className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="min-w-0">
-          <div className="flex items-center gap-2"><ListTodo className="size-4 text-primary" /><h2 className="text-sm font-semibold text-foreground">Shared Works</h2><Badge tone="info">{active} active</Badge></div>
+          <div className="flex items-center gap-2"><ListTodo className="size-4 text-primary" /><h2 className="text-sm font-semibold text-foreground">Shared Works</h2><Badge tone="info" title="Works not done or cancelled; the filter line below counts all Works including done ones">{active} active</Badge></div>
           <p className="mt-1 hidden text-[11px] text-muted-foreground sm:block">Durable ownership lives here. Messages discuss Work; they never create ownership.</p>
         </div>
         <div className="flex min-w-0 items-center gap-2">
@@ -278,7 +278,7 @@ export function TeamWorksBoard({
             <section
               key={lane.id}
               data-work-lane={lane.id}
-              className="rounded-xl border border-border/70 bg-muted/[0.18] p-2 lg:min-h-[23rem]"
+              className="rounded-xl border border-border/70 bg-muted/[0.18] p-2"
               aria-label={`${lane.label} Works`}
             >
               <header className="mb-1.5 flex items-center justify-between px-1">

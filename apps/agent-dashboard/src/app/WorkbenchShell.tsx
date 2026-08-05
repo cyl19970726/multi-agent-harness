@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import {
   BookOpen,
   BriefcaseBusiness,
@@ -49,7 +49,13 @@ import { AgentTeamsHome } from "../surfaces/AgentTeamsHome";
 import { TeamWarRoom } from "../surfaces/TeamWarRoom";
 import { MemberRunFocus } from "../surfaces/MemberRuns";
 import { MissionsSurface } from "../surfaces/Missions";
-import { CompanyOsRouter, isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/CompanyOsRouter";
+import { isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/routeMeta";
+
+/** Company OS page tree is large; keep it out of the initial workbench chunk
+ * and load it when a Company OS surface is actually opened. */
+const CompanyOsRouter = lazy(() =>
+  import("../company-os/CompanyOsRouter").then((module) => ({ default: module.CompanyOsRouter })),
+);
 import type { SelectionState, SurfaceId } from "./selection";
 import { freshnessDomains, type DomainFreshness, type FreshnessDomain } from "./freshness";
 
@@ -958,7 +964,11 @@ function SurfaceSwitch({
   };
   if (isCompanyOsSurface(selection.surface)) {
     const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
-    return <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} snapshotLoading={isLoading} sourceLabel={sourceLabel} onAction={onAction} onSelectionChange={onSelectionChange} />;
+    return (
+      <Suspense fallback={<div className="grid h-full place-items-center text-sm text-muted-foreground">Loading Company OS…</div>}>
+        <CompanyOsRouter model={model} selection={selection} actionsEnabled={actionsEnabled} livePending={livePending} snapshotLoading={isLoading} sourceLabel={sourceLabel} onAction={onAction} onSelectionChange={onSelectionChange} />
+      </Suspense>
+    );
   }
   switch (selection.surface) {
     case "missions":

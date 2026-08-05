@@ -1,11 +1,11 @@
-import contentCreative from "@/assets/agent-members/avatars/content-creative.png";
-import financeOperations from "@/assets/agent-members/avatars/finance-operations.png";
-import implementationEngineer from "@/assets/agent-members/avatars/implementation-engineer.png";
-import productStrategist from "@/assets/agent-members/avatars/product-strategist.png";
-import researchVerifier from "@/assets/agent-members/avatars/research-verifier.png";
-import securityReviewer from "@/assets/agent-members/avatars/security-reviewer.png";
-import technicalLead from "@/assets/agent-members/avatars/technical-lead.png";
-import workspaceArchitect from "@/assets/agent-members/avatars/workspace-architect.png";
+import contentCreative from "@/assets/agent-members/avatars/content-creative.webp";
+import financeOperations from "@/assets/agent-members/avatars/finance-operations.webp";
+import implementationEngineer from "@/assets/agent-members/avatars/implementation-engineer.webp";
+import productStrategist from "@/assets/agent-members/avatars/product-strategist.webp";
+import researchVerifier from "@/assets/agent-members/avatars/research-verifier.webp";
+import securityReviewer from "@/assets/agent-members/avatars/security-reviewer.webp";
+import technicalLead from "@/assets/agent-members/avatars/technical-lead.webp";
+import workspaceArchitect from "@/assets/agent-members/avatars/workspace-architect.webp";
 
 /**
  * Shared actor portrait resolver for Company OS and execution workbench roles.

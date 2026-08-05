@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { providerDisplayName, providerStackLine, memberModelLabel } from "@/lib/provider";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -356,7 +357,14 @@ export function TeamWarRoom({
               <Badge tone={teamTone(status)}>{status}</Badge>
               <Badge tone="muted">attempt {attemptNumber(attempts, run.id)}</Badge>
               <Badge tone="muted">Lead · {teamLeadLabel(stableTeam?.owner_agent_id)}</Badge>
-              <Badge tone={supervisorCurrent ? "good" : status === "running" ? "bad" : "muted"}>
+              <Badge
+                tone={supervisorCurrent ? "good" : status === "running" ? "bad" : "muted"}
+                title={supervisorCurrent
+                  ? "A live Team Supervisor lease owns this run's control handles."
+                  : status === "running"
+                    ? "The run reports running, but no current Team Supervisor lease was observed. Cross-process control may be unavailable until a supervisor reattaches."
+                    : "No supervisor lease is expected while the run is not active."}
+              >
                 Supervisor · {supervisorCurrent ? `live g${supervisor?.generation}` : "offline"}
               </Badge>
               {pendingCloseCount > 0 && <Badge tone="warn">Close pending · {pendingCloseCount}</Badge>}
@@ -818,7 +826,7 @@ function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped,
             <Avatar name={member.name ?? member.id} tone={memberTone(member.status)} size="xs" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[11px] font-medium text-foreground">{member.name ?? member.id}</span>
-              <span className="block truncate text-[9px] text-muted-foreground">{member.role ?? "member"}</span>
+              <span className="block truncate text-[9px] text-muted-foreground">{member.role ?? "member"} · {providerDisplayName(member.provider)}</span>
             </span>
             <span className={cn("text-[9px] font-medium", member.status === "completed" ? "text-status-good" : member.status === "running" ? "text-status-info" : "text-muted-foreground")}>{member.status ?? "unknown"}</span>
           </button>
@@ -887,8 +895,8 @@ function SelectedMemberModule({ member, work, currentAction, onMessage, onOpen }
   if (!member) return <ContextModule title="No member selected" kicker="Selected member"><p className="text-[11px] text-muted-foreground">Choose a member control to inspect its attempt-scoped context.</p></ContextModule>;
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
-      <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground">{member.role ?? "member"} · {member.provider ?? "provider"}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Current Work" value={work ?? "No Work owned"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /><Fact label="Provider account" value={member.provider_capacity ? `${member.provider_capacity.state} · ${member.provider_capacity.evidence_source}` : "Not observed"} /></div>
+      <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground" title={`${member.role ?? "member"} · ${providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}`}>{member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}</p></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Current Work" value={work ?? "No Work owned"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /><Fact label="Provider account" value={member.provider_capacity ? `${member.provider_capacity.state} · ${member.provider_capacity.evidence_source}` : "Not observed"} /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
@@ -901,8 +909,8 @@ function ResourcesModule({ members, delegationCount, liveCount }: { members: Mem
   return <ContextModule title="Resources" kicker="Observed runtime"><div className="space-y-1.5 text-[11px]"><Fact label="Sessions" value={`${sessions} / ${members.length}`} /><Fact label="Worktrees" value={String(worktrees)} /><Fact label="Delegations" value={String(delegationCount)} /><Fact label="Live previews" value={String(liveCount)} /><Fact label="Capacity observed" value={`${observedCapacity} / ${members.length}`} /></div><p className="mt-2 text-[10px] text-muted-foreground">Observed resources only; no termination control is implied.</p></ContextModule>;
 }
 
-function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div className="grid grid-cols-[5.25rem_1fr] gap-2"><span className="text-muted-foreground">{label}</span><span className={cn("min-w-0 break-words text-foreground", mono && "font-mono text-[10px]")}>{value}</span></div>;
+function Fact({ label, value, mono = false, title }: { label: string; value: string; mono?: boolean; title?: string }) {
+  return <div className="grid grid-cols-[5.25rem_1fr] gap-2" title={title}><span className="text-muted-foreground">{label}</span><span className={cn("min-w-0 break-words text-foreground", mono && "font-mono text-[10px]")}>{value}</span></div>;
 }
 
 function dispatch(onAction: TeamWarRoomProps["onAction"], action: { path: string; body: unknown }): void | Promise<boolean> | undefined { return onAction?.(action.path, action.body); }
